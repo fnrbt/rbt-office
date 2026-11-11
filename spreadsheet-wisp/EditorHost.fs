@@ -6,21 +6,16 @@ open Wisp.Layout
 
 module M = Rbt.Spreadsheet.Model
 module L = Rbt.Spreadsheet.Layout
-module Calc = Rbt.Spreadsheet.Calc
-module Formula = Rbt.Spreadsheet.Formula
+module Recalc = Rbt.Spreadsheet.Recalc
 module Workbook = Rbt.Spreadsheet.Workbook
 module GR = Rbt.SpreadsheetWisp.GridRender
 
 type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 
-module Clip =
-    let mutable Data : M.ClipboardData option = None
-    /// Index of the sheet the clipboard block was taken from.
-    let mutable SourceSheet = 0
-    let mutable Text = ""
 
 type EditorState =
-    { Sheets: RefSignal<M.SpreadsheetModel array>
+    { Workbook: RefSignal<Workbook.Workbook>
+      Sheets: RefSignal<M.SpreadsheetModel array>
       SheetNames: RefSignal<string array>
       ActiveSheet: Signal<int>
       ScrollX: Signal<float>
@@ -30,20 +25,19 @@ type EditorState =
       EditingCell: Signal<(int * int) option>
       EditBuffer: Signal<string>
       DragAnchor: Signal<(int * int) option>
-      UndoStack: RefSignal<(M.SpreadsheetModel array * int) list>
-      RedoStack: RefSignal<(M.SpreadsheetModel array * int) list>
-      CalcEngine: RefSignal<Calc.CalcEngine option>
-      mutable LastRecalcWasIncremental: bool }
+      UndoStack: RefSignal<Workbook.Workbook list>
+      RedoStack: RefSignal<Workbook.Workbook list>
+      CalcEngine: RefSignal<Recalc.Engine option>
+      mutable UsedSheetIds: Set<string>
+      mutable Clipboard: (M.ClipboardData * string) option
+      mutable ClipboardText: string }
 
-let create (sheets: M.SpreadsheetModel array) (names: string array) (activeIndex: int) =
-    let safeSheets = if sheets.Length = 0 then [| M.createEmpty 100 26 |] else sheets
-    let safeNames =
-        if names.Length = safeSheets.Length then names
-        else [| for i in 0 .. safeSheets.Length - 1 -> sprintf "Sheet%d" (i + 1) |]
-    let idx = max 0 (min (safeSheets.Length - 1) activeIndex)
-    { Sheets = refSignal safeSheets
-      SheetNames = refSignal safeNames
-      ActiveSheet = signal idx
+let createWithWorkbook (wb: Workbook.Workbook) =
+    let entries = wb.SheetOrder |> List.map (fun id -> wb.Sheets.[id]) |> List.toArray
+    { Workbook = refSignal wb
+      Sheets = refSignal (entries |> Array.map (fun s -> s.Model))
+      SheetNames = refSignal (entries |> Array.map (fun s -> s.Name))
+      ActiveSheet = signal (max 0 (Workbook.sheetIndex wb.ActiveSheet wb))
       ScrollX = signal 0.0
       ScrollY = signal 0.0
       VisibleWidth = signal 900.0
@@ -54,7 +48,14 @@ let create (sheets: M.SpreadsheetModel array) (names: string array) (activeIndex
       UndoStack = refSignal []
       RedoStack = refSignal []
       CalcEngine = refSignal None
-      LastRecalcWasIncremental = false }
+      UsedSheetIds = Set.ofList wb.SheetOrder
+      Clipboard = None
+      ClipboardText = "" }
+
+let create (sheets: M.SpreadsheetModel array) (names: string array) (activeIndex: int) =
+    let sheets = if sheets.Length = 0 then [| M.createEmpty 100 26 |] else sheets
+    Rbt.Spreadsheet.XlsxBridge.buildWorkbookContext sheets names (Array.create sheets.Length true) Map.empty Map.empty activeIndex
+    |> createWithWorkbook
 
 let activeModel (st: EditorState) : M.SpreadsheetModel =
     let sheets = st.Sheets.Value
@@ -66,106 +67,159 @@ let activeSheetName (st: EditorState) =
     let idx = st.ActiveSheet.Value
     if idx >= 0 && idx < names.Length then names.[idx] else "Sheet1"
 
-let private putActiveModel (st: EditorState) (model: M.SpreadsheetModel) =
-    let sheets = st.Sheets.Value |> Array.copy
-    let idx = st.ActiveSheet.Value
-    if idx >= 0 && idx < sheets.Length then
-        sheets.[idx] <- model
-        st.Sheets.Value <- sheets
+let private install (st: EditorState) (wb: Workbook.Workbook) =
+    st.Workbook.Value <- wb
+    let entries = wb.SheetOrder |> List.map (fun id -> wb.Sheets.[id]) |> List.toArray
+    st.Sheets.Value <- entries |> Array.map (fun s -> s.Model)
+    st.SheetNames.Value <- entries |> Array.map (fun s -> s.Name)
+    st.ActiveSheet.Value <- max 0 (Workbook.sheetIndex wb.ActiveSheet wb)
 
-let private invalidateCalc (st: EditorState) =
+let replaceWorkbook (st: EditorState) wb =
+    install st wb
+    st.UndoStack.Value <- []
+    st.RedoStack.Value <- []
     st.CalcEngine.Value <- None
-    st.LastRecalcWasIncremental <- false
+    st.UsedSheetIds <- Set.ofList wb.SheetOrder
+    st.Clipboard <- None
+    st.ClipboardText <- ""
+    st.EditingCell.Value <- None
+    st.EditBuffer.Value <- ""
+    st.DragAnchor.Value <- None
+    st.ScrollX.Value <- 0.0
+    st.ScrollY.Value <- 0.0
+
+let private updateModel (wb: Workbook.Workbook) (model: M.SpreadsheetModel) =
+    Workbook.updateSheetModelWithTables wb.ActiveSheet model wb
+
+let exportWorkbook (st: EditorState) (source: Rbt.Spreadsheet.XlsxBridge.XlsxSource option) =
+    let wb = st.Workbook.Value
+    let sheets = wb.SheetOrder |> List.map (fun id -> wb.Sheets.[id]) |> List.toArray
+    let ids = wb.SheetOrder |> List.mapi (fun i id -> id, Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex i) |> Map.ofList
+    let remap entries =
+        entries |> Map.toList |> List.choose (fun ((scope, name), value) ->
+            match scope with
+            | None -> Some ((None, name), value)
+            | Some id -> Map.tryFind id ids |> Option.map (fun id -> (Some id, name), value)) |> Map.ofList
+    let models = sheets |> Array.map (fun sheet -> sheet.Model)
+    let input : Rbt.Spreadsheet.XlsxBridge.ExportInput =
+        { Sheets = models
+          Names = sheets |> Array.map (fun sheet -> sheet.Name)
+          Visible = sheets |> Array.map (fun sheet -> sheet.Visible)
+          ActiveSheetIndex = max 0 (Workbook.sheetIndex wb.ActiveSheet wb)
+          DefinedNames = remap wb.Names
+          NameInfo = remap wb.NameInfo
+          Source = source
+          Macros = models |> Array.tryPick (fun model -> if String.IsNullOrWhiteSpace model.Macros then None else Some model.Macros) }
+    Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut input
+    |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration wb.Iteration
+
+let private calculate (st: EditorState) wb hint =
+    let result = st.CalcEngine.Value |> Option.bind (fun engine -> Recalc.recalculate engine wb hint)
+    match result with
+    | Some calculated -> calculated
+    | None ->
+        let calculated, engine = Recalc.recalculateAll wb
+        st.CalcEngine.Value <- Some engine
+        calculated
+
+let private commitCalculated (st: EditorState) before after =
+    if not (Object.ReferenceEquals(before, after)) then
+        st.UndoStack.Value <- before :: st.UndoStack.Value |> List.truncate 50
+        st.RedoStack.Value <- []
+        install st after
+        true
+    else false
+
+let private commit (st: EditorState) before after hint =
+    if Object.ReferenceEquals(before, after) then false
+    else commitCalculated st before (calculate st after hint)
 
 let applyNoHistory (st: EditorState) (transform: M.SpreadsheetModel -> M.SpreadsheetModel) =
-    let before = activeModel st
+    let wb = st.Workbook.Value
+    let before = wb.Sheets.[wb.ActiveSheet].Model
     let after = transform before
-    if not (Object.ReferenceEquals(before, after)) then putActiveModel st after
+    if not (Object.ReferenceEquals(before, after)) then install st (Workbook.updateSheetModel wb.ActiveSheet after wb)
     true
 
 let applyChange (st: EditorState) (transform: M.SpreadsheetModel -> M.SpreadsheetModel) =
-    invalidateCalc st
-    let before = activeModel st
+    let wb = st.Workbook.Value
+    let before = wb.Sheets.[wb.ActiveSheet].Model
     let after = transform before
-    if not (Object.ReferenceEquals(before, after)) then
-        st.UndoStack.Value <- (st.Sheets.Value, st.ActiveSheet.Value) :: st.UndoStack.Value |> List.truncate 50
-        st.RedoStack.Value <- []
-        putActiveModel st after
+    if not (Object.ReferenceEquals(before, after)) then commit st wb (updateModel wb after) None |> ignore
     true
 
-let private sheetIdAt (index: int) = sprintf "sheet%d" (index + 1)
-
-/// The editor's sheets as a workbook, so edits that reach across sheets
-/// (row/column insertion, moving cells) go through the workbook functions.
-let private workbookOf (st: EditorState) : Workbook.Workbook =
-    let sheets = st.Sheets.Value
-    let names = st.SheetNames.Value
-    let entries =
-        [ for i in 0 .. sheets.Length - 1 ->
-            let id = sheetIdAt i
-            let sheet : Workbook.Sheet =
-                { Id = id; Name = (if i < names.Length then names.[i] else sprintf "Sheet%d" (i + 1)); Model = sheets.[i]; Visible = true }
-            id, sheet ]
-    { Sheets = Map.ofList entries
-      SheetOrder = entries |> List.map fst
-      ActiveSheet = sheetIdAt (max 0 (min (sheets.Length - 1) st.ActiveSheet.Value))
-      Tables = Map.empty
-      Names = Map.empty
-      NameInfo = Map.empty
-      Iteration = None }
-
-/// Apply a workbook-wide change as one undoable step.
 let applyWorkbookChange (st: EditorState) (transform: Workbook.Workbook -> Workbook.Workbook) =
-    invalidateCalc st
-    let before = st.Sheets.Value
-    let changed = transform (workbookOf st)
-    let after =
-        before |> Array.mapi (fun i model ->
-            match Map.tryFind (sheetIdAt i) changed.Sheets with
-            | Some sheet -> sheet.Model
-            | None -> model)
-    if Array.exists2 (fun (a: M.SpreadsheetModel) b -> not (Object.ReferenceEquals(a, b))) before after then
-        st.UndoStack.Value <- (before, st.ActiveSheet.Value) :: st.UndoStack.Value |> List.truncate 50
-        st.RedoStack.Value <- []
-        st.Sheets.Value <- after
+    let before = st.Workbook.Value
+    commit st before (transform before) None |> ignore
     true
 
-/// Insert or delete rows/columns on the active sheet. Formulas on every sheet
-/// that point at it follow, including ones that name the sheet explicitly.
 let applyStructureEdit (st: EditorState) (edit: M.StructureEdit) =
-    let sheetId = sheetIdAt st.ActiveSheet.Value
-    applyWorkbookChange st (fun wb -> Workbook.applyStructureEdit sheetId edit wb |> fst |> Formula.recalculateWorkbook)
+    let id = st.Workbook.Value.ActiveSheet
+    applyWorkbookChange st (fun wb -> Workbook.applyStructureEdit id edit wb |> fst)
+
+let addSheet (st: EditorState) name =
+    let wb = st.Workbook.Value
+    match Workbook.sheetNameProblem name with
+    | Some problem -> Error problem
+    | None when Workbook.sheetNameTaken None name wb -> Error "a sheet with that name already exists"
+    | None ->
+        let id = Workbook.freshSheetId (fun id -> Set.contains id st.UsedSheetIds) wb
+        st.UsedSheetIds <- Set.add id st.UsedSheetIds
+        let model = { M.createEmpty 100 26 with Date1904 = Workbook.date1904 wb }
+        let sheet : Workbook.Sheet = { Id = id; Name = name; Model = model; Visible = true }
+        applyWorkbookChange st (Workbook.insertSheet sheet wb.SheetOrder.Length) |> ignore
+        Ok ()
+
+let renameSheet (st: EditorState) name =
+    let wb = st.Workbook.Value
+    match Workbook.sheetNameProblem name with
+    | Some problem -> Error problem
+    | None when Workbook.sheetNameTaken (Some wb.ActiveSheet) name wb -> Error "a sheet with that name already exists"
+    | None ->
+        applyWorkbookChange st (Workbook.renameSheetEverywhere wb.ActiveSheet name) |> ignore
+        Ok ()
+
+let deleteSheet (st: EditorState) =
+    let wb = st.Workbook.Value
+    match Workbook.lastVisibleSheetProblem wb.ActiveSheet wb with
+    | Some problem -> Error problem
+    | None ->
+        match Workbook.removeSheet wb.ActiveSheet wb with
+        | None -> Error "cannot delete the last sheet"
+        | Some (next, _) ->
+            applyWorkbookChange st (fun _ -> next) |> ignore
+            Ok ()
 
 let undo (st: EditorState) =
     match st.UndoStack.Value with
-    | (sheets, idx) :: rest ->
-        invalidateCalc st
-        st.RedoStack.Value <- (st.Sheets.Value, st.ActiveSheet.Value) :: st.RedoStack.Value |> List.truncate 50
+    | wb :: rest ->
+        st.RedoStack.Value <- st.Workbook.Value :: st.RedoStack.Value |> List.truncate 50
         st.UndoStack.Value <- rest
-        st.Sheets.Value <- sheets
-        st.ActiveSheet.Value <- idx
+        st.CalcEngine.Value <- None
+        install st wb
         true
     | [] -> true
 
 let redo (st: EditorState) =
     match st.RedoStack.Value with
-    | (sheets, idx) :: rest ->
-        invalidateCalc st
-        st.UndoStack.Value <- (st.Sheets.Value, st.ActiveSheet.Value) :: st.UndoStack.Value |> List.truncate 50
+    | wb :: rest ->
+        st.UndoStack.Value <- st.Workbook.Value :: st.UndoStack.Value |> List.truncate 50
         st.RedoStack.Value <- rest
-        st.Sheets.Value <- sheets
-        st.ActiveSheet.Value <- idx
+        st.CalcEngine.Value <- None
+        install st wb
         true
     | [] -> true
 
 let switchSheet (st: EditorState) index =
-    if index >= 0 && index < st.Sheets.Value.Length && index <> st.ActiveSheet.Value then
-        invalidateCalc st
-        st.ActiveSheet.Value <- index
+    let wb = st.Workbook.Value
+    match wb.SheetOrder |> List.tryItem index with
+    | Some id when id <> wb.ActiveSheet ->
+        install st (Workbook.setActiveSheet id wb)
         st.ScrollX.Value <- 0.0
         st.ScrollY.Value <- 0.0
         st.EditingCell.Value <- None
         st.EditBuffer.Value <- ""
+    | _ -> ()
 
 let private clampRow (model: M.SpreadsheetModel) row = max 0 (min (model.RowCount - 1) row)
 let private clampCol (model: M.SpreadsheetModel) col = max 0 (min (model.ColCount - 1) col)
@@ -260,67 +314,31 @@ let private formatAfterInput (date1904: bool) (text: string) (format: M.CellForm
     | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
     | _ -> format
 
-let private singleSheetWorkbook (name: string) (model: M.SpreadsheetModel) : Workbook.Workbook =
-    let sheet : Workbook.Sheet = { Id = "sheet1"; Name = name; Model = model; Visible = true }
-    { Sheets = Map.ofList [ "sheet1", sheet ]
-      SheetOrder = [ "sheet1" ]
-      ActiveSheet = "sheet1"
-      Tables = Map.empty
-      Names = Map.empty
-      NameInfo = Map.empty
-      Iteration = None }
-
-let private recalcEditedCell (st: EditorState) (addr: M.CellAddress) (cellData: M.CellData) (edited: M.SpreadsheetModel) (before: M.SpreadsheetModel) =
-    if st.Sheets.Value.Length <> 1 || cellData.Value = M.Empty then
-        invalidateCalc st
-        Formula.recalcAndSpill None None edited
-    else
-        let wb = singleSheetWorkbook (activeSheetName st) before
-        let sheetCell : Workbook.SheetCell = { Sheet = wb.ActiveSheet; Cell = addr }
-        match Calc.trySingleCellEdit sheetCell cellData wb st.CalcEngine.Value with
-        | Calc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
-            st.CalcEngine.Value <- Some updatedEngine
-            st.LastRecalcWasIncremental <- true
-            match Map.tryFind updatedWorkbook.ActiveSheet updatedWorkbook.Sheets with
-            | Some sheet -> sheet.Model
-            | None -> edited
-        | Calc.IncrementalFallback _ ->
-            invalidateCalc st
-            Formula.recalcAndSpill None None edited
-
-let private writeCell (st: EditorState) row col text (model: M.SpreadsheetModel) =
+let private writeCell row col text (model: M.SpreadsheetModel) =
     let value = parseCellInput model.Date1904 text
     let addr : M.CellAddress = { Row = row; Col = col }
     match M.validateEdit addr value model with
     | Result.Error _ -> model
     | Result.Ok () ->
-        let edited =
-            match value, M.getCell addr model with
-            | M.Empty, _ -> M.clearCell addr model
-            | v, Some existing -> M.setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
-            | v, None -> M.setCell addr { Value = v; Format = formatAfterInput model.Date1904 text M.defaultFormat; Comment = None } model
-        if Object.ReferenceEquals(model, edited) then model
-        else
-            let cellData =
-                match value, M.getCell addr model with
-                | M.Empty, _ -> ({ Value = M.Empty; Format = M.defaultFormat; Comment = None } : M.CellData)
-                | v, Some existing -> { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format }
-                | v, None -> { Value = v; Format = formatAfterInput model.Date1904 text M.defaultFormat; Comment = None }
-            let recomputed = recalcEditedCell st addr cellData edited model
-            let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
-            let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
-            if not (Object.ReferenceEquals(recomputed, afterEvent)) then invalidateCalc st
-            afterEvent
+        match value, M.getCell addr model with
+        | M.Empty, _ -> M.clearCell addr model
+        | v, Some existing -> M.setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
+        | v, None -> M.setCell addr { Value = v; Format = formatAfterInput model.Date1904 text M.defaultFormat; Comment = None } model
 
 let applyCellEdit (st: EditorState) row col text =
+    let wb = st.Workbook.Value
     let before = activeModel st
-    let after = writeCell st row col text before
-    if not (Object.ReferenceEquals(before, after)) then
-        st.UndoStack.Value <- (st.Sheets.Value, st.ActiveSheet.Value) :: st.UndoStack.Value |> List.truncate 50
-        st.RedoStack.Value <- []
-        putActiveModel st after
-        true
-    else false
+    let after = writeCell row col text before
+    if Object.ReferenceEquals(before, after) then false
+    else
+        let calculated = calculate st (updateModel wb after) None
+        let model = calculated.Sheets.[calculated.ActiveSheet].Model
+        let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
+        let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target model
+        let result =
+            if Object.ReferenceEquals(model, afterEvent) then calculated
+            else calculate st (updateModel calculated afterEvent) None
+        commitCalculated st wb result
 
 let startEditing (st: EditorState) row col seed =
     let model = activeModel st
@@ -374,31 +392,29 @@ let selectionSummary (st: EditorState) =
 let copySelection (st: EditorState) =
     let model = activeModel st
     let data = M.serializeSelection model.Selection model false
-    Clip.Data <- Some data
-    Clip.SourceSheet <- st.ActiveSheet.Value
+    st.Clipboard <- Some (data, st.Workbook.Value.ActiveSheet)
     let r, c = focusCell model
-    Clip.Text <- cellEditText model r c
+    st.ClipboardText <- cellEditText model r c
     true
 
 let cutSelection (st: EditorState) =
     let model = activeModel st
-    Clip.Data <- Some (M.serializeSelection model.Selection model true)
-    Clip.SourceSheet <- st.ActiveSheet.Value
+    st.Clipboard <- Some (M.serializeSelection model.Selection model true, st.Workbook.Value.ActiveSheet)
     let r, c = focusCell model
-    Clip.Text <- cellEditText model r c
+    st.ClipboardText <- cellEditText model r c
     applyChange st (M.clearSelectionCells model.Selection) |> ignore
     true
 
 let pasteFromClipboard (st: EditorState) =
-    match Clip.Data with
-    | Some data ->
+    match st.Clipboard with
+    | Some (_, sourceId) when not (Map.containsKey sourceId st.Workbook.Value.Sheets) -> false
+    | Some (data, sourceId) ->
         let model = activeModel st
         if data.IsCut then
             // A pasted cut is a move: references to the moved cells follow
             // them, on every sheet.
             let r, c = focusCell model
-            let targetId = sheetIdAt st.ActiveSheet.Value
-            let sourceId = sheetIdAt Clip.SourceSheet
+            let targetId = st.Workbook.Value.ActiveSheet
             let source = data.SourceStartRow, data.SourceStartCol, data.SourceEndRow, data.SourceEndCol
             let delta = r - data.SourceStartRow, c - data.SourceStartCol
             applyWorkbookChange st (fun wb ->
@@ -408,15 +424,14 @@ let pasteFromClipboard (st: EditorState) =
                     |> Workbook.updateSheetModel targetId (M.pasteClipboard { Row = r; Col = c } data sheet.Model)
                     |> Workbook.repointMovedCells sourceId source targetId delta
                     |> fst
-                    |> Formula.recalculateWorkbook
                 | None -> wb) |> ignore
-            Clip.Data <- None
+            st.Clipboard <- None
         else
             applyChange st (M.pasteClipboardIntoSelection model.Selection data) |> ignore
         true
-    | None when Clip.Text <> "" ->
+    | None when st.ClipboardText <> "" ->
         let r, c = focusCell (activeModel st)
-        applyCellEdit st r c Clip.Text |> ignore
+        applyCellEdit st r c st.ClipboardText |> ignore
         true
     | _ -> false
 

@@ -35,6 +35,15 @@ let private getClientX (e: obj): float = jsNative
 
 [<Emit("$0.clientY")>]
 let private getClientY (e: obj): float = jsNative
+[<Emit("$0.deltaX")>]
+let private wheelDeltaX (e: obj): float = jsNative
+
+[<Emit("$0.deltaY")>]
+let private wheelDeltaY (e: obj): float = jsNative
+
+[<Emit("$0.deltaMode")>]
+let private wheelDeltaMode (e: obj): int = jsNative
+
 
 [<Emit("(function (el) { const r = el.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })($0)")>]
 let private boundingRect (el: Element): float array = jsNative
@@ -570,6 +579,10 @@ type Spreadsheet(container: Element) =
     let mutable renderedDrawingsReadOnly = false
     /// The frozen panes and header sizes the drawings were last laid out for.
     let mutable renderedDrawingsPanes = ""
+    let mutable drawingOriginX = 0.0
+    let mutable drawingOriginY = 0.0
+    let mutable drawingShiftX = 0.0
+    let mutable drawingShiftY = 0.0
     // --- revisions ----------------------------------------------------------------
     // The revision is a number that names the workbook's content: every
     // change gives a new one, and undo / redo bring back the number the
@@ -745,12 +758,52 @@ type Spreadsheet(container: Element) =
     /// from or written to the page (scroll offsets, the size of the grid,
     /// pointer positions) is converted here.
     let mutable appliedZoom = 1.0
-    let gridScrollTop (grid: Element) = getScrollTop grid / appliedZoom
-    let gridScrollLeft (grid: Element) = getScrollLeft grid / appliedZoom
+    // Keep both the unzoomed CSS extent and the zoomed physical extent under
+    // eight million pixels, below Chromium and Firefox layout-coordinate limits.
+    let physicalExtentLimit = 8000000.0
+    let maxLogicalExtent () = physicalExtentLimit / max 1.0 appliedZoom
+    let mutable extentWidth = -1.0
+    let mutable extentHeight = -1.0
+    let mutable originX = 0.0
+    let mutable originY = 0.0
+    // A reveal can fall between physical pixels; keep its exact logical
+    // position until the browser scrollbar is moved independently.
+    let mutable anchorPhysicalX = -1.0
+    let mutable anchorPhysicalY = -1.0
+    let mutable anchorLogicalX = 0.0
+    let mutable anchorLogicalY = 0.0
+    let logicalScroll (physical: float) (extent: float) (client: float) =
+        let physicalMax = max 0.0 (min extent (maxLogicalExtent ()) * appliedZoom - client)
+        let logicalMax = max 0.0 (extent - client / appliedZoom)
+        if physicalMax <= 0.0 then 0.0 else min logicalMax (max 0.0 (physical * logicalMax / physicalMax))
+    let physicalScroll (logical: float) (extent: float) (client: float) =
+        let physicalMax = max 0.0 (min extent (maxLogicalExtent ()) * appliedZoom - client)
+        let logicalMax = max 0.0 (extent - client / appliedZoom)
+        if logicalMax <= 0.0 then 0.0 else min physicalMax (max 0.0 (logical * physicalMax / logicalMax))
+    let gridScrollTop (grid: Element) =
+        let physical = getScrollTop grid
+        if extentHeight > maxLogicalExtent () && physical = anchorPhysicalY then anchorLogicalY
+        else
+            anchorPhysicalY <- -1.0
+            logicalScroll physical extentHeight (getClientHeight grid)
+    let gridScrollLeft (grid: Element) =
+        let physical = getScrollLeft grid
+        if extentWidth > maxLogicalExtent () && physical = anchorPhysicalX then anchorLogicalX
+        else
+            anchorPhysicalX <- -1.0
+            logicalScroll physical extentWidth (getClientWidth grid)
     let gridClientWidth (grid: Element) = getClientWidth grid / appliedZoom
     let gridClientHeight (grid: Element) = getClientHeight grid / appliedZoom
-    let setGridScrollTop (grid: Element) (value: float) = setScrollTop grid (value * appliedZoom)
-    let setGridScrollLeft (grid: Element) (value: float) = setScrollLeft grid (value * appliedZoom)
+    let setGridScrollTop (grid: Element) (value: float) =
+        setScrollTop grid (physicalScroll value extentHeight (getClientHeight grid))
+        anchorPhysicalY <- getScrollTop grid
+        anchorLogicalY <- max 0.0 (min (max 0.0 (extentHeight - gridClientHeight grid)) value)
+    let setGridScrollLeft (grid: Element) (value: float) =
+        setScrollLeft grid (physicalScroll value extentWidth (getClientWidth grid))
+        anchorPhysicalX <- getScrollLeft grid
+        anchorLogicalX <- max 0.0 (min (max 0.0 (extentWidth - gridClientWidth grid)) value)
+    let paneX pane x = if pane >= 2 then x else x - originX
+    let paneY pane y = if pane = 1 || pane = 3 then y else y - originY
     let pointerX (e: obj) (grid: Element) = (getClientX e - getBoundingLeft grid) / appliedZoom
     let pointerY (e: obj) (grid: Element) = (getClientY e - getBoundingTop grid) / appliedZoom
 
@@ -795,8 +848,6 @@ type Spreadsheet(container: Element) =
     let mutable renderedStyleInputs: obj array = [||]
     let mutable renderedDrawings: obj = null
     let mutable renderedMetrics: obj = null
-    let mutable extentWidth = -1.0
-    let mutable extentHeight = -1.0
     /// For the rows on display: the nearest filled cell left and right of
     /// the columns in view when it holds text (its text may run into the
     /// view), else -1 / -2. Valid for `overflowCells` and the column range.
@@ -816,6 +867,10 @@ type Spreadsheet(container: Element) =
     /// What Copy / Cut last put on the system clipboard: a paste of the same
     /// text is a paste of the grid's own cells (formulas, formats).
     let mutable copiedText : string = ""
+    /// Clipboard belongs to the workbook session, not to the displayed sheet.
+    let mutable sessionClipboard : (SheetId * ClipboardData) option = None
+    let mutable clipboardGeneration = 0
+    let mutable clipboardVersion = 0
     /// Counts the clipboard events the grid handled (see handleKeyDown).
     let mutable clipboardEvents = 0
 
@@ -932,6 +987,75 @@ type Spreadsheet(container: Element) =
     let drawnObjects = System.Collections.Generic.Dictionary<string, string * float * float * string * (string * int * int * int * int * CellData option [] []) array>()
     /// The cells of every sheet as the charts on display were last drawn from them.
     let mutable chartStamp : obj array = [||]
+    /// Chart bindings change independently of cell values. Keep the imported parts untouched:
+    /// a new binding state parses them again, then lays out the visible frames again.
+    let mutable chartBindingState : (int * obj * (string * string * SheetOrigin option * int * obj) array) option = None
+    let mutable chartBindingsDifferFromSource = false
+    let mutable chartXmlRewrite : (string -> string) option = None
+    let mutable chartBindingVersion = 0
+    let mutable renderedChartBindingVersion = -1
+    let ensureChartBindings () =
+        let same =
+            match xlsxSource, workbook, chartBindingState with
+            | None, _, None | _, None, None -> true
+            | Some source, Some wb, Some (id, names, previous) ->
+                let mutable matches = source.Id = id && obj.ReferenceEquals(box wb.Names, names) && sheets.Length = previous.Length
+                let mutable index = 0
+                for sheetId in wb.SheetOrder do
+                    if matches then
+                        if index >= previous.Length then matches <- false
+                        else
+                            let sheet = if index = activeSheetIndex then model else sheets.[index]
+                            let oldId, oldName, oldOrigin, oldVersion, oldLog = previous.[index]
+                            matches <-
+                                sheetId = oldId && sheetNames.[index] = oldName && sheet.SourceSheet = oldOrigin
+                                && sheet.StructureVersion = oldVersion && obj.ReferenceEquals(box sheet.StructureLog, oldLog)
+                    index <- index + 1
+                matches && index = previous.Length
+            | _ -> false
+        if not same then
+            chartBindingState <-
+                match xlsxSource, workbook with
+                | Some source, Some wb ->
+                    let identities =
+                        wb.SheetOrder
+                        |> List.mapi (fun index sheetId ->
+                            let sheet = if index = activeSheetIndex then model else sheets.[index]
+                            sheetId, sheetNames.[index], sheet.SourceSheet, sheet.StructureVersion, box sheet.StructureLog)
+                        |> List.toArray
+                    Some (source.Id, box wb.Names, identities)
+                | _ -> None
+            chartModels.Clear()
+            drawnObjects.Clear()
+            chartXmlRewrite <- None
+            chartBindingVersion <- chartBindingVersion + 1
+            chartBindingsDifferFromSource <-
+                match xlsxSource, workbook with
+                | Some source, Some wb ->
+                    let mutable changed = wb.Names <> source.BaselineNames || sheets.Length <> source.Baseline.Length
+                    let mutable index = 0
+                    while not changed && index < sheets.Length do
+                        let sheet = if index = activeSheetIndex then model else sheets.[index]
+                        changed <-
+                            match sheet.SourceSheet with
+                            | Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Baseline.Length ->
+                                sheet.StructureLog <> source.Baseline.[origin.Sheet].StructureLog
+                                || sheetNames.[index] <> (List.item origin.Sheet source.Workbook.Sheets).Name
+                                || index <> origin.Sheet
+                            | _ -> true
+                        index <- index + 1
+                    changed
+                | _ -> false
+    let chartRewriter (source: Rbt.Spreadsheet.XlsxBridge.XlsxSource) =
+        match chartXmlRewrite with
+        | Some rewrite -> rewrite
+        | None ->
+            let rewrite =
+                Rbt.Spreadsheet.XlsxBridge.Export.chartXmlForWorkbook source
+                    (Array.init sheets.Length (fun index -> if index = activeSheetIndex then model else sheets.[index]))
+                    sheetNames
+            chartXmlRewrite <- Some rewrite
+            rewrite
     /// The faces of the PDF export (`SetPdfFonts`): (face name, family, bold, italic, TrueType bytes).
     let mutable pdfFonts : (string * string * bool * bool * byte[]) array = [||]
     /// The faces a host hands (`SetPdfFonts`, `ExportPdf`'s fonts).
@@ -955,6 +1079,7 @@ type Spreadsheet(container: Element) =
                     else family + (match bold, italic with | true, true -> "-BoldItalic" | true, false -> "-Bold" | false, true -> "-Italic" | _ -> "")
                 faceName.Replace(" ", ""), family, bold, italic, data)
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
+        ensureChartBindings ()
         match xlsxSource, sheet.SourceSheet with
         | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
             let parts, theme =
@@ -992,9 +1117,29 @@ type Spreadsheet(container: Element) =
                                 let read =
                                     match parts.TryGetValue path with
                                     | true, data ->
-                                        // (A chartEx part reads its data through defined names, `_xlchart.v1.0`.)
-                                        let names (name: string) = source.Workbook.NamedRanges |> List.tryPick (fun known -> if known.Name = name then Some known.RefersTo else None)
-                                        SpreadsheetCharts.parseChartWith names theme (System.Text.Encoding.UTF8.GetString data)
+                                        // Always parse the original part: structural and sheet edits are
+                                        // applied once, from the imported baseline, without changing its bytes.
+                                        let sheetIndex =
+                                            if obj.ReferenceEquals(sheet, model) then activeSheetIndex
+                                            else sheets |> Array.tryFindIndex (fun known -> obj.ReferenceEquals(known, sheet)) |> Option.defaultValue origin.Sheet
+                                        let names (name: string) =
+                                            workbook |> Option.bind (fun wb ->
+                                                Rbt.Spreadsheet.Workbook.getName (List.tryItem sheetIndex wb.SheetOrder) name wb)
+                                        let originalXml = System.Text.Encoding.UTF8.GetString data
+                                        let xml = chartRewriter source originalXml
+                                        let parsed = SpreadsheetCharts.parseChartWith names theme xml
+                                        if xml = originalXml
+                                           && (not (SpreadsheetCharts.isChartEx xml)
+                                               || (workbook |> Option.forall (fun wb -> wb.Names = source.BaselineNames))) then parsed
+                                        else
+                                            let baselineNames (name: string) =
+                                                let key = name.ToUpperInvariant()
+                                                source.BaselineNames
+                                                |> Map.tryFind (Some (Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex origin.Sheet), key)
+                                                |> Option.orElseWith (fun () -> Map.tryFind (None, key) source.BaselineNames)
+                                            match SpreadsheetCharts.parseChartWith baselineNames theme originalXml, parsed with
+                                            | Some original, Some current -> Some (SpreadsheetCharts.markChangedReferences original current)
+                                            | _ -> parsed
                                     | false, _ -> None
                                 chartModels.[path] <- read
                                 read))
@@ -1017,8 +1162,13 @@ type Spreadsheet(container: Element) =
     let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =
         match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
         | Some index ->
-            let sheet = if index = activeSheetIndex then model else sheets.[index]
-            // (A sheet that was not converted yet holds what the file holds: the chart's cache says the same.)
+            let sheet =
+                if index = activeSheetIndex then model
+                else
+                    // A changed binding may point into a different block of a deferred
+                    // sheet: its imported chart cache describes the *old* reference.
+                    if chartBindingsDifferFromSource then convertInPlace index
+                    sheets.[index]
             if isDeferredSheet sheet || float (r1 - r0 + 1) * float (c1 - c0 + 1) > 200000.0 then None
             else Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } sheet)))
         | None -> None
@@ -1087,6 +1237,7 @@ type Spreadsheet(container: Element) =
     /// anchor, its size and the cells it reads are what they were then.
     /// (`layOut` false: only what is known - None when the object would have to be laid out.)
     let drawingSvgWhen (layOut: bool) (drawing: SheetDrawing) (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option option =
+        ensureChartBindings ()
         let key =
             match xlsxSource, model.SourceSheet with
             | Some source, Some origin when origin.Book = source.Id -> string origin.Sheet + ":" + string drawing.Id
@@ -1577,13 +1728,22 @@ type Spreadsheet(container: Element) =
         let selection = model.Selection
         let clipboardData = serializeSelection selection model true
         let oldCells = model.Cells
-        let oldSpill = model.Spill
-        model <- { model with Clipboard = Some clipboardData }
+        let cutCells =
+            clipboardData.Cells
+            |> List.map (fun (row, col, data) ->
+                { Row = clipboardData.SourceStartRow + row; Col = clipboardData.SourceStartCol + col }, Some data)
+        clipboardVersion <- clipboardVersion + 1
+        let cutVersion = clipboardVersion
+        sessionClipboard <- Some (sheetIdForIndex activeSheetIndex, clipboardData)
         model <- clearSelectionCells selection model
         recalculateFormulas()
         if not (obj.ReferenceEquals(oldCells, model.Cells)) then
             let command = {
-                Undo = fun m -> restoreCellMapWithSpill oldCells oldSpill m
+                Undo = fun m ->
+                    if clipboardVersion = cutVersion then
+                        sessionClipboard <- None
+                        copiedText <- ""
+                    restoreCellOptions cutCells m
                 Redo = fun m -> clearSelectionCells selection m
                 Description = "Cut"
             }
@@ -1593,9 +1753,14 @@ type Spreadsheet(container: Element) =
     /// cut is a move: every formula and defined name in the workbook that
     /// referred to the moved cells is re-pointed at their new place.
     let pasteClipboardAtSelection () =
-        match model.Clipboard with
-        | None -> ()
-        | Some clipboardData ->
+        match sessionClipboard with
+        | None -> false
+        | Some (sourceSheet, clipboardData) when not (Map.containsKey sourceSheet (currentWorkbookSnapshot()).Sheets) ->
+            sessionClipboard <- None
+            copiedText <- ""
+            false
+        | Some (sourceSheet, clipboardData) ->
+            let targetSheet = sheetIdForIndex activeSheetIndex
             // (A pasted cut re-points the formulas of every sheet.)
             convertFormulaSheets ()
             let anchors = pasteAnchors model.Selection clipboardData
@@ -1607,32 +1772,35 @@ type Spreadsheet(container: Element) =
             let oldCells = touched |> List.map (fun addr -> addr, getCell addr model)
             for anchor in anchors do
                 model <- pasteClipboard anchor clipboardData model
-            let moveUndo =
+            // Redo must start with the un-repointed formulas, not the calculated
+            // result of the first move.
+            let newCells = touched |> List.map (fun addr -> addr, getCell addr model)
+            let mutable moveUndo =
                 match anchors with
                 | [ anchor ] when clipboardData.IsCut ->
-                    let sheetId = sheetIdForIndex activeSheetIndex
+                    let sheetId = targetSheet
                     let source =
                         clipboardData.SourceStartRow, clipboardData.SourceStartCol,
                         clipboardData.SourceEndRow, clipboardData.SourceEndCol
                     let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
                     let repointed, undoInfo =
-                        Rbt.Spreadsheet.Workbook.repointMovedCells sheetId source sheetId delta (currentWorkbookSnapshot())
+                        Rbt.Spreadsheet.Workbook.repointMovedCells sourceSheet source sheetId delta (currentWorkbookSnapshot())
                     installWorkbookSnapshot repointed
                     Some undoInfo
                 | _ -> None
             recalculateFormulas()
-            let newCells = touched |> List.map (fun addr -> addr, getCell addr model)
             let afterSelection = pasteSelection anchors clipboardData model.Selection
             model <- { model with Selection = afterSelection }
             let command = {
                 Undo = fun m ->
-                    model <- restoreCellOptions oldCells m
+                    model <- m
                     match moveUndo with
                     | Some undoInfo ->
                         currentWorkbookSnapshot()
                         |> Rbt.Spreadsheet.Workbook.undoRepointMovedCells undoInfo
                         |> installWorkbookSnapshot
                     | None -> ()
+                    model <- restoreCellOptions oldCells model
                     model
                 Redo = fun m ->
                     model <- restoreCellOptions newCells m
@@ -1641,15 +1809,16 @@ type Spreadsheet(container: Element) =
                         // Re-run the move against the workbook as it is now.
                         match anchors with
                         | [ anchor ] ->
-                            let sheetId = sheetIdForIndex activeSheetIndex
+                            let sheetId = targetSheet
                             let source =
                                 clipboardData.SourceStartRow, clipboardData.SourceStartCol,
                                 clipboardData.SourceEndRow, clipboardData.SourceEndCol
                             let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
-                            currentWorkbookSnapshot()
-                            |> Rbt.Spreadsheet.Workbook.repointMovedCells sheetId source sheetId delta
-                            |> fst
-                            |> installWorkbookSnapshot
+                            let repointed, undoInfo =
+                                currentWorkbookSnapshot()
+                                |> Rbt.Spreadsheet.Workbook.repointMovedCells sourceSheet source sheetId delta
+                            moveUndo <- Some undoInfo
+                            installWorkbookSnapshot repointed
                         | _ -> ()
                     | None -> ()
                     model
@@ -1658,7 +1827,9 @@ type Spreadsheet(container: Element) =
             model <- pushCommand command model
             // A cut can be pasted once.
             if clipboardData.IsCut then
-                model <- { model with Clipboard = None }
+                sessionClipboard <- None
+                copiedText <- ""
+            true
 
     /// Replace in the selected cell as one undoable step. True when it matched.
     let replaceInSelection (findText: string) (replaceText: string) (caseSensitive: bool) =
@@ -1892,34 +2063,36 @@ type Spreadsheet(container: Element) =
         if zoom <> appliedZoom then
             match contentElement, gridContainer with
             | Some content, Some grid ->
-                let top = gridScrollTop grid
-                let left = gridScrollLeft grid
                 appliedZoom <- zoom
                 setStyle content "zoom" (if zoom = 1.0 then "" else string zoom)
                 containerHeight <- gridClientHeight grid
                 containerWidth <- gridClientWidth grid
-                setGridScrollTop grid top
-                setGridScrollLeft grid left
-                scrollTop <- gridScrollTop grid
-                scrollLeft <- gridScrollLeft grid
             | _ -> appliedZoom <- zoom
 
     /// Give the scrolled content the extent of the active sheet, so that
     /// every row and column can be scrolled to. Done whenever the sheet's
     /// size or the size of a row / column changes.
     let syncExtent () =
+        let oldZoom = appliedZoom
+        let oldTop, oldLeft =
+            match gridContainer with
+            | Some grid -> gridScrollTop grid, gridScrollLeft grid
+            | None -> scrollTop, scrollLeft
         syncView ()
         match contentElement, gridContainer with
         | Some content, Some grid ->
             let metrics = SpreadsheetLayout.metricsOf model
             let width = rowHeaderWidth + metrics.ColPrefix.[metrics.ColCount]
             let height = headerHeight + metrics.RowPrefix.[metrics.RowCount]
-            if width <> extentWidth || height <> extentHeight then
+            if width <> extentWidth || height <> extentHeight || oldZoom <> appliedZoom then
                 extentWidth <- width
                 extentHeight <- height
-                setStyle content "width" (string (System.Math.Round width) + "px")
-                setStyle content "height" (string (System.Math.Round height) + "px")
-                // A smaller sheet may have pulled the scroll position back.
+                setStyle content "width" (string (min width (maxLogicalExtent ())) + "px")
+                setStyle content "height" (string (min height (maxLogicalExtent ())) + "px")
+                // Out-of-view descendants must not enlarge the bounded scroll area.
+                setStyle content "overflow" (if width > maxLogicalExtent () || height > maxLogicalExtent () then "clip" else "")
+                setGridScrollTop grid oldTop
+                setGridScrollLeft grid oldLeft
                 scrollTop <- gridScrollTop grid
                 scrollLeft <- gridScrollLeft grid
         | _ -> ()
@@ -2314,9 +2487,8 @@ type Spreadsheet(container: Element) =
         if readOnly then false
         else
             let normalised (value: string) = if isNull value then "" else value.Replace("\r\n", "\n").TrimEnd('\n')
-            if model.Clipboard.IsSome && copiedText <> "" && normalised text = normalised copiedText then
+            if sessionClipboard.IsSome && copiedText <> "" && normalised text = normalised copiedText then
                 pasteClipboardAtSelection()
-                true
             else
                 let fromHtml = if System.String.IsNullOrEmpty html then null else htmlTableCells html
                 if not (isNull (box fromHtml)) && fromHtml.Length > 0 then pasteExternalRows fromHtml
@@ -2867,6 +3039,11 @@ type Spreadsheet(container: Element) =
         let active = max 0 (System.Array.IndexOf(order, wb.ActiveSheet))
         activeSheetIndex <- active
         workbook <- Some { wb with SheetOrder = List.ofArray order; ActiveSheet = order.[active] }
+        match sessionClipboard with
+        | Some (source, _) when not (Map.containsKey source wb.Sheets) ->
+            sessionClipboard <- None
+            copiedText <- ""
+        | _ -> ()
         for id in order do usedSheetIds.Add id |> ignore
         convertInPlace active
         model <- sheets.[active]
@@ -3217,7 +3394,8 @@ type Spreadsheet(container: Element) =
         if isCut && not readOnly then
             cutSelection()
         else
-            model <- { model with Clipboard = Some (serializeSelection model.Selection model false) }
+            sessionClipboard <- Some (sheetIdForIndex activeSheetIndex, serializeSelection model.Selection model false)
+            clipboardVersion <- clipboardVersion + 1
         text, html
 
     /// Handle keyboard events
@@ -3400,14 +3578,15 @@ type Spreadsheet(container: Element) =
     and pasteFromSystemClipboard () : JS.Promise<bool> =
         if readOnly then promiseOf false
         else
+            let generation = clipboardGeneration
             let pasteOwn () =
-                if model.Clipboard.IsSome then
-                    pasteClipboardAtSelection()
+                if pasteClipboardAtSelection() then
                     render()
                     true
                 else false
             promiseThen (readSystemClipboard ()) (fun flavours ->
-                if isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
+                if disposed || generation <> clipboardGeneration || readOnly then false
+                elif isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
                 elif pasteFlavours flavours.[0] flavours.[1] then
                     render()
                     true
@@ -4002,6 +4181,11 @@ type Spreadsheet(container: Element) =
         | Some content, Some layer ->
             if not model.ConditionalFormats.IsEmpty then refreshRuleWorkbook()
             syncExtent()
+            match gridContainer with
+            | Some grid ->
+                originX <- if extentWidth > maxLogicalExtent () then scrollLeft - getScrollLeft grid / appliedZoom else 0.0
+                originY <- if extentHeight > maxLogicalExtent () then scrollTop - getScrollTop grid / appliedZoom else 0.0
+            | None -> originX <- 0.0; originY <- 0.0
             let metrics = SpreadsheetLayout.metricsOf model
             let rowPrefix = metrics.RowPrefix
             let colPrefix = metrics.ColPrefix
@@ -4065,9 +4249,9 @@ type Spreadsheet(container: Element) =
                     | None -> ()
                 if w > 0.0 && h > 0.0 then
                     let key = float r * 16384.0 + float c
-                    let x = rowHeaderWidth + colPrefix.[c]
-                    let y = headerHeight + rowPrefix.[r]
                     let pane = (if r < frozenRows then 1 else 0) + (if c < frozenCols then 2 else 0)
+                    let x = paneX pane (rowHeaderWidth + colPrefix.[c])
+                    let y = paneY pane (headerHeight + rowPrefix.[r])
                     match cellNodes.TryGetValue key with
                     | true, node ->
                         if node.Seen <> generation then
@@ -4194,10 +4378,10 @@ type Spreadsheet(container: Element) =
                     node.Signature <- ""
                     free.Add node
             placeHeaders colHeaderNodes freeColHeaders layer.ColHeaders newColumnHeader
-                (fun node col -> drawColumnHeader node col (rowHeaderWidth + colPrefix.[col]) (colPrefix.[col + 1] - colPrefix.[col]))
+                (fun node col -> drawColumnHeader node col (paneX (if col < frozenCols then 2 else 0) (rowHeaderWidth + colPrefix.[col])) (colPrefix.[col + 1] - colPrefix.[col]))
                 frozenCols firstCol lastCol colPrefix
             placeHeaders rowHeaderNodes freeRowHeaders layer.RowHeaders newRowHeader
-                (fun node row -> drawRowHeader node row (headerHeight + rowPrefix.[row]) (rowPrefix.[row + 1] - rowPrefix.[row]))
+                (fun node row -> drawRowHeader node row (paneY (if row < frozenRows then 1 else 0) (headerHeight + rowPrefix.[row])) (rowPrefix.[row + 1] - rowPrefix.[row]))
                 frozenRows firstRow lastRow rowPrefix
             renderOutline layer metrics frozenRows frozenCols firstRow lastRow firstCol lastCol
             renderDrawings content metrics
@@ -4325,20 +4509,28 @@ type Spreadsheet(container: Element) =
     /// With frozen panes a drawing is cut along the frozen edges, as in
     /// Excel: the part over the frozen rows / columns sits in their pane and
     /// stays, the part beside them scrolls (and goes under the frozen cells).
-    /// Rebuilt only when the drawings, the sizes of rows / columns or the
-    /// panes change (and while a picture is dragged across panes).
+    /// Rebuilt when the drawings, the sizes of rows / columns, their chart
+    /// bindings or the panes change (and while a picture is dragged across panes).
     and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
+        ensureChartBindings ()
         let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
         let frozenCols = max 0 (min metrics.ColCount model.FrozenCols)
         let panes = string frozenRows + "|" + string frozenCols + "|" + string rowHeaderWidth + "|" + string headerHeight
         // (A picture that is dragged over frozen panes is cut anew as it moves.)
         let dragged = match pictureDrag with Some drag when frozenRows > 0 || frozenCols > 0 -> Some drag | _ -> None
-        if not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) || renderedDrawingsReadOnly <> readOnly
-           || renderedDrawingsPanes <> panes || dragged.IsSome then
+        if renderedChartBindingVersion <> chartBindingVersion
+           || not (obj.ReferenceEquals(renderedDrawings, model.Drawings)) || not (obj.ReferenceEquals(renderedMetrics, metrics)) || renderedDrawingsReadOnly <> readOnly
+           || renderedDrawingsPanes <> panes || dragged.IsSome
+           || (drawingNodes.Count > 0 && (abs (originX - drawingOriginX) > 250000.0 || abs (originY - drawingOriginY) > 250000.0)) then
             renderedDrawings <- (if dragged.IsSome then null else box model.Drawings)
             renderedMetrics <- box metrics
             renderedDrawingsReadOnly <- readOnly
             renderedDrawingsPanes <- panes
+            drawingOriginX <- originX
+            drawingOriginY <- originY
+            drawingShiftX <- originX
+            drawingShiftY <- originY
+            renderedChartBindingVersion <- chartBindingVersion
             for node in drawingNodes do detach node
             drawingNodes.Clear()
             chartFrames.Clear()
@@ -4441,7 +4633,8 @@ type Spreadsheet(container: Element) =
                     let right = rect.X + rect.Width
                     let bottom = rect.Y + rect.Height
                     if (frozenRows = 0 && frozenCols = 0) || (rect.X >= frozenW && rect.Y >= frozenH) then
-                        let node = build (rowHeaderWidth + rect.X) (headerHeight + rect.Y)
+                        let node = build (paneX 0 (rowHeaderWidth + rect.X)) (paneY 0 (headerHeight + rect.Y))
+                        setAttribute node "data-pane" "0"
                         appendChild content node
                         drawingNodes.Add node
                     else
@@ -4457,7 +4650,7 @@ type Spreadsheet(container: Element) =
                                 setAttribute part "data-pane" (string pane)
                                 setCssText part
                                     (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;overflow:hidden;z-index:3;pointer-events:none"
-                                        (rowHeaderWidth + x0) (headerHeight + y0) (x1 - x0) (y1 - y0))
+                                        (paneX pane (rowHeaderWidth + x0)) (paneY pane (headerHeight + y0)) (x1 - x0) (y1 - y0))
                                 appendChild part (build (rect.X - x0) (rect.Y - y0))
                                 appendChild paneElements.[pane] part
                                 drawingNodes.Add part
@@ -4510,6 +4703,16 @@ type Spreadsheet(container: Element) =
                         if laidOut > 0 then
                             renderedDrawings <- null
                             render ()) 0 |> ignore
+        if drawingNodes.Count > 0 && (drawingShiftX <> originX || drawingShiftY <> originY) then
+            drawingShiftX <- originX
+            drawingShiftY <- originY
+            let dx = drawingOriginX - originX
+            let dy = drawingOriginY - originY
+            for node in drawingNodes do
+                let pane = match getAttribute node "data-pane" with "1" -> 1 | "2" -> 2 | "3" -> 3 | _ -> 0
+                let x = if pane >= 2 then 0.0 else dx
+                let y = if pane = 1 || pane = 3 then 0.0 else dy
+                setStyle node "transform" (sprintf "translate(%.2fpx,%.2fpx)" x y)
         renderPictureFrame content
 
     /// The page break preview (`viewMode`): every page the sheet prints on (`paginatePrinted`,
@@ -4565,7 +4768,7 @@ type Spreadsheet(container: Element) =
                         setAttribute frame "data-break-left" (if atAreaLeft then "area" elif manualLeft then "manual" else "automatic")
                         setCssText frame
                             (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;box-sizing:border-box;pointer-events:none;z-index:3;display:flex;align-items:center;justify-content:center;overflow:hidden;border-top:%s;border-left:%s;border-bottom:%s;border-right:%s"
-                                (rowHeaderWidth + x) (headerHeight + y) width height
+                                (paneX 0 (rowHeaderWidth + x)) (paneY 0 (headerHeight + y)) width height
                                 (line (atAreaTop || manualTop)) (line (atAreaLeft || manualLeft))
                                 (if atAreaBottom then line true else "0") (if atAreaRight then line true else "0"))
                         let label = createElement "span"
@@ -4598,6 +4801,10 @@ type Spreadsheet(container: Element) =
                 match pictureDrag with
                 | Some drag when drag.Id = drawing.Id -> drag.Current
                 | _ -> SpreadsheetLayout.drawingRect model drawing
+            let metrics = SpreadsheetLayout.metricsOf model
+            let pane =
+                (if rect.Y < metrics.RowPrefix.[max 0 (min metrics.RowCount model.FrozenRows)] then 1 else 0)
+                + (if rect.X < metrics.ColPrefix.[max 0 (min metrics.ColCount model.FrozenCols)] then 2 else 0)
             // The frame goes with the pane the picture's corner is in (a
             // picture over frozen rows / columns stays there with its handles).
             let parent =
@@ -4630,8 +4837,8 @@ type Spreadsheet(container: Element) =
             setAttribute frame "data-drawing-id" (string drawing.Id)
             setStyles frame [
                 "display", "block"
-                "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
-                "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                "left", sprintf "%.1fpx" (paneX pane (rowHeaderWidth + rect.X))
+                "top", sprintf "%.1fpx" (paneY pane (headerHeight + rect.Y))
                 "width", sprintf "%.1fpx" rect.Width
                 "height", sprintf "%.1fpx" rect.Height
             ]
@@ -4640,8 +4847,9 @@ type Spreadsheet(container: Element) =
                 let image = queryOne content (sprintf ".spreadsheet-picture[data-drawing-id=\"%d\"]" drawing.Id)
                 if not (isNull (box image)) then
                     setStyles image [
-                        "left", sprintf "%.1fpx" (rowHeaderWidth + rect.X)
-                        "top", sprintf "%.1fpx" (headerHeight + rect.Y)
+                        "left", sprintf "%.1fpx" (paneX 0 (rowHeaderWidth + rect.X))
+                        "top", sprintf "%.1fpx" (paneY 0 (headerHeight + rect.Y))
+                        "transform", ""
                         "width", sprintf "%.1fpx" rect.Width
                         "height", sprintf "%.1fpx" rect.Height
                     ]
@@ -4661,7 +4869,7 @@ type Spreadsheet(container: Element) =
         else
             let signature : obj array =
                 [| outlineAxes; box metrics.RowPrefix; box metrics.ColPrefix; box frozenRows; box frozenCols; box firstRow; box lastRow; box firstCol; box lastCol
-                   box gutterWidth; box gutterHeight; box readOnly; box headBand; box sideBand |]
+                   box gutterWidth; box gutterHeight; box readOnly; box headBand; box sideBand; box originX; box originY |]
             let same =
                 signature.Length = outlineSignature.Length
                 && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b) || (not (isNull a) && a.Equals b)) signature outlineSignature
@@ -4700,13 +4908,14 @@ type Spreadsheet(container: Element) =
                     let band = if rows then gutterHeight else gutterWidth
                     let bandSize = if rows then headBand else sideBand
                     let scrolled = if rows then layer.RowHeaders else layer.ColHeaders
+                    let shift = if rows then originY else originX
                     // A box along the axis (`along`, `length`) and across the strip (`across`, `size`).
                     let rect (along: float) (length: float) (across: float) (size: float) =
                         if rows then "left:" + px across + ";top:" + px along + ";width:" + px size + ";height:" + px length + ";"
                         else "top:" + px across + ";left:" + px along + ";height:" + px size + ";width:" + px length + ";"
                     let edge = if rows then "border-right:1px solid #a6a6a6;" else "border-bottom:1px solid #a6a6a6;"
                     if thickness > 0.0 then
-                        put scrolled "spreadsheet-outline-strip" (rect 0.0 (origin + prefix.[count]) 0.0 thickness + stripBackground + edge + "z-index:1") |> ignore
+                        put scrolled "spreadsheet-outline-strip" (rect 0.0 (min (origin + prefix.[count]) (maxLogicalExtent ())) 0.0 thickness + stripBackground + edge + "z-index:1") |> ignore
                         // (Groups that scroll pass under the strip of the frozen rows / columns.)
                         if frozen > 0 then
                             put layer.FrozenHeaders "spreadsheet-outline-strip" (rect origin prefix.[frozen] 0.0 thickness + stripBackground + edge + "z-index:4") |> ignore
@@ -4716,7 +4925,7 @@ type Spreadsheet(container: Element) =
                             if inView && used < 1500 && groupLast < count then
                                 let parent = if groupLast < frozen then layer.FrozenHeaders else scrolled
                                 let across = float (level - 1) * outlineStep + 2.0
-                                let start = origin + prefix.[groupFirst]
+                                let start = origin + prefix.[groupFirst] - (if groupLast < frozen then 0.0 else shift)
                                 let length = prefix.[groupLast + 1] - prefix.[groupFirst]
                                 if length > 3.0 then
                                     // The bracket: a line along the group with a tick at its far end.
@@ -4730,8 +4939,8 @@ type Spreadsheet(container: Element) =
                                     let buttonParent = if summary < frozen then layer.FrozenHeaders else scrolled
                                     let button =
                                         put buttonParent "spreadsheet-outline-button"
-                                            ((if rows then "left:" + px across + ";top:" + px (origin + prefix.[summary] + (size - 13.0) / 2.0) + ";"
-                                              else "top:" + px across + ";left:" + px (origin + prefix.[summary] + (size - 13.0) / 2.0) + ";") + cursor)
+                                            ((if rows then "left:" + px across + ";top:" + px (origin + prefix.[summary] - (if summary < frozen then 0.0 else shift) + (size - 13.0) / 2.0) + ";"
+                                              else "top:" + px across + ";left:" + px (origin + prefix.[summary] - (if summary < frozen then 0.0 else shift) + (size - 13.0) / 2.0) + ";") + cursor)
                                     setTextContent button (if collapsed then "+" else "\u2212")
                                     setAttribute button "data-axis" (if rows then "rows" else "columns")
                                     setAttribute button "data-first" (string groupFirst)
@@ -4858,8 +5067,20 @@ type Spreadsheet(container: Element) =
             let left, right = max left colFrom, min right colTo
             if top > bottom || left > right then None
             else
-                Some (rowHeaderWidth + colPrefix.[left], headerHeight + rowPrefix.[top],
-                      colPrefix.[right + 1] - colPrefix.[left], rowPrefix.[bottom + 1] - rowPrefix.[top])
+                let x0, x1 = rowHeaderWidth + colPrefix.[left], rowHeaderWidth + colPrefix.[right + 1]
+                let y0, y1 = headerHeight + rowPrefix.[top], headerHeight + rowPrefix.[bottom + 1]
+                // Huge selections are clipped outside the viewport before being
+                // handed to CSS, whose coordinate and size ranges are finite.
+                let x0, x1 =
+                    if pane < 2 && extentWidth > maxLogicalExtent () then
+                        max x0 (scrollLeft - 1000.0), min x1 (scrollLeft + containerWidth + 1000.0)
+                    else x0, x1
+                let y0, y1 =
+                    if pane <> 1 && pane <> 3 && extentHeight > maxLogicalExtent () then
+                        max y0 (scrollTop - 1000.0), min y1 (scrollTop + containerHeight + 1000.0)
+                    else y0, y1
+                if x1 <= x0 || y1 <= y0 then None
+                else Some (paneX pane x0, paneY pane y0, x1 - x0, y1 - y0)
         let paneOf (row: int) (col: int) = (if row < frozenRows then 1 else 0) + (if col < frozenCols then 2 else 0)
         let place (element: Element) (pane: int) =
             if not (isChildOf element layer.Panes.[pane]) then appendChild layer.Panes.[pane] element
@@ -4898,8 +5119,8 @@ type Spreadsheet(container: Element) =
                 | None -> addr.Row, addr.Col
             let pane = paneOf addr.Row addr.Col
             place layer.EditInput pane
-            let x = rowHeaderWidth + colPrefix.[addr.Col]
-            let y = headerHeight + rowPrefix.[addr.Row]
+            let x = paneX pane (rowHeaderWidth + colPrefix.[addr.Col])
+            let y = paneY pane (headerHeight + rowPrefix.[addr.Row])
             let w = colPrefix.[editRight + 1] - colPrefix.[addr.Col]
             let h = rowPrefix.[editBottom + 1] - rowPrefix.[addr.Row]
             setCssText layer.EditInput
@@ -4911,8 +5132,8 @@ type Spreadsheet(container: Element) =
         if readOnly || model.EditingCell.IsSome || rowCount = 0 || colCount = 0 || bottom < 0 || right < 0 then hide layer.FillHandle
         else
             place layer.FillHandle (paneOf bottom right)
-            let cornerX = rowHeaderWidth + colPrefix.[right + 1]
-            let cornerY = headerHeight + rowPrefix.[bottom + 1]
+            let cornerX = paneX (paneOf bottom right) (rowHeaderWidth + colPrefix.[right + 1])
+            let cornerY = paneY (paneOf bottom right) (headerHeight + rowPrefix.[bottom + 1])
             setCssText layer.FillHandle
                 ("position:absolute;left:" + px (cornerX - 4.0) + ";top:" + px (cornerY - 4.0)
                  + ";width:7px;height:7px;background:#217346;border:1px solid white;box-sizing:border-box;cursor:crosshair;z-index:9")
@@ -4921,8 +5142,8 @@ type Spreadsheet(container: Element) =
            || model.Validations.IsEmpty || not (showsListDropdown active model) then hide layer.ListButton
         else
             place layer.ListButton activePane
-            let cellRight = rowHeaderWidth + colPrefix.[min colCount (activeRight + 1)]
-            let cellTop = headerHeight + rowPrefix.[activeTop]
+            let cellRight = paneX activePane (rowHeaderWidth + colPrefix.[min colCount (activeRight + 1)])
+            let cellTop = paneY activePane (headerHeight + rowPrefix.[activeTop])
             let cellHeight = rowPrefix.[min rowCount (activeBottom + 1)] - rowPrefix.[activeTop]
             setCssText layer.ListButton
                 ("position:absolute;left:" + px cellRight + ";top:" + px (cellTop + max 0.0 (cellHeight - 20.0)) + ";width:17px;height:" + px (min 20.0 (max 12.0 cellHeight))
@@ -4984,7 +5205,7 @@ type Spreadsheet(container: Element) =
                             // An arrow for the sort order, a funnel-like mark for a filter, else the plain triangle.
                             setTextContent node ((if sorted > 0 then "\u2191" elif sorted < 0 then "\u2193" else "") + (if active then "\u25BC\u0332" else "\u25BE"))
                         setCssText node
-                            ("position:absolute;left:" + px (rowHeaderWidth + colPrefix.[col + 1] - size - 1.0) + ";top:" + px (headerHeight + rowPrefix.[row + 1] - size - 1.0)
+                            ("position:absolute;left:" + px (paneX (paneOf row col) (rowHeaderWidth + colPrefix.[col + 1] - size - 1.0)) + ";top:" + px (paneY (paneOf row col) (headerHeight + rowPrefix.[row + 1] - size - 1.0))
                              + ";width:" + px size + ";height:" + px size + ";box-sizing:border-box;border:1px solid " + (if active then "#217346" else "#8a8a8a")
                              + ";background:" + (if active then "#d5eadd" else "#f3f3f3") + ";color:" + (if active then "#217346" else "#444")
                              + ";font-size:" + (if sorted <> 0 then "7px" else "9px") + ";line-height:" + px (size - 2.0)
@@ -5015,7 +5236,7 @@ type Spreadsheet(container: Element) =
                     setAttribute node "data-row" (string cell.Row)
                     setAttribute node "data-col" (string cell.Col)
                     setCssText node
-                        ("position:absolute;left:" + px (rowHeaderWidth + colPrefix.[cell.Col] - 3.0) + ";top:" + px (headerHeight + rowPrefix.[cell.Row] - 3.0)
+                        ("position:absolute;left:" + px (paneX (paneOf cell.Row cell.Col) (rowHeaderWidth + colPrefix.[cell.Col] - 3.0)) + ";top:" + px (paneY (paneOf cell.Row cell.Col) (headerHeight + rowPrefix.[cell.Row] - 3.0))
                          + ";width:" + px (w + 6.0) + ";height:" + px (h + 6.0)
                          + ";box-sizing:border-box;border:2px solid #E00000;border-radius:50%;pointer-events:none;z-index:6")
         while circleNodes.Count > used do
@@ -5035,8 +5256,8 @@ type Spreadsheet(container: Element) =
             let body = createElement "div"
             setTextContent body message
             appendChild target body
-        let below (row: int) = headerHeight + rowPrefix.[min rowCount (max 0 row + 1)] + 3.0
-        let leftOf (col: int) = rowHeaderWidth + colPrefix.[min colCount (max 0 col)]
+        let below (row: int) = headerHeight + rowPrefix.[min rowCount (max 0 row + 1)] + 3.0 + (if row < frozenRows then scrollTop else 0.0) - originY
+        let leftOf (col: int) = rowHeaderWidth + colPrefix.[min colCount (max 0 col)] + (if col < frozenCols then scrollLeft else 0.0) - originX
         match validationNotice with
         | Some (style, title, message, cell) ->
             let background, border =
@@ -6153,7 +6374,7 @@ type Spreadsheet(container: Element) =
                 let x = rowHeaderWidth + metrics.ColPrefix.[min metrics.ColCount (right + 1)] + (if right < model.FrozenCols then scrollLeft else 0.0) + 6.0
                 let y = headerHeight + metrics.RowPrefix.[min metrics.RowCount (max 0 top)] + (if top < model.FrozenRows then scrollTop else 0.0)
                 setCssText panel
-                    ("position:absolute;left:" + string (int x) + "px;top:" + string (int y) + "px;min-width:96px;max-width:280px;padding:3px 5px;background:"
+                    ("position:absolute;left:" + string (int (x - originX)) + "px;top:" + string (int (y - originY)) + "px;min-width:96px;max-width:280px;padding:3px 5px;background:"
                      + (if info.Thread.IsSome then "#FFFFFF" else "#FFFFE1") + ";border:1px solid " + (if info.Thread.IsSome then "#7b61ff" else "#000000")
                      + ";box-shadow:2px 2px 4px rgba(0,0,0,0.3);font-family:Tahoma, Arial, sans-serif;font-size:12px;color:#000000;white-space:pre-wrap;overflow-wrap:break-word;pointer-events:none;z-index:31")
                 setAttribute panel "data-row" (string addr.Row)
@@ -6220,8 +6441,8 @@ type Spreadsheet(container: Element) =
                         let flipped = cellLeft - 6.0 - boxWidth
                         if flipped >= viewLeft then flipped else max viewLeft (viewRight - boxWidth)
                 let placedY = if y + boxHeight <= viewBottom then y else max viewTop (viewBottom - boxHeight)
-                if placedX <> x then setStyle panel "left" (string (int placedX) + "px")
-                if placedY <> y then setStyle panel "top" (string (int placedY) + "px")
+                if placedX <> x then setStyle panel "left" (string (int (placedX - originX)) + "px")
+                if placedY <> y then setStyle panel "top" (string (int (placedY - originY)) + "px")
             | _, None -> hideCommentBox ()
             | _ -> ()
         listen content "mousemove" (fun e ->
@@ -6242,6 +6463,19 @@ type Spreadsheet(container: Element) =
 
         // Add event listeners
         listen gridDiv "scroll" handleScroll
+        listen gridDiv "wheel" (fun e ->
+            // A scrollbar thumb maps the entire sheet, but a wheel or
+            // trackpad still travels in screen pixels, not in scrollbar ratios.
+            if not (eventFlag e "ctrlKey") && (extentWidth > maxLogicalExtent () || extentHeight > maxLogicalExtent ()) then
+                let mode = wheelDeltaMode e
+                let dx, dy = wheelDeltaX e, wheelDeltaY e
+                let dx, dy = if eventFlag e "shiftKey" && dx = 0.0 then dy, 0.0 else dx, dy
+                let unitX = if mode = 1 then 16.0 elif mode = 2 then getClientWidth gridDiv else 1.0
+                let unitY = if mode = 1 then 16.0 elif mode = 2 then getClientHeight gridDiv else 1.0
+                preventDefault e
+                if dx <> 0.0 then setGridScrollLeft gridDiv (gridScrollLeft gridDiv + dx * unitX / appliedZoom)
+                if dy <> 0.0 then setGridScrollTop gridDiv (gridScrollTop gridDiv + dy * unitY / appliedZoom)
+                handleScroll e)
         listen content "keydown" handleKeyDown
 
         // One listener each for the whole grid: which cell or header a
@@ -6694,6 +6928,9 @@ type Spreadsheet(container: Element) =
     /// instance can be mounted again.
     member _.Dispose() =
         disposed <- true
+        clipboardGeneration <- clipboardGeneration + 1
+        sessionClipboard <- None
+        copiedText <- ""
         for cleanup in cleanups.ToArray() do
             try cleanup () with _ -> ()
         cleanups.Clear()
@@ -7019,6 +7256,17 @@ type Spreadsheet(container: Element) =
             let rename (newName: string) () =
                 // The formulas of every sheet follow: those not converted yet are now.
                 convertFormulaSheets ()
+                let previousName = (bookSnapshot ()).Sheets.[id].Name
+                sessionClipboard <-
+                    sessionClipboard |> Option.map (fun (source, data) ->
+                        let cells =
+                            data.Cells |> List.map (fun (row, col, cell) ->
+                                let value =
+                                    match cell.Value with
+                                    | Formula (formula, cached) -> Formula (rewriteFormulaForSheets (RenameSheetRefs (previousName, newName)) formula, cached)
+                                    | other -> other
+                                row, col, { cell with Value = value })
+                        source, { data with Cells = cells })
                 installBook (Rbt.Spreadsheet.Workbook.renameSheetEverywhere id newName (bookSnapshot ()))
                 rebaseCalcEngine ()
             runBookStep "Rename sheet" (rename name) (rename oldName)
@@ -7197,6 +7445,9 @@ type Spreadsheet(container: Element) =
     /// would resolve sheet ids, tables and names against sheets that are gone.
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
+        clipboardGeneration <- clipboardGeneration + 1
+        sessionClipboard <- None
+        copiedText <- ""
         importedPackage <- None
         invalidateCalcEngine()
         invalidCircles.Clear()

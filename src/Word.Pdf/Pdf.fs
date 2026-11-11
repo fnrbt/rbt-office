@@ -149,9 +149,9 @@ let private remappedPairCacheKeyComparer =
 
 type private TextContext = {
     FontSet: Rbt.Word.ShaperText.FontSet
-    FontBytes: Map<string, byte[]>
+    mutable FontBytes: Map<string, byte[]>
+    FontNamesByBytes: System.Collections.Generic.Dictionary<byte[], string>
     PdfFontCache: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
-    DefaultFamily: string
     mutable PdfFonts: Map<string, PdfFont.TrueTypeFont>
     GlyphText: System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>
     ShapeCache: System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>
@@ -215,11 +215,19 @@ let private createTextContext (options: RenderOptions) =
                Bold = face.Bold
                Italic = face.Italic
                Data = face.Data }: Rbt.Word.ShaperText.FontFace))
+    let fontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+    let bytesComparer =
+        { new System.Collections.Generic.IEqualityComparer<byte[]> with
+            member _.Equals(left, right) = obj.ReferenceEquals(left, right)
+            member _.GetHashCode(bytes) = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(bytes) }
+    let fontNamesByBytes = System.Collections.Generic.Dictionary<byte[], string>(bytesComparer)
+    for KeyValue(name, bytes) in fontBytes do
+        if not (fontNamesByBytes.ContainsKey bytes) then fontNamesByBytes.[bytes] <- name
     {
         FontSet = Rbt.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
-        FontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
+        FontBytes = fontBytes
+        FontNamesByBytes = fontNamesByBytes
         PdfFontCache = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
-        DefaultFamily = options.DefaultFontFamily
         PdfFonts = Map.empty
         GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
         ShapeCache = System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>()
@@ -232,21 +240,6 @@ let private createTextContext (options: RenderOptions) =
         TextRunMs = 0.0
         TextAllocMs = 0.0
     }
-let private fallbackFaceName (textContext: TextContext) (style: WordPaint.TextPaintStyle) =
-    // Mirror WordModelLayout.Font.exactFace's naming scheme, but anchored on
-    // the FontSet's DefaultFamily.  Used when the requested face (e.g.
-    // "Cambria") isn't registered: the shaper falls back to the default
-    // family internally, so we follow the same chain for the PDF font lookup
-    // — keeps shape and embedded-font face in agreement and avoids dropping
-    // into PDF's Helvetica simple path (which paints spaces at Helvetica
-    // metrics while layout positioned glyphs from the fallback shape).
-    let defaultFamily = textContext.DefaultFamily
-    match style.Bold, style.Italic with
-    | true, true -> defaultFamily + "-BoldItalic"
-    | true, false -> defaultFamily + "-Bold"
-    | false, true -> defaultFamily + "-Italic"
-    | false, false -> defaultFamily
-
 let private tryGetPdfFont (textContext: TextContext) faceName =
     match Map.tryFind faceName textContext.PdfFonts with
     | Some font -> Some font
@@ -269,15 +262,21 @@ let private tryGetPdfFont (textContext: TextContext) faceName =
             textContext.PdfFonts <- textContext.PdfFonts |> Map.add faceName font
             Some font
 
-let private tryGetPdfFontWithFallback (textContext: TextContext) (style: WordPaint.TextPaintStyle) faceName =
-    match tryGetPdfFont textContext faceName with
-    | Some font -> Some (faceName, font)
-    | None ->
-        let fallback = fallbackFaceName textContext style
-        if fallback = faceName then None
-        else
-            tryGetPdfFont textContext fallback
-            |> Option.map (fun font -> fallback, font)
+// A shaper can return a face not listed in options.Fonts. Its parsed font retains
+// the original bytes, so use those bytes both for PDF widths and embedding.
+let private shapedFaceName (textContext: TextContext) (font: Rbt.Text.Engine.TextFont) =
+    let bytes = font.ShaperFont.Data
+    match textContext.FontNamesByBytes.TryGetValue bytes with
+    | true, name -> name
+    | false, _ ->
+        let mutable index = textContext.FontNamesByBytes.Count
+        let mutable name = "RbtShapedFont" + string index
+        while Map.containsKey name textContext.FontBytes do
+            index <- index + 1
+            name <- "RbtShapedFont" + string index
+        textContext.FontBytes <- Map.add name bytes textContext.FontBytes
+        textContext.FontNamesByBytes.[bytes] <- name
+        name
 
 let private shapeTextCached (textContext: TextContext) text style =
     let key = textCacheKey text style
@@ -383,9 +382,6 @@ let private addGlyphTextMappings (textContext: TextContext) faceName (mappings: 
             match fontMappings.TryGetValue gid with
             | true, existing when existing.Length >= text.Length -> ()
             | _ -> fontMappings.[gid] <- text
-
-let private rendererPdfFaceName (style: WordPaint.TextPaintStyle) =
-    paintStyleToTextStyle style |> WordModelLayout.Font.exactFace
 
 let private equalsOrdinalIgnoreCase (left: string) (right: string) =
     String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
@@ -608,13 +604,16 @@ let private recordGlyphPairs (textContext: TextContext) (usage: GlyphUsage) name
 let private addEmbeddedTextOps (ops: ResizeArray<PdfDraw.DrawOp>) (textContext: TextContext) (usage: GlyphUsage) pageTop pageHeight text (style: WordPaint.TextPaintStyle) x baseline width =
     let yPdf y = pageHeight - (y - pageTop)
     let textStyle = paintStyleToTextStyle style
-    let requestedFace = rendererPdfFaceName style
     let shapeStart = timingStart ()
-    let pdfFontResolved = tryGetPdfFontWithFallback textContext style requestedFace
     let shaped = shapeTextCached textContext text textStyle
+    let resolved =
+        shaped |> Option.bind (fun (font, shapedText) ->
+            let faceName = shapedFaceName textContext font
+            tryGetPdfFont textContext faceName
+            |> Option.map (fun pdfFont -> faceName, pdfFont, shapedText))
     if traceTimingEnabled then textContext.TextShapeMs <- textContext.TextShapeMs + (nowMs () - shapeStart)
-    match pdfFontResolved, shaped with
-    | Some (faceName, pdfFont), Some (_, shapedText) ->
+    match resolved with
+    | Some (faceName, pdfFont, shapedText) ->
         let spacedAdvance = shapedText.TotalAdvance + TextBuffer.characterSpacingAdvance text textStyle
         let horizontalScale = if width > 0.0 && spacedAdvance > 0.0 then width / spacedAdvance else 1.0
         let cacheKey = pdfRunCacheKey faceName text width textStyle

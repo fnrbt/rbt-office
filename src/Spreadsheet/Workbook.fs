@@ -479,6 +479,32 @@ let updateSheetModel (sheetId: SheetId) (model: SpreadsheetModel) (workbook: Wor
         { workbook with Sheets = Map.add sheetId updatedSheet workbook.Sheets }
     | None -> workbook
 
+/// Replace a sheet model after a model-level command, keeping its table
+/// registry in step. Structural commands use applyStructureEdit instead:
+/// that operation also moves column identities and rewrites references.
+let updateSheetModelWithTables (sheetId: SheetId) (model: SpreadsheetModel) (workbook: Workbook): Workbook =
+    match Map.tryFind sheetId workbook.Sheets with
+    | None -> workbook
+    | Some sheet when obj.ReferenceEquals(sheet.Model, model) -> workbook
+    | Some sheet ->
+        let updated = updateSheetModel sheetId model workbook
+        if obj.ReferenceEquals(sheet.Model.Tables, model.Tables) then updated
+        else
+            let mutable tables = workbook.Tables |> Map.filter (fun _ table -> table.SheetId <> sheetId)
+            for table in model.Tables do
+                if table.Name <> "" then
+                    let columns =
+                        match getTable table.Name workbook with
+                        | Some previous when previous.SheetId = sheetId
+                                             && List.length previous.Columns = table.EndCol - table.StartCol + 1 ->
+                            previous.Columns
+                        | _ -> []
+                    let entry =
+                        makeTableFromRegion sheetId table.Name table.StartRow table.StartCol table.EndRow table.EndCol
+                            table.HeaderRowCount (if table.HasTotals then 1 else 0) columns model
+                    tables <- Map.add table.Name entry tables
+            { updated with Tables = tables }
+
 // --- Row / column insertion and deletion across the workbook -----------------
 
 /// What `applyStructureEdit` changed outside the edited sheet's own model,
@@ -489,6 +515,9 @@ type StructureEditUndo = {
     Before: SpreadsheetModel
     /// Formula cells rewritten on other sheets: (sheet, cell, before, after).
     ForeignCells: (SheetId * CellAddress * CellData * CellData) list
+    /// Formula-bearing rules on other sheets: (sheet, rule id, before, after).
+    ForeignFormats: (SheetId * int * ConditionalFormatRule * ConditionalFormatRule) list
+    ForeignValidations: (SheetId * int * ValidationRule * ValidationRule) list
     /// Structured-reference tables moved or removed: (key, before, after).
     Tables: (string * Table * Table option) list
     /// Defined names whose refers-to text changed: (key, before, after).
@@ -553,7 +582,7 @@ let private moveTableForEdit (edit: StructureEdit) (table: Table) : Table option
 let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workbook) : Workbook * StructureEditUndo =
     match Map.tryFind sheetId workbook.Sheets with
     | None ->
-        workbook, { Sheet = sheetId; Before = createEmpty 1 1; ForeignCells = []; Tables = []; Names = [] }
+        workbook, { Sheet = sheetId; Before = createEmpty 1 1; ForeignCells = []; ForeignFormats = []; ForeignValidations = []; Tables = []; Names = [] }
     | Some sheet ->
         let namesThisSheet (qualifier: string) =
             qualifier.Equals(sheet.Name, System.StringComparison.OrdinalIgnoreCase)
@@ -567,18 +596,29 @@ let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workb
             | Some name -> namesThisSheet name
 
         let foreign = ResizeArray<SheetId * CellAddress * CellData * CellData>()
+        let foreignFormats = ResizeArray<SheetId * int * ConditionalFormatRule * ConditionalFormatRule>()
+        let foreignValidations = ResizeArray<SheetId * int * ValidationRule * ValidationRule>()
         let sheets =
             workbook.Sheets
             |> Map.map (fun id other ->
                 if id = sheetId then
                     { other with Model = applyStructureEditWith fromEditedSheet edit other.Model }
                 else
-                    let rewritten = rewriteFormulasForEdit edit fromOtherSheet other.Model
+                    let rewritten = mapModelFormulas (adjustFormulaForEdit edit fromOtherSheet) other.Model
                     if not (obj.ReferenceEquals(rewritten, other.Model)) then
-                        for KeyValue(addr, after) in rewritten.Cells do
-                            match Map.tryFind addr other.Model.Cells with
-                            | Some before when before <> after -> foreign.Add((id, addr, before, after))
-                            | _ -> ()
+                        if not (obj.ReferenceEquals(rewritten.Cells, other.Model.Cells)) then
+                            for KeyValue(addr, after) in rewritten.Cells do
+                                match Map.tryFind addr other.Model.Cells with
+                                | Some before when before <> after -> foreign.Add((id, addr, before, after))
+                                | _ -> ()
+                        List.iter2 (fun (before: ConditionalFormatRange) (after: ConditionalFormatRange) ->
+                            if before.Format.Rule <> after.Format.Rule then
+                                foreignFormats.Add((id, before.Id, before.Format.Rule, after.Format.Rule)))
+                            other.Model.ConditionalFormats rewritten.ConditionalFormats
+                        List.iter2 (fun (before: ValidationRange) (after: ValidationRange) ->
+                            if before.Validation.Rule <> after.Validation.Rule then
+                                foreignValidations.Add((id, before.Id, before.Validation.Rule, after.Validation.Rule)))
+                            other.Model.Validations rewritten.Validations
                     { other with Model = rewritten })
 
         let tableChanges = ResizeArray<string * Table * Table option>()
@@ -606,8 +646,57 @@ let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workb
         { Sheet = sheetId
           Before = sheet.Model
           ForeignCells = List.ofSeq foreign
+          ForeignFormats = List.ofSeq foreignFormats
+          ForeignValidations = List.ofSeq foreignValidations
           Tables = List.ofSeq tableChanges
           Names = List.ofSeq nameChanges }
+
+// Restore only formula fields still holding this edit's output. A later change
+// to a rule's range, style, options, or another operand must survive undo.
+let private undoFormulaText before after current =
+    if before <> after && current = after then before else current
+
+let private undoFormulaOption before after current =
+    match before, after, current with
+    | Some before, Some after, Some current -> Some (undoFormulaText before after current)
+    | _ -> current
+
+let private undoThreshold (before: CfThreshold) (after: CfThreshold) (current: CfThreshold) =
+    if before.Kind = CfvoFormula && after.Kind = CfvoFormula && current.Kind = CfvoFormula then
+        { current with Value = undoFormulaOption before.Value after.Value current.Value }
+    else current
+
+let private undoThresholds before after current =
+    if List.length before = List.length after && List.length after = List.length current then
+        List.map3 undoThreshold before after current
+    else current
+
+let private undoFormatRule before after current =
+    let restore = undoFormulaText
+    match before, after, current with
+    | Expression b, Expression a, Expression c -> Expression (restore b a c)
+    | CellIs (_, b1, b2), CellIs (_, a1, a2), CellIs (op, c1, c2) ->
+        CellIs (op, restore b1 a1 c1, undoFormulaOption b2 a2 c2)
+    | ColorScale b, ColorScale a, ColorScale c when List.length b = List.length a && List.length a = List.length c ->
+        ColorScale (List.map3 (fun (bt, _) (at, _) (ct, color) -> undoThreshold bt at ct, color) b a c)
+    | DataBar (bl, bh, _), DataBar (al, ah, _), DataBar (cl, ch, color) ->
+        DataBar (undoThreshold bl al cl, undoThreshold bh ah ch, color)
+    | IconSet (_, b, _), IconSet (_, a, _), IconSet (family, c, reverse) ->
+        IconSet (family, undoThresholds b a c, reverse)
+    | DataBarEx (bl, bh, _, _), DataBarEx (al, ah, _, _), DataBarEx (cl, ch, color, options) ->
+        DataBarEx (undoThreshold bl al cl, undoThreshold bh ah ch, color, options)
+    | IconSetEx (_, b, _, _), IconSetEx (_, a, _, _), IconSetEx (family, c, reverse, options) ->
+        IconSetEx (family, undoThresholds b a c, reverse, options)
+    | _ -> current
+
+let private undoValidationRule before after current =
+    let restore = undoFormulaText
+    match before, after, current with
+    | CustomFormula b, CustomFormula a, CustomFormula c -> CustomFormula (restore b a c)
+    | ListSource b, ListSource a, ListSource c -> ListSource (restore b a c)
+    | Comparison (_, _, b1, b2), Comparison (_, _, a1, a2), Comparison (kind, op, c1, c2) ->
+        Comparison (kind, op, restore b1 a1 c1, undoFormulaOption b2 a2 c2)
+    | _ -> current
 
 /// Reverse `applyStructureEdit`. The edited sheet goes back to its earlier
 /// state wholesale (cells, merges, sizes, formats, validations, tables, spill
@@ -639,6 +728,42 @@ let undoStructureEdit (undo: StructureEditUndo) (workbook: Workbook) : Workbook 
                                 | _ -> false
                             if sameFormula then model <- setCell addr before model
                         | None -> ()
+                let formatChanges =
+                    undo.ForeignFormats
+                    |> List.fold (fun changes (owner, ruleId, before, after) ->
+                        if owner = id then Map.add ruleId (before, after) changes else changes) Map.empty
+                if not formatChanges.IsEmpty then
+                    let mutable changed = false
+                    let updated =
+                        model.ConditionalFormats
+                        |> List.map (fun entry ->
+                            match Map.tryFind entry.Id formatChanges with
+                            | None -> entry
+                            | Some (before, after) ->
+                                let rule = undoFormatRule before after entry.Format.Rule
+                                if rule = entry.Format.Rule then entry
+                                else
+                                    changed <- true
+                                    { entry with Format = { entry.Format with Rule = rule } })
+                    if changed then model <- { model with ConditionalFormats = updated }
+                let validationChanges =
+                    undo.ForeignValidations
+                    |> List.fold (fun changes (owner, ruleId, before, after) ->
+                        if owner = id then Map.add ruleId (before, after) changes else changes) Map.empty
+                if not validationChanges.IsEmpty then
+                    let mutable changed = false
+                    let updated =
+                        model.Validations
+                        |> List.map (fun entry ->
+                            match Map.tryFind entry.Id validationChanges with
+                            | None -> entry
+                            | Some (before, after) ->
+                                let rule = undoValidationRule before after entry.Validation.Rule
+                                if rule = entry.Validation.Rule then entry
+                                else
+                                    changed <- true
+                                    { entry with Validation = { entry.Validation with Rule = rule } })
+                    if changed then model <- { model with Validations = updated }
                 if obj.ReferenceEquals(model, sheet.Model) then sheet else { sheet with Model = model })
     let tables =
         undo.Tables

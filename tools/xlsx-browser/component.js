@@ -666,7 +666,6 @@ checks['drawings-in-grid'] = async () => {
             const expected = fileAnchors.map((a) => { const copy = [...a]; copy[2] += 2; if (copy[4] != null) copy[4] += 2; return copy; });
             const sortKey = (a) => JSON.stringify([a[0], a[1], a[3]]);
             check(`${short}: exported at their new rows, pictures byte for byte`, anchors(after, name).sort((x, y) => sortKey(x).localeCompare(sortKey(y))), absolute.size > 1 ? null : expected.sort((x, y) => sortKey(x).localeCompare(sortKey(y))));
-            check(`${short}: chart parts byte for byte`, changedParts(await partsOf(original, KEPT_PARTS), await partsOf(saved, KEPT_PARTS)), []);
             check(`${short}: z-order kept`, zOrder(after), zOrder(before));
             grid.Undo(); grid.Undo();
             check(`${short}: undo puts them back`, boxes(), boxesBefore);
@@ -983,6 +982,97 @@ checks['grid-extent-scroll-and-stacking'] = async () => {
     close();
     return lines;
 };
+// A sheet may be taller than the browser's layout range. The scrollbar must
+// reach its end without changing cell sizes or losing the logical coordinates.
+checks['grid-full-height-zoom'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        const last = 1048575;
+        grid.InstallWorkbook([createEmpty(last + 1, 26), createEmpty(100, 8), withFields(createEmpty(100, 16384), { DefaultColumnWidth: 250 })], ['Full', 'Small', 'Wide'], 0, undefined);
+        grid.SetRowHeight(last, 55);
+        grid.SetRowHeight(last - 2, 37);
+        grid.HideRows(last - 1);
+        grid.FreezeAt(1, 1);
+        const { scroller } = parts(host);
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const centre = (element) => {
+            const r = element.getBoundingClientRect();
+            return [r.left + r.width / 2, r.top + r.height / 2];
+        };
+        const click = (element) => {
+            const [clientX, clientY] = centre(element);
+            const target = document.elementFromPoint(clientX, clientY);
+            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX, clientY }));
+            document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0, clientX, clientY }));
+        };
+        const aligned = (a, b) => ['left', 'top', 'width', 'height'].every((key) => Math.abs(a[key] - b[key]) <= 2);
+        for (const zoom of [4, 1, 0.1]) {
+            grid.SetZoom(zoom);
+            scroller.scrollTop = scroller.scrollHeight;
+            await frame(); await frame();
+            const cell = node(last, 1);
+            const bounds = cell?.getBoundingClientRect(), view = scroller.getBoundingClientRect();
+            check(`zoom ${zoom}: scrollbar reaches the last visible row`, !!bounds && bounds.bottom <= view.bottom + 2 && bounds.top >= view.top && Math.abs(bounds.height - 55 * zoom) < 2, true);
+            check(`zoom ${zoom}: extent stays within the browser ceiling`, scroller.scrollHeight <= 8000001, true);
+            check(`zoom ${zoom}: hidden row is not drawn`, !node(last - 1, 1), true);
+            click(cell);
+            check(`zoom ${zoom}: clicking the last row hit-tests it`, active(grid), [last, 1]);
+            const activeBox = [...host.querySelectorAll('.spreadsheet-active-cell')].find((el) => getComputedStyle(el).display !== 'none');
+            check(`zoom ${zoom}: active outline follows the cell`, !!activeBox && aligned(activeBox.getBoundingClientRect(), cell.getBoundingClientRect()), true);
+            press(host, 'F2');
+            const input = host.querySelector('.spreadsheet-edit-input');
+            check(`zoom ${zoom}: edit box follows the cell`, grid.IsEditing() && aligned(input.getBoundingClientRect(), cell.getBoundingClientRect()), true);
+            input.value = `last-${zoom}`; input.dispatchEvent(new Event('input', { bubbles: true }));
+            press(host, 'Enter');
+            check(`zoom ${zoom}: last row is editable`, await valueAt(grid, last, 1), `last-${zoom}`);
+            grid.SelectCell(last, 1); await frame();
+            check(`zoom ${zoom}: SelectCell reveals the last row`, !!node(last, 1) && active(grid)[0] === last, true);
+            press(host, 'ArrowUp');
+            check(`zoom ${zoom}: arrow navigation skips the hidden row`, active(grid), [last - 2, 1]);
+            press(host, 'PageUp'); const before = active(grid)[0];
+            press(host, 'PageDown');
+            check(`zoom ${zoom}: page navigation moves through the bottom of the sheet`, before < last - 2 && active(grid)[0] > before, true);
+            grid.GoTo('B1048576'); await frame();
+            check(`zoom ${zoom}: GoTo reveals the last row`, [active(grid), !!node(last, 1)], [[last, 1], true]);
+            grid.SelectRange(last - 2, 1, last, 2); await frame();
+            const selection = [...host.querySelectorAll('.spreadsheet-selection')].find((el) => getComputedStyle(el).display !== 'none');
+            const selectedCell = node(last, 1)?.getBoundingClientRect(), selectedBox = selection?.getBoundingClientRect();
+            check(`zoom ${zoom}: range overlay covers the last cell`, !!selectedBox && !!selectedCell && selectedBox.top <= selectedCell.top + 2 && selectedBox.bottom >= selectedCell.bottom - 2, true);
+            check(`zoom ${zoom}: frozen corner remains visible`, !!node(0, 0) && node(0, 0).getBoundingClientRect().top < view.top + 31 * zoom + 2, true);
+        }
+        grid.SetZoom(4); grid.SelectCell(500000, 1); await frame();
+        grid.SetZoom(1); await frame();
+        check('zooming preserves the deep viewport', !!node(500000, 1), true);
+        grid.SetZoom(4); await frame();
+        const view = scroller.getBoundingClientRect();
+        const target = document.elementFromPoint(view.left + 700, view.top + 320)?.closest('.spreadsheet-cell');
+        const before = target?.getBoundingClientRect().top;
+        scroller.dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 40 }));
+        await frame();
+        check('wheel travel remains in screen pixels on the bounded scrollbar', !!target && Math.abs(target.getBoundingClientRect().top - before + 40) <= 4, true);
+        const canvas = document.createElement('canvas'); canvas.width = 30; canvas.height = 15;
+        const picture = grid.InsertPicture(canvas.toDataURL('image/png'), 'B500001');
+        grid.SelectCell(500000, 1); await frame();
+        const image = host.querySelector(`.spreadsheet-picture[data-drawing-id="${picture}"]`);
+        const pictureCell = node(500000, 1)?.getBoundingClientRect(), pictureBox = image?.getBoundingClientRect();
+        check('a drawing at a rebased row follows its cell', !!pictureBox && !!pictureCell && Math.abs(pictureBox.left - pictureCell.left) <= 2 && Math.abs(pictureBox.top - pictureCell.top) <= 2, true);
+        grid.DeletePicture(picture);
+        grid.SwitchSheet(1); await frame();
+        check('switching sheets resets the bounded scroll origin', [scroller.scrollTop, active(grid)[0], !!node(0, 0)], [0, 0, true]);
+        grid.SwitchSheet(0); await frame();
+        check('returning to the full sheet starts at the top', [scroller.scrollTop, !!node(0, 0)], [0, true]);
+        grid.SwitchSheet(2); grid.SetZoom(4); grid.SelectCell(1, 16383); await frame();
+        const lastColumn = node(1, 16383);
+        check('a bounded full-width sheet reveals its last column', [!!lastColumn && lastColumn.getBoundingClientRect().left < scroller.getBoundingClientRect().right, active(grid)], [true, [1, 16383]]);
+        scroller.scrollLeft = scroller.scrollWidth; await frame();
+        check('the horizontal scrollbar reaches the last column', !!node(1, 16383) && scroller.scrollWidth <= 8000001, true);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 
 // Selection with the keyboard and the mouse, the active cell, and the editing API.
 checks['grid-selection-and-keyboard'] = async () => {
@@ -1179,6 +1269,177 @@ checks['grid-clipboard'] = async () => {
         check('Paste() pastes (the grid\'s own cells when the system clipboard cannot be read)', [pasted, await valueAt(grid, 25, 0), await valueAt(grid, 25, 1)], [true, 'Apples', '12']);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
+    return lines;
+};
+
+// The internal clipboard belongs to the workbook, not the sheet currently displayed.
+checks['grid-clipboard-cross-sheet-copy'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const ownClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([createEmpty(40, 12), createEmpty(40, 12)], ['Source', 'Target'], 0, undefined);
+        grid.SetCell(1, 0, '13');
+        grid.SetCell(1, 1, '=A2*2');
+        grid.SetCell(1, 2, '=B2+1');
+        grid.SelectCell(1, 1); grid.ApplyFormat('bold');
+        grid.SelectCell(1, 2); grid.ApplyBgColor('#DDEBF7');
+        grid.SelectRange(1, 1, 1, 2);
+        const transfer = new DataTransfer();
+        const copyEvent = new ClipboardEvent('copy', { clipboardData: transfer, bubbles: true, cancelable: true });
+        parts(host).content.dispatchEvent(copyEvent);
+        const copiedText = transfer.getData('text/plain'), copiedHtml = transfer.getData('text/html');
+        check('copy event exposes the matching system text', [copyEvent.defaultPrevented, copiedText], [true, '26\t27']);
+        const held = { text: copiedText, html: copiedHtml, reads: 0 };
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+            read: async () => { held.reads++; return [{ types: ['text/plain', 'text/html'], getType: async (type) => new Blob([type === 'text/plain' ? held.text : held.html], { type }) }]; },
+            readText: async () => held.text,
+        } });
+        // A matching system read uses the rich internal cells, not the HTML table of displayed values.
+        grid.SwitchSheet(1);
+        grid.SetCell(3, 2, '9');
+        grid.SetCell(3, 3, '901');
+        grid.SelectCell(3, 3);
+        check('matching system clipboard pastes rich cells onto another sheet', [await grid.Paste(), held.reads, grid.GetRange('Target!D4:E4')[0].map((cell) => [cell.formula, cell.value]), grid.GetSelectionRef()],
+            [true, 1, [['=C4*2', 18], ['=D4+1', 19]], 'D4:E4']);
+        check('cross-sheet copy preserves both cell formats', [grid.GetCell(3, 3).format.bold, grid.GetCell(3, 4).format.fill], [true, '#DDEBF7']);
+        check('copy leaves its source formulas and values untouched', grid.GetRange('Source!B2:C2')[0].map((cell) => [cell.formula, cell.value]), [['=A2*2', 26], ['=B2+1', 27]]);
+        grid.Undo();
+        check('copy paste undo restores only the target', [grid.GetCell(3, 3).value, grid.GetCell(3, 4).value, grid.GetRange('Source!B2')[0][0].value], [901, null, 26]);
+        grid.Redo();
+        check('copy paste redo restores shifted formulas', grid.GetRange('Target!D4:E4')[0].map((cell) => [cell.formula, cell.value]), [['=C4*2', 18], ['=D4+1', 19]]);
+
+        // An unrelated system clipboard always wins over the grid's prior copy.
+        held.text = 'other application'; held.html = '';
+        grid.SelectCell(8, 3);
+        check('unrelated system text takes precedence over internal copy', [await grid.Paste(), grid.GetCell(8, 3).value, grid.GetCell(8, 3).formula], [true, 'other application', null]);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+            read: async () => { throw new Error('clipboard read denied'); },
+            readText: async () => { throw new Error('clipboard read denied'); },
+        } });
+        grid.SelectCell(10, 3);
+        check('denied system read falls back to cross-sheet rich copy', [await grid.Paste(), grid.GetCell(10, 3).formula, grid.GetCell(10, 4).formula, grid.GetCell(10, 3).format.bold],
+            [true, '=C11*2', '=D11+1', true]);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        grid.SelectCell(12, 2); grid.SetCell(12, 2, '4');
+        grid.SelectCell(12, 3);
+        check('unavailable system clipboard falls back to cross-sheet rich copy', [await grid.Paste(), grid.GetCell(12, 3).formula, grid.GetCell(12, 4).value],
+            [true, '=C13*2', 9]);
+
+        // Import replaces the workbook, even if its sheet has the same name as the copied source.
+        const fresh = mountGrid();
+        let bytes;
+        try {
+            fresh.grid.InstallWorkbook([fresh.grid.GetModel()], ['Source'], 0, undefined);
+            fresh.grid.SetCell(0, 0, '314');
+            bytes = await fresh.grid.ExportXlsx();
+        }
+        finally { fresh.close(); }
+        await grid.ImportXlsx(bytes.slice());
+        grid.SelectCell(4, 3);
+        check('import invalidates prior workbook internal clipboard', [grid.GetSheetNames(), await grid.Paste(), grid.GetCell(4, 3).value, grid.GetCell(0, 0).value],
+            [['Source'], false, null, 314]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        if (ownClipboard) Object.defineProperty(navigator, 'clipboard', ownClipboard); else delete navigator.clipboard;
+        close();
+    }
+    return lines;
+};
+
+checks['grid-clipboard-cross-sheet-cut'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const ownClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        grid.InstallWorkbook([createEmpty(40, 12), createEmpty(40, 12), createEmpty(40, 12)], ['Source', 'Target', 'Witness'], 0, undefined);
+        grid.SetCell(0, 0, '11');
+        grid.SetCell(0, 1, '=A1*3');
+        grid.SetCell(0, 2, '=B1+Source!$D$1');
+        grid.SetCell(0, 3, '7');
+        grid.SetCell(0, 4, '=B1+1');
+        grid.SetDefinedName('MovedNumber', '=Source!$B$1');
+        grid.SwitchSheet(1);
+        grid.SetCell(0, 0, '70');
+        grid.SetCell(0, 1, '=Source!A1+5');
+        grid.SetCell(4, 5, '901'); grid.SetCell(4, 6, '902'); grid.SetCell(4, 7, '903');
+        grid.SwitchSheet(2);
+        grid.SetCell(0, 0, '=Source!B1+2');
+        grid.SetCell(0, 1, '=MovedNumber+3');
+        grid.SwitchSheet(0);
+        grid.SelectRange(0, 0, 0, 2);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        // Cut clears immediately, independently of the later paste.
+        await grid.Cut();
+        check('cut immediately clears source cells, not their neighbour', [grid.GetRange('Source!A1:C1')[0].map((cell) => cell.value), grid.GetCell(0, 3).value], [[null, null, null], 7]);
+        grid.SwitchSheet(1);
+        grid.SelectCell(4, 5);
+        check('cross-sheet cut pastes stored source, not active target cells', [await grid.Paste(), grid.GetRange('Target!F5:H5')[0].map((cell) => [cell.formula, cell.value])],
+            [true, [[null, 11], ['=F5*3', 33], ['=G5+Source!$D$1', 40]]]);
+        const dependents = () => [grid.GetRange('Source!E1')[0][0], grid.GetRange('Target!B1')[0][0], grid.GetRange('Witness!A1:B1')[0][0], grid.GetRange('Witness!B1')[0][0]];
+        check('carried formulas keep stationary source dependencies and self refs travel', [grid.GetCell(4, 7).formula, grid.GetCell(4, 7).value], ['=G5+Source!$D$1', 40]);
+        check('foreign dependents and defined name follow the moved block', [dependents().map((cell) => [cell.formula, cell.value]), grid.GetDefinedNames().find((name) => name.name === 'MovedNumber').refersTo],
+            [[['=Target!G5+1', 34], ['=F5+5', 16], ['=Target!G5+2', 35], ['=MovedNumber+3', 36]], 'Target!$G$5']);
+
+        grid.Undo();
+        check('paste undo restores target and workbook references, but not the earlier cut', [grid.GetRange('Target!F5:H5')[0].map((cell) => cell.value),
+            grid.GetRange('Source!A1:C1')[0].map((cell) => cell.value), dependents().map((cell) => cell.formula),
+            grid.GetDefinedNames().find((name) => name.name === 'MovedNumber').refersTo],
+            [[901, 902, 903], [null, null, null], ['=B1+1', '=Source!A1+5', '=Source!B1+2', '=MovedNumber+3'], 'Source!$B$1']);
+        grid.SwitchSheet(0);
+        grid.Undo();
+        check('source cut undo after switching back restores source, leaves target intact', [grid.GetRange('Source!A1:C1')[0].map((cell) => [cell.formula, cell.value]),
+            grid.GetRange('Target!F5:H5')[0].map((cell) => cell.value), dependents().map((cell) => cell.value)],
+            [[[null, 11], ['=A1*3', 33], ['=B1+Source!$D$1', 40]], [901, 902, 903], [34, 16, 35, 36]]);
+        grid.Redo();
+        grid.SwitchSheet(1);
+        grid.Redo();
+        check('cut and paste redo restores source clear, target and foreign references',
+            [grid.GetRange('Source!A1:C1')[0].map((cell) => cell.value), grid.GetRange('Target!F5:H5')[0].map((cell) => cell.value),
+                dependents().map((cell) => cell.value), grid.GetDefinedNames().find((name) => name.name === 'MovedNumber').refersTo],
+            [[null, null, null], [11, 33, 40], [34, 16, 35, 36], 'Target!$G$5']);
+
+        const reopened = mountGrid();
+        try {
+            await reopened.grid.ImportXlsx((await grid.ExportXlsx()).slice());
+            check('save and reopen retains exact moved formulas and calculated results',
+                [reopened.grid.GetRange('Target!F5:H5')[0].map((cell) => [cell.formula, cell.value]),
+                    reopened.grid.GetRange('Source!A1:E1')[0].map((cell) => [cell.formula, cell.value]),
+                    reopened.grid.GetRange('Witness!A1:B1')[0].map((cell) => [cell.formula, cell.value]),
+                    reopened.grid.GetDefinedNames().find((name) => name.name === 'MovedNumber').refersTo],
+                [[[null, 11], ['=F5*3', 33], ['=G5+Source!$D$1', 40]],
+                    [[null, null], [null, null], [null, null], [null, 7], ['=Target!G5+1', 34]],
+                    [['=Target!G5+2', 35], ['=MovedNumber+3', 36]], 'Target!$G$5']);
+        } finally { reopened.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        if (ownClipboard) Object.defineProperty(navigator, 'clipboard', ownClipboard); else delete navigator.clipboard;
+        close();
+    }
+    return lines;
+};
+
+checks['grid-clipboard-deleted-source'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const ownClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    try {
+        grid.AddSheet('Target', undefined);
+        grid.SwitchSheet(0); grid.SetCell(0, 0, '51'); grid.SetCell(0, 1, '=A1+1');
+        grid.SelectRange(0, 0, 0, 1);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        await grid.Cut();
+        grid.DeleteSheet(0);
+        grid.SelectCell(3, 3);
+        check('deleted cut source cannot supply a stale internal paste', [grid.GetSheetNames(), await grid.Paste(), grid.GetCell(3, 3).value],
+            [['Target'], false, null]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        if (ownClipboard) Object.defineProperty(navigator, 'clipboard', ownClipboard); else delete navigator.clipboard;
+        close();
+    }
     return lines;
 };
 

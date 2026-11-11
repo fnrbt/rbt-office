@@ -196,12 +196,12 @@ const blob = await api.word.write([
 
 #### Level 2: EditorFormat API
 ```javascript
-const blob = await api.word.writeFromEditor([
+const blob = await api.word.writeFromEditorPackage({ Paragraphs: [
     {
         Runs: [{ Text: "Bold", Bold: true, FontSize: 14, ... }],
         Alignment: "center"
     }
-]);
+] });
 ```
 
 #### Level 3: Builder API
@@ -464,7 +464,7 @@ const paragraphs = [
     }
 ];
 
-const blob = await apiInstance.word.writeFromEditor(paragraphs);
+const blob = await apiInstance.word.writeFromEditorPackage({ Paragraphs: paragraphs });
 
 // Save in Node.js
 const buffer = Buffer.from(await blob.arrayBuffer());

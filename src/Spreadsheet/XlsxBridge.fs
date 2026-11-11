@@ -2347,6 +2347,92 @@ module Export =
     /// The elements of a chart part (chart, chartEx) that hold a formula.
     let private chartFormulaElements = [ "c:f"; "cx:f"; "c15:f"; "c16r3:f" ]
 
+    /// Rewrite original chart formulas against the current owners of the file's
+    /// sheets. A copied drawing can substitute its model for its source sheet.
+    let private chartXmlForWorkbookWithCopy (source: XlsxSource) (models: SpreadsheetModel array) (names: string array) (copy: (int * int) option) : (string -> string) =
+        let sheets = List.toArray source.Workbook.Sheets
+        let owners : (int * SpreadsheetModel) option array = Array.create sheets.Length None
+        for index in 0 .. models.Length - 1 do
+            match models.[index].SourceSheet with
+            | Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < sheets.Length
+                               && origin.Sheet < source.Baseline.Length && owners.[origin.Sheet].IsNone ->
+                owners.[origin.Sheet] <- Some (index, models.[index])
+            | _ -> ()
+        match copy with
+        | Some (origin, index) when origin >= 0 && origin < sheets.Length && origin < source.Baseline.Length && index >= 0 && index < models.Length ->
+            owners.[origin] <- Some (index, models.[index])
+        | _ -> ()
+        let renames = Collections.Generic.Dictionary<string, string>()
+        let deleted = ResizeArray<string>()
+        let moves = ResizeArray<string * StructureEdit list>()
+        for origin in 0 .. sheets.Length - 1 do
+            let oldName = sheets.[origin].Name
+            match owners.[origin] with
+            | None -> deleted.Add oldName
+            | Some (index, model) ->
+                let name = if index < names.Length then names.[index] else sprintf "Sheet%d" (index + 1)
+                if oldName <> name then renames.[oldName.ToUpperInvariant()] <- name
+                let baseline = source.Baseline.[origin]
+                let delta = model.StructureVersion - baseline.StructureVersion
+                if delta > 0 && model.StructureLog.Length >= delta
+                   && List.skip delta model.StructureLog = baseline.StructureLog then
+                    let edits =
+                        model.StructureLog
+                        |> List.take delta
+                        |> List.rev
+                        |> List.map (fun move ->
+                            match move.OnRows, move.Insert with
+                            | true, true -> InsertRows (move.At, move.Count)
+                            | true, false -> DeleteRows (move.At, move.Count)
+                            | false, true -> InsertCols (move.At, move.Count)
+                            | false, false -> DeleteCols (move.At, move.Count))
+                    moves.Add (oldName, edits)
+        let tabs = sheets |> Array.map (fun sheet -> sheet.Name) |> Array.toList
+        let deleted = List.ofSeq deleted
+        fun xml ->
+            let moved =
+                if moves.Count = 0 then xml
+                else
+                    mapElementTexts chartFormulaElements (fun formula ->
+                        let adjusted =
+                            moves
+                            |> Seq.fold (fun text (name, edits) ->
+                                let targets = function
+                                    | Some sheet -> String.Equals(sheet, name, StringComparison.OrdinalIgnoreCase)
+                                    | None -> false
+                                edits |> List.fold (fun text edit -> adjustFormulaForEdit edit targets text) text) ("=" + formula)
+                        if adjusted.StartsWith "=" then adjusted.Substring 1 else adjusted) xml
+            keptFormulasFollow chartFormulaElements renames deleted tabs moved
+
+    /// Rewriter for original chart parts in the current workbook state.
+    let chartXmlForWorkbook (source: XlsxSource) (models: SpreadsheetModel array) (names: string array) : (string -> string) =
+        chartXmlForWorkbookWithCopy source models names None
+
+    /// Cached points describe the old reference, not the edited cells. Drop
+    /// only the cache belonging to a changed formula (or changed defined name).
+    let private chartCachesFollow (changedNames: Collections.Generic.HashSet<string>) (rewrite: string -> string) (xml: string) : string =
+        let containers = Text.RegularExpressions.Regex("<(?:c:(?:numRef|strRef|multiLvlStrRef)|cx:(?:numDim|strDim|txData))(?=[\\s>])[^>]*>[\\s\\S]*?</(?:c:(?:numRef|strRef|multiLvlStrRef)|cx:(?:numDim|strDim|txData))\\s*>")
+        let caches = "<c:(?:numCache|strCache|multiLvlStrCache)(?=[\\s/>])(?:[^>]*/>|[^>]*>[\\s\\S]*?</c:(?:numCache|strCache|multiLvlStrCache)\\s*>)|<cx:(?:lvl|v)(?=[\\s/>])(?:[^>]*/>|[^>]*>[\\s\\S]*?</cx:(?:lvl|v)\\s*>)"
+        let result = Text.StringBuilder()
+        let mutable at = 0
+        for found in containers.Matches xml do
+            result.Append(rewrite (xml.Substring(at, found.Index - at))) |> ignore
+            let before = found.Value
+            let after = rewrite before
+            let mutable changedName = false
+            if changedNames.Count > 0 then
+                mapElementTexts chartFormulaElements (fun formula ->
+                    let name = formula.Trim().TrimStart('=').ToUpperInvariant()
+                    if changedNames.Contains name then changedName <- true
+                    formula) before |> ignore
+            let after =
+                if before <> after || changedName then Text.RegularExpressions.Regex.Replace(after, caches, "")
+                else after
+            result.Append(after) |> ignore
+            at <- found.Index + found.Length
+        result.Append(rewrite (xml.Substring at)) |> ignore
+        result.ToString()
+
     /// The editor's workbook in the writer's shape (see the module comment).
     /// Whether a sheet is what it was when it was opened, in everything a
     /// save writes into its part: its cells and their texts, sizes, merges,
@@ -2552,6 +2638,14 @@ module Export =
                 if readerSheet.Name <> nameOf index then renames.[readerSheet.Name.ToUpperInvariant()] <- nameOf index
             | None -> ()
         let deletedTabs = fileTabs |> List.filter (fun name -> not (present.Contains (name.ToUpperInvariant())))
+        let changedChartNames = Collections.Generic.HashSet<string>()
+        match input.Source with
+        | Some source ->
+            for KeyValue ((scope, name), value) in source.BaselineNames do
+                if Map.tryFind (scope, name) input.DefinedNames <> Some value then changedChartNames.Add(name.ToUpperInvariant()) |> ignore
+            for KeyValue ((scope, name), value) in input.DefinedNames do
+                if Map.tryFind (scope, name) source.BaselineNames <> Some value then changedChartNames.Add(name.ToUpperInvariant()) |> ignore
+        | None -> ()
         let withKeptFormulas (sheet: XlsxWriter.XlsxSheetOut) : XlsxWriter.XlsxSheetOut =
             if (renames.Count = 0 && deletedTabs.IsEmpty) || sheet.Extras.KeptCellExtensions.IsEmpty then sheet
             else
@@ -2577,8 +2671,7 @@ module Export =
                 let xmlOfObjects = model.Drawings |> List.choose (fun drawing -> match drawing.Content with KeptObject (_, xml) -> Some xml | Picture _ -> None)
                 let refersTo (relId: string) = xmlOfObjects |> List.exists (fun xml -> xml.IndexOf ("\"" + relId + "\"") >= 0)
                 let partOf (path: string) = source.Workbook.Preserved.Parts |> List.tryFind (fun (kept, _) -> kept = path) |> Option.map snd
-                let ownRenames = Collections.Generic.Dictionary<string, string>(renames)
-                ownRenames.[readerSheet.Name.ToUpperInvariant()] <- nameOf index
+                let rewriteChart = chartXmlForWorkbookWithCopy source input.Sheets input.Names (Some (origin.Sheet, index))
                 let relationships =
                     readerSheet.Extras.DrawingRelationships
                     |> List.filter (fun (relId, _, _, _) -> refersTo relId)
@@ -2597,7 +2690,8 @@ module Export =
                             let copyPath = sprintf "%s%d.xml" prefix number
                             takenPaths.Add copyPath |> ignore
                             let text = Text.Encoding.UTF8.GetString data
-                            clonedParts.Add ((copyPath, Text.Encoding.UTF8.GetBytes (keptFormulasFollow chartFormulaElements ownRenames deletedTabs fileTabs text)))
+                            let rewritten = chartCachesFollow changedChartNames rewriteChart text
+                            clonedParts.Add ((copyPath, if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten))
                             let relsOf (part: string) = let cut = part.LastIndexOf '/' in part.Substring(0, cut) + "/_rels/" + part.Substring(cut + 1) + ".rels"
                             (match partOf (relsOf path) with
                              | Some rels ->
@@ -2777,10 +2871,21 @@ module Export =
                     if isDeferredSheet model then withKeptFormulas { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
                     else
                         let written = withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
-                        match patchOf outSheet before model with
-                        | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
-                        | Some patch -> withSource outSheet before model { written with Extras = { written.Extras with Patch = Some patch } }
-                        | None -> withSource outSheet before model written
+                        let written =
+                            match patchOf outSheet before model with
+                            | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
+                            | Some patch -> withSource outSheet before model { written with Extras = { written.Extras with Patch = Some patch } }
+                            | None -> withSource outSheet before model written
+                        // A pivot whose entire location was deleted has no table
+                        // left to attach; retaining its relationship resurrects it
+                        // on the next import.
+                        let kept = model.KeptRanges |> List.map (fun range -> range.Key) |> Set.ofList
+                        let relationships =
+                            written.Extras.KeptRelationships
+                            |> List.filter (fun (_, kind, target, external) ->
+                                external || not (kind.EndsWith "/pivotTable") || Set.contains (target.TrimStart '/') kept)
+                        if relationships.Length = written.Extras.KeptRelationships.Length then written
+                        else { written with Extras = { written.Extras with KeptRelationships = relationships } }
                 | None ->
                     let written = modelSheet cache dxfIndex name (stateOf index model) (filterRowsAsHidden model)
                     let written =
@@ -2801,9 +2906,36 @@ module Export =
           Preserved =
             match input.Source with
             | Some source ->
-                // A pivot table whose cells moved (rows / columns inserted or
-                // deleted before it) is written at its new place: only the
-                // range of its <location> changes, the part is otherwise kept.
+                // Match each preserved pivot part to its imported layout and
+                // its current location. The location alone is not sufficient
+                // after inserting/deleting within rowItems or colItems.
+                let pivotGeometry =
+                    [ for index in 0 .. input.Sheets.Length - 1 do
+                        match sourceOf index with
+                        | Some (_, _, before) ->
+                            let now = input.Sheets.[index]
+                            for was in before.KeptRanges do
+                                if was.Key.StartsWith("xl/pivotTables/", StringComparison.OrdinalIgnoreCase) then
+                                    match before.Pivots |> List.tryFind (fun pivot ->
+                                        pivot.Top = was.Range.From.Row && pivot.Left = was.Range.From.Col
+                                        && pivot.Bottom = was.Range.To.Row && pivot.Right = was.Range.To.Col),
+                                          now.KeptRanges |> List.tryFind (fun kept -> kept.Key = was.Key) with
+                                    | Some oldPivot, Some kept ->
+                                        match now.Pivots |> List.tryFind (fun pivot ->
+                                            pivot.Top = kept.Range.From.Row && pivot.Left = kept.Range.From.Col
+                                            && pivot.Bottom = kept.Range.To.Row && pivot.Right = kept.Range.To.Col) with
+                                        | Some pivot when pivot <> oldPivot ->
+                                            let delta = now.StructureVersion - before.StructureVersion
+                                            let moves =
+                                                if delta >= 0 && now.StructureLog.Length >= delta
+                                                   && List.skip delta now.StructureLog = before.StructureLog then
+                                                    now.StructureLog |> List.take delta |> List.rev
+                                                else []
+                                            yield was.Key, (oldPivot, pivot, moves)
+                                        | _ -> ()
+                                    | _ -> ()
+                        | _ -> () ]
+                    |> Map.ofList
                 let moved =
                     [ for index in 0 .. input.Sheets.Length - 1 do
                         match sourceOf index with
@@ -2841,9 +2973,17 @@ module Export =
                             | None -> false))
                 let preserved =
                     if chainStands then source.Workbook.Preserved else { source.Workbook.Preserved with CalcChain = None }
+                let chartStructureChanged =
+                    input.Sheets
+                    |> Array.mapi (fun index model ->
+                        match sourceOf index with
+                        | Some (_, _, baseline) -> model.StructureVersion <> baseline.StructureVersion
+                        | None -> false)
+                    |> Array.exists id
+                let rewriteChart = chartXmlForWorkbook source input.Sheets input.Names
                 // What the kept parts say of sheets that were renamed or deleted; the parts of copied charts.
                 let preserved =
-                    if renames.Count = 0 && deletedTabs.IsEmpty && clonedParts.Count = 0 then preserved
+                    if renames.Count = 0 && deletedTabs.IsEmpty && clonedParts.Count = 0 && not chartStructureChanged && changedChartNames.Count = 0 then preserved
                     else
                         let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
                         // The `sheetId`s of the deleted sheets.
@@ -2876,10 +3016,9 @@ module Export =
                                                     found.Value.Replace(name.Value, "<c:name>" + xmlTextEncoded (full.Substring(0, close + 1) + named + full.Substring bang) + "</c:name>")
                                                 | false, _ -> found.Value))
                         let follows (path: string) (data: byte[]) : byte[] =
-                            if renames.Count = 0 && deletedTabs.IsEmpty then data
-                            elif isChartPart path then
+                            if isChartPart path then
                                 let text = Text.Encoding.UTF8.GetString data
-                                let rewritten = keptFormulasFollow chartFormulaElements renames deletedTabs fileTabs text |> pivotSourceFollows
+                                let rewritten = chartCachesFollow changedChartNames rewriteChart text |> pivotSourceFollows
                                 if rewritten = text then data else Text.Encoding.UTF8.GetBytes rewritten
                             elif (path.StartsWith "xl/slicerCaches/" || path.StartsWith "xl/timelineCaches/") && path.EndsWith ".xml" && not deletedIds.IsEmpty then
                                 // A slicer or timeline filters pivot tables it names by sheet (`tabId`) and
@@ -2930,22 +3069,100 @@ module Export =
                                 not (Set.contains path sheetPaths) && not (Set.contains path known)
                                 && Some path <> preserved.StylesPart && Some path <> preserved.SharedStringsPart)
                         if others.IsEmpty then preserved else { preserved with Parts = preserved.Parts @ others }
-                if moved.IsEmpty then preserved
+                if moved.IsEmpty && pivotGeometry.IsEmpty then preserved
                 else
                     let cachePaths = preserved.PivotCacheSources |> List.map (fun (path, _, _) -> path) |> Set.ofList
+                    let withPivotGeometry (before: PivotLayout) (pivot: PivotLayout) (moves: StructureMove list) (xml: string) =
+                        // Patch the parsed source spans, rather than reconstructing its
+                        // <i> children: Excel puts data-field indexes and extensions on
+                        // individual items that PivotLine deliberately does not model.
+                        match XmlPatch.readPart xml with
+                        | None -> xml
+                        | Some part ->
+                            let nameOf node =
+                                match node with XmlDsl.Element (name, _, _, _) -> name | _ -> ""
+                            let moveIndex onRows index =
+                                moves
+                                |> List.fold (fun position move ->
+                                    match position with
+                                    | None -> None
+                                    | Some old when move.OnRows <> onRows -> Some old
+                                    | Some old when move.Insert -> Some (if old >= move.At then old + move.Count else old)
+                                    | Some old when old >= move.At + move.Count -> Some (old - move.Count)
+                                    | Some old when old >= move.At -> None
+                                    | Some old -> Some old) (Some index)
+                            let targets = ResizeArray<XmlDsl.XmlNode * XmlPatch.ElementEdit list>()
+                            match XmlPatch.child "location" part.Node with
+                            | Some location ->
+                                let changed =
+                                    [ if before.FirstHeaderRow <> pivot.FirstHeaderRow then
+                                          XmlPatch.SetAttribute ("firstHeaderRow", string pivot.FirstHeaderRow)
+                                      if before.FirstDataRow <> pivot.FirstDataRow then
+                                          XmlPatch.SetAttribute ("firstDataRow", string pivot.FirstDataRow)
+                                      if before.FirstDataCol <> pivot.FirstDataCol then
+                                          XmlPatch.SetAttribute ("firstDataCol", string pivot.FirstDataCol) ]
+                                if not changed.IsEmpty then targets.Add((location, changed))
+                            | None -> ()
+                            let replaceLines onRows elementName (original: PivotLine list) (lines: PivotLine list) =
+                                if original <> lines then
+                                    let oldLines = List.toArray original
+                                    match XmlPatch.child elementName part.Node with
+                                    | None -> ()
+                                    | Some parent ->
+                                        let items =
+                                            match parent with
+                                            | XmlDsl.Element (_, _, kids, _) ->
+                                                kids |> List.filter (fun kid -> XmlDsl.Ns.stripNs (nameOf kid) = "i") |> List.toArray
+                                            | _ -> [||]
+                                        let tag =
+                                            if items.Length > 0 then nameOf items.[0]
+                                            else
+                                                let parentName = nameOf parent
+                                                let cut = parentName.IndexOf ':'
+                                                (if cut >= 0 then parentName.Substring(0, cut + 1) else "") + "i"
+                                        let oldStart = (if onRows then before.Top + before.FirstDataRow else before.Left + before.FirstDataCol)
+                                        let newStart = (if onRows then pivot.Top + pivot.FirstDataRow else pivot.Left + pivot.FirstDataCol)
+                                        let originalAt =
+                                            original
+                                            |> List.mapi (fun index _ -> moveIndex onRows (oldStart + index) |> Option.map (fun at -> at, index))
+                                            |> List.choose id
+                                            |> Map.ofList
+                                        let xmls =
+                                            lines
+                                            |> List.mapi (fun index line ->
+                                                match Map.tryFind (newStart + index) originalAt with
+                                                | Some oldIndex when oldIndex < items.Length ->
+                                                    let oldLine = oldLines.[oldIndex]
+                                                    let edits =
+                                                        [ if oldLine.Kind <> line.Kind then yield XmlPatch.SetAttribute ("t", line.Kind)
+                                                          if oldLine.Repeat <> line.Repeat then yield XmlPatch.SetAttribute ("r", string line.Repeat) ]
+                                                    if edits.IsEmpty then XmlPatch.bytesOf part.Text items.[oldIndex]
+                                                    else XmlPatch.apply (fun _ -> []) (XmlPatch.at part items.[oldIndex]) edits
+                                                | _ -> sprintf "<%s t=\"blank\"/>" tag)
+                                        targets.Add((parent, [ XmlPatch.SetAttribute ("count", string lines.Length)
+                                                               XmlPatch.SetChildren (tag, xmls) ]))
+                            replaceLines true "rowItems" before.RowLines pivot.RowLines
+                            replaceLines false "colItems" before.ColumnLines pivot.ColumnLines
+                            if targets.Count = 0 then xml
+                            else XmlPatch.applyPart (fun _ -> []) part (XmlPatch.editsAt part.Node (List.ofSeq targets))
                     { preserved with
                         Parts =
                             preserved.Parts
                             |> List.map (fun (path, data) ->
-                                match Map.tryFind path moved with
-                                | Some range ->
+                                match Map.tryFind path moved, Map.tryFind path pivotGeometry with
+                                | None, None -> path, data
+                                | range, geometry ->
                                     let text = Text.Encoding.UTF8.GetString data
-                                    // A pivot cache's source range, or a pivot table's location.
                                     let rewritten =
-                                        if Set.contains path cachePaths then XlsxReader.withPivotCacheSource range text
-                                        else XlsxReader.withPivotLocation range text
-                                    path, Text.Encoding.UTF8.GetBytes rewritten
-                                | None -> path, data) }
+                                        match range with
+                                        | Some value when Set.contains path cachePaths -> XlsxReader.withPivotCacheSource value text
+                                        | Some value -> XlsxReader.withPivotLocation value text
+                                        | None -> text
+                                    let rewritten =
+                                        match geometry with
+                                        | Some (before, pivot, moves) -> withPivotGeometry before pivot moves rewritten
+                                        | None -> rewritten
+                                    path, Text.Encoding.UTF8.GetBytes rewritten) }
             | None ->
                 // (A workbook that is not a file's is in the date system its sheets say.)
                 if input.Sheets |> Array.exists (fun sheet -> sheet.Date1904) then { XlsxReader.emptyWorkbookPreservation with Date1904 = true }

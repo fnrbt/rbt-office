@@ -234,7 +234,7 @@ type InputHandler = {
     /// Moves the input proxy to the caret, so the IME candidate window opens
     /// there (set by `create`).
     mutable SyncInputProxy: Doc.Document -> unit
-    /// Removes listeners registered outside the canvas (set by `create`).
+    /// Removes all listeners and invalidates pending callbacks (set by `create`).
     mutable Dispose: unit -> unit
     /// The column Up / Down / PageUp / PageDown keep to (layout x of the
     /// caret when the run of vertical moves started).
@@ -263,10 +263,9 @@ type InputHandler = {
     /// Put plain text in at the caret, or over the selection, as Ctrl+V does
     /// (its lines are paragraphs; one undo step). Set when the handler is made.
     mutable PasteText: string -> unit
-    /// Paste what the clipboard has, its text and its HTML (either may be
-    /// empty), as Ctrl+V does: what the last Copy kept, with its formatting,
-    /// while the text is its text; else the HTML with its formatting; else the
-    /// text. One undo step. Set when the handler is made.
+    /// Paste clipboard text and HTML. Only a marked copy from this handler
+    /// reuses its original rich clip; other HTML is parsed independently, and
+    /// plain text is always pasted as plain text. One undo step.
     mutable PasteClipboard: string -> string -> unit
     /// Copy (true: Cut) the selection, as Ctrl+C / Ctrl+X do: kept for Paste;
     /// its text and its HTML for the system clipboard, None with nothing
@@ -308,16 +307,13 @@ let private selectProxyText (_element: HTMLElement) : unit = jsNative
 [<Emit("setTimeout($0, 0)")>]
 let private soon (_action: unit -> unit) : unit = jsNative
 
-// ---- the clipboard -----------------------------------------------------------
-// Copy and Cut put the selection's text and its HTML on the system clipboard
-// and keep what they copied as a clip (Doc.copySelection); Paste puts the
-// clip back with its formatting while the clipboard's text is still the
-// clip's, else the clipboard's HTML (from Word, a browser, a mail), else its
-// text. The keys work through the browser's own copy, cut and paste events
-// on the input proxy: no permission is asked, and the HTML reaches us.
+// Internal rich paste requires provenance in clipboard data, not equality
+// with text left by an earlier copy (possibly in another editor).
+[<Emit("(globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36))")>]
+let private clipboardId () : string = jsNative
 
-/// What the last Copy or Cut of an editor on the page kept.
-let mutable private lastClip : Doc.Clip option = None
+[<Emit("console.error($0, $1)")>]
+let private clipboardError (_message: string) (_error: obj) : unit = jsNative
 
 [<Emit("(function (h) { try { return new DOMParser().parseFromString(h, 'text/html').body; } catch (e) { return null; } })($0)")>]
 let private parseHtmlBody (_html: string) : obj = jsNative
@@ -1016,6 +1012,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         OnShapeSelection = ignore
         Typing = None
     }
+    let mutable disposed = false
+    let listeners = ResizeArray<HTMLElement * string * (Event -> unit)>()
+    let listen (element: HTMLElement) (eventName: string) (callback: Event -> unit) =
+        let guarded event = if not disposed then callback event
+        element.addEventListener(eventName, guarded)
+        listeners.Add(element, eventName, guarded)
+    let mutable richClip : (string * Doc.Clip) option = None
+    let mutable skipParagraphInput = false
+    let mutable suppressPhysicalParagraphBeforeInput = false
 
     // ---- caret movement over the layout that is on screen -------------------
     // Lines are visual lines: a paragraph wraps into several, and Up / Down /
@@ -1351,7 +1356,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         | _ -> doc'
 
     let pasteText (text: string) =
-        if not (isNull text) && text <> "" then
+        if not disposed && not (isNull text) && text <> "" then
             let beforeDoc = handler.Document
             let doc' = pastedText text beforeDoc
             if not (documentsEqualForChange doc' beforeDoc) then
@@ -1376,35 +1381,44 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             handler.SyncInputProxy doc'
             handler.OnChange doc'
 
-    /// Copy (cut: and Cut): the selection kept as the clip to paste, and its
-    /// text and HTML for the system clipboard. None with nothing selected.
-    let copyToClipboard (cut: bool) : (string * string) option =
+    /// Each copy has its own marker in HTML. Text equality alone never gives
+    /// an unrelated clipboard transfer access to this handler's rich clip.
+    let captureCopy () =
         match Doc.copySelection handler.Document with
         | None -> None
         | Some clip ->
-            lastClip <- Some clip
-            if cut then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
-            Some (clip.Text, Doc.clipToHtml clip)
+            let marker = sprintf "<!--rbt-word-clip:%s-->" (clipboardId ())
+            let html = Doc.clipToHtml clip + marker
+            richClip <- Some (html, clip)
+            Some (clip.Text, html)
 
-    /// Paste the clipboard's `text` and `html` (either may be empty): the
-    /// clip Copy kept while the text is still its text, with its formatting;
-    /// else the HTML's text with its formatting; else the text (pasteText).
-    /// With changes tracked: the text.
+    /// The host-owned cut API returns its payload synchronously. The browser's
+    /// clipboard event and asynchronous canvas shortcut use captureCopy instead
+    /// so deletion occurs only after their respective transfers succeed.
+    let copyToClipboard (cut: bool) : (string * string) option =
+        if disposed then None
+        else
+            let copied = captureCopy ()
+            if cut && copied.IsSome then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+            copied
+
     let pasteClipboard (text: string) (html: string) =
-        let text = if isNull text then "" else text
-        let normalize (value: string) = value.Replace("\r\n", "\n").Replace("\r", "\n")
-        let clip =
-            if handler.TrackChanges then None
-            else
-                match lastClip with
-                | Some clip when text <> "" && normalize text = normalize clip.Text -> Some clip
-                | _ -> htmlClip html
-        match clip with
-        | Some clip ->
-            // (A text box holds paragraphs only: a table's rows are pasted as paragraphs.)
-            let clip = match handler.Story with Some session when session.Box.IsSome -> Doc.clipWithoutTables clip | _ -> clip
-            commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
-        | None -> pasteText text
+        if not disposed then
+            let text = if isNull text then "" else text
+            let html = if isNull html then "" else html
+            let normalize (value: string) = value.Replace("\r\n", "\n").Replace("\r", "\n")
+            let clip =
+                if handler.TrackChanges then None
+                else
+                    match richClip with
+                    | Some (knownHtml, clip) when html = knownHtml && normalize text = normalize clip.Text -> Some clip
+                    | _ -> htmlClip html
+            match clip with
+            | Some clip ->
+                // A text box holds paragraphs only: a table's rows are pasted as paragraphs.
+                let clip = match handler.Story with Some session when session.Box.IsSome -> Doc.clipWithoutTables clip | _ -> clip
+                commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
+            | None -> pasteText text
     handler.PasteClipboard <- pasteClipboard
     handler.CopyToClipboard <- copyToClipboard
 
@@ -1454,6 +1468,8 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             handler.OnChange newDoc
 
     // Make canvas focusable
+    let originalTabIndex = canvas.tabIndex
+    let originalCursor : string = canvas?style?cursor
     canvas.tabIndex <- 0
 
     /// The shape the keys act on - Delete, the arrows: the one that is
@@ -1475,6 +1491,26 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let afterDoc = characterFormatted handler command
         if documentsEqualForChange afterDoc beforeDoc then None
         else Some (Cmd.execute (FormatTextCommand(beforeDoc, afterDoc, description) :> ICommand) beforeDoc handler.History)
+    /// Physical Enter and virtual insertParagraph resolve the same edit,
+    /// including list exit, tables and tracked paragraph marks.
+    let paragraphStep () =
+        let beforeDoc = handler.Document
+        match beforeDoc.Selection with
+        | Some selection ->
+            match Doc.findParagraph beforeDoc selection.Focus.BlockId with
+            | Some para ->
+                let emptyListItem = TextBuffer.length para.Buffer = 0 && para.Metadata.ListStyle <> NoList
+                let afterDoc = if emptyListItem then Doc.decreaseIndent beforeDoc else splitBlockForMode beforeDoc
+                if documentsEqualForChange afterDoc beforeDoc then beforeDoc, None
+                else
+                    let command : ICommand =
+                        if emptyListItem then DeleteTextCommand(beforeDoc, afterDoc, "Edit") :> ICommand
+                        else SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
+                    let doc', history = Cmd.execute command beforeDoc handler.History
+                    doc', Some history
+            | None -> beforeDoc, None
+        | None -> beforeDoc, None
+
 
     // Handle keyboard input. The listener serves the canvas and the input
     // proxy (which normally has the focus).
@@ -1676,18 +1712,42 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     if text <> "" then
                         setProxyValue element text
                         selectProxyText element
-                        soon (fun () -> if proxyValue element = text then setProxyValue element "")
+                        soon (fun () -> if not disposed && proxyValue element = text then setProxyValue element "")
                 | _ -> ()
             else
                 // (The key reached the canvas itself: through the asynchronous clipboard.)
                 e.preventDefault()
                 if keyEquals 'v' key then
-                    Clipboard.pasteText().``then``(fun text -> pasteClipboard text "") |> ignore
+                    try
+                        Clipboard.pasteText()
+                            .``then``(fun text -> if not disposed then pasteClipboard text "")
+                            .``catch``(fun error -> if not disposed then clipboardError "Word paste failed" (box error))
+                        |> ignore
+                    with error ->
+                        clipboardError "Word paste failed" (box error)
                 else
-                    let copied = copyToClipboard (keyEquals 'x' key)
-                    // (A cut has changed the document already.)
-                    newDoc <- handler.Document
-                    copied |> Option.iter (fun (text, _) -> Clipboard.copyText text |> ignore)
+                    match captureCopy () with
+                    | None -> ()
+                    | Some (text, _) ->
+                        let cut = keyEquals 'x' key
+                        let source = handler.Document
+                        let history = handler.History
+                        let story = handler.Story
+                        try
+                            (Clipboard.copyText text)
+                                .``then``(fun () ->
+                                    if not disposed && cut then
+                                        if sameContent source handler.Document
+                                            && source.Selection = handler.Document.Selection
+                                            && obj.ReferenceEquals(history.Undos, handler.History.Undos)
+                                            && obj.ReferenceEquals(history.Redos, handler.History.Redos)
+                                            && story = handler.Story then
+                                            commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+                                        else clipboardError "Word cut cancelled: selection or document changed while copying" null)
+                                .``catch``(fun error -> if not disposed then clipboardError "Word clipboard write failed" (box error))
+                            |> ignore
+                        with error ->
+                            clipboardError "Word clipboard write failed" (box error)
         | "Backspace" ->
             let beforeDoc = handler.Document
             // (Ctrl+Backspace, Option+Backspace on a Mac: the word before the caret.)
@@ -1817,33 +1877,20 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 useCommand <- true
             e.preventDefault()
         | "Enter" ->
-            // Check if we're on an empty list item - if so, exit list
-            match handler.Document.Selection with
-            | Some sel ->
-                match Doc.findParagraph handler.Document sel.Focus.BlockId with
-                | Some para ->
-                    let isEmpty = TextBuffer.length para.Buffer = 0
-                    let inList = para.Metadata.ListStyle <> NoList
-
-                    if isEmpty && inList then
-                        // Exit list instead of splitting
-                        newDoc <- Doc.decreaseIndent handler.Document
-                        e.preventDefault()
-                    else
-                        // Normal split
-                        let beforeDoc = handler.Document
-                        let afterDoc = splitBlockForMode handler.Document
-                        if not (documentsEqualForChange afterDoc beforeDoc) then
-                            let cmd = SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
-                            let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                            newDoc <- doc'
-                            newHistory <- hist'
-                            useCommand <- true
-                        e.preventDefault()
-                | None ->
-                    e.preventDefault()
-            | None ->
-                e.preventDefault()
+            let doc', history = paragraphStep ()
+            newDoc <- doc'
+            match history with
+            | Some hist' ->
+                newHistory <- hist'
+                useCommand <- true
+            | None -> ()
+            skipParagraphInput <- true
+            suppressPhysicalParagraphBeforeInput <- true
+            soon (fun () ->
+                if not disposed then
+                    skipParagraphInput <- false
+                    suppressPhysicalParagraphBeforeInput <- false)
+            e.preventDefault()
         | key when isSingleCodePoint key && not ke.ctrlKey && not ke.metaKey ->
             // Regular character - use command
             let beforeDoc = handler.Document
@@ -1878,7 +1925,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             handler.SyncInputProxy newDoc
             handler.OnChange newDoc
 
-    canvas.addEventListener("keydown", onKeyDown)
+    listen canvas "keydown" onKeyDown
 
     // ---- text input proxy: IME / dead keys / virtual keyboards ----------------
     // A canvas receives no composition or input events. A hidden textarea next
@@ -1962,21 +2009,32 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             syncInputProxy beforeDoc
 
     let commitInput description afterDoc = commitInputAs None description afterDoc
+    let commitParagraphInput () =
+        let afterDoc, history = paragraphStep ()
+        match history with
+        | Some history ->
+            handler.History <- storyHistory handler handler.History history
+            dropPendingFormat handler afterDoc
+            handler.Document <- afterDoc
+            renderWithHover handler.RenderContext afterDoc handler.HoveredImage
+            syncInputProxy afterDoc
+            handler.OnChange afterDoc
+        | None -> ()
 
-    proxy.addEventListener("keydown", onKeyDown)
+    listen proxy "keydown" onKeyDown
 
-    proxy.addEventListener("compositionstart", fun (_: Event) ->
+    listen proxy "compositionstart" (fun (_: Event) ->
         handler.Composition <- Some { Text = "" }
         syncInputProxy handler.Document)
 
-    proxy.addEventListener("compositionupdate", fun (e: Event) ->
+    listen proxy "compositionupdate" (fun (e: Event) ->
         let text = match eventData e with | null -> "" | data -> data
         match handler.Composition with
         | Some state -> state.Text <- text
         | None -> handler.Composition <- Some { Text = text }
         showComposition text)
 
-    proxy.addEventListener("compositionend", fun (e: Event) ->
+    listen proxy "compositionend" (fun (e: Event) ->
         let text =
             match eventData e with
             | null -> (match handler.Composition with Some state -> state.Text | None -> "")
@@ -1988,7 +2046,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
 
     // Text and deletions that do not come as handled keydowns (virtual
     // keyboards, dictation, the emoji picker, autocorrect).
-    proxy.addEventListener("beforeinput", fun (e: Event) ->
+    listen proxy "beforeinput" (fun (e: Event) ->
         if handler.Composition.IsNone then
             match eventInputType e with
             | "insertText" | "insertReplacementText" ->
@@ -2009,6 +2067,15 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             | "deleteWordForward" ->
                 e.preventDefault()
                 commitInput "Delete" (deleteWordForMode true handler.Document)
+            | "insertParagraph" ->
+                e.preventDefault()
+                setProxyValue proxy ""
+                if suppressPhysicalParagraphBeforeInput then
+                    suppressPhysicalParagraphBeforeInput <- false
+                else
+                    skipParagraphInput <- true
+                    soon (fun () -> if not disposed then skipParagraphInput <- false)
+                    commitParagraphInput ()
             | "insertLineBreak" ->
                 e.preventDefault()
                 commitInput "Typing" (insertTextForMode "\n" handler.Document)
@@ -2019,40 +2086,48 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let onCopy (cut: bool) (e: Event) =
         let data = e?clipboardData
         if not (isNull data) && handler.Composition.IsNone then
-            match copyToClipboard cut with
+            match captureCopy () with
             | Some (text, html) ->
-                data?setData("text/plain", text) |> ignore
-                data?setData("text/html", html) |> ignore
-                e.preventDefault()
+                try
+                    data?setData("text/plain", text) |> ignore
+                    data?setData("text/html", html) |> ignore
+                    e.preventDefault()
+                    if cut then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+                with error ->
+                    clipboardError "Word clipboard transfer failed" (box error)
             | None -> ()
             setProxyValue proxy ""
-    proxy.addEventListener("copy", onCopy false)
-    proxy.addEventListener("cut", onCopy true)
-    proxy.addEventListener("paste", fun (e: Event) ->
+    listen proxy "copy" (onCopy false)
+    listen proxy "cut" (onCopy true)
+    listen proxy "paste" (fun (e: Event) ->
         let data = e?clipboardData
         if not (isNull data) && handler.Composition.IsNone then
             e.preventDefault()
             let read (kind: string) = match unbox<string> (data?getData(kind)) with null -> "" | value -> value
             pasteClipboard (read "text/plain") (read "text/html"))
 
-    proxy.addEventListener("input", fun (_: Event) ->
-        // Whatever still reached the proxy (a paste from the context menu, an
-        // input type not handled above) is taken over as typed text.
+    listen proxy "input" (fun (e: Event) ->
+        // Browser fallback for virtual paragraph input without beforeinput.
+        // A prevented beforeinput does not normally emit input; a synthetic
+        // duplicate must not insert a second paragraph.
         if handler.Composition.IsNone then
             let text = proxyValue proxy
-            if not (System.String.IsNullOrEmpty text) then
-                setProxyValue proxy ""
+            setProxyValue proxy ""
+            if eventInputType e = "insertParagraph" then
+                if not skipParagraphInput then commitParagraphInput ()
+                skipParagraphInput <- false
+            elif not (System.String.IsNullOrEmpty text) then
                 commitInput "Typing" (insertTextForMode text handler.Document))
 
     // The canvas stays focusable (clicks, Tab, hosts calling canvas.focus());
     // focus is handed on to the proxy so that text input reaches it.
-    canvas.addEventListener("focus", fun (_: Event) ->
+    listen canvas "focus" (fun (_: Event) ->
         if proxyAttached then
             syncInputProxy handler.Document
             focusWithoutScroll proxy)
 
     // Handle mouse down - start selection or image resize
-    canvas.addEventListener("mousedown", fun (e: Event) ->
+    listen canvas "mousedown" (fun (e: Event) ->
         let me = e :?> MouseEvent
         let x, y = pointerPosition me
 
@@ -2191,7 +2266,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     )
 
     // Handle mouse move - extend selection, resize image, or update hover
-    canvas.addEventListener("mousemove", fun (e: Event) ->
+    listen canvas "mousemove" (fun (e: Event) ->
         let me = e :?> MouseEvent
         let x, y = pointerPosition me
 
@@ -2325,11 +2400,18 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             handler.ResizingImage <- None
             handler.DraggingImage <- None
 
-    addWindowListener "mouseup" onMouseUp
+    let guardedMouseUp event = if not disposed then onMouseUp event
+    addWindowListener "mouseup" guardedMouseUp
     handler.Dispose <- fun () ->
-        removeWindowListener "mouseup" onMouseUp
-        // The input proxy belongs to the handler: take it out of the page.
+        disposed <- true
+        removeWindowListener "mouseup" guardedMouseUp
+        for element, eventName, listener in listeners do
+            element.removeEventListener(eventName, listener)
+        listeners.Clear()
+        canvas.tabIndex <- originalTabIndex
+        canvas?style?cursor <- originalCursor
         proxyAttached <- false
+        richClip <- None
         handler.Composition <- None
         handler.SyncInputProxy <- ignore
         handler.InputProxy <- None

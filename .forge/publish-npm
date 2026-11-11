@@ -1,32 +1,87 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-: "${FORGE_VERSION:?FORGE_VERSION is required}"
-: "${FORGE_NPM_REGISTRY:?FORGE_NPM_REGISTRY is required}"
-: "${NPM_CONFIG_USERCONFIG:?NPM_CONFIG_USERCONFIG is required}"
+# --prepare DIR is non-publishing. It creates the immutable tarball and the
+# Office oracle inputs. Copy DIR/{word,excel}/docs to a Windows desktop with
+# Word and Excel, run the respective tools/{word,excel}-parity/open-all.vbs
+# against each parent directory, and return their opened.tsv files to DIR.
+# Create DIR/oracle.json as specified by scripts/verify-release-oracle.mjs.
+# Forge's default mode consumes FORGE_RELEASE_BUNDLE after that review.
+mode="${1:---publish}"
+case "$mode" in
+    --prepare) [[ $# == 2 ]] || { echo 'usage: publish-npm --prepare DIR' >&2; exit 2; }; bundle="$2" ;;
+    --publish) [[ $# -le 2 ]] || exit 2; bundle="${2:-${FORGE_RELEASE_BUNDLE:?FORGE_RELEASE_BUNDLE is required}}" ;;
+    *) echo 'usage: publish-npm --prepare DIR | --publish [DIR]' >&2; exit 2 ;;
+esac
+root="$(git rev-parse --show-toplevel)"
+cd "$root"
+root="$(pwd -P)"
+bundle="$(realpath -m -- "$bundle")"
+case "$bundle/" in
+    "$root/"*) echo 'release bundle must be outside the checkout' >&2; exit 1 ;;
+esac
+[[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo 'release requires a clean checkout' >&2; exit 1; }
+commit="$(git rev-parse HEAD)"
+version="$(node -p "require('./package.json').version")"
+[[ -z "${FORGE_VERSION:-}" || "$version" == "$FORGE_VERSION" ]] || { echo 'Forge version does not match package.json' >&2; exit 1; }
+if [[ "$mode" == --publish ]]; then
+    : "${FORGE_VERSION:?FORGE_VERSION is required}"
+    : "${FORGE_NPM_REGISTRY:?FORGE_NPM_REGISTRY is required}"
+    : "${NPM_CONFIG_USERCONFIG:?NPM_CONFIG_USERCONFIG is required}"
+    [[ -d "$bundle" ]] || { echo 'release bundle not found' >&2; exit 1; }
+    bundle="$(cd "$bundle" && pwd)"
+    [[ "$(cat "$bundle/commit")" == "$commit" ]] || { echo 'release bundle commit mismatch' >&2; exit 1; }
+    [[ "$(cat "$bundle/version")" == "$version" ]] || { echo 'release bundle version mismatch' >&2; exit 1; }
+    (cd "$bundle" && sha256sum --check SHA256SUMS)
+    node scripts/verify-release-oracle.mjs "$bundle"
+else
+    [[ ! -e "$bundle" ]] || { echo 'prepare requires a new bundle directory' >&2; exit 1; }
+    mkdir -p "$bundle/word/docs" "$bundle/excel/docs"
+    bundle="$(cd "$bundle" && pwd)"
+fi
 
-actual_version="$(node -p "require('./package.json').version")"
-[[ "$actual_version" == "$FORGE_VERSION" ]] || {
-    printf 'package version %s does not match Forge version %s\n' "$actual_version" "$FORGE_VERSION" >&2
-    exit 1
-}
-
-# The SDK's own checks of its installation (workloads, first run) are not this build's: in the sandbox they
-# failed the v0.1.27 action ("An issue was encountered verifying workloads").
-export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=true
-export DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true
-export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true
-export DOTNET_NOLOGO=true
-export DOTNET_CLI_TELEMETRY_OPTOUT=true
-
-# `dotnet tool restore` does not read RestoreConfigFile, so hand it the
-# sandbox's NuGet configuration explicitly.
+export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=true DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true
+export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true DOTNET_NOLOGO=true DOTNET_CLI_TELEMETRY_OPTOUT=true
+export DOTNET_PROCESSOR_COUNT="${DOTNET_PROCESSOR_COUNT:-2}"
+export MSBUILDDISABLENODEREUSE="${MSBUILDDISABLENODEREUSE:-1}"
 dotnet tool restore ${NUGET_CONFIG_FILE:+--configfile "$NUGET_CONFIG_FILE"}
-
 pnpm install --frozen-lockfile
 pnpm run build
-out="$(mktemp -d "${FORGE_ARTIFACT_TMP:-/tmp}/rbt-office-npm.XXXXXX")"
-npm pack --pack-destination "$out"
-tarball="$out/rbt-office-$FORGE_VERSION.tgz"
-[[ -f "$tarball" ]] || { printf 'npm pack did not create %s\n' "$tarball" >&2; exit 1; }
-npm publish "$tarball" --registry "$FORGE_NPM_REGISTRY" --access restricted
+bash tests/run-all.sh --core
+
+work="$(mktemp -d "${FORGE_ARTIFACT_TMP:-/tmp}/rbt-office-gate.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+if [[ "$mode" == --prepare ]]; then
+    npm pack --pack-destination "$bundle"
+fi
+tarball="$bundle/rbt-office-$version.tgz"
+[[ -f "$tarball" ]] || { echo "missing tarball: $tarball" >&2; exit 1; }
+# Install as an actual consumer, and prove its packed modules match this build.
+printf '{"private":true,"type":"module"}\n' > "$work/package.json"
+npm install --prefix "$work" --ignore-scripts --no-audit --no-fund "$tarball"
+consumer="$work/node_modules/@rbt/office"
+diff -qr dist "$consumer/dist"
+node --input-type=module -e 'import { createRequire } from "node:module"; const r = createRequire(process.argv[1] + "/package.json"); for (const p of ["word/Word.js", "spreadsheet/Spreadsheet.js", "office-formats/src/Main.js"]) r.resolve("@rbt/office/" + p);' "$work"
+
+# The existing browser runner owns the pinned Playwright and JSZip versions.
+npm ci --prefix tools/browser-runner --no-audit --no-fund
+./tools/browser-runner/node_modules/.bin/playwright install chromium
+export PLAYWRIGHT="$root/tools/browser-runner/node_modules/playwright/index.mjs"
+export JSZIP_DIR="$work/node_modules/jszip"
+dist="$consumer/dist"
+node tools/word-browser/run.mjs --dist "$dist"
+node tools/xlsx-browser/run.mjs --dist "$dist"
+[[ -z "$(git status --porcelain --untracked-files=all)" && "$(git rev-parse HEAD)" == "$commit" ]] || { echo 'checkout changed during release gate' >&2; exit 1; }
+if [[ "$mode" == --prepare ]]; then
+    node tools/docx-roundtrip/roundtrip.mjs --dist "$dist" --out "$bundle/word/docs"
+    node tools/xlsx-browser/run.mjs --dist "$dist" --keep "$bundle/excel/docs"
+    printf '%s\n' "$commit" > "$bundle/commit"
+    printf '%s\n' "$version" > "$bundle/version"
+    (cd "$bundle" && find word/docs excel/docs -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; sha256sum "rbt-office-$version.tgz" commit version) > "$bundle/SHA256SUMS"
+    echo "Prepared $bundle; external Word/Excel review is required before publication."
+else
+    # Recheck the exact bytes immediately before npm receives them.
+    (cd "$bundle" && sha256sum --check SHA256SUMS)
+    node scripts/verify-release-oracle.mjs "$bundle"
+    npm publish "$tarball" --registry "$FORGE_NPM_REGISTRY" --access restricted
+fi

@@ -341,6 +341,14 @@ type DataRef = {
     Strings: Map<int, string>
     Count: int
     FormatCode: string option
+    /// Its formula differs from the one in the original chart part (including
+    /// a chartEx defined name's original target): the old cache's point count
+    /// must not limit the new live range.
+    FollowedEdit: bool
+    /// A pivot chart's range can include the grand total, which was never a
+    /// point of the chart. Only those charts use the cache's point count to
+    /// bound live data; ordinary charts can grow after save and reopen.
+    LimitToCachedPoints: bool
 }
 
 type LabelSpec = {
@@ -528,18 +536,19 @@ let private dataRefOf (holder: XmlDsl.XmlNode) : DataRef option =
          | level :: _ -> points level)
         (match valOf "ptCount" cache |> Option.bind number with Some stated when int stated > count -> count <- int stated | _ -> ())
         { Formula = formula; Numbers = numbers; Strings = strings; Count = count
-          FormatCode = child "formatCode" cache |> Option.map innerText |> Option.filter (fun code -> code <> "") }
+          FormatCode = child "formatCode" cache |> Option.map innerText |> Option.filter (fun code -> code <> "")
+          FollowedEdit = false; LimitToCachedPoints = false }
     let reference (node: XmlDsl.XmlNode) =
         let formula = child "f" node |> Option.map innerText |> Option.filter (fun text -> text.Trim() <> "")
         match kids node |> List.tryFind (fun item -> (nameOf item).EndsWith "Cache") with
         | Some cache -> cached cache formula
-        | None -> { Formula = formula; Numbers = Map.empty; Strings = Map.empty; Count = 0; FormatCode = None }
+        | None -> { Formula = formula; Numbers = Map.empty; Strings = Map.empty; Count = 0; FormatCode = None; FollowedEdit = false; LimitToCachedPoints = false }
     kids holder
     |> List.tryPick (fun item ->
         match nameOf item with
         | "numRef" | "strRef" | "multiLvlStrRef" -> Some (reference item)
         | "numLit" | "strLit" -> Some (cached item None)
-        | "v" -> Some { Formula = None; Numbers = Map.empty; Strings = Map.ofList [ 0, innerText item ]; Count = 1; FormatCode = None }
+        | "v" -> Some { Formula = None; Numbers = Map.empty; Strings = Map.ofList [ 0, innerText item ]; Count = 1; FormatCode = None; FollowedEdit = false; LimitToCachedPoints = false }
         | _ -> None)
 
 let private labelsOf (theme: ThemeColors) (holder: XmlDsl.XmlNode) : LabelSpec option =
@@ -821,7 +830,8 @@ let private chartExDim (names: string -> string option) (dim: XmlDsl.XmlNode) : 
         (match attr "ptCount" level |> Option.bind number with Some stated -> count <- max count (int stated) | None -> ())
     | None -> ()
     { Formula = formula; Numbers = numbers; Strings = strings; Count = count
-      FormatCode = level |> Option.bind (attr "formatCode") |> Option.filter (fun code -> code <> "") }
+      FormatCode = level |> Option.bind (attr "formatCode") |> Option.filter (fun code -> code <> "")
+      FollowedEdit = false; LimitToCachedPoints = false }
 
 /// A chartEx chart of a kind that is not drawn: a placeholder that says what it is, with its title
 /// (or, where the title is the automatic one, its series' name).
@@ -999,10 +1009,24 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                 if known.IsEmpty || unknown then None
                 else
                     let shape = child "spPr" space
+                    let pivot = (child "pivotSource" space).IsSome
+                    let limit (reference: DataRef option) =
+                        if pivot then reference |> Option.map (fun value -> { value with LimitToCachedPoints = true }) else reference
+                    let plots =
+                        if not pivot then known
+                        else
+                            known |> List.map (fun plot ->
+                                let series =
+                                    plot.Series |> List.map (fun series ->
+                                        { series with
+                                            Name = limit series.Name; Categories = limit series.Categories
+                                            Values = limit series.Values; XValues = limit series.XValues
+                                            BubbleSizes = limit series.BubbleSizes })
+                                { plot with Series = series })
                     Some { Title = child "title" chart |> Option.bind titleText
                            TitleStyle = child "title" chart |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
                            AutoTitleDeleted = isOn (valOf "autoTitleDeleted" chart) false || (child "title" chart).IsNone
-                           Plots = known
+                           Plots = plots
                            Axes = items |> List.choose (axisOf theme)
                            Legend =
                              child "legend" chart
@@ -1033,6 +1057,27 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
 let parseChartWith (names: string -> string option) (theme: ThemeColors) (xml: string) : Chart option =
     if isChartEx xml then (try parseChartEx names theme xml with _ -> None)
     else parseClassicChart theme xml
+/// Mark only references whose formulas changed since the imported chart. Cached point
+/// counts still trim unchanged pivot-chart ranges (which include grand totals), while
+/// inserted points and changed defined-name ranges use the full live range.
+let markChangedReferences (original: Chart) (current: Chart) : Chart =
+    let moved before after =
+        match before, after with
+        | Some oldRef, Some newRef when oldRef.Formula <> newRef.Formula ->
+            Some { newRef with FollowedEdit = true }
+        | _ -> after
+    let series before after =
+        { after with
+            Name = moved before.Name after.Name
+            Categories = moved before.Categories after.Categories
+            Values = moved before.Values after.Values
+            XValues = moved before.XValues after.XValues
+            BubbleSizes = moved before.BubbleSizes after.BubbleSizes }
+    let plot before after =
+        if List.length before.Series <> List.length after.Series then after
+        else { after with Series = List.map2 series before.Series after.Series }
+    if List.length original.Plots <> List.length current.Plots then current
+    else { current with Plots = List.map2 plot original.Plots current.Plots }
 
 /// The chart of a chart part, or None for a part this module does not draw: a chartEx part reads
 /// its data through defined names, which this does not resolve (`parseChartWith` does).
@@ -1337,7 +1382,8 @@ let private cellsOf (data: ChartData) (source: DataRef) : CellData option list o
             let cells = blocks |> List.collect (fun block -> block.Value |> Array.toList |> List.collect Array.toList)
             // (As many points as the file cached: the range a pivot chart names runs on over the
             // pivot table's grand total - 13 cells for 12 points -, which is no point of the chart.)
-            Some (if source.Count > 0 && source.Count < cells.Length then List.truncate source.Count cells else cells))
+            Some (if source.LimitToCachedPoints && not source.FollowedEdit && source.Count > 0 && source.Count < cells.Length
+                  then List.truncate source.Count cells else cells))
 
 let rec private numberOfValue (value: CellValue) : float option =
     match value with
@@ -1346,13 +1392,15 @@ let rec private numberOfValue (value: CellValue) : float option =
     | CellValue.Boolean _ -> None
     | _ -> None
 
-/// The numbers of a series: live when its cells can be read, else the file's cache. A point without a number is None.
+/// The numbers of a series: live when its cells can be read, else the file's
+/// cache only if its reference has not changed since that cache was written.
 let private numbersOf (data: ChartData) (source: DataRef option) : float option [] =
     match source with
     | None -> [||]
     | Some source ->
         match cellsOf data source with
         | Some cells -> cells |> List.map (fun cell -> cell |> Option.bind (fun cell -> numberOfValue cell.Value)) |> List.toArray
+        | None when source.FollowedEdit -> [||]
         | None -> Array.init source.Count (fun index -> Map.tryFind index source.Numbers)
 
 /// The texts of categories (or of a series name).
@@ -1362,6 +1410,7 @@ let private textsOf (data: ChartData) (source: DataRef option) : string [] =
     | Some source ->
         match cellsOf data source with
         | Some cells -> cells |> List.map (fun cell -> match cell with Some cell -> data.Display cell | None -> "") |> List.toArray
+        | None when source.FollowedEdit -> [||]
         | None ->
             Array.init source.Count (fun index ->
                 match Map.tryFind index source.Strings, Map.tryFind index source.Numbers, source.FormatCode with

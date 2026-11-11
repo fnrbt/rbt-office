@@ -205,6 +205,18 @@ check "GETPIVOTDATA: tabular, a line that begins both fields" (gp "=GETPIVOTDATA
 check "GETPIVOTDATA: a field the pivot does not have" (gp "=GETPIVOTDATA(\"Sales\",A3,\"City\",\"Paris\")") (CellValue.Error "REF!")
 check "GETPIVOTDATA: a cell outside every pivot" (gp "=GETPIVOTDATA(\"Sales\",H20)") (CellValue.Error "REF!")
 
+let pivotDeletedParent = deleteRow 3 pivotSheet
+check "GETPIVOTDATA: deleted parent invalidates repeated child"
+    (evaluateFormula "=GETPIVOTDATA(\"Sales\",D3,\"State\",\"VIC\",\"Country\",\"AU\")" pivotDeletedParent None)
+    (CellValue.Error "REF!")
+check "GETPIVOTDATA: next complete row survives parent deletion"
+    (evaluateFormula "=GETPIVOTDATA(\"Sales\",D3,\"State\",\"AKL\",\"Country\",\"NZ\")" pivotDeletedParent None)
+    (N 30.0)
+let pivotTabularDataInserted = insertColumn 5 pivotSheet
+check "GETPIVOTDATA: tabular label columns remain at boundary"
+    (evaluateFormula "=GETPIVOTDATA(\"Sales\",D3,\"State\",\"VIC\",\"Country\",\"AU\")" pivotTabularDataInserted None)
+    (N 20.0)
+
 printfn ""
 printfn "Stage 13 pivot tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

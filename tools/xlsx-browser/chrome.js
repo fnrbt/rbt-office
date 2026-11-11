@@ -1660,6 +1660,49 @@ checks['row-insert-keeps-drawing-part'] = async () => {
     return lines;
 };
 
+// Structural edits must preserve pivot lookup geometry through the Fable
+// reader/writer path, including a gap within its data rows.
+checks['pivot-structure-roundtrip'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const { grid, close } = mountGrid();
+    const again = mountGrid();
+    const geometry = (p) => [p.Top, p.Left, p.Bottom, p.Right, p.FirstHeaderRow, p.FirstDataRow, p.FirstDataCol,
+        [...p.RowLines].map((line) => [line.Kind, line.Repeat, [...line.Items]]),
+        [...p.ColumnLines].map((line) => [line.Kind, line.Repeat, [...line.Items]])];
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-slicers.xlsx')).slice());
+        const sheetIndex = grid.GetSheetNames().findIndex((_, index) => {
+            grid.SwitchSheet(index);
+            return [...grid.GetModel().Pivots].length > 0;
+        });
+        if (sheetIndex < 0) throw new Error('pivot fixture has no pivot');
+        const initial = [...grid.GetModel().Pivots][0];
+        const { formatCellRef } = await import('/spreadsheet/Model.js');
+        const queryRow = initial.Bottom + 10;
+        const field = [...initial.DataFields][0].replaceAll('"', '""');
+        grid.SetCell(queryRow, 0, `=GETPIVOTDATA("${field}",${formatCellRef(initial.Top, initial.Left)})`);
+        const total = grid.GetCell(queryRow, 0).value;
+        check('fixture pivot lookup has a numeric total', typeof total, 'number');
+        grid.InsertRows(initial.Top + initial.FirstDataRow + 1, 1);
+        grid.InsertColumns(initial.Left + initial.FirstDataCol, 1);
+        const moved = [...grid.GetModel().Pivots][0];
+        check('row and column insertion expand pivot bounds', [moved.Bottom, moved.Right], [initial.Bottom + 1, initial.Right + 1]);
+        check('a gap does not change the pivot total', grid.GetCell(queryRow + 1, 0).value, total);
+        grid.Undo(); grid.Undo();
+        check('undo restores pivot geometry', geometry([...grid.GetModel().Pivots][0]), geometry(initial));
+        grid.Redo(); grid.Redo();
+        await again.grid.ImportXlsx(await grid.ExportXlsx());
+        again.grid.SwitchSheet(sheetIndex);
+        check('saved pivot geometry reopens intact', geometry([...again.grid.GetModel().Pivots][0]), geometry(moved));
+        check('saved lookup cache and formula remain usable', again.grid.GetCell(queryRow + 1, 0).value, total);
+        again.grid.SetCell(queryRow + 1, 0, again.grid.GetCell(queryRow + 1, 0).formula);
+        check('reopened pivot lookup recalculates', again.grid.GetCell(queryRow + 1, 0).value, total);
+    } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { again.close(); close(); }
+    return lines;
+};
+
 // Charts, shapes and groups of an opened file are drawn in the grid from the file's parts: an
 // <svg> in the object's frame, with the values of the cells the series read as they are now (a
 // chart is drawn again when one of them changes), the theme's colours, title, axes and legend.
@@ -1830,6 +1873,86 @@ checks['slicers-in-grid'] = async () => {
         }
         check('no error reported', errors, []);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
+    finally { grid.Dispose(); host.remove(); }
+    return lines;
+};
+
+checks['chart-reference-edits'] = async () => {
+    const { lines, check } = makeLog();
+    const { bytesOf } = await import('/component.js');
+    const host = container('position:absolute;left:0;top:0;width:1180px;height:880px');
+    const grid = createSpreadsheet(host);
+    grid.Mount();
+    let seriesFill;
+    const values = async () => {
+        await frame(); await seenAll(host);
+        const column = [...host.querySelectorAll('.spreadsheet-object-drawn')]
+            .find(node => node.querySelector('svg text')?.textContent === 'Column');
+        const rects = [...column.querySelectorAll('svg rect')];
+        seriesFill ??= rects.at(-1).getAttribute('fill');
+        const heights = rects.filter(rect => rect.getAttribute('fill') === seriesFill)
+            .map(rect => Number(rect.getAttribute('height')));
+        return heights.map(height => Math.round(height / heights.at(-1) * 30));
+    };
+    const formulas = async () => {
+        const zip = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const xml = new DOMParser().parseFromString(await zip.file('xl/charts/chart1.xml').async('string'), 'application/xml');
+        return [...xml.getElementsByTagNameNS('*', 'f')].map(node => node.textContent);
+    };
+    try {
+        await grid.ImportXlsx(await bytesOf('tests/real-world/chart-zoo.xlsx'));
+        check('original plotted values', await values(), [10, 25, 15, 30]);
+        grid.InsertRows(3, 1);
+        grid.EnterText(3, 1, '20');
+        check('inserting inside a series expands plotted data', await values(), [10, 25, 20, 15, 30]);
+        grid.Undo(); grid.Undo();
+        grid.InsertRows(0, 2);
+        grid.InsertColumns(0, 1);
+        grid.RenameSheet(0, 'Zoo renamed');
+        check('insertions and rename retain plotted values', await values(), [10, 25, 15, 30]);
+        check('series name, categories and values follow edits', await formulas(),
+            ["'Zoo renamed'!$C$3", "'Zoo renamed'!$B$4:$B$7", "'Zoo renamed'!$C$4:$C$7"]);
+        grid.EnterText(4, 2, '65');
+        check('chart reads moved cells', await values(), [10, 65, 15, 30]);
+        for (let i = 0; i < 4; i++) grid.Undo();
+        check('undo restores bindings and values', [await formulas(), await values()],
+            [['Zoo!$B$1', 'Zoo!$A$2:$A$5', 'Zoo!$B$2:$B$5'], [10, 25, 15, 30]]);
+        for (let i = 0; i < 4; i++) grid.Redo();
+        check('redo restores moved values', await values(), [10, 65, 15, 30]);
+        grid.DeleteRows(4, 1);
+        grid.DeleteColumns(0, 1);
+        check('deletion shrinks data and shifts bindings', [await formulas(), await values()],
+            [["'Zoo renamed'!$B$3", "'Zoo renamed'!$A$4:$A$6", "'Zoo renamed'!$B$4:$B$6"], [10, 15, 30]]);
+        const saved = await grid.ExportXlsx();
+        await grid.ImportXlsx(saved);
+        check('saved chart reopens on current cells', await values(), [10, 15, 30]);
+        grid.InsertRows(5, 2);
+        grid.EnterText(5, 1, '20');
+        grid.EnterText(6, 1, '25');
+        await grid.ImportXlsx(await grid.ExportXlsx());
+        check('expanded series survives save and reopen beyond original cache count', await values(), [10, 15, 20, 25, 30]);
+        await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-chartex.xlsx'));
+        const funnelValues = async () => {
+            await frame(); await seenAll(host);
+            const funnel = [...host.querySelectorAll('.spreadsheet-object-drawn')]
+                .find(node => node.querySelector('svg text')?.textContent === 'Funnel');
+            const widths = [...funnel.querySelectorAll('svg rect')]
+                .filter(rect => rect.getAttribute('fill') !== '#FFFFFF' && Number(rect.getAttribute('height')) < 100)
+                .map(rect => Number(rect.getAttribute('width')));
+            return widths.map(width => Math.round(width / Math.max(...widths) * 100));
+        };
+        const initialFunnel = await funnelValues();
+        for (let row = 1; row <= 5; row++) grid.EnterText(row, 7, String(row * 10));
+        grid.SetDefinedName('_xlchart.v2.5', '=ChartEx!$H$2:$H$6');
+        check('chartEx resolves a changed workbook name without a cell edit', await funnelValues(), [20, 40, 60, 80, 100]);
+        grid.Undo();
+        check('undo restores chartEx named binding', await funnelValues(), initialFunnel);
+        grid.Redo();
+        grid.InsertRows(0, 2);
+        check('chartEx named binding follows structural edits', await funnelValues(), [20, 40, 60, 80, 100]);
+        await grid.ImportXlsx(await grid.ExportXlsx());
+        check('chartEx name survives save and reopen', await funnelValues(), [20, 40, 60, 80, 100]);
+    } catch (e) { lines.push('FAIL threw: ' + String(e?.stack || e)); }
     finally { grid.Dispose(); host.remove(); }
     return lines;
 };

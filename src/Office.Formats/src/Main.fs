@@ -786,9 +786,6 @@ module WordWriter =
     /// Write paragraphs to DOCX (Phase 1: plain text only)
     let write (paragraphs: string list) = DocxWriter.writeMinimalDocx paragraphs
 
-    /// Write from EditorFormat with formatting (Phase 2)
-    let writeFromEditor (paragraphs: obj array) =
-        DocumentWriter.writeFromEditor paragraphs
 
     let writeFromEditorPackage (package: obj) =
         DocumentWriter.writeFromEditorPackage package
@@ -1818,7 +1815,6 @@ let api () = {|
         endnotes = Word.endnotes
         shapes = Word.shapes
         write = WordWriter.write
-        writeFromEditor = WordWriter.writeFromEditor
         writeFromEditorPackage = WordWriter.writeFromEditorPackage
         getLastSaveReport = WordWriter.getLastSaveReport
         openProgressive = Processors.openProgressive

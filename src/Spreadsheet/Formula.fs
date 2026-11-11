@@ -1374,9 +1374,20 @@ and referencesRangedAt (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         | BinOp (l, _, r) ->
             push seen l
             push seen r
-        | Function (_, args) ->
-            for arg in args do
-                push seen arg
+        | Function (name, args) ->
+            if name.Equals("GETPIVOTDATA", StringComparison.OrdinalIgnoreCase) then
+                match List.tryItem 1 args with
+                | Some (CellRef anchor) | Some (RangeRef (anchor, _)) ->
+                    match sheetIdOf anchor.Sheet |> Option.bind (fun sid ->
+                        workbook |> Option.bind (fun wb -> Map.tryFind sid wb.Sheets)
+                        |> Option.bind (fun sheet ->
+                            sheet.Model.Pivots
+                            |> List.tryFind (fun pivot -> anchor.Row >= pivot.Top && anchor.Row <= pivot.Bottom && anchor.Col >= pivot.Left && anchor.Col <= pivot.Right)
+                            |> Option.map (fun pivot -> sid, pivot))) with
+                    | Some (sid, pivot) -> addArea sid pivot.Top pivot.Left pivot.Bottom pivot.Right
+                    | None -> ()
+                | _ -> ()
+            for arg in args do push seen arg
     let mutable cellSet = Set.empty
     for cell in cells do
         cellSet <- Set.add cell cellSet
@@ -1451,9 +1462,21 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         | BinOp (l, _, r) ->
             stack.Add(struct (seen, l))
             stack.Add(struct (seen, r))
-        | Function (_, args) ->
-            for arg in args do
-                stack.Add(struct (seen, arg))
+        | Function (name, args) ->
+            if name.Equals("GETPIVOTDATA", StringComparison.OrdinalIgnoreCase) then
+                match List.tryItem 1 args with
+                | Some (CellRef anchor) | Some (RangeRef (anchor, _)) ->
+                    let pivotOn sid =
+                        workbook |> Option.bind (fun wb -> Map.tryFind sid wb.Sheets)
+                        |> Option.bind (fun sheet ->
+                            sheet.Model.Pivots
+                            |> List.tryFind (fun pivot -> anchor.Row >= pivot.Top && anchor.Row <= pivot.Bottom && anchor.Col >= pivot.Left && anchor.Col <= pivot.Right))
+                        |> Option.iter (fun pivot -> onArea sid pivot.Top pivot.Left pivot.Bottom pivot.Right)
+                    match anchor.Sheet with
+                    | None -> pivotOn homeSheet
+                    | Some qualifier -> workbook |> Option.bind (Rbt.Spreadsheet.Workbook.resolveSheetName qualifier) |> Option.iter pivotOn
+                | _ -> ()
+            for arg in args do stack.Add(struct (seen, arg))
 
 /// Shift every *relative* reference in an expression by (dr, dc). Absolute
 /// components (`$`-locked row/col) are left untouched. This is how a
@@ -12093,21 +12116,22 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 let paths (lines: (int * PivotLine) list) (labelAt: int -> int -> CellValue) (fields: string list) =
                     let mutable before : CellValue list = []
                     [ for at, line in lines ->
-                        if line.Kind = "grand" then at, line, None
+                        if line.Kind = "blank" then at, line, None
+                        elif line.Kind = "grand" then at, line, None
                         else
-                            // Its items are those of the fields from Repeat on, one each (several where the line
-                            // begins more than one field - the tabular form: each in its own label column).
+                            // A deleted parent line cannot lend its labels to a surviving
+                            // child that repeats them. Such a child has no complete path.
+                            let validRepeat = line.Repeat >= 0 && line.Repeat <= before.Length
                             let items = if line.Items.IsEmpty then [ 0 ] else line.Items
                             let own =
                                 items |> List.mapi (fun offset item ->
                                     let level = line.Repeat + offset
                                     if level < fields.Length && fields.[level] = "" then
-                                        // (The data fields as a field: its item is the index of a data field.)
                                         CellValue.Number (float item)
                                     else labelAt at level)
                             let path = (List.truncate line.Repeat before) @ own
-                            if line.Kind = "data" then before <- path
-                            at, line, Some path ]
+                            if line.Kind = "data" && validRepeat then before <- path
+                            at, line, (if validRepeat then Some path else None) ]
                 let rowLabelColumn level = pivot.Left + (if pivot.FirstDataCol > 1 then min level (pivot.FirstDataCol - 1) else 0)
                 let rowPaths = paths lineRows (fun r level -> valueAt r (rowLabelColumn level)) pivot.RowFields
                 let colPaths = paths lineCols (fun c level -> valueAt (pivot.Top + pivot.FirstHeaderRow + level) c) pivot.ColumnFields
@@ -12119,12 +12143,16 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         if field = "" then dataIndex |> Option.map (fun index -> level, CellValue.Number (float index))
                         else pairs |> List.tryFind (fun (name, _) -> same name field) |> Option.map (fun (_, item) -> level, item))
                 let known = pairs |> List.forall (fun (name, _) -> List.exists (same name) pivot.RowFields || List.exists (same name) pivot.ColumnFields)
-                let pick (lines: (int * PivotLine * CellValue list option) list) (want: (int * CellValue) list) =
+                let pick (fields: string list) (lines: (int * PivotLine * CellValue list option) list) (want: (int * CellValue) list) =
                     if want.IsEmpty then
                         match lines |> List.tryFind (fun (_, line, _) -> line.Kind = "grand") with
                         | Some (at, _, _) -> Some at
-                        // (No grand total: one line alone is the whole.)
-                        | None -> (match lines with [ (at, _, _) ] -> Some at | _ -> None)
+                        // A fieldless axis has one value column/row, not a grand-total
+                        // item. A remaining member of a real field is not its deleted total.
+                        | None ->
+                            match fields, lines with
+                            | [], [ (at, line, _) ] when line.Kind = "data" -> Some at
+                            | _ -> None
                     else
                         let depth = (want |> List.map fst |> List.max) + 1
                         lines
@@ -12136,7 +12164,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         |> Option.map (fun (at, _, _) -> at)
                 if dataIndex.IsNone || not known then err Err.ref
                 else
-                    match pick rowPaths (wants pivot.RowFields), pick colPaths (wants pivot.ColumnFields) with
+                    match pick pivot.RowFields rowPaths (wants pivot.RowFields), pick pivot.ColumnFields colPaths (wants pivot.ColumnFields) with
                     | Some r, Some c ->
                         match valueAt r c with
                         | CellValue.Empty -> err Err.ref

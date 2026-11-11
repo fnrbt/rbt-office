@@ -137,7 +137,7 @@ try {
         check('Ctrl+C is left to the browser, the selection is in the proxy, selected', [prevented, proxy.value, proxy.selectionStart, proxy.selectionEnd], [false, 'bold', 0, 4]);
         const copied = new DataTransfer();
         check('the copy event is taken', clipboardEvent('copy', copied), true);
-        check('copied: text and HTML; the proxy is empty again', [copied.getData('text/plain'), copied.getData('text/html'), proxy.value], ['bold', '<p><span style="font-weight:bold">bold</span></p>', '']);
+        check('copied text and marked HTML; the proxy is empty', [copied.getData('text/plain'), copied.getData('text/html').startsWith('<p><span style="font-weight:bold">bold</span></p><!--rbt-word-clip:'), proxy.value], ['bold', true, '']);
         Word.setSelection(editor, ids[1], 6, ids[1], 6);
         check('Ctrl+V is left to the browser', key(proxy, 'v', { ctrlKey: true }), false);
         check('the paste event is taken', paste('bold', copied.getData('text/html')), true);
@@ -173,6 +173,18 @@ try {
         check('a table pasted into a cell: its text, the cells parted by a tab', [Word.getLayoutLines(editor).some((line) => line.Text === 'cm\tn'), cellOf('cm')[0]], [true, true]);
         Word.undo(editor);
         check('... one undo step', [Word.undo(editor), text()], [true, 'Hello bold world\nSecond\n']);
+        // A synthetic clipboard transfer that throws cannot authorize a Cut.
+        Word.setSelection(editor, ids[0], 0, ids[0], 6);
+        const failedTransfer = new DataTransfer();
+        failedTransfer.setData = () => { throw new Error('clipboard unavailable'); };
+        const originalError = console.error;
+        let transferReported = false;
+        console.error = () => { transferReported = true; };
+        try {
+            const beforeCut = text();
+            clipboardEvent('cut', failedTransfer);
+            check('failed synchronous clipboard transfer cannot cut', [text(), transferReported], [beforeCut, true]);
+        } finally { console.error = originalError; }
         // Cut.
         Word.setSelection(editor, ids[0], 0, ids[0], 6);
         const cut = new DataTransfer();
@@ -185,13 +197,44 @@ try {
         // The host's menu: copySelection / cutSelection / pasteClipboard.
         Word.setSelection(editor, ids[0], 6, ids[0], 10);
         const fromApi = Word.copySelection(editor);
-        check('copySelection', [fromApi.Text, fromApi.Html], ['bold', '<p><span style="font-weight:bold">bold</span></p>']);
+        check('copySelection includes rich provenance', [fromApi.Text, fromApi.Html.startsWith('<p><span style="font-weight:bold">bold</span></p><!--rbt-word-clip:')], ['bold', true]);
+        Word.setSelection(editor, ids[0], 0, ids[0], 0);
+        Word.pasteClipboard(editor, fromApi.Text, fromApi.Html);
+        check('marked host copy preserves original rich formatting', boldIn(ids[0], 0, 4), true);
+        Word.undo(editor);
         Word.setSelection(editor, ids[0], 0, ids[0], 0);
         Word.pasteClipboard(editor, 'bold', null);
-        check('pasteClipboard: the copy, with its formatting', [text().split('\n')[0], boldIn(ids[0], 0, 4)], ['boldHello bold world', true]);
+        check('text-only external overwrite does not reuse rich copy', [text().split('\n')[0], boldIn(ids[0], 0, 4)], ['boldHello bold world', false]);
         Word.setSelection(editor, ids[0], 0, ids[0], 4);
         check('cutSelection', [Word.cutSelection(editor).Text, text().split('\n')[0]], ['bold', 'Hello bold world']);
         check('copySelection with nothing selected', Word.copySelection(editor), null);
+        // Even identical plain text may have new HTML formatting or a link.
+        Word.setSelection(editor, ids[0], 0, ids[0], 0);
+        Word.pasteClipboard(editor, 'bold', '<p><i><a href="https://example.com/new">bold</a></i></p>');
+        Word.setSelection(editor, ids[0], 0, ids[0], 4);
+        check('identical text from external HTML keeps its italic and link', [Word.getSelectionFormat(editor).Italic, Word.getSelectionFormat(editor).Hyperlink, Word.getSelectionFormat(editor).Bold], [true, 'https://example.com/new', false]);
+        Word.undo(editor);
+        // A program that carries our comment but edits the HTML is not the
+        // original rich clip; its visible formatting takes precedence.
+        Word.setSelection(editor, ids[0], 6, ids[0], 10);
+        const marked = Word.copySelection(editor);
+        Word.setSelection(editor, ids[0], 0, ids[0], 0);
+        Word.pasteClipboard(editor, 'bold', marked.Html.replace('font-weight:bold', 'font-style:italic'));
+        Word.setSelection(editor, ids[0], 0, ids[0], 4);
+        check('modified marked HTML is parsed, not cached', [Word.getSelectionFormat(editor).Italic, Word.getSelectionFormat(editor).Bold], [true, false]);
+        Word.undo(editor);
+        const secondCanvas = document.createElement('canvas');
+        secondCanvas.id = 'clipboard-second';
+        secondCanvas.width = canvas.width;
+        secondCanvas.height = canvas.height;
+        document.body.appendChild(secondCanvas);
+        const second = Word.initialize(secondCanvas.id);
+        Word.pasteClipboard(second, fromApi.Text, fromApi.Html);
+        const secondId = Word.getLayoutLines(second)[0].BlockId;
+        Word.setSelection(second, secondId, 0, secondId, 4);
+        check('another editor parses marked HTML instead of using foreign clip', [Word.getText(second).includes('bold'), Word.getSelectionFormat(second).Bold], [true, true]);
+        Word.dispose(second);
+        secondCanvas.remove();
         Word.dispose(editor);
     }
 

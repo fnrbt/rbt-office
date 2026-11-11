@@ -3448,25 +3448,6 @@ let private moveEditSpan isInsert at count lo hi =
         let newHi = if hi >= at + count then hi - count elif hi >= at then at - 1 else hi
         Some (newLo, newHi)
 
-/// Re-point the formulas of a sheet after `edit` happened on the sheet that
-/// `targetsEditedSheet` selects. Used for the *other* sheets of a workbook;
-/// returns the same model when no formula changed.
-let rewriteFormulasForEdit (edit: StructureEdit) (targetsEditedSheet: string option -> bool) (model: SpreadsheetModel) : SpreadsheetModel =
-    let mutable cells = model.Cells
-    let mutable changed = false
-    // (Its formulas, by the sheet's formula index: the values are not walked.)
-    for addr in formulaIndexOf model.Cells do
-        match Map.tryFind addr model.Cells with
-        | Some ({ Value = Formula (formula, cached) } as cellData) ->
-            let adjusted = adjustFormulaForEdit edit targetsEditedSheet formula
-            if adjusted <> formula then
-                cells <- Map.add addr { cellData with Value = Formula (adjusted, cached) } cells
-                changed <- true
-        | _ -> ()
-    if changed then
-        inheritFormulaIndex model.Cells cells
-        { model with Cells = cells } |> invalidateFilterProjection
-    else model
 
 /// Apply `rewrite` to every formula a sheet holds: its formula cells, the
 /// formulas of its conditional formats and of its validations. The model
@@ -3981,6 +3962,58 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
             if moved.Length = items.Length && List.forall2 (fun (a: 'T) (b: 'T) -> obj.ReferenceEquals(a, b)) moved items then items else moved
     let hyperlinks = model.Hyperlinks |> moveRanged (fun link -> link.Range) (fun link range -> { link with Range = range })
     let keptRanges = model.KeptRanges |> moveRanged (fun kept -> kept.Range) (fun kept range -> { kept with Range = range })
+    // Pivot line positions are offsets from the pivot's top/left, not sheet
+    // coordinates. Move the line coordinates with their cells; gaps made by
+    // insertion must not let a later line read the preceding label/value.
+    let pivots =
+        if model.Pivots.IsEmpty then model.Pivots
+        else
+            model.Pivots
+            |> List.choose (fun pivot ->
+                let lo, hi = if onRows then pivot.Top, pivot.Bottom else pivot.Left, pivot.Right
+                match moveSpan lo hi with
+                | None -> None
+                | Some (newLo, newHi) ->
+                    let first = if onRows then pivot.FirstDataRow else pivot.FirstDataCol
+                    let lines = if onRows then pivot.RowLines else pivot.ColumnLines
+                    let oldStart = lo + first
+                    let mutable lostParent = false
+                    let movedLines =
+                        lines
+                        |> List.mapi (fun index line ->
+                            match moveIndex (oldStart + index) with
+                            | None ->
+                                lostParent <- true
+                                None
+                            | Some pos ->
+                                // A repeated label from a deleted line cannot be
+                                // reconstructed from the surviving sheet cells.
+                                let line = if lostParent && line.Repeat > 0 then { line with Kind = "blank" } else line
+                                if line.Repeat = 0 then lostParent <- false
+                                Some (pos, line))
+                        |> List.choose id
+                    let newStart =
+                        match movedLines with
+                        | (pos, _) :: _ -> pos
+                        | [] -> moveIndex oldStart |> Option.defaultValue (max newLo at)
+                    let mutable next = newStart
+                    let gap = { Kind = "blank"; Repeat = 0; Items = [] }
+                    let lines =
+                        [ for pos, line in movedLines do
+                              while next < pos do
+                                  yield gap
+                                  next <- next + 1
+                              yield line
+                              next <- pos + 1 ]
+                    if onRows then
+                        let firstHeader = moveIndex (lo + pivot.FirstHeaderRow) |> Option.defaultValue (max newLo at)
+                        Some { pivot with Top = newLo; Bottom = newHi
+                                          FirstHeaderRow = firstHeader - newLo; FirstDataRow = newStart - newLo
+                                          RowLines = lines }
+                    else
+                        Some { pivot with Left = newLo; Right = newHi
+                                          FirstDataCol = newStart - newLo; ColumnLines = lines })
+            |> fun moved -> if moved = model.Pivots then model.Pivots else moved
     // The input cells of a data table are references: they move like the
     // references of a formula, and a deleted one is marked as such.
     let dataTables =
@@ -4029,6 +4062,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         StructureLog = { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 } :: model.StructureLog
         Hyperlinks = hyperlinks
         KeptRanges = keptRanges
+        Pivots = pivots
         DataTables = dataTables
         ColumnStyles = columnStyles
         Drawings = drawings

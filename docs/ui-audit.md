@@ -4,6 +4,8 @@
 - `redbat-*.png`: redbat's editors, from the adoption harness build (made from `redbat-office` at `8d62b0d9e`). Its `SpreadsheetEditor.tsx`, `WordEditor.tsx` and `SheetDialogs.tsx` are byte-identical to redbat-test's.
 - `comp-*.png`: rbt-office's own browser UI from `dist/` (built 2026-11-10), through a scratch vite page: `WordShell.mount`, `createSpreadsheet` with `createSpreadsheetShell` and `createFormulaBar`, and the dialog specs through `OfficeUiDialog.renderDialog`.
 
+**Implementation follow-through (2026-11-11):** the C5–C6 fixes now render all eleven existing field kinds and tabs in `OfficeUiDialog`, preserve tab edits, and provide accessible names plus keyboard/focus behavior. The renderer's seven Chromium dialog scenarios and real Word Cancel/undo workflow passed; see `systematic-review-2026-11-11.md` and the contract in `sharing-architecture.md`. This does not wire the unused advanced dialog specs into the browser shells or merge the parked command registry. The tables below remain the original audit snapshot.
+
 
 
 ## 0. The headline: where the UI lives

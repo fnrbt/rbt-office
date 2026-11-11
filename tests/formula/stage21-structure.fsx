@@ -1,6 +1,9 @@
 #r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
+open System.IO
+open System.IO.Compression
 open Rbt.Spreadsheet.Model
 open Rbt.Spreadsheet.Workbook
 open Rbt.Spreadsheet.Formula
@@ -244,6 +247,95 @@ eq "wb-table-col-removed" wbColDel.Tables.["T"].Columns [ "a" ]
 let wbHeaderGone, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "sheet1" (DeleteRows (0, 1)) wb0
 eq "wb-table-header-deleted" (Map.containsKey "T" wbHeaderGone.Tables) false
 
+// References on a foreign rule change, but its application range and anchor
+// belong to its own sheet, not the sheet whose rows/columns were edited.
+let foreignRange = [ { From = at 5 5; To = at 7 6 } ]
+let formulaThreshold text = { Kind = CfvoFormula; Value = Some text }
+let percentThreshold = { Kind = CfvoPercent; Value = Some "50" }
+let foreignFormat id rule =
+    { Id = id; Ranges = foreignRange; Format = { Rule = rule; Style = defaultFormat }; Priority = id; StopIfTrue = false }
+let foreignValidation id rule =
+    { Id = id; Ranges = foreignRange; Validation = { validationOf rule with Anchor = Some (at 5 5) } }
+let foreignRules formula source =
+    let threshold = formulaThreshold formula
+    [ foreignFormat 1 (Expression formula)
+      foreignFormat 2 (CellIs (OpBetween, formula, Some formula))
+      foreignFormat 3 (ColorScale [ threshold, "#FF0000"; percentThreshold, "#FFFFFF" ])
+      foreignFormat 4 (DataBar (threshold, percentThreshold, "#638EC6"))
+      foreignFormat 5 (IconSet ("3Arrows", [ threshold; percentThreshold ], false))
+      foreignFormat 6 (DataBarEx (threshold, percentThreshold, "#638EC6", defaultDataBarOptions))
+      foreignFormat 7 (IconSetEx ("3Arrows", [ threshold; percentThreshold ], false, defaultIconSetOptions))
+      foreignFormat 8 (Expression "=A1") ],
+    [ foreignValidation 1 (Comparison (WholeKind, OpBetween, formula, Some formula))
+      foreignValidation 2 (CustomFormula formula)
+      foreignValidation 3 (ListSource source)
+      foreignValidation 4 (CustomFormula "=A1") ]
+let originalForeignFormats, originalForeignValidations = foreignRules "=Data!$B$2" "Data!$B$2"
+let foreignRuleSheet =
+    { modelOf [] with
+        ConditionalFormats = originalForeignFormats
+        Validations = originalForeignValidations }
+let foreignRuleWorkbook = wbOf [ "data", "Data", modelOf [ at 1 1, num 42.0 ]; "other", "Other", foreignRuleSheet ]
+let ruleEdits =
+    [ "insert-row", InsertRows (1, 1), "=Data!$B$3", "Data!$B$3"
+      "delete-row", DeleteRows (1, 1), "=#REF!", "#REF!"
+      "insert-col", InsertCols (1, 1), "=Data!$C$2", "Data!$C$2"
+      "delete-col", DeleteCols (1, 1), "=#REF!", "#REF!" ]
+for (label, edit, formula, source) in ruleEdits do
+    let changed, undo = Rbt.Spreadsheet.Workbook.applyStructureEdit "data" edit foreignRuleWorkbook
+    let foreign = sheetModel "other" changed
+    let expectedFormats, expectedValidations = foreignRules formula source
+    eq (label + "-foreign-formats") foreign.ConditionalFormats expectedFormats
+    eq (label + "-foreign-validations") foreign.Validations expectedValidations
+    let restored = sheetModel "other" (undoStructureEdit undo changed)
+    eq (label + "-undo-formats") restored.ConditionalFormats originalForeignFormats
+    eq (label + "-undo-validations") restored.Validations originalForeignValidations
+
+// An intervening rule edit is not discarded by undoing the structural edit.
+// Matching only the entire list (or even the entire rule) would lose these.
+let ruleChanged, ruleUndo = Rbt.Spreadsheet.Workbook.applyStructureEdit "data" (InsertRows (1, 1)) foreignRuleWorkbook
+let ruleEditedForeign = sheetModel "other" ruleChanged
+let editedFormats =
+    ruleEditedForeign.ConditionalFormats
+    |> List.map (fun entry ->
+        match entry.Id with
+        | 1 -> { entry with Format = { entry.Format with Rule = Expression "=99" } }
+        | 2 -> { entry with Format = { entry.Format with Rule = CellIs (OpBetween, "=Data!$B$3", Some "=77") } }
+        | 3 -> { entry with Priority = 20; Ranges = [ { From = at 9 9; To = at 9 9 } ]
+                            Format = { entry.Format with Style = { entry.Format.Style with Bold = true } } }
+        | _ -> entry)
+    |> fun entries -> foreignFormat 20 (Expression "=Other!A1") :: entries
+let editedValidations =
+    ruleEditedForeign.Validations
+    |> List.map (fun entry ->
+        match entry.Id with
+        | 1 ->
+            { entry with Validation = { entry.Validation with
+                                            Rule = Comparison (WholeKind, OpBetween, "=Data!$B$3", Some "=88")
+                                            InputMessage = Some "new message" } }
+        | 2 -> { entry with Validation = { entry.Validation with Rule = CustomFormula "=99" } }
+        | _ -> entry)
+    |> fun entries -> foreignValidation 20 (CustomFormula "=Other!A1") :: entries
+let ruleRetyped =
+    ruleChanged
+    |> updateSheetModel "other" { ruleEditedForeign with ConditionalFormats = editedFormats; Validations = editedValidations }
+    |> undoStructureEdit ruleUndo
+let restoredForeign = sheetModel "other" ruleRetyped
+eq "rule-undo-keeps-new-format" restoredForeign.ConditionalFormats.Head (foreignFormat 20 (Expression "=Other!A1"))
+eq "rule-undo-keeps-retyped-expression" restoredForeign.ConditionalFormats.[1].Format.Rule (Expression "=99")
+eq "rule-undo-restores-only-cellis-first" restoredForeign.ConditionalFormats.[2].Format.Rule
+    (CellIs (OpBetween, "=Data!$B$2", Some "=77"))
+eq "rule-undo-keeps-range-priority-style"
+    (restoredForeign.ConditionalFormats.[3].Ranges, restoredForeign.ConditionalFormats.[3].Priority,
+     restoredForeign.ConditionalFormats.[3].Format.Style.Bold, restoredForeign.ConditionalFormats.[3].Format.Rule)
+    ([ { From = at 9 9; To = at 9 9 } ], 20, true,
+     ColorScale [ formulaThreshold "=Data!$B$2", "#FF0000"; percentThreshold, "#FFFFFF" ])
+eq "rule-undo-keeps-new-validation" restoredForeign.Validations.Head (foreignValidation 20 (CustomFormula "=Other!A1"))
+eq "rule-undo-keeps-retyped-validation" restoredForeign.Validations.[2].Validation.Rule (CustomFormula "=99")
+eq "rule-undo-restores-only-comparison-first"
+    (restoredForeign.Validations.[1].Validation.Rule, restoredForeign.Validations.[1].Validation.InputMessage)
+    (Comparison (WholeKind, OpBetween, "=Data!$B$2", Some "=88"), Some "new message")
+
 // Workbook-wide recalculation: a sheet earlier in tab order that reads a later one.
 let chainWb =
     wbOf [ "sheet1", "First", modelOf [ at 0 0, fml "=Second!A1+1" ]
@@ -308,6 +400,205 @@ eq "spill-returns" [ for r in 0 .. 2 -> valueAt r 0 spillFreed ] [ N 1.0; N 2.0;
 // Formatting a ghost cell does not turn it into an obstruction.
 let spillStyled = spillBase |> setCellBgColor (at 1 0) "#FF0000" |> recalcAndSpill None None
 eq "spill-styled-ghost" (valueAt 0 0 spillStyled, valueAt 1 0 spillStyled) (N 1.0, N 2.0)
+
+// Imported pivot layouts keep line offsets relative to the moved location.
+// GETPIVOTDATA depends on the labels AND the selected value, on either sheet.
+let pivotLayout : PivotLayout =
+    { Top = 10; Left = 2; Bottom = 14; Right = 4
+      FirstHeaderRow = 1; FirstDataRow = 2; FirstDataCol = 1
+      RowFields = [ "Region" ]; ColumnFields = [ "Quarter" ]; DataFields = [ "Sum of Sales" ]
+      RowLines = [ { Kind = "data"; Repeat = 0; Items = [ 0 ] }
+                   { Kind = "data"; Repeat = 0; Items = [ 1 ] }
+                   { Kind = "grand"; Repeat = 0; Items = [] } ]
+      ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [ 0 ] }
+                      { Kind = "grand"; Repeat = 0; Items = [] } ] }
+let pivotData =
+    { modelOf
+        [ at 11 3, str "Q1"; at 11 4, str "Grand Total"
+          at 12 2, str "East"; at 13 2, str "West"; at 14 2, str "Grand Total"
+          at 12 3, num 10.0; at 12 4, num 15.0
+          at 13 3, num 20.0; at 13 4, num 25.0
+          at 14 3, num 30.0; at 14 4, num 40.0 ] with
+        Pivots = [ pivotLayout ] }
+let pivotQuery = "=GETPIVOTDATA(\"Sales\",Data!C11,\"Region\",\"East\",\"Quarter\",\"Q1\")"
+let pivotTotal = "=GETPIVOTDATA(\"Sales\",Data!C11)"
+let pivotOther = modelOf [ at 0 0, fml pivotQuery; at 1 0, fml pivotTotal; at 2 0, fml "=A1+1"; at 0 3, fml "=7" ]
+let pivotWb = wbOf [ "pivot", "Data", pivotData; "lookup", "Other", pivotOther ] |> recalculateWorkbook
+let pivotValues (book: Workbook) =
+    let lookup = sheetModel "lookup" book
+    [ valueAt 0 0 lookup; valueAt 1 0 lookup; valueAt 2 0 lookup ]
+eq "pivot-cross-sheet-initial" (pivotValues pivotWb) [ CellValue.Number 10.0; CellValue.Number 40.0; CellValue.Number 11.0 ]
+let pivotChange label edit expectedGeometry expected =
+    let changed, undo = Rbt.Spreadsheet.Workbook.applyStructureEdit "pivot" edit pivotWb
+    let calculated = recalculateWorkbook changed
+    eq (label + "-geometry") ((sheetModel "pivot" changed).Pivots |> List.map (fun p ->
+        p.Top, p.Left, p.Bottom, p.Right, p.FirstHeaderRow, p.FirstDataRow, p.FirstDataCol,
+        p.RowLines |> List.map (fun line -> line.Kind), p.ColumnLines |> List.map (fun line -> line.Kind))) expectedGeometry
+    eq (label + "-values") (pivotValues calculated) expected
+    let restored = undoStructureEdit undo calculated |> recalculateWorkbook
+    eq (label + "-undo") (pivotValues restored) (pivotValues pivotWb)
+    let redone, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "pivot" edit restored
+    eq (label + "-redo") (pivotValues (recalculateWorkbook redone)) expected
+let kindsRow = [ "data"; "data"; "grand" ]
+let kindsCol = [ "data"; "grand" ]
+let pivotResult q total = [ q; total; (match q with CellValue.Number n -> CellValue.Number (n + 1.0) | _ -> q) ]
+pivotChange "pivot-insert-header-row" (InsertRows (11, 1))
+    [ 10, 2, 15, 4, 2, 3, 1, kindsRow, kindsCol ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-insert-data-boundary-col" (InsertCols (3, 1))
+    [ 10, 2, 14, 5, 1, 2, 2, kindsRow, kindsCol ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-insert-before-row" (InsertRows (9, 2))
+    [ 12, 2, 16, 4, 1, 2, 1, kindsRow, kindsCol ] (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-insert-before-col" (InsertCols (1, 2))
+    [ 10, 4, 14, 6, 1, 2, 1, kindsRow, kindsCol ] (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-insert-data-row" (InsertRows (13, 1))
+    [ 10, 2, 15, 4, 1, 2, 1, [ "data"; "blank"; "data"; "grand" ], kindsCol ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-insert-data-col" (InsertCols (4, 1))
+    [ 10, 2, 14, 5, 1, 2, 1, kindsRow, [ "data"; "blank"; "grand" ] ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-delete-east-row" (DeleteRows (12, 1))
+    [ 10, 2, 13, 4, 1, 2, 1, [ "data"; "grand" ], kindsCol ]
+    (pivotResult (CellValue.Error "REF!") (CellValue.Number 40.0))
+pivotChange "pivot-delete-header-row" (DeleteRows (11, 1))
+    [ 10, 2, 13, 4, 1, 1, 1, kindsRow, kindsCol ]
+    (pivotResult (CellValue.Error "REF!") (CellValue.Number 40.0))
+pivotChange "pivot-delete-west-row" (DeleteRows (13, 1))
+    [ 10, 2, 13, 4, 1, 2, 1, [ "data"; "grand" ], kindsCol ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0))
+pivotChange "pivot-delete-total-col" (DeleteCols (4, 1))
+    [ 10, 2, 14, 3, 1, 2, 1, kindsRow, [ "data" ] ]
+    (pivotResult (CellValue.Number 10.0) (CellValue.Error "REF!"))
+pivotChange "pivot-delete-q1-col" (DeleteCols (3, 1))
+    [ 10, 2, 14, 3, 1, 2, 1, kindsRow, [ "grand" ] ]
+    (pivotResult (CellValue.Error "REF!") (CellValue.Number 40.0))
+pivotChange "pivot-delete-all-rows" (DeleteRows (10, 5)) []
+    (pivotResult (CellValue.Error "REF!") (CellValue.Error "REF!"))
+pivotChange "pivot-delete-all-cols" (DeleteCols (2, 3)) []
+    (pivotResult (CellValue.Error "REF!") (CellValue.Error "REF!"))
+// The graph must follow the value cell, not just the pivot anchor, and
+// recognize a moved/deleted layout even if the formula is on another sheet.
+let pivotEngine = Rbt.Spreadsheet.Recalc.build pivotWb
+let pivotTyped = updateSheetModel "pivot" (setCell (at 12 3) (num 99.0) pivotData) pivotWb
+let pivotTypedCalc = Rbt.Spreadsheet.Recalc.recalculate pivotEngine pivotTyped None
+eq "pivot-incremental-value" (pivotTypedCalc |> Option.map pivotValues)
+    (Some (pivotResult (CellValue.Number 99.0) (CellValue.Number 40.0)))
+eq "pivot-incremental-selective" (pivotEngine.LastStats.EvaluatedFormulas < 4) true
+let pivotRelabeled = updateSheetModel "pivot" (setCell (at 12 2) (str "North") pivotData) pivotWb
+eq "pivot-incremental-label"
+    (Rbt.Spreadsheet.Recalc.recalculate (Rbt.Spreadsheet.Recalc.build pivotWb) pivotRelabeled None |> Option.map pivotValues)
+    (Some (pivotResult (CellValue.Error "REF!") (CellValue.Number 40.0)))
+let pivotRemoved = updateSheetModel "pivot" { pivotData with Pivots = [] } pivotWb
+eq "pivot-incremental-metadata"
+    (Rbt.Spreadsheet.Recalc.recalculate (Rbt.Spreadsheet.Recalc.build pivotWb) pivotRemoved None |> Option.map pivotValues)
+    (Some (pivotResult (CellValue.Error "REF!") (CellValue.Error "REF!")))
+let pivotMoved, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "pivot" (InsertRows (13, 1)) pivotWb
+let pivotMovedCalc = Rbt.Spreadsheet.Recalc.recalculate (Rbt.Spreadsheet.Recalc.build pivotWb) pivotMoved None
+eq "pivot-incremental-structure" (pivotMovedCalc |> Option.map pivotValues)
+    (Some (pivotResult (CellValue.Number 10.0) (CellValue.Number 40.0)))
+let pivotColDeleted, _ = Rbt.Spreadsheet.Workbook.applyStructureEdit "pivot" (DeleteCols (3, 1)) pivotWb
+eq "pivot-incremental-delete-col"
+    (Rbt.Spreadsheet.Recalc.recalculate (Rbt.Spreadsheet.Recalc.build pivotWb) pivotColDeleted None |> Option.map pivotValues)
+    (Some (pivotResult (CellValue.Error "REF!") (CellValue.Number 40.0)))
+
+// Persist the pivot part's location and its internal line geometry, then
+// reopen it through the same XLSX reader as a user file.
+let pivotFile = Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel", "synthetic-slicers.xlsx")
+let pivotImported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook
+                        (XlsxReader.loadBytesNative (File.ReadAllBytes pivotFile) |> Option.get)
+let pivotModels = pivotImported.Sheets |> Array.map (fun sheet -> sheet.Model)
+let pivotIndex = pivotModels |> Array.findIndex (fun model -> not model.Pivots.IsEmpty)
+let pivotFileModel = pivotModels.[pivotIndex]
+let pivotFileLayout = pivotFileModel.Pivots.Head
+let pivotFileChanged =
+    insertRow (pivotFileLayout.Top + pivotFileLayout.FirstDataRow + 1) pivotFileModel
+    |> insertColumn (pivotFileLayout.Left + pivotFileLayout.FirstDataCol)
+let savePivotFixtureFrom source pivotModel =
+    let sheets = Array.copy pivotModels
+    sheets.[pivotIndex] <- pivotModel
+    let export : Rbt.Spreadsheet.XlsxBridge.ExportInput =
+        { Sheets = sheets
+          Names = pivotImported.Sheets |> Array.map (fun sheet -> sheet.Name)
+          Visible = pivotImported.Sheets |> Array.map (fun sheet -> sheet.Visible)
+          ActiveSheetIndex = pivotIndex
+          DefinedNames = pivotImported.Context.Names; NameInfo = Map.empty
+          Source = Some source; Macros = None }
+    XlsxWriter.writeWorkbookPackageBytes (Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut export)
+let savePivotFixture = savePivotFixtureFrom pivotImported.Source
+let pivotFileSaved = savePivotFixture pivotFileChanged
+let pivotReopened =
+    Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative pivotFileSaved |> Option.get)
+    |> fun book -> book.Sheets.[pivotIndex].Model
+eq "pivot-save-reopen-layout" pivotReopened.Pivots pivotFileChanged.Pivots
+eq "pivot-save-reopen-cells"
+    [ for r in pivotFileLayout.Top .. pivotFileLayout.Bottom + 1 do
+        for c in pivotFileLayout.Left .. pivotFileLayout.Right + 1 do
+            yield r, c, valueAt r c pivotReopened ]
+    [ for r in pivotFileLayout.Top .. pivotFileLayout.Bottom + 1 do
+        for c in pivotFileLayout.Left .. pivotFileLayout.Right + 1 do
+            yield r, c, valueAt r c pivotFileChanged ]
+let firstFileRow = pivotFileLayout.Top + pivotFileLayout.FirstDataRow
+let firstFileLabel =
+    match valueAt firstFileRow pivotFileLayout.Left pivotFileModel with
+    | CellValue.String label -> label
+    | value -> failwithf "pivot fixture row label: %A" value
+let fileQuery =
+    sprintf "=GETPIVOTDATA(\"%s\",A3,\"%s\",\"%s\")"
+        pivotFileLayout.DataFields.Head pivotFileLayout.RowFields.Head firstFileLabel
+let expectedFileValue = valueAt firstFileRow (pivotFileLayout.Left + pivotFileLayout.FirstDataCol) pivotFileModel
+eq "pivot-save-live-lookup" (evaluateFormula fileQuery pivotFileChanged None) expectedFileValue
+eq "pivot-save-reopen-lookup" (evaluateFormula fileQuery pivotReopened None) expectedFileValue
+let pivotFileGone =
+    Rbt.Spreadsheet.Model.applyStructureEdit
+        (DeleteRows (pivotFileLayout.Top, pivotFileLayout.Bottom - pivotFileLayout.Top + 1)) pivotFileModel
+let pivotGoneReopened =
+    Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook
+        (XlsxReader.loadBytesNative (savePivotFixture pivotFileGone) |> Option.get)
+    |> fun book -> book.Sheets.[pivotIndex].Model
+eq "pivot-save-reopen-whole-deletion" pivotGoneReopened.Pivots []
+
+// An <i> can carry its data-field index and extensions that PivotLine does
+// not model. The saved pivot must keep surviving items' XML byte-for-byte,
+// even as structural edits add blank items or remove old ones. Qualifying
+// <location> also exercises the source-span patch with namespace prefixes.
+let pivotPart = "xl/pivotTables/pivotTable1.xml"
+let originalPivotXml =
+    pivotImported.Source.Workbook.Preserved.Parts
+    |> List.find (fun (path, _) -> path = pivotPart)
+    |> snd |> System.Text.Encoding.UTF8.GetString
+let firstItem = "<i i=\"0\" extra=\"first\"><x v=\"1\" note=\"keep\"/><custom source=\"first\"/></i>"
+let secondItem = "<i i=\"1\" extra=\"second\"><x v=\"2\" note=\"keep\"/><custom source=\"second\"/></i>"
+let originalItems = "<rowItems count=\"3\"><i><x v=\"1\"/></i><i><x v=\"2\"/></i>"
+eq "pivot-preserved-fixture-items" (originalPivotXml.Contains originalItems) true
+let decoratedPivotXml =
+    originalPivotXml.Replace(originalItems, "<rowItems count=\"3\">" + firstItem + secondItem)
+    |> fun xml ->
+        xml.Replace(" xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"",
+                    " xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:p=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"")
+    |> fun xml -> xml.Replace("<location ", "<p:location ")
+let decoratedSource =
+    let original = pivotImported.Source
+    let preserved = original.Workbook.Preserved
+    let parts = preserved.Parts |> List.map (fun (path, data) ->
+        if path = pivotPart then path, System.Text.Encoding.UTF8.GetBytes decoratedPivotXml else path, data)
+    { original with Workbook = { original.Workbook with Preserved = { preserved with Parts = parts } } }
+let savedPivotXml model =
+    let bytes = savePivotFixtureFrom decoratedSource model
+    use archive = new ZipArchive(new MemoryStream(bytes), ZipArchiveMode.Read)
+    use entry = archive.GetEntry(pivotPart).Open()
+    use reader = new StreamReader(entry)
+    reader.ReadToEnd()
+let insertedPivotXml = savedPivotXml pivotFileChanged
+eq "pivot-save-prefixed-location" (insertedPivotXml.Contains "<p:location ref=\"A3:C7\"") true
+eq "pivot-save-first-i-attrs-and-child" (insertedPivotXml.Contains firstItem) true
+eq "pivot-save-second-i-attrs-and-child" (insertedPivotXml.Contains secondItem) true
+eq "pivot-save-inserted-blank" (insertedPivotXml.Contains "<i t=\"blank\"/>") true
+let deletedPivotXml = savedPivotXml (deleteRow firstFileRow pivotFileModel)
+eq "pivot-save-deleted-first-i" (deletedPivotXml.Contains firstItem) false
+eq "pivot-save-surviving-second-i" (deletedPivotXml.Contains secondItem) true
+
+
 
 printfn ""
 printfn "Stage 21 structure tests: %d passed, %d failed" pass fail

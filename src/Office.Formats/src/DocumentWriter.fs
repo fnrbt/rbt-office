@@ -3026,20 +3026,6 @@ let generateDocumentXmlWithFormatting (paragraphs: obj array) : string =
 
     document doc
 
-let private generateDocumentXmlWithFormattingAndImages (paragraphs: obj array) (images: ImageScope) : string =
-    let hyperlinks = hyperlinkMap paragraphs
-    let paraElements =
-        paragraphs
-        |> generateBlocks (generateDocumentItemWithImages hyperlinks images) (generateTextBoxRun defaultPageSetupInfo hyperlinks images)
-
-    let body = element "w:body" [] [paraElements]
-
-    let doc =
-        element "w:document"
-            [("xmlns:w", Namespaces.word); ("xmlns:r", Namespaces.relationships); ("xmlns:m", Namespaces.math)]
-            [body]
-
-    document doc
 
 // ---- the body as it was read ---------------------------------------------------
 //
@@ -4789,20 +4775,6 @@ let generateContentTypes (hasComments: bool) (hasFootnotes: bool) (hasEndnotes: 
     let root = element "Types" [("xmlns", Namespaces.contentTypes)] children
     document root
 
-let private generateContentTypesWithImages hasComments hasFootnotes hasEndnotes (imageAssets: ImageAsset array) =
-    let children = [
-        yield selfClosing "Default" [("Extension", "rels"); ("ContentType", "application/vnd.openxmlformats-package.relationships+xml")]
-        yield selfClosing "Default" [("Extension", "xml"); ("ContentType", "application/xml")]
-        for extension, contentType in imageAssets |> Array.filter (fun image -> not image.Linked) |> Array.map (fun image -> image.Extension, image.ContentType) |> Array.distinct do
-            yield selfClosing "Default" [("Extension", extension); ("ContentType", contentType)]
-        yield selfClosing "Override" [("PartName", "/word/document.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml")]
-        yield selfClosing "Override" [("PartName", "/word/styles.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml")]
-        yield selfClosing "Override" [("PartName", "/word/numbering.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml")]
-        if hasComments then yield selfClosing "Override" [("PartName", "/word/comments.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.comments+xml")]
-        if hasFootnotes then yield selfClosing "Override" [("PartName", "/word/footnotes.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml")]
-        if hasEndnotes then yield selfClosing "Override" [("PartName", "/word/endnotes.xml"); ("ContentType", "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml")]
-    ]
-    document (element "Types" [("xmlns", Namespaces.contentTypes)] children)
 
 /// [Content_Types].xml for a package that carries kept parts: the original
 /// Default entries, the writer's own, and the Override entries of the kept parts.
@@ -4854,11 +4826,6 @@ let generateContentTypesPackage hasSettings hasComments hasFootnotes hasEndnotes
     ]
     document (element "Types" [("xmlns", Namespaces.contentTypes)] children)
 
-/// Generate _rels/.rels
-let generateRootRels () : string =
-    let rel = selfClosing "Relationship" [("Id", "rId1"); ("Type", RelationshipTypes.officeDocument); ("Target", "word/document.xml")]
-    let root = element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] [rel]
-    document root
 
 /// Generate word/_rels/document.xml.rels
 /// The writer's own relationship ids are named, not numbered: kept
@@ -4905,10 +4872,6 @@ let private generateHyperlinkRelationships (hyperlinks: Map<string, string>) =
     |> List.map (fun (url, relId) ->
         selfClosing "Relationship" [("Id", relId); ("Type", RelationshipTypes.hyperlink); ("Target", url); ("TargetMode", "External")])
 
-let private generateDocumentRelsWithImages hyperlinks hasComments hasFootnotes hasEndnotes (images: ImageScope) =
-    let rels = documentRelationshipElements hyperlinks hasComments hasFootnotes hasEndnotes @ generateImageRelationships images.Assets
-    let root = element "Relationships" [("xmlns", Namespaces.relationshipsPackage)] rels
-    document root
 
 let generateDocumentRelsPackage hasSettings hyperlinks hasComments hasFootnotes hasEndnotes (headers: HeaderFooterPartInfo array) (footers: HeaderFooterPartInfo array) (images: ImageScope) =
     let headerFooterRels =
@@ -4947,32 +4910,6 @@ let private generatePartRelsWithKept (kept: PreservedRelationshipInfo list) (hyp
 let private generatePartRels (hyperlinks: Map<string, string>) (images: ImageScope) =
     generatePartRelsWithKept [] hyperlinks images
 
-let generateComments (comments: CommentRef list) : string =
-    let children =
-        comments
-        |> List.map (fun comment ->
-            let attrs =
-                [("w:id", comment.Id); ("w:author", comment.Author |> Option.defaultValue "RedBat")]
-                @ (comment.Date |> Option.map (fun date -> [("w:date", date)]) |> Option.defaultValue [])
-            element "w:comment" attrs [
-                element "w:p" [] [
-                    runElement [] false comment.Text
-                ]
-            ])
-
-    document (element "w:comments" [("xmlns:w", Namespaces.word)] children)
-
-let generateNotes (rootName: string) (noteElementName: string) (notes: NoteRef list) : string =
-    let children =
-        notes
-        |> List.map (fun note ->
-            element noteElementName [("w:id", note.Id)] [
-                element "w:p" [] [
-                    runElement [] false note.Text
-                ]
-            ])
-
-    document (element rootName [("xmlns:w", Namespaces.word)] children)
 
 /// A footnote / endnote with its body as blocks (package.Footnotes /
 /// package.Endnotes), or with plain text only (a reference run's NoteText, for
@@ -5192,7 +5129,6 @@ let private collectNumberingInfoOf (undefinedLists: bool) (items: obj array) =
                   Undefined = undefinedLists && (optionalString (para?ListNumberFormat)).IsNone && (optionalString (para?ListLevelText)).IsNone }))
     |> List.distinctBy (fun info -> info.NumId, info.Level)
 
-let private collectNumberingInfo (items: obj array) = collectNumberingInfoOf false items
 
 /// Generate minimal styles.xml
 type StyleInfo = {
@@ -5874,41 +5810,6 @@ let private contentTypesStillRight (original: string) (generated: string) (writt
     writtenPaths |> List.forall (fun path -> path = "[Content_Types].xml" || (match originalType path with Some contentType -> generatedType path = Some contentType | None -> false))
     && originalOverrides |> List.forall (fun name -> Set.contains name written)
 
-/// Write DOCX from EditorFormat (Phase 2)
-let writeFromEditor (paragraphs: obj array) : Fable.Core.JS.Promise<obj> =
-    nextShapeId <- 1000
-    let hyperlinks = hyperlinkMap paragraphs
-    let bodyImages, _ = buildImageScope 1 paragraphs
-    let comments = collectComments paragraphs
-    let footnotes = collectNotes "footnote" paragraphs
-    let endnotes = collectNotes "endnote" paragraphs
-    // Rendered first: it picks the default list ids the paragraph writer uses.
-    let numberingXml = generateNumbering (collectNumberingInfo paragraphs)
-    let styles = collectStyles paragraphs
-    let hasComments = not comments.IsEmpty
-    let hasFootnotes = not footnotes.IsEmpty
-    let hasEndnotes = not endnotes.IsEmpty
-    let files = [
-        yield { Path = "[Content_Types].xml"; Content = generateContentTypesWithImages hasComments hasFootnotes hasEndnotes bodyImages.Assets }
-        yield { Path = "_rels/.rels"; Content = generateRootRels() }
-        yield { Path = "word/document.xml"; Content = generateDocumentXmlWithFormattingAndImages paragraphs bodyImages }
-        yield { Path = "word/_rels/document.xml.rels"; Content = generateDocumentRelsWithImages hyperlinks hasComments hasFootnotes hasEndnotes bodyImages }
-        yield { Path = "word/styles.xml"; Content = generateDefaultStylesWithStyles styles }
-        yield { Path = "word/numbering.xml"; Content = numberingXml }
-        if hasComments then
-            yield { Path = "word/comments.xml"; Content = generateComments comments }
-        if hasFootnotes then
-            yield { Path = "word/footnotes.xml"; Content = generateNotes "w:footnotes" "w:footnote" footnotes }
-        if hasEndnotes then
-            yield { Path = "word/endnotes.xml"; Content = generateNotes "w:endnotes" "w:endnote" endnotes }
-    ]
-
-    let binaryFiles =
-        bodyImages.Assets
-        |> Array.choose (fun image -> image.Data |> Option.map (fun data -> sprintf "word/media/%s" image.FileName, data))
-        |> Array.toList
-
-    createPackageWithBinary files binaryFiles
 
 [<Emit("(($0 != null && $0.Unchanged === true && $0.RegenerateAll !== true && $0.Preserved != null && $0.Preserved.OpenedBytes instanceof Uint8Array) ? $0.Preserved.OpenedBytes : null)")>]
 let private openedBytesOfUnchanged (_package: obj) : obj = jsNative

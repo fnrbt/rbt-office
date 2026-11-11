@@ -186,7 +186,7 @@ if (want("g")) {
   await ready(page);
   const r = await ev(page, () => {
     const w = window.__word, m = window.__wordModule, e = window.__editors[0];
-    const exp = w.exportToDocx(e); let fields = 0, multi = 0; const codes = [];
+    const exp = w.exportDocumentPackage(e).Paragraphs; let fields = 0, multi = 0; const codes = [];
     const walk = (o, d = 0) => { if (!o || typeof o !== "object" || d > 8) return; if (Array.isArray(o)) { let prev = null; for (const x of o) { if (x && typeof x === "object" && x.FieldCode) { fields++; if (prev === x.FieldCode) multi++; prev = x.FieldCode; if (codes.length < 5) codes.push(String(x.FieldCode).slice(0, 40)); } else prev = null; walk(x, d + 1); } return; } for (const k of Object.keys(o)) walk(o[k], d + 1); };
     walk(exp);
     return { fields, multi, codes };

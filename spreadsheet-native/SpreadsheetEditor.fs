@@ -8,50 +8,72 @@ open Rbt.Spreadsheet.Model
 
 module Layout = Rbt.Spreadsheet.Layout
 module SpreadsheetGrid = Rbt.Widgets.Composit.Ui.SpreadsheetGrid
+module Workbook = Rbt.Spreadsheet.Workbook
+module Recalc = Rbt.Spreadsheet.Recalc
 
 let inline private px (v: float) : float<px> = LanguagePrimitives.FloatWithMeasure v
 
-/// Interactive editor state. Holds the full workbook (sheets array +
-/// names + active index) plus per-app UI state: selection drag anchor,
-/// in-cell edit buffer, scroll position, formula bar text, undo/redo
-/// snapshots. Mirrors the structure of Rbt.Widgets.Composit.Ui.WordEditor.
-/// SpreadsheetModel can't satisfy the `equality` constraint because its
-/// History.Past/Future hold Command records with function-valued Undo/Redo
-/// fields. RefSignal sidesteps the constraint — we re-render on every
-/// assignment regardless of whether the new value is structurally equal,
-/// which is fine for the editor since assignments are explicit.
+/// Workbook is authoritative; arrays are read-only projections for the UI.
+/// History snapshots include names, tables, iteration, sheet identity and order.
 type SpreadsheetEditorState = {
+    Workbook: RefSignal<Workbook.Workbook>
     Sheets: RefSignal<SpreadsheetModel array>
     SheetNames: Signal<string array>
     ActiveSheet: Signal<int>
     ScrollX: Signal<float>
     ScrollY: Signal<float>
-    /// Visible viewport size in CSS pixels — written by `scrollWidget` on
-    /// every layout pass so key handlers (PageUp/PageDown, ensure-visible
-    /// after arrow moves) know how big the visible window is.
     VisibleWidth: Signal<float>
     VisibleHeight: Signal<float>
-    /// (row, col) of the cell currently being edited. None when no cell
-    /// is in edit mode. Set by double-click, F2, or a printable key.
     EditingCell: Signal<(int * int) option>
-    /// Live edit-buffer text for the cell in EditingCell. Reused as the
-    /// formula bar contents when the user clicks into the cell ref box.
     EditBuffer: Signal<string>
-    /// Drag-select anchor: the (row, col) where the pointer went down,
-    /// used to compute Range selections on PointerMove.
     DragAnchor: Signal<(int * int) option>
-    UndoStack: RefSignal<(SpreadsheetModel array * int) list>
-    RedoStack: RefSignal<(SpreadsheetModel array * int) list>
-    CalcEngine: RefSignal<Rbt.Spreadsheet.Calc.CalcEngine option>
+    UndoStack: RefSignal<Workbook.Workbook list>
+    RedoStack: RefSignal<Workbook.Workbook list>
+    CalcEngine: RefSignal<Recalc.Engine option>
+    Clipboard: RefSignal<(Workbook.SheetId * ClipboardData * string) option>
+    IssuedSheetIds: System.Collections.Generic.HashSet<Workbook.SheetId>
+    InvalidatedClipboardText: Signal<string option>
     FocusId: int
 }
 
-let createState (sheets: SpreadsheetModel array) (names: string array) (activeIndex: int) =
-    let idx = max 0 (min (sheets.Length - 1) activeIndex)
-    {
-        Sheets = refSignal sheets
-        SheetNames = signal names
-        ActiveSheet = signal idx
+let private sheetId (state: SpreadsheetEditorState) =
+    state.Workbook.Value.ActiveSheet
+
+let private projectWorkbook (state: SpreadsheetEditorState) (book: Workbook.Workbook) =
+    let previous = state.Workbook.Value
+    let oldSheets = state.Sheets.Value
+    let oldNames = state.SheetNames.Value
+    if obj.ReferenceEquals(previous.SheetOrder, book.SheetOrder) && oldSheets.Length = book.SheetOrder.Length && oldNames.Length = oldSheets.Length then
+        let mutable models = oldSheets
+        let mutable names = oldNames
+        book.SheetOrder |> List.iteri (fun index id ->
+            let sheet = book.Sheets.[id]
+            if not (obj.ReferenceEquals(models.[index], sheet.Model)) then
+                if obj.ReferenceEquals(models, oldSheets) then models <- Array.copy oldSheets
+                models.[index] <- sheet.Model
+            if names.[index] <> sheet.Name then
+                if obj.ReferenceEquals(names, oldNames) then names <- Array.copy oldNames
+                names.[index] <- sheet.Name)
+        if not (obj.ReferenceEquals(models, oldSheets)) then state.Sheets.Value <- models
+        if not (obj.ReferenceEquals(names, oldNames)) then state.SheetNames.Value <- names
+    else
+        state.Sheets.Value <- book.SheetOrder |> List.map (fun id -> book.Sheets.[id].Model) |> List.toArray
+        state.SheetNames.Value <- book.SheetOrder |> List.map (fun id -> book.Sheets.[id].Name) |> List.toArray
+    state.Workbook.Value <- book
+    state.ActiveSheet.Value <- Workbook.sheetIndex book.ActiveSheet book
+    match state.Clipboard.Value with
+    | Some (source, _, text) when not (Map.containsKey source book.Sheets) ->
+        state.InvalidatedClipboardText.Value <- Some text
+        state.Clipboard.Value <- None
+    | _ -> ()
+
+/// Imported workbooks can be supplied without losing sheet IDs or metadata.
+let createStateFromWorkbook (book: Workbook.Workbook) =
+    let state = {
+        Workbook = refSignal book
+        Sheets = refSignal [||]
+        SheetNames = signal [||]
+        ActiveSheet = signal 0
         ScrollX = signal 0.0
         ScrollY = signal 0.0
         VisibleWidth = signal 800.0
@@ -62,91 +84,160 @@ let createState (sheets: SpreadsheetModel array) (names: string array) (activeIn
         UndoStack = refSignal []
         RedoStack = refSignal []
         CalcEngine = refSignal None
+        Clipboard = refSignal None
+        IssuedSheetIds = System.Collections.Generic.HashSet<Workbook.SheetId>(book.SheetOrder)
+        InvalidatedClipboardText = signal None
         FocusId = Focus.allocId()
     }
+    projectWorkbook state book
+    state
 
-/// Read the currently-active sheet's model.
+/// Fresh models have no imported workbook metadata.
+let createState (sheets: SpreadsheetModel array) (names: string array) (activeIndex: int) =
+    if sheets.Length = 0 then invalidArg "sheets" "A workbook must have a sheet"
+    if names.Length <> sheets.Length then invalidArg "names" "Sheet names must match sheet models"
+    Rbt.Spreadsheet.XlsxBridge.buildWorkbookContext sheets names (Array.create sheets.Length true) Map.empty Map.empty activeIndex
+    |> createStateFromWorkbook
+
 let activeModel (state: SpreadsheetEditorState) : SpreadsheetModel =
-    let sheets = state.Sheets.Value
-    let idx = state.ActiveSheet.Value
-    if idx >= 0 && idx < sheets.Length then sheets.[idx]
-    else sheets.[0]
+    state.Workbook.Value.Sheets.[sheetId state].Model
 
 let activeSheetName (state: SpreadsheetEditorState) : string =
-    let names = state.SheetNames.Value
-    let idx = state.ActiveSheet.Value
-    if idx >= 0 && idx < names.Length then names.[idx] else "Sheet1"
+    state.Workbook.Value.Sheets.[sheetId state].Name
 
-/// Replace the active sheet's model. Does not push undo; callers that
-/// want history should go through applyChange.
-let private putActiveModel (state: SpreadsheetEditorState) (model: SpreadsheetModel) =
-    let sheets = state.Sheets.Value |> Array.copy
-    let idx = state.ActiveSheet.Value
-    if idx >= 0 && idx < sheets.Length then
-        sheets.[idx] <- model
-        state.Sheets.Value <- sheets
+let private recalculate (state: SpreadsheetEditorState) (book: Workbook.Workbook) hint =
+    match state.CalcEngine.Value with
+    | Some engine ->
+        match Recalc.recalculate engine book hint with
+        | Some calculated -> calculated
+        | None ->
+            let calculated, engine = Recalc.recalculateAll book
+            state.CalcEngine.Value <- Some engine
+            calculated
+    | None ->
+        let calculated, engine = Recalc.recalculateAll book
+        state.CalcEngine.Value <- Some engine
+        calculated
 
-/// Push the current workbook snapshot onto the undo stack, then apply
-/// the transform to the active sheet. Returns true when the change
-/// actually altered the model.
+let private installCalculatedEdit (state: SpreadsheetEditorState) (before: Workbook.Workbook) (calculated: Workbook.Workbook) =
+    state.UndoStack.Value <- before :: state.UndoStack.Value
+    state.RedoStack.Value <- []
+    projectWorkbook state calculated
+    Platform.requestRedraw()
+    true
+
+let private installEdit (state: SpreadsheetEditorState) (before: Workbook.Workbook) (after: Workbook.Workbook) hint =
+    if obj.ReferenceEquals(before, after) then false
+    else installCalculatedEdit state before (recalculate state after hint)
+
+let applyWorkbookChange (state: SpreadsheetEditorState) (transform: Workbook.Workbook -> Workbook.Workbook) =
+    let before = state.Workbook.Value
+    installEdit state before (transform before) None
+
+/// Model transforms may write cells (including through macros), so always
+/// recalculate across the entire workbook. Selection-only changes use the
+/// no-history path below instead.
 let applyChange (state: SpreadsheetEditorState) (transform: SpreadsheetModel -> SpreadsheetModel) =
-    state.CalcEngine.Value <- None
-    let before = activeModel state
-    let after = transform before
-    if System.Object.ReferenceEquals(before, after) then false
+    let before = state.Workbook.Value
+    let id = before.ActiveSheet
+    let oldModel = before.Sheets.[id].Model
+    let changed = transform oldModel
+    if obj.ReferenceEquals(oldModel, changed) then false
+    else installEdit state before (Workbook.updateSheetModelWithTables id changed before) None
+
+let applyChangeNoHistory (state: SpreadsheetEditorState) (transform: SpreadsheetModel -> SpreadsheetModel) =
+    let before = state.Workbook.Value
+    let id = before.ActiveSheet
+    let oldModel = before.Sheets.[id].Model
+    let changed = transform oldModel
+    if obj.ReferenceEquals(oldModel, changed) then false
     else
-        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
-        state.RedoStack.Value <- []
-        putActiveModel state after
+        let book = Workbook.updateSheetModelWithTables id changed before
+        if obj.ReferenceEquals(oldModel.Cells, changed.Cells) && obj.ReferenceEquals(oldModel.Tables, changed.Tables) then
+            projectWorkbook state book
+        else projectWorkbook state (recalculate state book None)
         Platform.requestRedraw()
         true
 
-/// Apply a transform without recording undo — used for selection and
-/// scroll-only changes that should not eat into the user's undo budget.
-let applyChangeNoHistory (state: SpreadsheetEditorState) (transform: SpreadsheetModel -> SpreadsheetModel) =
-    let before = activeModel state
-    let after = transform before
-    if System.Object.ReferenceEquals(before, after) then false
-    else
-        putActiveModel state after
-        Platform.requestRedraw()
-        true
+let private restore (state: SpreadsheetEditorState) (book: Workbook.Workbook) =
+    state.CalcEngine.Value <- None
+    match state.Clipboard.Value with
+    | Some (_, data, _) when data.IsCut -> state.Clipboard.Value <- None
+    | _ -> ()
+    projectWorkbook state book
+    state.EditingCell.Value <- None
+    state.EditBuffer.Value <- ""
+    Platform.requestRedraw()
 
 let undo (state: SpreadsheetEditorState) =
     match state.UndoStack.Value with
-    | (sheets, idx) :: rest ->
-        state.CalcEngine.Value <- None
-        state.RedoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.RedoStack.Value
+    | previous :: rest ->
+        state.RedoStack.Value <- state.Workbook.Value :: state.RedoStack.Value
         state.UndoStack.Value <- rest
-        state.Sheets.Value <- sheets
-        state.ActiveSheet.Value <- idx
-        Platform.requestRedraw()
+        restore state previous
         true
     | [] -> true
 
 let redo (state: SpreadsheetEditorState) =
     match state.RedoStack.Value with
-    | (sheets, idx) :: rest ->
-        state.CalcEngine.Value <- None
-        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
+    | next :: rest ->
+        state.UndoStack.Value <- state.Workbook.Value :: state.UndoStack.Value
         state.RedoStack.Value <- rest
-        state.Sheets.Value <- sheets
-        state.ActiveSheet.Value <- idx
-        Platform.requestRedraw()
+        restore state next
         true
     | [] -> true
 
 let switchSheet (state: SpreadsheetEditorState) (index: int) =
-    let sheets = state.Sheets.Value
-    if index >= 0 && index < sheets.Length && index <> state.ActiveSheet.Value then
-        state.CalcEngine.Value <- None
-        state.ActiveSheet.Value <- index
+    let order = state.Workbook.Value.SheetOrder
+    if index >= 0 && index < order.Length && index <> state.ActiveSheet.Value then
+        projectWorkbook state (Workbook.setActiveSheet order.[index] state.Workbook.Value)
         state.ScrollX.Value <- 0.0
         state.ScrollY.Value <- 0.0
         state.EditingCell.Value <- None
         state.EditBuffer.Value <- ""
         Platform.requestRedraw()
 
+/// Replace an open document without carrying pending edits, selection drag,
+/// clipboard provenance, history or calculated state into the new workbook.
+let replaceWorkbook (state: SpreadsheetEditorState) (book: Workbook.Workbook) =
+    state.EditingCell.Value <- None
+    state.EditBuffer.Value <- ""
+    state.DragAnchor.Value <- None
+    state.ScrollX.Value <- 0.0
+    state.ScrollY.Value <- 0.0
+    state.UndoStack.Value <- []
+    state.RedoStack.Value <- []
+    state.Clipboard.Value <- None
+    state.InvalidatedClipboardText.Value <- None
+    state.CalcEngine.Value <- None
+    state.IssuedSheetIds.Clear()
+    for id in book.SheetOrder do state.IssuedSheetIds.Add id |> ignore
+    projectWorkbook state book
+    Platform.requestRedraw()
+
+let insertSheet (state: SpreadsheetEditorState) (name: string) =
+    let current = state.Workbook.Value
+    if (Workbook.sheetNameProblem name).IsSome || Workbook.sheetNameTaken None name current then false
+    else applyWorkbookChange state (fun book ->
+        let id = Workbook.freshSheetId state.IssuedSheetIds.Contains book
+        state.IssuedSheetIds.Add id |> ignore
+        let sheet : Workbook.Sheet =
+            { Id = id; Name = name; Model = { createEmpty 1000 26 with Date1904 = Workbook.date1904 book }; Visible = true }
+        Workbook.insertSheet sheet book.SheetOrder.Length book)
+
+let renameSheet (state: SpreadsheetEditorState) (id: Workbook.SheetId) (name: string) =
+    let current = state.Workbook.Value
+    if (Workbook.sheetNameProblem name).IsSome || Workbook.sheetNameTaken (Some id) name current then false
+    else applyWorkbookChange state (Workbook.renameSheetEverywhere id name)
+
+let deleteSheet (state: SpreadsheetEditorState) (id: Workbook.SheetId) =
+    applyWorkbookChange state (fun book ->
+        match Workbook.lastVisibleSheetProblem id book with
+        | Some _ -> book
+        | None -> match Workbook.removeSheet id book with Some (changed, _) -> changed | None -> book)
+
+let moveSheet (state: SpreadsheetEditorState) (id: Workbook.SheetId) (index: int) =
+    applyWorkbookChange state (Workbook.moveSheet id index)
 // ── Selection helpers ──────────────────────────────────────
 
 let private clampRow (model: SpreadsheetModel) row = max 0 (min (model.RowCount - 1) row)
@@ -289,77 +380,53 @@ let private formatAfterInput (date1904: bool) (text: string) (format: CellFormat
     | Some code, (None | Some "" | Some "General") -> { format with NumberFormat = Some code }
     | _ -> format
 
-let private singleSheetWorkbook (name: string) (model: SpreadsheetModel) : Rbt.Spreadsheet.Workbook.Workbook =
-    let sheet : Rbt.Spreadsheet.Workbook.Sheet =
-        { Id = "sheet1"; Name = name; Model = model; Visible = true }
-    { Sheets = Map.ofList [ "sheet1", sheet ]
-      SheetOrder = [ "sheet1" ]
-      ActiveSheet = "sheet1"
-      Tables = Map.empty
-      Names = Map.empty
-      NameInfo = Map.empty
-      Iteration = None }
+let private fireChange (selection: Selection) (model: SpreadsheetModel) =
+    let address row col = sprintf "%s%d" (columnToLetter col) (row + 1)
+    let target =
+        match selection with
+        | SingleCell (row, col) -> sprintf "Range(\"%s\")" (address row col)
+        | Range (r0, c0, r1, c1) -> sprintf "Range(\"%s:%s\")" (address r0 c0) (address r1 c1)
+    Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target model
 
-let private recalcEditedCell (state: SpreadsheetEditorState) (addr: CellAddress) (cellData: CellData) (edited: SpreadsheetModel) (before: SpreadsheetModel) =
-    if state.Sheets.Value.Length <> 1 || cellData.Value = CellValue.Empty then
-        state.CalcEngine.Value <- None
-        Rbt.Spreadsheet.Formula.recalcAndSpill None None edited
-    else
-        let wb = singleSheetWorkbook (activeSheetName state) before
-        let sheetCell : Rbt.Spreadsheet.Workbook.SheetCell =
-            { Sheet = wb.ActiveSheet; Cell = addr }
-        match Rbt.Spreadsheet.Calc.trySingleCellEdit sheetCell cellData wb state.CalcEngine.Value with
-        | Rbt.Spreadsheet.Calc.IncrementalApplied (updatedWorkbook, updatedEngine) ->
-            state.CalcEngine.Value <- Some updatedEngine
-            match Map.tryFind updatedWorkbook.ActiveSheet updatedWorkbook.Sheets with
-            | Some sheet -> sheet.Model
-            | None -> edited
-        | Rbt.Spreadsheet.Calc.IncrementalFallback _ ->
-            state.CalcEngine.Value <- None
-            Rbt.Spreadsheet.Formula.recalcAndSpill None None edited
-
-let private writeCell (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
+let private writeCell (row: int) (col: int) (text: string) (model: SpreadsheetModel) =
     let value = parseCellInput model.Date1904 text
     let addr = { Row = row; Col = col }
-    // Reject edits that violate the cell's data-validation rule (keep old value).
     match validateEdit addr value model with
     | Result.Error _ -> model
-    | Result.Ok() ->
+    | Result.Ok () ->
         let edited =
             match value, getCell addr model with
             | Empty, _ -> clearCell addr model
-            | v, Some existing -> setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
-            | v, None -> setCell addr { Value = v; Format = formatAfterInput model.Date1904 text defaultFormat; Comment = None } model
-        if System.Object.ReferenceEquals(model, edited) then model
+            | v, Some existing ->
+                setCell addr { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format } model
+            | v, None ->
+                setCell addr { Value = v; Format = formatAfterInput model.Date1904 text defaultFormat; Comment = None } model
+        edited
+
+/// Run Worksheet_Change against freshly calculated values; macro writes are
+/// included in the same history entry and recalculated once more if needed.
+let private commitValueEdit (state: SpreadsheetEditorState) (before: Workbook.Workbook)
+                            (edited: Workbook.Workbook) hint (selection: Selection) =
+    let calculated = recalculate state edited hint
+    let id = edited.ActiveSheet
+    let model = calculated.Sheets.[id].Model
+    let afterEvent = fireChange selection model
+    let final =
+        if obj.ReferenceEquals(model, afterEvent) then calculated
         else
-            // Recompute formulas and (re)materialize dynamic-array spills so the edit
-            // is live — a spilling formula (FILTER/SORT/GROUPBY/PIVOTBY) refreshes when
-            // its source changes. (Same-sheet scope; cross-sheet recalc is separate.)
-            let cellData =
-                match value, getCell addr model with
-                | Empty, _ -> { Value = Empty; Format = defaultFormat; Comment = None }
-                | v, Some existing -> { existing with Value = v; Format = formatAfterInput model.Date1904 text existing.Format }
-                | v, None -> { Value = v; Format = formatAfterInput model.Date1904 text defaultFormat; Comment = None }
-            let recomputed = recalcEditedCell state addr cellData edited model
-            // Fire the workbook's Worksheet_Change handler (if any), passing the edited
-            // cell as Target. A no-op unless the macro module defines the sub; its
-            // writes apply directly, so this can't recurse back through writeCell.
-            let target = sprintf "Range(\"%s%d\")" (columnToLetter col) (row + 1)
-            let afterEvent = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target recomputed
-            if not (System.Object.ReferenceEquals(recomputed, afterEvent)) then
-                state.CalcEngine.Value <- None
-            afterEvent
+            let withMacro = Workbook.updateSheetModelWithTables id afterEvent calculated
+            recalculate state withMacro None
+    installCalculatedEdit state before final
 
 let private applyCellEdit (state: SpreadsheetEditorState) (row: int) (col: int) (text: string) =
-    let before = activeModel state
-    let after = writeCell state row col text before
-    if System.Object.ReferenceEquals(before, after) then false
+    let before = state.Workbook.Value
+    let id = before.ActiveSheet
+    let oldModel = before.Sheets.[id].Model
+    let edited = writeCell row col text oldModel
+    if obj.ReferenceEquals(oldModel, edited) then false
     else
-        state.UndoStack.Value <- (state.Sheets.Value, state.ActiveSheet.Value) :: state.UndoStack.Value
-        state.RedoStack.Value <- []
-        putActiveModel state after
-        Platform.requestRedraw()
-        true
+        let book = Workbook.updateSheetModelWithTables id edited before
+        commitValueEdit state before book (Some [ id, { Row = row; Col = col } ]) (SingleCell (row, col))
 
 /// Active cell reference like "B7" for the status bar / cell-ref box.
 let activeCellRef (state: SpreadsheetEditorState) =
@@ -429,26 +496,75 @@ let submitFormula (state: SpreadsheetEditorState) =
 
 // ── Clipboard ──────────────────────────────────────────────
 
+let private clipboardText (data: ClipboardData) (model: SpreadsheetModel) =
+    let cells = data.Cells |> List.map (fun (r, c, cell) ->
+        (r, c), Rbt.Spreadsheet.Input.editTextFor model.Date1904 (Some cell)) |> Map.ofList
+    [ for row in 0 .. data.SourceEndRow - data.SourceStartRow ->
+        [ for col in 0 .. data.SourceEndCol - data.SourceStartCol ->
+            Map.tryFind (row, col) cells |> Option.defaultValue "" ] |> String.concat "\t" ]
+    |> String.concat "\n"
+
+let private clearSelected (state: SpreadsheetEditorState) =
+    let before = state.Workbook.Value
+    let id = before.ActiveSheet
+    let model = before.Sheets.[id].Model
+    let cleared = clearSelectionCells model.Selection model
+    if obj.ReferenceEquals(model, cleared) then false
+    else commitValueEdit state before (Workbook.updateSheetModelWithTables id cleared before) None model.Selection
+
 let copySelection (state: SpreadsheetEditorState) =
     let model = activeModel state
-    let r, c = focusCell model
-    let text = cellEditText model r c
-    if text <> "" then Platform.clipboard.SetText text
+    let data = serializeSelection model.Selection model false
+    let text = clipboardText data model
+    state.Clipboard.Value <- Some (sheetId state, data, text)
+    state.InvalidatedClipboardText.Value <- None
+    Platform.clipboard.SetText text
     text
 
 let cutSelection (state: SpreadsheetEditorState) =
-    let text = copySelection state
-    if text <> "" then
-        let r, c = focusCell (activeModel state)
-        applyChange state (clearCell { Row = r; Col = c }) |> ignore
+    let model = activeModel state
+    let data = serializeSelection model.Selection model true
+    let text = clipboardText data model
+    state.Clipboard.Value <- Some (sheetId state, data, text)
+    state.InvalidatedClipboardText.Value <- None
+    Platform.clipboard.SetText text
+    clearSelected state |> ignore
     text
 
+let private pasteInternal (state: SpreadsheetEditorState) (source: Workbook.SheetId) (data: ClipboardData) =
+    let before = state.Workbook.Value
+    if not (Map.containsKey source before.Sheets) then
+        state.InvalidatedClipboardText.Value <- (state.Clipboard.Value |> Option.map (fun (_, _, text) -> text))
+        state.Clipboard.Value <- None
+        false
+    else
+        let id = before.ActiveSheet
+        let oldModel = before.Sheets.[id].Model
+        let anchors = pasteAnchors oldModel.Selection data
+        let pasted = pasteClipboardIntoSelection oldModel.Selection data oldModel
+        let selection = pasteSelection anchors data oldModel.Selection
+        if obj.ReferenceEquals(oldModel, pasted) then false
+        else
+            let book = Workbook.updateSheetModelWithTables id { pasted with Selection = selection } before
+            let book =
+                match anchors with
+                | [ anchor ] when data.IsCut ->
+                    let area = data.SourceStartRow, data.SourceStartCol, data.SourceEndRow, data.SourceEndCol
+                    let delta = anchor.Row - data.SourceStartRow, anchor.Col - data.SourceStartCol
+                    Workbook.repointMovedCells source area id delta book |> fst
+                | _ -> book
+            let committed = commitValueEdit state before book None selection
+            if committed && data.IsCut then state.Clipboard.Value <- None
+            committed
+
 let pasteFromClipboard (state: SpreadsheetEditorState) =
-    match Platform.clipboard.GetText() with
-    | Some text when text <> "" ->
+    let systemText = Platform.clipboard.GetText()
+    match state.Clipboard.Value, systemText with
+    | Some (source, data, ownText), text when text.IsNone || text = Some ownText -> pasteInternal state source data
+    | _, Some text when state.InvalidatedClipboardText.Value = Some text -> false
+    | _, Some text when text <> "" ->
         let r, c = focusCell (activeModel state)
-        applyCellEdit state r c text |> ignore
-        true
+        applyCellEdit state r c text
     | _ -> false
 
 // ── Hit testing ────────────────────────────────────────────
@@ -473,7 +589,7 @@ let private hitCell (state: SpreadsheetEditorState) width height (x: float) (y: 
 
 // ── Key handling ───────────────────────────────────────────
 
-let private handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
+let handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
     let editing = state.EditingCell.Value.IsSome
     match ev with
     | { Key = "Escape" } when editing ->
@@ -624,8 +740,7 @@ let private handleKey (state: SpreadsheetEditorState) (ev: KeyEvent) : bool =
         startEditing state r c None
         true
     | { Key = "Delete" } | { Key = "Backspace" } ->
-        let r, c = focusCell (activeModel state)
-        applyChange state (clearCell { Row = r; Col = c }) |> ignore
+        clearSelected state |> ignore
         true
     | { Ctrl = false; Alt = false; Key = key } when key.Length = 1 ->
         // Printable key with no edit in flight: start a new edit and

@@ -96,7 +96,8 @@ and Node(sheet: SheetState, row: int, col: int) =
     /// What the formula is made of (`classify`): 1 a function that gives another value every time,
     /// 2 references chosen while it is evaluated, 4 a 3-D reference, 8 a function that leaves out
     /// hidden rows (SUBTOTAL, AGGREGATE), 16 a defined name, 32 a structured reference, 64 a
-    /// function of the workbook's sheets (SHEET, SHEETS), 128 a reference to a sheet there is none of.
+    /// function of the workbook's sheets (SHEET, SHEETS), 128 a reference to a sheet there is none of,
+    /// 256 a GETPIVOTDATA lookup (its pivot layout can change independently of cell values).
     member val Traits = 0 with get, set
     /// Which wiring of a formula this is (`Engine.WireCount` when it was wired).
     member val WireStamp = 0 with get, set
@@ -239,7 +240,7 @@ let private traitsOf (name: string) =
             traits
             ||| (if upper = "SUBTOTAL" || upper = "AGGREGATE" then 8 else 0)
             ||| (if upper = "SHEET" || upper = "SHEETS" then 64 else 0)
-        if functionTraits.Count > 4096 then functionTraits.Clear()
+            ||| (if upper = "GETPIVOTDATA" then 256 else 0)
         functionTraits.[name] <- traits
         traits
 
@@ -797,6 +798,7 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
                 || (state.Name = sheet.Name
                     && before.StructureVersion = after.StructureVersion
                     && (obj.ReferenceEquals(before.Tables, after.Tables) || before.Tables = after.Tables)
+                    && (obj.ReferenceEquals(before.Pivots, after.Pivots) || before.Pivots = after.Pivots)
                     && sameFilterState before after)
             | _ -> false))
 
@@ -1142,6 +1144,8 @@ type private Surroundings = {
     Structural: HashSet<SheetId>
     /// Of those, the sheets where that was one insertion or deletion, with it.
     Moves: Dictionary<SheetId, StructureMove>
+    /// Sheets whose pivot lookup metadata changed, including removal.
+    PivotChanged: HashSet<SheetId>
 }
 
 let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
@@ -1151,6 +1155,7 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
     let renamed = ResizeArray<SheetState>()
     let structural = HashSet<SheetId>()
     let moves = Dictionary<SheetId, StructureMove>()
+    let pivotChanged = HashSet<SheetId>()
     let mutable problem : string = null
     let mutable tables = not (obj.ReferenceEquals(known.Tables, edited.Tables) || known.Tables = edited.Tables)
     let mutable visibility = false
@@ -1163,6 +1168,8 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
             if not (obj.ReferenceEquals(before, after)) then
                 if not (obj.ReferenceEquals(before.Tables, after.Tables) || before.Tables = after.Tables) then tables <- true
                 if not (sameFilterState before after) then visibility <- true
+                if not (obj.ReferenceEquals(before.Pivots, after.Pivots) || before.Pivots = after.Pivots) then
+                    pivotChanged.Add sheetId |> ignore
                 if not (sameMap before.RowHeights after.RowHeights) then visibility <- true
                 if before.StructureVersion <> after.StructureVersion then
                     if not (isLoaded after) || not (isLoaded before) then problem <- "rows or columns changed on a sheet that is not converted"
@@ -1301,11 +1308,11 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
                     following <- true
     let order = not (obj.ReferenceEquals(known.SheetOrder, edited.SheetOrder) || known.SheetOrder = edited.SheetOrder)
     let sheets = added.Count > 0 || removed.Count > 0 || renamed.Count > 0 || order
-    { Any = sheets || names || tables || visibility || structural.Count > 0
+    { Any = sheets || names || tables || visibility || structural.Count > 0 || pivotChanged.Count > 0
       Problem = problem
       Added = added; Removed = removed; Renamed = renamed
       SheetsChanged = sheets; NamesChanged = names; ChangedNames = changedNames; FollowerNames = followerNames; TablesChanged = tables; VisibilityChanged = visibility
-      Structural = structural; Moves = moves }
+      Structural = structural; Moves = moves; PivotChanged = pivotChanged }
 
 let private blankModel = createEmpty 1 1
 
@@ -1482,7 +1489,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         else
             { Any = false; Problem = null; Added = ResizeArray(); Removed = ResizeArray(); Renamed = ResizeArray()
               SheetsChanged = false; NamesChanged = false; ChangedNames = HashSet<string>(); FollowerNames = HashSet<string>(); TablesChanged = false; VisibilityChanged = false
-              Structural = HashSet<SheetId>(); Moves = Dictionary<SheetId, StructureMove>() }
+              Structural = HashSet<SheetId>(); Moves = Dictionary<SheetId, StructureMove>(); PivotChanged = HashSet<SheetId>() }
     if mode = 0 && engine.Workbook.Iteration <> edited.Iteration then decline "the setting of iterative calculation changed"
     elif not (isNull surroundings.Problem) then decline surroundings.Problem
     else
@@ -1637,6 +1644,13 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     for node in state.Nodes.Values do
                         if node.IsFormula && node.Traits &&& seedTraits <> 0 then toSeed node
             // One insertion or deletion: what reads the sheet at or beyond the edit, as it is wired now.
+            // Layout changes can change which data cell a GETPIVOTDATA call
+            // chooses even when its anchor stayed put. Rewire only pivot calls
+            // (including calls on another sheet), not every formula in the book.
+            if surroundings.PivotChanged.Count > 0 then
+                for state in engine.Sheets.Values do
+                    for node in state.Nodes.Values do
+                        if node.IsFormula && node.Traits &&& 256 <> 0 then toRewire node
             for KeyValue (sheetId, move) in surroundings.Moves do
                 match engine.Sheets.TryGetValue sheetId with
                 | true, state ->
@@ -1674,7 +1688,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                 formulaOf (match Map.tryFind { Row = row; Col = col } (loadedCells sheet.Model) with Some cell -> ValueSome cell | None -> ValueNone)
                             else node.Formula
                         // (Whether its array has to be laid out again is not known of a formula that is only wired again.)
-                        let evaluate = evaluate || node.Spills || node.Traits &&& (1 ||| 2 ||| 4 ||| 8 ||| 32 ||| 64 ||| 128) <> 0
+                        let evaluate = evaluate || node.Spills || node.Traits &&& (1 ||| 2 ||| 4 ||| 8 ||| 32 ||| 64 ||| 128 ||| 256) <> 0
                         going.Add node
                         if not (isNull text) then again.Add (struct (state, row, col, text, evaluate))
                     | _ -> ()

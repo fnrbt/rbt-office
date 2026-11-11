@@ -119,6 +119,22 @@ takes back the call alone and gives the revision the entry left, a second one gi
 false when that was the saved one), and `Redo()` twice gives the revision the call left. (Checked for 116 calls by the `undo-steps` check
 of `tools/xlsx-browser`.) What is view state is said so at the member (zoom, a viewer's filter, `SetShowOutline`, the validation circles).
 
+## Clipboard
+
+### `Copy(): Promise<boolean>`, `Cut(): Promise<boolean>`
+
+Capture the selection's cells, formulas and formatting in this workbook session, and write displayed text plus an HTML table to the system clipboard. The result reports whether the **system write** succeeded; a refused write still leaves the internal copy available. Switching sheets does not discard it. In read-only mode, `Cut` copies without clearing cells.
+
+`Cut` clears the source immediately as one undo step. Pasting the cut is a separate step on the destination sheet: carried formulas keep their source dependencies, references within the moved block travel together, and dependent formulas and defined names throughout the workbook follow the destination. A cut can be pasted internally once.
+
+### `Paste(): Promise<boolean>`, `PasteText(text: string, html: string): boolean`
+
+Paste at the selection. Matching text from this session uses the internal rich cells; other content uses its HTML table or tab-separated text. `Paste` falls back to the internal clipboard when system clipboard access is unavailable or refused. Its result reports whether anything was pasted, not whether clipboard permission was granted. A copied formula shifts relative references to its destination; a cut formula uses move semantics instead.
+
+Undo the paste on its destination sheet to restore overwritten cells and moved references/names. The source remains cleared until its separate Cut step is undone on the source sheet. Redo reapplies those steps. Clipboard state is session-only and is not saved to XLSX.
+
+Replacing the workbook or deleting the source sheet clears the internal clipboard. An asynchronous clipboard read that completes after workbook replacement or disposal is ignored.
+
 ## Formatting
 
 All of these act on the selection (unless they take a range), are ONE undo step, bump the revision and fire `OnChange`; a call that changes nothing adds no step. They do not recalculate (except the Clear members that remove values). A selection of up to 20 000 cells gives every cell the format (empty ones too); a larger one (whole rows / columns of a big sheet) changes only the cells that exist. All formats survive `ExportXlsx` → `ImportXlsx` (a re-imported cell without a font of its own reports the workbook's default font, e.g. `fontFamily: "Calibri", fontSize: 11`, instead of `null`).
@@ -426,6 +442,8 @@ no `OnChange`, `IsModified()` unchanged; the zoom is nevertheless written by `Ex
 A host zoom control should re-read `GetZoom()` on `OnSelectionChange` when `SheetIndex` changes (each sheet has its own zoom).
 Throws when `factor` is not a number in the range.
 
+Large sheets use a bounded physical scrollbar mapped to logical sheet coordinates; cells retain their normal zoomed size. Use `ScrollToCell`, `SelectCell` or `GoTo` rather than treating the DOM container's `scrollTop` / `scrollLeft` as sheet-pixel offsets. Wheel travel remains in screen pixels, including when the scrollbar represents a sheet beyond the browser's layout range.
+
 ### `SetShowGridLines(show: boolean)`, `SetShowHeaders(show: boolean)`, `SetShowFormulas(show: boolean)`, `SetShowZeros(show: boolean)`
 Each is one undo step, a new revision and an `OnChange`; each throws when `show` is not a boolean.
 - grid lines: the light cell grid (borders stay).
@@ -480,6 +498,12 @@ them (`<pivotTable tabId name>` of `xl/slicerCaches/*`, `xl/timelineCaches/*`, b
 (it is then a chart of its cached values); **renaming** such a sheet renames it in `<c:pivotSource><c:name>[book]Sheet!Pivot`. Not
 followed: a table slicer whose table was on a deleted sheet (its cache stays as it is), external-link parts (they do not name sheets
 of the workbook), and text inside chart titles.
+
+Imported pivot layouts follow row/column insertion and deletion: bounds, relative header/data offsets, and row/column items move together.
+`GETPIVOTDATA` tracks the pivot's label/value cells and is invalidated when its layout changes, including on other sheets.
+Undo/redo restores the layout with the cells. XLSX export preserves surviving pivot-item XML (including data-field indexes and unknown
+attributes/children), inserts blank items for internal gaps, and removes a pivot whose entire range was deleted. This is structural
+preservation of an imported pivot, **not pivot-cache refresh or pivot authoring**.
 
 ## Rows and columns (group 8)
 
@@ -921,8 +945,9 @@ Nothing to call for the recalculation itself: every edit recalculates what it ha
   sheet stays as long as it is and the keys stay inside it. Rows cost nothing: the layout keeps offsets for the rows up to the last
   one with a height of its own (`SpreadsheetLayout.AxisOffsets`) and works the rest out, so a sheet whose caret is in row 1 048 576
   takes the memory and the frame time it took before (measured: the Ctrl+Down there and its frame 50 ms, an entry there 33 ms).
-  The scroll height is then 26 million pixels at 100 % zoom: within what Chromium lays out (33.5 million); at a zoom above 125 %,
-  and in Firefox (17.9 million), the last rows cannot be scrolled to - a limit of the browser the grid does not work around yet.
+  Large extents now use an at-most-eight-million-pixel layout surface (also bounded after zoom), with logical scrolling and rebased
+  cell/overlay positions. Chromium checks cover the last row at 10%, 100% and 400%, frozen panes, hidden/custom-sized rows and the
+  last column at 400%. Firefox and Safari have not been verified.
 - **A drag held at the edge scrolls (0.1.15).** While the selection or the fill handle is dragged and the pointer is within 4 px of
   an edge of the grid or past it, the sheet scrolls under it every 50 ms, faster the further out the pointer is (25 px + 1.5 px per
   pixel of distance, at most 600 px; twice that sideways), and the selection / the fill preview follows to the cells that come into

@@ -15,9 +15,6 @@
   <Folder Name="/src/ShaperText/">
     <Project Path="src/ShaperText/Rbt.Word.ShaperText.fsproj" />
   </Folder>
-  <Folder Name="/src/Spreadsheet.Core/">
-    <Project Path="src/Spreadsheet.Core/Rbt.Spreadsheet.Core.fsproj" />
-  </Folder>
   <Folder Name="/src/Spreadsheet/">
     <Project Path="src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
   </Folder>
@@ -48,12 +45,4 @@
   <Folder Name="/src/Spreadsheet.Pdf/">
     <Project Path="src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
   </Folder>
-  <Project Path="../rbt-pdf/Rbt.Pdf/Rbt.Pdf.fsproj" />
-  <Project Path="../rbt-renderer/Rbt.Renderer.fsproj" />
-  <Project Path="../rbt-text/bidi/Rbt.Bidi.Core.fsproj" />
-  <Project Path="../rbt-text/engine/Rbt.Text.Engine.fsproj" />
-  <Project Path="../rbt-text/opentype/Rbt.OpenType.Core.fsproj" />
-  <Project Path="../rbt-text/shaper/Rbt.Shaper.Core.fsproj" />
-  <Project Path="../rbt-text/unicode/src/Rbt.Unicode/Rbt.Unicode.Core.fsproj" />
-  <Project Path="../rbt-widgets/Rbt.Widgets.fsproj" />
 </Solution>

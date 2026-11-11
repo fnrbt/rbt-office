@@ -183,16 +183,14 @@ module Ui =
         /// A bold section heading + hairline, non-interactive. Use to
         /// break a long form into named groups ("Spacing", "Indentation"…).
         | DialogSectionHeader
-        /// Color swatch button. Clicking opens the standard 16-color
-        /// picker; the picked hex is written back to the field's value
-        /// signal. Initial value should be a "#rrggbb" string.
+        /// A color selector; its value is a "#rrggbb" string.
+        /// The renderer supplies the platform's color picker.
         | DialogColorField
-        /// Click-to-step slider on a continuous range. Initial value is
-        /// parsed as a float; clicking cycles through the next step,
-        /// wrapping to min when it would overshoot max.
+        /// A numeric selector bounded by min and max. The renderer supplies
+        /// the platform's range/step control.
         | DialogSliderField of minValue: float * maxValue: float
-        /// Multi-line text area. `lines` is the visible row count; the
-        /// underlying TextInput still accepts arbitrarily many lines.
+        /// Multi-line text area. `lines` is the visible row count;
+        /// the value may contain arbitrarily many lines.
         | DialogTextAreaField of placeholder: string * lines: int
         /// Column of radio buttons. The active option's `Value` is what
         /// gets written to the field's value signal.

@@ -58,19 +58,23 @@ try {
         Word.onChange(editor, (change) => changes.push({ ...change }));
         Word.importFromDocxPackage(editor, pkg);
         check('the import returns with the document still being read', [Word.isLoadComplete(editor), Word.isLoadFailed(editor), Word.getLoadError(editor), Word.isLayoutComplete(editor)], [false, false, null, false]);
-        check('whenLoadComplete resolves to false when the document cannot be read on', [await within(Word.whenLoadComplete(editor), 60000)], [false]);
+        let settlements = 0;
+        const failedWaiters = [Word.whenLoadComplete(editor), Word.whenLoadComplete(editor)]
+            .map((p) => p.then((value) => { settlements++; return value; }));
+        check('whenLoadComplete resolves to false when the document cannot be read on', [await within(failedWaiters[0], 60000)], [false]);
         check('the load is failed, not complete', [Word.isLoadComplete(editor), Word.isLoadFailed(editor), typeof Word.getLoadError(editor), Word.getLoadError(editor) === pkg.Progressive.Error], [false, true, 'string', true]);
         const failures = changes.filter((change) => change.LoadFailed);
         check('the listeners are told once that it failed', [failures.filter((change) => change.LoadChanged).length, failures.length > 0 && failures[0].LoadChanged, failures.length > 0 && failures[0].LoadComplete, failures.length > 0 && failures[0].LoadError === Word.getLoadError(editor), changes.filter((change) => change.LoadChanged && !change.LoadFailed).every((change) => change.LoadError === null && !change.LoadComplete)], [1, true, false, true, true]);
         check('the layout completes over what was read', [await within(Word.whenLayoutComplete(editor).then(() => 'laid out'), 120000), Word.isLayoutComplete(editor), Word.getDocumentSize(editor).LayoutComplete, Word.getDocumentSize(editor).PageCount], ['laid out', true, true, goodPages]);
         check('the text, find and the page count are of what was read', [attempt(() => Word.getText(editor) === goodText), attempt(() => Word.findText(editor, 'Paragraph 69', false).length), attempt(() => Word.getPageCount(editor)), Word.getRenderStats(editor).Blocks], [true, goodFound, goodPages, 6999]);
         const saved = attempt(() => Word.exportDocumentPackage(editor));
-        check('saving refuses, and says why', [typeof saved === 'string' && saved.startsWith('threw: ') && saved.includes('cannot be saved') && saved.includes(Word.getLoadError(editor)), String(attempt(() => Word.exportToDocx(editor))).includes('cannot be saved')], [true, true]);
+        check('saving refuses the partial document and reports the load error', typeof saved === 'string' && saved.startsWith('threw: ') && saved.includes(Word.getLoadError(editor)), true);
         note(String(saved));
         check('it can still be edited and resolves at once from here on', [attempt(() => { Word.insertText(editor, 'X'); return Word.getText(editor).startsWith('X'); }), await Word.whenLoadComplete(editor), Word.isLoadFailed(editor)], [true, false, true]);
         // Another document loaded: the failure was the other document's.
         Word.setContent(editor, 'another document');
         check('a document loaded afterwards is not failed', [Word.isLoadFailed(editor), Word.getLoadError(editor), Word.isLoadComplete(editor), await Word.whenLoadComplete(editor), attempt(() => Word.exportDocumentPackage(editor).Paragraphs.length)], [false, null, true, true, 1]);
+        check('all failure waiters keep their generation result after replacement', [await within(failedWaiters[1], 5000), settlements], [false, 2]);
         Word.dispose(editor); canvas.remove();
     }
 

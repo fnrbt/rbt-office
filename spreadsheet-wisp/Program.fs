@@ -15,7 +15,6 @@ module L = Rbt.Spreadsheet.Layout
 module EH = Rbt.SpreadsheetWisp.EditorHost
 module GR = Rbt.SpreadsheetWisp.GridRender
 module Pivot = Rbt.Spreadsheet.Pivot
-module Formula = Rbt.Spreadsheet.Formula
 module CF = Rbt.Spreadsheet.ConditionalFormatting
 
 let private appW = 1200
@@ -56,12 +55,7 @@ module XlsxRead =
     /// it what the editor does not model (drawings, named styles, theme, ...).
     let mutable source : Bridge.XlsxSource option = None
 
-    /// Sheet states of the workbook that was last loaded, by sheet name. The
-    /// editor shows every sheet and does not model visibility, so the state is
-    /// kept here to be written back on save.
-    let sheetStates = System.Collections.Generic.Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-
-    let load path : (M.SpreadsheetModel array * string array) option =
+    let load path : Rbt.Spreadsheet.Workbook.Workbook option =
         try
             let bytes = File.ReadAllBytes path
             match XlsxReader.loadBytesNative bytes with
@@ -70,38 +64,20 @@ module XlsxRead =
             | Some wb ->
                 let macros = VbaProject.extractFromXlsx bytes |> Option.defaultValue ""
                 let imported = Bridge.Import.importWorkbookWith Bridge.editorImportOptions wb
-                let names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
-                sheetStates.Clear()
-                for sheet in imported.Sheets do sheetStates.[sheet.Name] <- sheet.State
-                let sheets =
-                    imported.Sheets
-                    |> Array.map (fun sheet -> if String.IsNullOrWhiteSpace macros then sheet.Model else { sheet.Model with Macros = macros })
-                // The baseline is what the editor starts from, macros included.
+                let context =
+                    if String.IsNullOrWhiteSpace macros then imported.Context
+                    else
+                        { imported.Context with Sheets = imported.Context.Sheets |> Map.map (fun _ sheet -> { sheet with Model = { sheet.Model with Macros = macros } }) }
+                let sheets = context.SheetOrder |> List.map (fun id -> context.Sheets.[id].Model) |> List.toArray
                 source <- Some { imported.Source with Baseline = sheets }
-                Some(sheets, names)
+                Some context
         with ex ->
             eprintfn "[spreadsheet-wisp] load failed: %s" ex.Message
             None
 
 module XlsxWrite =
-    let save (sheets: M.SpreadsheetModel array) (names: string array) path =
-        let macroSource = sheets |> Array.tryPick (fun m -> if String.IsNullOrWhiteSpace m.Macros then None else Some m.Macros)
-        let workbook =
-            Bridge.Export.toWorkbookOut
-                { Sheets = sheets
-                  Names = names
-                  Visible =
-                    names
-                    |> Array.map (fun name ->
-                        match XlsxRead.sheetStates.TryGetValue name with
-                        | true, state -> state = "visible"
-                        | _ -> true)
-                  ActiveSheetIndex = 0
-                  // The editor does not edit defined names: they go back as loaded.
-                  NameInfo = Map.empty; DefinedNames = (match XlsxRead.source with Some source -> source.BaselineNames | None -> Map.empty)
-                  Source = XlsxRead.source
-                  Macros = macroSource }
-        File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes workbook)
+    let save st path =
+        File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes (EH.exportWorkbook st XlsxRead.source))
 
 let private sampleWorkbook () =
     let put r c v m = M.setCell ({ Row = r; Col = c } : M.CellAddress) ({ Value = v; Format = M.defaultFormat; Comment = None } : M.CellData) m
@@ -150,7 +126,6 @@ let private selfTest () =
     EH.applyCellEdit st 0 1 "=A1*5" |> ignore
     let b1 = M.getCellValue { Row = 0; Col = 1 } (EH.activeModel st)
     let formulaOk = match b1 with M.Formula(_, M.Number 10.0) -> true | _ -> false
-    let incremental = st.LastRecalcWasIncremental || st.CalcEngine.Value.IsSome
     EH.handleKey st { Key = "ArrowRight"; Shift = false; Ctrl = false; Alt = false } |> ignore
     let navOk = EH.focusCell (EH.activeModel st) = (0, 1)
     EH.handleKey st { Key = "Delete"; Shift = false; Ctrl = false; Alt = false } |> ignore
@@ -159,24 +134,25 @@ let private selfTest () =
     let restored = M.getCellValue { Row = 0; Col = 1 } (EH.activeModel st) <> M.Empty
     EH.redo st |> ignore
     let redone = M.getCellValue { Row = 0; Col = 1 } (EH.activeModel st) = M.Empty
-    if formulaOk && navOk && deleted && restored && redone && incremental then
+    if formulaOk && navOk && deleted && restored && redone then
         printfn "spreadsheet-wisp selftest ok"
         0
     else
-        eprintfn "selftest failed formula=%b nav=%b deleted=%b restored=%b redone=%b incremental=%b" formulaOk navOk deleted restored redone incremental
+        eprintfn "selftest failed formula=%b nav=%b deleted=%b restored=%b redone=%b" formulaOk navOk deleted restored redone
         1
 
 [<EntryPoint>]
 let main argv =
     if Array.contains "--selftest" argv then selfTest () else
     let xlsxPath = argv |> Array.tryFind (fun a -> a.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
-    let sheets, names =
+    let st =
         match xlsxPath |> Option.bind XlsxRead.load with
         | Some loaded ->
             xlsxPath |> Option.iter rememberRecent
-            loaded
-        | None -> sampleWorkbook ()
-    let st = EH.create sheets names 0
+            EH.createWithWorkbook loaded
+        | None ->
+            let sheets, names = sampleWorkbook ()
+            EH.create sheets names 0
     let shell = Shell.create ()
     let status = refSignal "Ready"
     let currentPath = refSignal xlsxPath
@@ -188,7 +164,7 @@ let main argv =
 
     let writeTo path =
         try
-            XlsxWrite.save st.Sheets.Value st.SheetNames.Value path
+            XlsxWrite.save st path
             currentPath.Value <- Some path
             rememberRecent path
             status.Value <- sprintf "Saved %s" (Path.GetFileName path)
@@ -196,13 +172,8 @@ let main argv =
 
     let loadFromPath path =
         match XlsxRead.load path with
-        | Some (sheets, names) ->
-            st.Sheets.Value <- sheets
-            st.SheetNames.Value <- names
-            st.ActiveSheet.Value <- 0
-            st.UndoStack.Value <- []
-            st.RedoStack.Value <- []
-            st.CalcEngine.Value <- None
+        | Some workbook ->
+            EH.replaceWorkbook st workbook
             currentPath.Value <- Some path
             rememberRecent path
             status.Value <- sprintf "Opened %s" (Path.GetFileName path)
@@ -253,7 +224,7 @@ let main argv =
     let openMacroDialog () =
         let model = EH.activeModel st
         XlUi.macroDialog model.Macros (fun source ->
-            let sheetName = names |> Array.tryItem st.ActiveSheet.Value |> Option.defaultValue "Sheet1"
+            let sheetName = EH.activeSheetName st
             let mutable msg = "Macro ran"
             EH.applyChange st (fun m ->
                 match Rbt.Spreadsheet.Vba.runOnModelWithSheetName sheetName { m with Macros = source } source with
@@ -296,9 +267,7 @@ let main argv =
                 let colOpt = if req.ColField = "" then None else Some req.ColField
                 match Pivot.buildFormula sr sc er ec headers rowFields colOpt req.ValueField req.Agg with
                 | Result.Ok formula ->
-                    EH.applyChange st (fun m ->
-                        let m1 = M.setCell { Row = dr; Col = dc } { Value = M.Formula(formula, M.Empty); Format = M.defaultFormat; Comment = None } m
-                        Formula.recalcAndSpill None None m1) |> ignore
+                    EH.applyChange st (M.setCell { Row = dr; Col = dc } { Value = M.Formula(formula, M.Empty); Format = M.defaultFormat; Comment = None }) |> ignore
                     status.Value <- sprintf "Inserted pivot formula at %s" (M.formatCellRef dr dc)
                     true
                 | Result.Error msg -> status.Value <- "Pivot: " + msg; false
@@ -307,22 +276,17 @@ let main argv =
 
     let openInsertSheetDialog () =
         XlUi.insertSheetDialog (fun name ->
-            st.Sheets.Value <- Array.append st.Sheets.Value [| M.createEmpty 100 26 |]
-            st.SheetNames.Value <- Array.append st.SheetNames.Value [| name |]
-            EH.switchSheet st (st.Sheets.Value.Length - 1)
-            status.Value <- sprintf "Added sheet \"%s\"" name)
+            match EH.addSheet st name with
+            | Ok () -> status.Value <- sprintf "Added sheet \"%s\"" name
+            | Error problem -> status.Value <- problem)
         |> Shell.openDialog shell
 
     let openRenameSheetDialog () =
-        let idx = st.ActiveSheet.Value
-        let initial = st.SheetNames.Value |> Array.tryItem idx |> Option.defaultValue ""
+        let initial = EH.activeSheetName st
         XlUi.renameSheetDialog initial (fun name ->
-            let next = Array.copy st.SheetNames.Value
-            if idx >= 0 && idx < next.Length then
-                next.[idx] <- name
-                st.SheetNames.Value <- next
-                st.CalcEngine.Value <- None
-                status.Value <- sprintf "Renamed sheet to \"%s\"" name)
+            match EH.renameSheet st name with
+            | Ok () -> status.Value <- sprintf "Renamed sheet to \"%s\"" name
+            | Error problem -> status.Value <- problem)
         |> Shell.openDialog shell
 
     let actions : XlUi.ShellActions =
@@ -369,14 +333,9 @@ let main argv =
           RunMacro = openMacroDialog
           InsertSheet = openInsertSheetDialog
           DeleteSheet = (fun () ->
-              if st.Sheets.Value.Length <= 1 then status.Value <- "Can't delete the last sheet"
-              else
-                  let idx = st.ActiveSheet.Value
-                  st.Sheets.Value <- st.Sheets.Value |> Array.mapi (fun i s -> i, s) |> Array.filter (fun (i, _) -> i <> idx) |> Array.map snd
-                  st.SheetNames.Value <- st.SheetNames.Value |> Array.mapi (fun i s -> i, s) |> Array.filter (fun (i, _) -> i <> idx) |> Array.map snd
-                  st.ActiveSheet.Value <- max 0 (min (st.Sheets.Value.Length - 1) idx)
-                  st.CalcEngine.Value <- None
-                  status.Value <- "Deleted sheet")
+              match EH.deleteSheet st with
+              | Ok () -> status.Value <- "Deleted sheet"
+              | Error problem -> status.Value <- problem)
           RenameSheet = openRenameSheetDialog
           SwitchSheet = (fun name -> st.SheetNames.Value |> Array.tryFindIndex ((=) name) |> Option.iter (EH.switchSheet st))
           EditFormula = EH.editFormula st

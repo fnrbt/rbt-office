@@ -135,11 +135,6 @@ module Host =
         | Some editor -> command editor; refreshReviewState host
         | None -> ()
 
-    let exportDocument host : obj array =
-        match host.Editor with
-        | Some editor -> WordApi.exportToDocx editor
-        | None -> [||]
-
     let exportDocumentPackage host : obj option =
         host.Editor |> Option.map WordApi.exportDocumentPackage
 
@@ -759,9 +754,6 @@ module Host =
 
     let openMountedAnnotation kind =
         mountedHost |> Option.iter (openAnnotation kind)
-
-    let exportMountedDocument () =
-        mountedHost |> Option.map exportDocument |> Option.defaultValue [||]
 
     let exportMountedDocumentPackage () =
         mountedHost |> Option.bind exportDocumentPackage |> Option.defaultValue null

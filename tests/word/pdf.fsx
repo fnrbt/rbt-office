@@ -118,6 +118,71 @@ let blankPlan: Pdf.PaintPlan =
       ImageSources = []
       ImageUses = []
       PageUnit = Pdf.CssPixels }
+// The chosen PDF font must be the face that produced the glyph IDs and
+// advances, not merely a face with the requested weight in another family.
+let serifBoldBytes = IO.File.ReadAllBytes("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf")
+let regularA: Pdf.FontFace =
+    { FaceName = "FamilyA"; Family = "FamilyA"; Bold = false; Italic = false; Data = fontBytes }
+let styledB: Pdf.FontFace =
+    { FaceName = "FamilyB-Bold"; Family = "FamilyB"; Bold = true; Italic = false; Data = serifBoldBytes }
+let italicB: Pdf.FontFace =
+    { styledB with FaceName = "FamilyB-Italic"; Bold = false; Italic = true }
+let paintStyle: Paint.TextPaintStyle =
+    { Bold = false; Italic = false; Underline = false; AllCaps = false
+      SmallCaps = false; Strike = false; FontSize = 18.0; CharacterSpacing = 0.0
+      FontFamily = Some "FamilyA"; Color = "#000000"; Highlight = None; VertAlign = None }
+let facePlan style =
+    { blankPlan with Commands = [ Paint.DrawText ("WAV fi", style, 12.0, 48.0, 65.0) ] }
+let renderFaces fonts shape style =
+    Pdf.toBytesWithPaintPlan
+        { options with DefaultFontFamily = "FamilyB"; Fonts = fonts; ShapeText = shape }
+        (facePlan style)
+// Font resource names may differ even when the subset and glyph stream are
+// identical. Ignore only those names and the xref offsets they change.
+let comparablePdf (bytes: byte[]) =
+    let pdf = Text.Encoding.GetEncoding("ISO-8859-1").GetString bytes
+    let xref = pdf.LastIndexOf("\nxref", StringComparison.Ordinal)
+    let body = if xref >= 0 then pdf.Substring(0, xref) else pdf
+    Text.RegularExpressions.Regex.Replace(body, @"(/(?:BaseFont|FontName)\s*)/[^\s<>\[\]()]+", "$1/NormalizedFont")
+
+
+for label, bold, italic in [ "bold", true, false; "italic", false, true; "bold italic", true, true ] do
+    let style = { paintStyle with Bold = bold; Italic = italic }
+    let actual = renderFaces [ regularA; styledB; italicB ] None style
+    let expected = renderFaces [ regularA ] None style
+    let wrongFace = renderFaces [ styledB; italicB ] None style
+    check ("shaping face fallback " + label) (actual = expected && actual <> wrongFace)
+        "PDF must contain the same subset, glyphs and widths as the requested family's regular face"
+
+// The external shaper may select another registered face, or even one that
+// was not registered in Fonts. In both cases its returned font owns the IDs.
+let externalFont = Rbt.Text.Engine.loadFont serifBoldBytes
+let externalShape text (style: Rbt.Word.TextBuffer.TextStyle) =
+    Some (externalFont, Rbt.Text.Engine.shapeText externalFont style.FontSize text)
+let externalActual = renderFaces [ regularA; styledB ] (Some externalShape) paintStyle
+let externalExpected = renderFaces [ styledB ] (Some externalShape) paintStyle
+check "external shaper registered face" (externalActual = externalExpected)
+    "external shaping face, not the requested family, must determine PDF glyphs and widths"
+
+let externalUnregistered = renderFaces [ regularA ] (Some externalShape) paintStyle
+let externalRegistered = renderFaces [ regularA; styledB ] (Some externalShape) paintStyle
+let externalWrong = renderFaces [ regularA ] None paintStyle
+check "external shaper unregistered face"
+    (comparablePdf externalUnregistered = comparablePdf externalRegistered
+     && comparablePdf externalUnregistered <> comparablePdf externalWrong)
+    "the external face's own bytes must be embedded when absent from Fonts"
+
+// Duplicate names must not pair a shaped face with the other face's bytes.
+let collisionA = { regularA with FaceName = "shared-name" }
+let collisionB = { styledB with FaceName = "shared-name" }
+let collisionActual = renderFaces [ collisionA; collisionB ] None { paintStyle with Bold = true }
+let collisionExpected = renderFaces [ regularA; collisionB ] None { paintStyle with Bold = true }
+let collisionWrong = renderFaces [ collisionB ] None { paintStyle with Bold = true }
+check "duplicate face name keeps identity"
+    (comparablePdf collisionActual = comparablePdf collisionExpected
+     && comparablePdf collisionActual <> comparablePdf collisionWrong)
+    "a name collision must not substitute the other font's bytes"
+
 
 let imageResource source dataSize : Pdf.ImageResource =
     { Source = source

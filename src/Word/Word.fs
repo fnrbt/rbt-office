@@ -25,6 +25,35 @@ module API =
 
     let private referenceSlot (value: obj) slotCount =
         referenceHash value &&& (slotCount - 1)
+    // An identity trie: each object key is weak, so an abandoned history state
+    // is not kept alive by revision tracking. Primitive/null keys use a Map.
+    // Its keys match Input.sameContentObjects, excluding selection.
+    [<Emit("({ weak: new WeakMap(), primitive: new Map() })")>]
+    let private newRevisionIndex () : obj = jsNative
+
+    [<Emit("""((index, doc) => {
+        let node = index;
+        for (const key of [doc.Blocks, doc.PageSetup, doc.Styles, doc.Headers, doc.Footers, doc.HeaderParts, doc.FooterParts, doc.Package]) {
+            const map = key !== null && (typeof key === 'object' || typeof key === 'function') ? node.weak : node.primitive;
+            node = map.get(key);
+            if (node === undefined) return -1;
+        }
+        return node.revision === undefined ? -1 : node.revision;
+    })($0, $1)""")>]
+    let private findRevision (_index: obj) (_doc: Doc.Document) : int = jsNative
+
+    [<Emit("""((index, doc, revision) => {
+        let node = index;
+        for (const key of [doc.Blocks, doc.PageSetup, doc.Styles, doc.Headers, doc.Footers, doc.HeaderParts, doc.FooterParts, doc.Package]) {
+            const map = key !== null && (typeof key === 'object' || typeof key === 'function') ? node.weak : node.primitive;
+            let next = map.get(key);
+            if (next === undefined) { next = { weak: new WeakMap(), primitive: new Map() }; map.set(key, next); }
+            node = next;
+        }
+        node.revision = revision;
+    })($0, $1, $2)""")>]
+    let private rememberRevision (_index: obj) (_doc: Doc.Document) (_revision: int) : unit = jsNative
+
 
     /// Editor instance
     type Editor = {
@@ -45,10 +74,9 @@ module API =
         /// The revision the document was loaded with: the document is what
         /// was opened while (and whenever) it has this revision.
         mutable OpenedRevision: int
-        /// The document the current revision was given to, and the states
-        /// undo / redo can come back to, newest first.
+        /// Current content and identities of states still retained elsewhere.
         mutable RevisionDocument: Doc.Document
-        KnownRevisions: ResizeArray<Doc.Document * int>
+        mutable RevisionIndex: obj
         /// Font families the host's text stack can draw (see setFontFamilies).
         mutable FontFamilies: string array
         /// The whole document as the listeners last heard of it. (While a
@@ -62,7 +90,7 @@ module API =
         mutable StopLoading: unit -> unit
         /// When the listeners were last told that more was read, and who waits for the end.
         mutable LoadNotified: float
-        LoadWaiters: ResizeArray<unit -> unit>
+        LoadWaiters: ResizeArray<bool -> unit>
         /// Why the document on display could not be read to its end, when it
         /// could not (see isLoadFailed): it is what was read, and is not saved.
         mutable LoadFailure: string option
@@ -98,24 +126,17 @@ module API =
     /// content seen before (undo, redo) gets its number back, anything else
     /// a new one.
     let private observeRevision (editor: Editor) (doc: Doc.Document) =
-        // (By identity, in constant time: a caret move keeps every part of the
-        // document but the selection, and undo / redo bring back the very
-        // documents that were left. Comparing contents walked the blocks of
-        // up to 400 remembered states at every keystroke.)
+        // A selection move retains the content objects; a history step brings
+        // those objects back. Intermediate coalesced typing states need not be
+        // held strongly just to preserve the history's older undo target.
         if not (Inp.sameContentObjects doc editor.RevisionDocument) then
-            // What is being left can be come back to.
-            editor.KnownRevisions.Insert(0, (editor.RevisionDocument, editor.Revision))
-            if editor.KnownRevisions.Count > 400 then editor.KnownRevisions.RemoveAt (editor.KnownRevisions.Count - 1)
-            let mutable known = -1
-            let mutable i = 0
-            while known < 0 && i < editor.KnownRevisions.Count do
-                let state, revision = editor.KnownRevisions.[i]
-                if Inp.sameContentObjects state doc then known <- revision
-                i <- i + 1
+            rememberRevision editor.RevisionIndex editor.RevisionDocument editor.Revision
+            let known = findRevision editor.RevisionIndex doc
             if known >= 0 then editor.Revision <- known
             else
                 editor.LastRevision <- editor.LastRevision + 1
                 editor.Revision <- editor.LastRevision
+            rememberRevision editor.RevisionIndex doc editor.Revision
             editor.RevisionDocument <- doc
 
     /// The frames of the pages of the layout the layout queries read (set by
@@ -213,15 +234,16 @@ module API =
     /// Show a newly loaded document (import, setContent). It replaces the
     /// previous document wholesale, so the undo history is cleared rather
     /// than letting Ctrl+Z swap the old document back in.
-    let private stopLoading (editor: Editor) =
-        editor.StopLoading ()
+    let private stopLoading (editor: Editor) (result: bool) =
+        // Detach before releasing: release may notify other package consumers.
+        let stop = editor.StopLoading
         editor.StopLoading <- ignore
         editor.Loading <- None
         editor.Handler.RenderContext.Progress.LoadPending <- false
-        if editor.LoadWaiters.Count > 0 then
-            let waiters = editor.LoadWaiters.ToArray()
-            editor.LoadWaiters.Clear()
-            for waiter in waiters do waiter ()
+        let waiters = editor.LoadWaiters.ToArray()
+        editor.LoadWaiters.Clear()
+        stop ()
+        for waiter in waiters do waiter result
 
     /// What follows a step of a package that is being read (set further down).
     let private loadStep : (Editor -> Docx.ImportStep -> unit) ref = ref (fun _ _ -> ())
@@ -233,7 +255,7 @@ module API =
         reading |> Option.iter Docx.holdProgressiveImport
         // (The document that was on display may have been one that was being read: the editor
         // is done with that package - which ends its reading, unless a viewer shows it too.)
-        stopLoading editor
+        stopLoading editor false
         editor.LoadFailure <- loading |> Option.bind (fun state -> state.Failed)
         editor.Fonts.Reset ()
         match reading with
@@ -254,7 +276,7 @@ module API =
         editor.Whole <- newDoc
         // A loaded document is a new document: nothing of the old one can be
         // come back to, and it is as it was saved.
-        editor.KnownRevisions.Clear()
+        editor.RevisionIndex <- newRevisionIndex ()
         observeRevision editor newDoc
         editor.SavedRevision <- editor.Revision
         editor.OpenedRevision <- editor.Revision
@@ -276,23 +298,17 @@ module API =
     let canRedo (editor: Editor) =
         Inp.canRedo editor.Handler
 
-    /// Detach the editor's window-level listeners and remove its hidden text
-    /// input element. Call when the canvas is removed.
+    /// Detach the editor's input listeners and remove its hidden text input.
+    /// Call before removing or reusing the canvas.
     ///
     /// A document that was still being read stays what was read: the reading
     /// is cancelled (unless a viewer or another editor shows the package), and
     /// the editor says of it what it says after cancelLoad - isLoadComplete
     /// false, isLoadFailed true, getLoadError that the reading was cancelled.
     let dispose (editor: Editor) =
-        let reading = editor.Loading
-        editor.StopLoading ()
-        editor.StopLoading <- ignore
-        match reading with
-        | Some state ->
-            if not state.Complete then editor.LoadFailure <- state.Failed |> Option.orElse (Some Docx.readingCancelledMessage)
-            editor.Loading <- None
-        | None -> ()
-        editor.LoadWaiters.Clear()
+        if editor.Loading.IsSome then
+            editor.LoadFailure <- Some Docx.readingCancelledMessage
+            stopLoading editor false
         editor.Listeners.Clear()
         Ren.cancelScheduledLayout editor.Handler.RenderContext
         Inp.dispose editor.Handler
@@ -515,14 +531,17 @@ module API =
         if editor.Handler.Story.IsSome then Inp.exitStory editor.Handler |> ignore
         let blocksBefore = List.length editor.Doc.Blocks
         let sameWhole = obj.ReferenceEquals(editor.Whole, editor.Doc)
-        let doc = Inp.extendDocuments editor.Handler step.Extend
+        // History commands extend lazily. Transfer their old identity when
+        // each retained document is extended, not just the current state.
+        let extend doc =
+            let revision = findRevision editor.RevisionIndex doc
+            let extended = step.Extend doc
+            if revision >= 0 then rememberRevision editor.RevisionIndex extended revision
+            extended
+        let doc = Inp.extendDocuments editor.Handler extend
         editor.Doc <- doc
-        editor.Whole <- (if sameWhole then doc else step.Extend editor.Whole)
-        // (The same content as before, with the same number: reading is not a change of the user's.)
-        editor.RevisionDocument <- step.Extend editor.RevisionDocument
-        for index in 0 .. editor.KnownRevisions.Count - 1 do
-            let known, revision = editor.KnownRevisions.[index]
-            editor.KnownRevisions.[index] <- (step.Extend known, revision)
+        editor.Whole <- (if sameWhole then doc else extend editor.Whole)
+        editor.RevisionDocument <- extend editor.RevisionDocument
         match editor.Loading with
         | Some importing -> editor.Fonts.Extend importing step
         | None -> ()
@@ -531,7 +550,7 @@ module API =
         // laid out, found in and counted as any document; it is not saved.)
         let ended = step.Complete || step.Failed.IsSome
         if step.Failed.IsSome then editor.LoadFailure <- step.Failed
-        if ended then stopLoading editor
+        if ended then stopLoading editor step.Failed.IsNone
         // (What was laid out was all there was: the view may reach into what is there now.)
         if wasWhole then Inp.repaint editor.Handler
         let now = nowMs ()
@@ -563,7 +582,7 @@ module API =
     /// resolves to false (it never rejects), and nothing more is read - what
     /// goes by the whole document goes by what was read: the layout completes
     /// over it, getText, find and getPageCount answer for it. It cannot be
-    /// saved: exportDocumentPackage and exportToDocx throw.
+    /// saved: exportDocumentPackage throws.
     let isLoadComplete (editor: Editor) : bool =
         editor.Loading.IsNone && editor.LoadFailure.IsNone
 
@@ -582,7 +601,7 @@ module API =
             match editor.Loading with
             | None -> resolve editor.LoadFailure.IsNone
             | Some state ->
-                editor.LoadWaiters.Add (fun () -> resolve editor.LoadFailure.IsNone)
+                editor.LoadWaiters.Add resolve
                 // (A package that was opened not to read on by itself is read on from here.)
                 state.Package?Progressive?start () |> ignore)
 
@@ -795,7 +814,7 @@ module API =
             SavedRevision = 0
             OpenedRevision = 0
             RevisionDocument = doc
-            KnownRevisions = ResizeArray()
+            RevisionIndex = newRevisionIndex ()
             FontFamilies = [||]
             Whole = doc
             Loading = None
@@ -4044,14 +4063,6 @@ module API =
         | Some error -> failwith ("The document could not be read to its end and cannot be saved (" + error + ")")
         | None -> ()
 
-    /// Export document to EditorParagraphs (Office.Formats format)
-    /// Use with: Office.Formats WordWriter.writeFromEditor()
-    /// (Both exports throw for a document that could not be read to its end, see isLoadFailed.)
-    let exportToDocx (editor: Editor) : obj array =
-        ensureLoaded editor
-        refuseFailedLoad editor
-        Docx.exportToEditor (wholeDocument editor)
-
     ///
     /// The package says `Unchanged: true` when the document is what it was
     /// when it was loaded - nothing was edited since, or every edit was undone
@@ -4296,7 +4307,6 @@ module API =
             "setHeaderFooterTableText" ==> setHeaderFooterTableText
             "setHeaderFooterImageText" ==> setHeaderFooterImageText
             "setCurrentSectionHeaderFooterText" ==> setCurrentSectionHeaderFooterText
-            "exportToDocx" ==> exportToDocx
             "exportDocumentPackage" ==> exportDocumentPackage
             "insertTextBox" ==> insertTextBox
             "moveShape" ==> moveShape

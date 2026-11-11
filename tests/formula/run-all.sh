@@ -1,19 +1,38 @@
 #!/usr/bin/env bash
-# Run every formula-engine test stage. Each stage script exits non-zero on
-# the first failed assertion; this runner aggregates them and fails if any
-# stage fails. Builds the Spreadsheet project first; each stage references
-# this worktree's build output by relative path.
+# Run every mandatory formula stage; missing stages or fixtures fail before
+# any build/test. --skip-build explicitly opts out of fresh build coverage.
+# --check-coverage is the root runner's build-free preflight.
 set -u
 cd "$(dirname "$0")/../.."
 
-# Office.Formats is needed by the vbaProject.bin stage.
-for proj in src/Spreadsheet/Rbt.Spreadsheet.fsproj src/Office.Formats/Rbt.OfficeFormat.fsproj; do
-    echo "building $proj..."
-    if ! dotnet build "$proj" -v quiet >/dev/null; then
-        echo "BUILD FAILED: $proj" >&2
-        exit 1
-    fi
+skip_build=0
+check_coverage=0
+for option in "$@"; do
+    case "$option" in
+        --skip-build)
+            if [ "$skip_build" -ne 0 ]; then
+                echo "Duplicate option: --skip-build" >&2
+                exit 2
+            fi
+            skip_build=1
+            ;;
+        --check-coverage)
+            if [ "$check_coverage" -ne 0 ]; then
+                echo "Duplicate option: --check-coverage" >&2
+                exit 2
+            fi
+            check_coverage=1
+            ;;
+        *)
+            echo "Unknown option: $option (use --skip-build or --check-coverage)" >&2
+            exit 2
+            ;;
+    esac
 done
+if [ "$skip_build" -eq 1 ] && [ "$check_coverage" -eq 1 ]; then
+    echo "--check-coverage cannot be combined with --skip-build" >&2
+    exit 2
+fi
 
 stages=(
     stage1-operators
@@ -75,10 +94,46 @@ stages=(
     numbertext
 )
 
+required=(
+    tests/formula/excel-2019-tints.tsv
+    tests/test-documents-excel/pandas-test_decimal.xlsx
+    tests/test-documents-excel/synthetic-table-styles.xlsx
+    tests/test-documents-excel/synthetic-chartex.xlsx
+    tests/test-documents-excel/synthetic-slicers.xlsx
+    tests/real-world/chart-zoo.xlsx
+    tests/real-world/dashboard-sales-analysis.xlsx
+    tests/real-world/dashboard-ecommerce-sales.xlsx
+)
+for s in "${stages[@]}"; do required+=("tests/formula/$s.fsx"); done
+for f in "${required[@]}"; do
+    if [ ! -f "$f" ]; then
+        echo "MISSING MANDATORY FORMULA SUITE/FIXTURE: $f" >&2
+        exit 1
+    fi
+done
+if [ "$check_coverage" -eq 1 ]; then
+    echo "FORMULA COVERAGE: all mandatory stages and fixtures present"
+    exit 0
+fi
+
+if [ "$skip_build" -eq 1 ]; then
+    echo "USER OPT-OUT: --skip-build; fresh formula build coverage is excluded"
+else
+    export MSBUILDDISABLENODEREUSE=1
+    export DOTNET_PROCESSOR_COUNT="${DOTNET_PROCESSOR_COUNT:-2}"
+    # Office.Formats is needed by the vbaProject.bin stage.
+    for proj in src/Spreadsheet/Rbt.Spreadsheet.fsproj src/Office.Formats/Rbt.OfficeFormat.fsproj; do
+        echo "building $proj..."
+        if ! dotnet build "$proj" -v quiet -m:1 -nr:false -p:UseSharedCompilation=false; then
+            echo "BUILD FAILED: $proj" >&2
+            exit 1
+        fi
+    done
+fi
+
 failed=0
 for s in "${stages[@]}"; do
     f="tests/formula/$s.fsx"
-    [ -f "$f" ] || { echo "--- $s (missing, skipped) ---"; continue; }
     echo "--- $s ---"
     if ! dotnet fsi --quiet "$f"; then
         failed=1

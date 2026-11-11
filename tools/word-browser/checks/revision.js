@@ -78,6 +78,41 @@ try {
         Word.redo(editor);
         check('redone: written by the writer', [Word.exportDocumentPackage(editor).Unchanged], [false]);
         Word.undo(editor);
+        // Long coalesced runs must retain both the opened state and a saved
+        // checkpoint, even though hundreds of intermediate states were seen.
+        Word.markSaved(editor);
+        const proxy = Word.getInputElement(editor);
+        const typeRun = (key) => {
+            for (let i = 0; i < 410; i++)
+                proxy.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        };
+        typeRun('a');
+        const checkpoint = Word.getRevision(editor);
+        check('undo of a long coalesced run returns to the saved opened state', [Word.undo(editor), Word.getRevision(editor), Word.isModified(editor)], [true, opened, false]);
+        check('redo of the long coalesced run restores its revision', [Word.redo(editor), Word.getRevision(editor), Word.isModified(editor)], [true, checkpoint, true]);
+        const checkpointText = Word.getText(editor);
+        Word.exportDocumentPackage(editor); // ends the first typing run
+        typeRun('b');
+        const afterLongRuns = Word.getRevision(editor);
+        Word.markSaved(editor, checkpoint);
+        check('a delayed save after long typing keeps later edits modified', [Word.isModified(editor), afterLongRuns > checkpoint], [true, true]);
+        check('undo restores the long-run saved checkpoint', [Word.undo(editor), Word.getRevision(editor), Word.isModified(editor), Word.getText(editor) === checkpointText], [true, checkpoint, false, true]);
+        check('undo restores the opened revision after more than 400 observations', [Word.undo(editor), Word.getRevision(editor), Word.isModified(editor)], [true, opened, true]);
+        const longUndone = Word.exportDocumentPackage(editor);
+        const longUndoneBytes = await written(longUndone);
+        check('the restored opened revision exports the original bytes', [longUndone.Unchanged, same(longUndoneBytes, original)], [true, true]);
+        const reopened = Word.initializeCanvas(document.createElement('canvas'));
+        try {
+            Word.importFromDocxPackage(reopened, await OF.processors.forEditorPackage(longUndoneBytes));
+            const reopenedPackage = Word.exportDocumentPackage(reopened);
+            check('the restored output reopens unchanged and exports byte-identically', [Word.isModified(reopened), reopenedPackage.Unchanged, same(await written(reopenedPackage), original)], [false, true, true]);
+        } finally {
+            Word.dispose(reopened);
+        }
+        check('redo returns to the saved checkpoint', [Word.redo(editor), Word.getRevision(editor), Word.isModified(editor)], [true, checkpoint, false]);
+        check('redo returns to the later long run', [Word.redo(editor), Word.getRevision(editor), Word.isModified(editor)], [true, afterLongRuns, true]);
+        Word.undo(editor);
+        Word.undo(editor);
         // A host that changes the package it exported says so; a package that was made from the model alone is written.
         const changed = Word.exportDocumentPackage(editor);
         changed.Unchanged = false;

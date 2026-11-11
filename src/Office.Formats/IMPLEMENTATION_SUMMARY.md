@@ -91,7 +91,7 @@ const editorParagraphs = [
     }
 ];
 
-const blob = await api.word.writeFromEditor(editorParagraphs);
+const blob = await api.word.writeFromEditorPackage({ Paragraphs: editorParagraphs });
 
 // Write formatted Excel sheet
 const sheets = [
@@ -414,7 +414,7 @@ const paragraphs = [
     }
 ];
 
-const blob = await api.word.writeFromEditor(paragraphs);
+const blob = await api.word.writeFromEditorPackage({ Paragraphs: paragraphs });
 ```
 
 ## Conclusion

@@ -152,7 +152,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
                 ]
             )
             |> List.toArray
-        writeFromEditor paraObjects
+        writeFromEditorPackage (createObj [ "Paragraphs" ==> paraObjects ])
 
 /// Create a new document builder
 let create () =

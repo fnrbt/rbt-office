@@ -618,9 +618,6 @@ module Shell =
         mountedHost <- Some host
         mountApp selector (view host)
 
-    let exportDocument () : obj array =
-        mountedHost |> Option.map WordHost.exportDocument |> Option.defaultValue [||]
-
     let exportDocumentPackage () =
         mountedHost |> Option.bind WordHost.exportDocumentPackage |> Option.defaultValue null
 

@@ -2,6 +2,16 @@
 
 2026-11-11, `master` at `e32373f7`. Read-only: nothing in the repo was edited, built or run. Line counts are `wc -l` of the source files (comments included). Ranges inside a file such as "drawCell 3416-3978" come from reading where its definitions start and end, so they are approximate.
 
+**Native spreadsheet follow-through (2026-11-11):** the S4–S6 correctness changes retain complete `Workbook` snapshots rather than sheet-array snapshots and use the shared `Recalc` engine. `Workbook.updateSheetModelWithTables` keeps model-level table changes and the formula registry consistent. The Wisp host accepts imported context with `createWithWorkbook` / `replaceWorkbook`; `exportWorkbook` writes current names, name metadata, visibility, active sheet and iteration, remapping stable local-name scopes only at the XLSX boundary. Sheet insertion, rename and deletion use workbook reference-rewriting operations and undo as complete transactions. The audit tables and line counts below remain the original snapshot; a portable controller extraction is still outstanding, not claimed by these correctness fixes. Verification is recorded in `systematic-review-2026-11-11.md`.
+
+For Widgets, use `createStateFromWorkbook` / `replaceWorkbook` when opening imported context; `createState` is for fresh model arrays. Treat both hosts' sheet/name/index signals as UI projections and make content changes through their transaction functions, not direct signal assignments. The native gate now includes both host regression suites and the Wisp executable smoke.
+
+**Browser dialog contract (C5–C6 follow-through):** `OfficeUiDialog` renders all eleven current field kinds and tabs without changing `DialogSpec`. Mount `renderDialog state` once and retain its mount disposer. With tabs, `Fields` is ignored as the current spec states; values from every tab survive switching and reach the button callback. Colour uses the browser-native picker; sliders have range and numeric inputs. Computed fields read the same value map.
+
+Field edits remain dialog-local. `DialogButton.Action` owns validation and the editor transaction: validate before mutating, return `false` to retain the dialog and its edits, and invoke one undoable editor command on acceptance. Returning `false` is not a rollback of mutations made by the callback. Cancel must not apply those local values. A callback that opens another dialog does not have its replacement closed by the previous callback's return value.
+
+The renderer names the dialog and controls, focuses on opening, contains focus, and restores the invoker on close/unmount. Tab headers support arrows/Home/End. Unmodified Enter activates the primary action except in multiline/select/radio/checkbox/colour controls or focused buttons, which retain their native behavior; composition is not submission. Escape activates the standard `dlg-cancel` button, or closes without invoking an arbitrary secondary action. This completes the renderer, not browser-shell command wiring or the parked foundation's expanded validation/spec API. The audit tables below remain historical.
+
 The direction (`docs/continuation-roadmap.md`, *Three ways to run it*):
 1. An embedded widget with no UI (redbat today).
 2. The browser with our own UI and no server.

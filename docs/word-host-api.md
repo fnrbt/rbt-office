@@ -19,6 +19,35 @@ Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
 const blob = await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor));
 ```
 
+### Document save contract
+
+Save imported documents with the complete package shown above, including its
+`Preserved` state, headers, footers, notes and styles. Do not reconstruct a
+package from `Paragraphs`: those are only the document's body.
+
+Capture the revision **after** exporting (which completes any pending load),
+then mark that revision saved only after the write and host storage succeed:
+
+```js
+const packageToSave = Word.exportDocumentPackage(editor);
+const revisionToSave = Word.getRevision(editor);
+const blobToSave = await OF.word.writeFromEditorPackage(packageToSave);
+await storeDocument(blobToSave); // the host's storage operation
+Word.markSaved(editor, revisionToSave);
+```
+
+Typing during the asynchronous save belongs to a new undo step and must not
+be marked saved. A failed write or upload must not call `markSaved`.
+
+The paragraph-only `exportToDocx` / `word.writeFromEditor` APIs and the
+paragraph-only host/shell export wrappers have been removed. Use
+`exportDocumentPackage` (or the mounted host's `exportMountedDocumentPackage`)
+and `writeFromEditorPackage`; there is no compatibility alias.
+For a **new** document assembled from paragraph objects, the writer accepts
+`{ Paragraphs: paragraphs }`. That is creation, not a way to save an imported
+document. The document builder also uses the package writer.
+
+
 The first argument of nearly every function is the editor `initialize` /
 `initializeCanvas` returned. A read-only viewer is a separate, smaller
 module (`@rbt/office/word/WordViewer.js`, also `Word.createViewer`): see
@@ -389,6 +418,11 @@ Ctrl+Enter itself and calls `insertPageBreak` removes that handler** (two
 breaks otherwise), unless it stops the event before it reaches the editor's
 canvas and input element.
 
+Virtual `beforeinput`/`input` paragraph insertion uses the same paragraph,
+list-exit, table-cell and tracked-change edit as physical Enter, with one
+undo step. Shift+Enter and `insertLineBreak` remain line breaks within a
+paragraph. Paired physical and virtual events do not insert twice.
+
 ## Copying and pasting
 
 Ctrl+C, Ctrl+X and Ctrl+V go through the browser's own copy, cut and paste
@@ -396,14 +430,15 @@ events on the editor's input element (0.1.26; before, the asynchronous
 clipboard, which asks for a permission to read and never had HTML). Copy
 writes the selection's text and its HTML (paragraphs, headings, lists,
 alignment, bold, italic, underline, strike, sizes, faces, colours, links) and
-keeps what it copied. Paste puts back what the last Copy or Cut of an editor
-on the page kept, with all its formatting and the properties of the
-paragraphs whose marks it took (Word's "keep source formatting"; the last
-paragraph joins the text after the caret and keeps that paragraph's
-properties), while the clipboard's text is still its text; else the
-clipboard's HTML with its formatting (from Word, a browser, a mail); else its
-text. With changes tracked it is the text. Each is one undo step. What a copy
-leaves out: the marks of comments, bookmarks, fields (their result is text),
+keeps what it copied with explicit provenance in the returned HTML. Paste
+uses that internal rich payload only when the supplied provenance and
+content match; plain-text equality alone never identifies an internal copy.
+Otherwise the supplied HTML determines formatting (from Word, a browser or
+mail), or plain text is pasted when there is no HTML. Internal rich paste
+keeps source formatting and the paragraph properties whose marks it copied;
+the last paragraph joins the text after the caret and keeps that paragraph's
+properties. With changes tracked it is the text. Each edit is one undo step.
+What a copy leaves out: the marks of comments, bookmarks, fields (their result is text),
 the objects of the file kept as they were read (charts). A host that handles
 the events on the input element itself stops them first.
 
@@ -416,6 +451,14 @@ Ctrl+V does; `copySelection(editor)` / `cutSelection(editor)` give
 `{ Text, Html }` to write (null with nothing selected) and keep the copy as
 Ctrl+C / Ctrl+X do.
 
+The browser's asynchronous cut fallback deletes only after a successful
+clipboard write, and only while the captured document and selection remain
+current. Rejected/unavailable writes leave the document untouched and report
+a warning. The synchronous host `cutSelection` API instead transfers
+ownership of `{ Text, Html }` to the caller and deletes immediately; hosts
+requiring write confirmation should copy, await their transfer, then apply
+their own selection-validated edit.
+
 ## The functions
 
 ### Creating an editor, loading and saving
@@ -427,7 +470,7 @@ Ctrl+C / Ctrl+X do.
 | `initializeCanvasWithChange(canvas: HTMLCanvasElement, afterChange: () => void)` | As initializeCanvas, with a function called after every change of the document (before the onChange listeners). |
 | `createViewer(canvas: HTMLCanvasElement): Viewer` | Create a read-only viewer on a canvas (see The viewer). |
 | `getText(editor)` | The text of the document, a line per paragraph (the body's, its tables' and its text boxes'). |
-| `dispose(editor)` | Detach the editor's window-level listeners and remove its hidden text input element. |
+| `dispose(editor)` | End the editor's input/layout lifecycle: detach its canvas, proxy and window listeners, remove the hidden input, and prevent pending input callbacks from changing the disposed editor. The canvas may be reused by another editor. |
 | `getInputElement(editor): object` | The hidden text input that holds the keyboard focus while the editor is in use (IME, dead keys and virtual keyboards type into it); null once the editor is disposed. |
 | `setAllowLinkedImages(editor, allow: boolean)` | Whether linked (not embedded) pictures may be loaded from the address the document gives. |
 | `getAllowLinkedImages(editor): boolean` | Whether linked (external) pictures may be requested. |
@@ -440,15 +483,14 @@ Ctrl+C / Ctrl+X do.
 | `importFromDocxWithPageSetupAndHeaderFooterParts(editor, editorParagraphs: object[], pageSetup: object, headerParts: object[], footerParts: object[])` | As importFromDocxWithHeaderFooterParts, with the reader's page setup. |
 | `importFromDocxPackage(editor, package: object)` | Show an editor package: Office.Formats' `forEditorPackage(bytes)`, or - for a document that is shown before it is read to its end - `word.openProgressive(bytes)`. |
 | `setImageCache(editor, cache: object)` | Give the editor the decoded images of the document: a Map of image source (as in the editor package) -> HTMLImageElement. |
-| `exportToDocx(editor): object[]` | Export document to EditorParagraphs (Office.Formats format) Use with: Office.Formats WordWriter.writeFromEditor() (Both exports throw for a document that could not be read to its end, see isLoadFailed.). |
-| `exportDocumentPackage(editor)` |  The package says `Unchanged: true` when the document is what it was when it was loaded - nothing was edited since, or every edit was undone (its revision is the one it was loaded with). |
+| `exportDocumentPackage(editor)` | Export the whole document for `OF.word.writeFromEditorPackage`. Completes pending reading and throws if loading failed. Ends the current typing run, making save an undo boundary. `Unchanged: true` means the document is back at its imported revision, so the writer can return the original bytes. |
 
 ### A document that is still being read
 
 | Function | What it does |
 | --- | --- |
 | `isLoadComplete(editor): boolean` | Whether the document on display is all there. |
-| `whenLoadComplete(editor): Promise<boolean>` | A promise that resolves once the document is all there - to true; at once when it is - or cannot be read on: to false (see isLoadFailed). |
+| `whenLoadComplete(editor): Promise<boolean>` | Await the document load active when called: true on completion, false on failure, cancellation, replacement or disposal before completion. Each pending waiter settles once; replacing the document cannot turn the outgoing load's cancellation into success. |
 | `completeLoad(editor): void` | Read the rest of the document now. |
 | `isLoadFailed(editor): boolean` | Whether the document on display could not be read to its end (see isLoadComplete). |
 | `cancelLoad(editor): boolean` | Stop reading the document on display: it stays what was read so far, as a document that could not be read to its end (isLoadFailed is true, getLoadError says that the reading was cancelled, whenLoadComplete resolves to false, the listeners are told, it is not saved). |
@@ -530,7 +572,7 @@ Ctrl+C / Ctrl+X do.
 | `replaceAllText(editor, query: string, replacement: string, matchCase: boolean)` | Replace every occurrence of `query` with `replacement` (literal text; `matchCase`), as one undo step; returns how many were replaced. |
 | `insertText(editor, text: string)` | Insert text at cursor. |
 | `pasteText(editor, text: string): void` | Put plain text in at the caret, or over the selection, as Ctrl+V does with the clipboard's text (a host that reads the clipboard itself, or pastes from a menu, calls this): the lines of the text are paragraphs, the whole is one undo step, and with nothing selected the text has the format chosen at the caret for what is typed ... |
-| `pasteClipboard(editor, text: string, html: string): void` | Paste what a host read from the clipboard (either may be empty or null), as Ctrl+V does: what the last copy kept, with its formatting, while `text` is its text; else the HTML with its formatting (tables as tables between paragraphs; in a table cell or a text box their rows as paragraphs, the cells parted by tabs); else the text as `pasteText` puts it. One undo step. |
+| `pasteClipboard(editor, text: string, html: string): void` | Paste supplied clipboard content: an explicitly identified, unchanged internal rich payload; otherwise HTML formatting (tables as tables between paragraphs; in a table cell or text box their rows as paragraphs, cells parted by tabs); otherwise plain text. Matching text alone never reuses an earlier copy's formatting. One undo step. |
 | `copySelection(editor): { Text, Html } \| null` | Copy the selection as Ctrl+C does: the text and the HTML to write to the clipboard; kept for a paste. Null with nothing selected. |
 | `cutSelection(editor): { Text, Html } \| null` | `copySelection`, and the selection deleted (one undo step). |
 
