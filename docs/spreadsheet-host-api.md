@@ -776,6 +776,15 @@ A table has a name (unique in the workbook, also against defined names), a range
   - *A formula in a data cell of a column* whose other data cells are empty, or all hold the one formula of a calculated column: the formula fills
     the whole column (relative references move row by row; `[@Col]` stays). A column that holds values or differing formulas keeps them.
   Hosts that enter cells themselves on behalf of the user and want this should call `EnterText`; a host that must not get it uses `SetCell`.
+- **One look of a cell for every painter** (`Paint.cellLook`): the DOM grid, the canvas / PDF / native painters draw a cell from the same resolved
+  look - fill, font, colour (a conditional format's, else the number format's `[Red]` section colour, else the cell's own, else its table's),
+  alignment (`Layout.cellTextAlign`), indent (at the side the text is aligned to), vertical alignment (bottom by default, as Excel: the grid draws
+  it so where a row is taller than a line by more than a few pixels), wrap (own line breaks kept; unwrapped text shows none), rotation, shrink to
+  fit, centre across selection (over the run of empty center-across cells), its number-formatted text (General numbers in the digits the column
+  has room for, `####` for a number of a format code that does not fit), its table's look under it, its conditional formats (fills, fonts, data
+  bars two pixels in from the cell's top and bottom, icons at the cell's left) over it - and the same edges (`Layout.edgeAbove` / `edgeLeft`:
+  the stronger border of the two cells, each cell's own line else its table's, on sheets with merged cells too; else a grid line, which a fill
+  hides). A table without a style (`"none"`) is drawn as plain cells. The DOM grid only maps the look to CSS.
 - **Table styles are drawn from the style's name**, in the DOM grid and by the portable painter (PNG / PDF / native), for the built-in families
   `TableStyleLight1-21`, `TableStyleMedium1-28`, `TableStyleDark1-11`. The colour is the theme accent the number stands for (every seven: black, accent
   1 ... accent 6; taken from the theme of an opened file, the Office theme otherwise). Drawn: the header row (filled with white bold text in Medium /

@@ -166,6 +166,24 @@ eq "Data-style: the header in accent 1 of the workbook's theme, the text its own
 eq "Data-style: both stripes the same light blue" (fill ecommerce "B2", fill ecommerce "B3") (Some "#DEEAF6", Some "#DEEAF6")
 eq "Data-style: first and last column are on, but the style has no such element" (bold ecommerce "A5", bold ecommerce "V5") ((getCell (cellAt "A5") ecommerce).Value.Format.Bold, (getCell (cellAt "V5") ecommerce).Value.Format.Bold)
 
+// ---- the lines of a table's style are the edges of its cells, on a sheet with merged cells too --------------
+// (The web grid drew only the lines above and below a table's cells there; the painter and Excel all four.)
+do
+    let model =
+        { createEmpty 20 10 with
+            Tables = [ made ]
+            MergedCells = [ { StartRow = 15; StartCol = 5; EndRow = 16; EndCol = 6 } ] }
+    let look = lookOf made 2 1
+    eq "a table's left line on a sheet with merged cells" (Layout.edgeLeft model 2 0) (Layout.EdgeBorder (lookOf made 2 0).Value.BorderLeft.Value)
+    eq "... and on one without" (Layout.edgeLeft { model with MergedCells = [] } 2 0) (Layout.EdgeBorder (lookOf made 2 0).Value.BorderLeft.Value)
+    ignore look
+// ---- a table without a style: plain cells (no look of its own, as Excel draws one) ---------------------------
+do
+    let plain = { made with Style = None }
+    let model = { createEmpty 20 10 with Tables = [ plain ] } |> setCell { Row = 0; Col = 0 } { Value = CellValue.String "Name"; Format = defaultFormat; Comment = None }
+    let look = Paint.cellLook model 0 0 (getCell { Row = 0; Col = 0 } model) None 64.0
+    eq "a table without a style: its header is a plain cell" (look.Fill, look.Bold, look.Align) (None, false, Layout.AlignLeft)
+
 printfn ""
 printfn "Stage 54 table style tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -146,6 +146,11 @@ let private browserTextWidth (text: string) (fontSize: float) (fontName: string)
 [<Emit("(function(text,fontSize,bold,italic){const g=globalThis.__rbSpreadsheetCellMeasure||(globalThis.__rbSpreadsheetCellMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px Arial, sans-serif';const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3)")>]
 let private cellTextWidth (text: string) (fontSize: float) (bold: bool) (italic: bool): float = jsNative
 
+/// The grid's measure of a cell's text for its look (`Paint.cellLook`): the width it is drawn at
+/// (the grid's font, a pixel for each point of the cell's).
+let private gridTextMeasurer : SpreadsheetLayout.TextMeasurer option =
+    Some (fun (text: string) (fontSize: float) (_: string option) (bold: bool) (italic: bool) -> cellTextWidth text fontSize bold italic)
+
 [<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string) (fontName: string): unit = jsNative
 
@@ -897,12 +902,6 @@ type Spreadsheet(container: Element) =
     let drawnObjects = System.Collections.Generic.Dictionary<string, string * float * float * string * (string * int * int * int * int * CellData option [] []) array>()
     /// The cells of every sheet as the charts on display were last drawn from them.
     let mutable chartStamp : obj array = [||]
-    /// The look of a cell its table's style gives (`Model.tableCellEntry`: looked up, worked out once a kind of row).
-    let tableLookAt (tables: Rbt.Spreadsheet.Model.Table list) (row: int) (col: int) : TableLookEntry option =
-        match tables with
-        | [] -> None
-        | [ table ] -> tableCellEntry table row col
-        | _ -> tables |> List.tryPick (fun own -> tableCellEntry own row col)
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
         match xlsxSource, sheet.SourceSheet with
         | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
@@ -3412,19 +3411,17 @@ type Spreadsheet(container: Element) =
         notifyEditState ()
 
     /// Draw a cell into its node: position, look and text. Selection is not
-    /// drawn here (it is an overlay), so moving it draws no cell.
+    /// drawn here (it is an overlay), so moving it draws no cell. How the
+    /// cell looks - fill, font, colour, alignment, indent, rotation, wrap,
+    /// its number-formatted text, its table's look and its conditional
+    /// formats - is worked out by the painters' rule (`Paint.cellLook`);
+    /// this maps it to CSS.
     and drawCell (layer: GridLayers) (node: CellNode) (row: int) (col: int) (x: float) (y: float) (w: float) (h: float) (pane: int)
-                 (cellData: CellData option) (tables: Rbt.Spreadsheet.Workbook.Table list) =
+                 (cellData: CellData option) =
         let cell = node.Element
-        // What the cell shows under the sheet's view options (formulas as
-        // text, no zeros); `storedData` is the cell itself.
+        // (`cellData` is what the cell holds; the look applies the sheet's view options.)
         let storedData = cellData
-        let cellData =
-            if model.ShowZeros && not model.ShowFormulas then cellData
-            else
-                cellData |> Option.map (fun data ->
-                    let shown = viewedValue model data.Value
-                    if obj.ReferenceEquals(shown, data.Value) then data else { data with Value = shown })
+        let look = SpreadsheetPaint.cellLook model row col cellData gridTextMeasurer w
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -3441,106 +3438,65 @@ type Spreadsheet(container: Element) =
         add "top" (px y)
         add "width" (span x w)
         add "height" (span y h)
-        add "line-height" (px (h - 4.0))
-        // The colour of the cell's grid lines (a table has its own).
-        let mutable gridColor = defaultGridColor
-        // Table styling first (base styles).
-        let tableInfo =
-            tables
-            |> List.tryPick (fun table ->
-                if row >= table.StartRow && row <= table.EndRow && col >= table.StartCol && col <= table.EndCol then
-                    // (The style is the one the sheet keeps for the table.)
-                    let style = model.Tables |> List.tryFind (fun own -> own.Name = table.Name) |> Option.bind (fun own -> own.Style)
-                    Some (table.HasHeaders && row = table.StartRow, (row - table.StartRow - (if table.HasHeaders then 1 else 0)) % 2 = 0,
-                          style, table.HasTotals && row = table.EndRow)
-                else None)
-        // What the table's style gives the cell (header, total row, bands, first / last column).
-        let tableLook = tableLookAt model.Tables row col
-        match tableLook with
-        | Some { Look = look } ->
-            match look.Fill with Some fill -> add "background-color" fill | None -> ()
-            match look.Text with Some color -> add "color" color | None -> ()
-            if look.Bold then add "font-weight" "bold"
-            if look.Italic then add "font-style" "italic"
-        | None -> ()
-        // The look of a neighbour's table, for the edges the cell shares with it.
-        let lookOf (r: int) (c: int) : TableLookEntry option =
-            if model.Tables.IsEmpty || r < 0 || c < 0 then None else tableLookAt model.Tables r c
-        match (if tableLook.IsSome then None else tableInfo) with
-        | Some (true, _, _, _) ->
-            add "background" "linear-gradient(180deg, #4472C4 0%, #2E5AA8 100%)"
-            add "color" "white"
-            add "font-weight" "bold"
-            add "text-align" "center"
-            gridColor <- "#2E5AA8"
-        | Some (false, _, Some _, isTotals) -> if isTotals then add "font-weight" "bold"
-        | Some (false, isEvenRow, None, isTotals) ->
-            add "background-color" (if isEvenRow then "#FFFFFF" else "#EDF2FA")
-            if isTotals then add "font-weight" "bold"
-            gridColor <- "#D0D8E4"
-        | None -> ()
-        // The cell's own format (over the table's).
-        match cellData with
-        | Some data ->
-            // (Over the table's look, added above: black text is the default font's, which the look's colour replaces - `formatWithTableLook`.)
-            let format = data.Format
-            let lookText = match tableLook with Some { Look = look } -> look.Text.IsSome | None -> false
-            if format.Bold then add "font-weight" "bold"
-            if format.Italic then add "font-style" "italic"
-            if format.Underline || format.UnderlineDouble || format.Strikethrough then
-                let lines =
-                    (if format.Underline || format.UnderlineDouble then "underline " else "")
-                    + (if format.Strikethrough then "line-through " else "")
-                    + (if format.UnderlineDouble then "double" else "")
-                add "text-decoration" (lines.TrimEnd())
-            match format.FontName with
-            // (A name is all a family can be here: nothing that ends the declaration.)
-            | Some family when family <> "" -> add "font-family" ("'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif")
-            | _ -> ()
-            match format.TextColor with Some color when not (lookText && (color = "#000000" || color = "#000")) -> add "color" color | _ -> ()
-            match format.BgColor with Some color -> add "background-color" color | None -> ()
-            match format.FontSize with Some size -> add "font-size" (string size + "px") | None -> ()
-            match format.HorizontalAlign with
-            | Some "centerContinuous" -> add "text-align" "center"
-            | Some "distributed" -> add "text-align" "justify"
-            | Some "justify" -> add "text-align" "justify"
-            | _ ->
-                // Explicit or General: the one rule of every painter (numbers to the right,
-                // booleans and errors centred; the style sheet's default is the left).
-                match SpreadsheetLayout.cellTextAlign format data.Value with
-                | SpreadsheetLayout.AlignRight -> add "text-align" "right"
-                | SpreadsheetLayout.AlignCenter -> add "text-align" "center"
-                | SpreadsheetLayout.AlignLeft -> if format.HorizontalAlign = Some "left" then add "text-align" "left"
-            // Where the text sits in the height of the cell. One line of text
-            // is centred by the cell's line height (the node's default look);
-            // top and bottom give the line its own height and, for bottom,
-            // push it down. Wrapped text is a column of lines, placed as a
-            // block (at the bottom unless the format says otherwise, as Excel does).
-            let lineHeight = System.Math.Round (float (defaultArg format.FontSize 11) * 1.3)
-            if format.WrapText then
-                add "white-space" "normal"
-                add "word-wrap" "break-word"
+        // The look: fill and font.
+        match look.Fill with Some fill -> add "background-color" fill | None -> ()
+        match look.TextColor with Some color -> add "color" color | None -> ()
+        if look.Bold then add "font-weight" "bold"
+        if look.Italic then add "font-style" "italic"
+        if look.Underline || look.UnderlineDouble || look.Strikethrough then
+            let lines =
+                (if look.Underline || look.UnderlineDouble then "underline " else "")
+                + (if look.Strikethrough then "line-through " else "")
+                + (if look.UnderlineDouble then "double" else "")
+            add "text-decoration" (lines.TrimEnd())
+        match look.FontName with
+        // (A name is all a family can be here: nothing that ends the declaration.)
+        | Some family when family <> "" -> add "font-family" ("'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif")
+        | _ -> ()
+        // (The grid's font is a pixel for each point of the cell's: 11 px by default.)
+        let fontPx = look.FontSize
+        if fontPx <> 11.0 then add "font-size" (string fontPx + "px")
+        // Across the cell (the style sheet's default is the left).
+        match look.Horizontal with
+        | "distributed" | "justify" -> add "text-align" "justify"
+        | _ ->
+            match look.Align with
+            | SpreadsheetLayout.AlignRight -> add "text-align" "right"
+            | SpreadsheetLayout.AlignCenter -> add "text-align" "center"
+            | SpreadsheetLayout.AlignLeft -> ()
+        // Where the text sits in the height of the cell. One line of text
+        // is centred by the cell's line height (the node's default look);
+        // top and bottom give the line its own height and, for bottom,
+        // push it down. (Bottom, Excel's default, is drawn so only where
+        // the row is taller than a line by more than a few pixels or the
+        // format says so: in a row of about a line's height the centred
+        // line is where the bottom one would be, a pixel or so apart.)
+        // Wrapped text is a column of lines, placed as a block.
+        let lineHeight = System.Math.Round (fontPx * 1.3)
+        if look.Wrap then
+            // (Its own line breaks are kept.)
+            add "white-space" "pre-line"
+            add "word-wrap" "break-word"
+            add "line-height" (px lineHeight)
+            add "display" "flex"
+            add "flex-direction" "column"
+            add "justify-content"
+                (match look.VerticalAlign with
+                 | SpreadsheetPaint.VAlignTop -> "flex-start"
+                 | SpreadsheetPaint.VAlignMiddle -> "center"
+                 | SpreadsheetPaint.VAlignBottom -> "flex-end")
+        else
+            match look.VerticalAlign with
+            | SpreadsheetPaint.VAlignTop -> add "line-height" (px lineHeight)
+            | SpreadsheetPaint.VAlignBottom when look.Format.VerticalAlign.IsSome || h - 3.0 - lineHeight > 6.0 ->
                 add "line-height" (px lineHeight)
-                add "display" "flex"
-                add "flex-direction" "column"
-                add "justify-content"
-                    (match format.VerticalAlign with
-                     | Some "top" -> "flex-start"
-                     | Some "middle" | Some "center" -> "center"
-                     | _ -> "flex-end")
-            else
-                match format.VerticalAlign with
-                | Some "top" -> add "line-height" (px lineHeight)
-                | Some "bottom" ->
-                    add "line-height" (px lineHeight)
-                    add "padding-top" (px (max 3.0 (h - 3.0 - lineHeight)))
-                | _ -> ()
-            // An indent pads the edge the text is aligned to.
-            if format.Indent > 0 then
-                let indent = float format.Indent * SpreadsheetCellText.mdwPx (float (defaultArg format.FontSize 11)) * 1.4
-                if format.HorizontalAlign = Some "right" then add "padding-right" (px (5.0 + indent))
-                elif format.HorizontalAlign <> Some "center" then add "padding-left" (px (5.0 + indent))
-        | None -> ()
+                add "padding-top" (px (max 3.0 (h - 3.0 - lineHeight)))
+            | _ -> add "line-height" (px (h - 4.0))
+        // An indent pads the edge the text is aligned to.
+        if look.IndentRight > 0.0 then add "padding-right" (px (5.0 + look.IndentRight))
+        elif look.IndentLeft > 0.0 then add "padding-left" (px (5.0 + look.IndentLeft))
+        // The table's look of the cell, for its edges and theirs.
+        let tableLook = look.Table
         // Borders and grid lines: one line per edge. A cell draws the edge
         // above it and the edge to its left - each the one border the two
         // cells that share it resolve to (Layout.edgeAbove / edgeLeft), or
@@ -3549,9 +3505,6 @@ type Spreadsheet(container: Element) =
         // those too.) Grid lines are an inset shadow of the cell; a border is
         // a child element over it, the stronger of the two on top where they
         // meet, so a line runs on through the corners of the cells it passes.
-        let formatAt (r: int) (c: int) =
-            if r = row && c = col then cellData |> Option.map (fun data -> data.Format)
-            else getCell { Row = r; Col = c } model |> Option.map (fun data -> data.Format)
         let endRow, endCol =
             if model.MergedCells.IsEmpty then row, col
             else
@@ -3561,21 +3514,8 @@ type Spreadsheet(container: Element) =
         let edgeChildren = ResizeArray<int * string>()
         let borderWidth (border: BorderStyle) = match borderCssParts border.Style with Some (width, _) -> width | None -> 0
         // The runs of one kind along an edge of the cell: (offset, length, kind).
-        let runsAlong (first: int) (last: int) (startOf: int -> float) (kindAt: int -> SpreadsheetLayout.SharedEdge) =
-            if first = last then [ 0.0, (startOf (last + 1) - startOf first), kindAt first ]
-            else
-                let runs = ResizeArray<float * float * SpreadsheetLayout.SharedEdge>()
-                let origin = startOf first
-                for index in first .. last do
-                    let size = startOf (index + 1) - startOf index
-                    if size > 0.0 then
-                        let kind = kindAt index
-                        let offset = startOf index - origin
-                        if runs.Count > 0 && (let (_, _, previous) = runs.[runs.Count - 1] in previous = kind) then
-                            let (start, length, _) = runs.[runs.Count - 1]
-                            runs.[runs.Count - 1] <- (start, length + size, kind)
-                        else runs.Add (offset, size, kind)
-                List.ofSeq runs
+        let runsAlong = SpreadsheetLayout.edgeRuns
+        let gridColor = defaultGridColor
         let shadows = ResizeArray<string>()
         // The colour of the grid line drawn for a thin line of a table's style, on the top (0) / left (1) edge.
         let tableShadow : string array = [| null; null |]
@@ -3610,27 +3550,20 @@ type Spreadsheet(container: Element) =
         let above = SpreadsheetLayout.rowShownBefore model row
         let before = SpreadsheetLayout.columnShownBefore model col
         let aboveRaw, leftRaw, cornerRaw = cellAt above col, cellAt row before, cellAt above before
+        // The look of a neighbour's table, for the edges the cell shares with it.
+        let lookOf (r: int) (c: int) : TableLookEntry option =
+            if model.Tables.IsEmpty || r < 0 || c < 0 then None else SpreadsheetLayout.tableEntryAt model.Tables r c
         let aboveLook, leftLook, cornerLook = lookOf above col, lookOf row before, lookOf above before
         let plainSheet = model.MergedCells.IsEmpty
         // (Without merged cells an edge follows from the two cells' formats - each with its table's look
-        // under it: its own line, else the look's - with no further look-ups.)
+        // under it: its own line, else the look's - with no further look-ups: the painters' rule,
+        // `Layout.edgeBetween`, of the cells at hand.)
         let border (data: CellData option) (pick: CellFormat -> BorderStyle option) = data |> Option.bind (fun data -> pick data.Format)
-        let lookLine (look: TableLookEntry option) (pick: TableLookEntry -> BorderStyle option) : BorderStyle option =
-            match look with
-            | Some entry -> pick entry
-            | None -> None
         let ownLines (first: CellData option) (second: CellData option) (horizontal: bool) (hasFirst: bool) =
             (if hasFirst then border first (fun format -> if horizontal then format.BorderBottom else format.BorderRight) else None),
             border second (fun format -> if horizontal then format.BorderTop else format.BorderLeft)
         let edgeBetween (first: CellData option, firstLook: TableLookEntry option) (second: CellData option, secondLook: TableLookEntry option) (horizontal: bool) (hasFirst: bool) =
-            let filled (data: CellData option) (look: TableLookEntry option) =
-                (match data with Some data -> data.Format.BgColor.IsSome | None -> false) || (match look with Some entry -> entry.Look.Fill.IsSome | None -> false)
-            let firstOwn, secondOwn = ownLines first second horizontal hasFirst
-            let firstLine = if hasFirst then firstOwn |> Option.orElse (lookLine firstLook (fun look -> if horizontal then look.Bottom else look.Right)) else None
-            let secondLine = secondOwn |> Option.orElse (lookLine secondLook (fun look -> if horizontal then look.Top else look.Left))
-            match resolveSharedBorder firstLine secondLine with
-            | Some line -> SpreadsheetLayout.EdgeBorder line
-            | None -> SpreadsheetLayout.EdgeGrid (model.ShowGridLines && not (hasFirst && filled first firstLook) && not (filled second secondLook))
+            SpreadsheetLayout.edgeBetween model.ShowGridLines first firstLook second secondLook horizontal hasFirst
         // A cell's own edge (top or left) where the line is a thin one of a table's style and neither cell
         // states a line of its own: drawn as the grid line is, in the line's colour (no node of its own).
         let ownEdge (side: int) (first: CellData option, firstLook: TableLookEntry option) (horizontal: bool) (hasFirst: bool) =
@@ -3719,78 +3652,49 @@ type Spreadsheet(container: Element) =
         // (The style sheet gives a cell the two grid lines most cells have.)
         if not (shadows.Count = 2 && gridColor = defaultGridColor && isNull tableShadow.[0] && isNull tableShadow.[1] && shadows.[0].StartsWith "inset 0 1px" && shadows.[1].StartsWith "inset 1px") then
             add "box-shadow" (if shadows.Count = 0 then "none" else String.concat "," shadows)
-        // Conditional formatting (highest priority): the merged effect of
-        // every matching rule that covers the cell.
-        let mutable icon : IconDraw option = None
+        // The data bar and the icon of its conditional formats (`Paint.cellLook`).
+        let icon = look.Icon
         let mutable bar = -1
         let mutable barDraw : DataBarDraw option = None
-        let mutable hideValue = false
-        if not model.ConditionalFormats.IsEmpty then
-            match Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr with
-            | Some effect ->
-                if effect.Bold = Some true then add "font-weight" "bold"
-                if effect.Italic = Some true then add "font-style" "italic"
-                let decorations =
-                    [ if effect.Underline = Some true then yield "underline"
-                      if effect.Strikethrough = Some true then yield "line-through" ]
-                if not decorations.IsEmpty then add "text-decoration" (String.concat " " decorations)
-                match effect.TextColor with Some color -> add "color" color | None -> ()
-                match effect.BgColor with Some color -> add "background-color" color | None -> ()
-                match effect.DataBar with
-                | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
-                    // A plain bar from the left edge, behind the text.
-                    let percent = int (System.Math.Round (draw.To * 100.0))
-                    add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
-                    bar <- percent
-                    hideValue <- draw.HideValue
-                | Some draw ->
-                    // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
-                    bar <- int (System.Math.Round ((draw.To - draw.From) * 100.0))
-                    barDraw <- Some draw
-                    hideValue <- draw.HideValue
-                | None -> ()
-                match effect.IconSet with
-                | Some draw when draw.Count > 1 ->
-                    icon <- Some draw
-                    if draw.HideValue then hideValue <- true
-                | _ -> ()
-            | None -> ()
-        // The text. A number that does not fit its cell shows ####, as in
-        // Excel (it is never cut off to something that reads as another number).
-        let fontPx = match cellData with Some data -> float (defaultArg data.Format.FontSize 11) | None -> 11.0
-        let measureText (text: string) =
-            match cellData with
-            | Some data -> cellTextWidth text fontPx data.Format.Bold data.Format.Italic
-            | None -> 0.0
-        let displayText =
-            match cellData with
-            | Some data ->
-                match unwrapFormulaValue data.Value with
-                | CellValue.Number _ ->
-                    let text = SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format data.Value
-                    // (Shrunk or turned text is not measured against the cell's width.)
-                    if data.Format.ShrinkToFit || data.Format.TextRotation <> 0 then text
-                    elif float text.Length * fontPx * 0.7 <= w - 10.0 || measureText text <= w - 9.0 then text
-                    else
-                        let hash = max 1.0 (measureText "#")
-                        System.String('#', max 1 (int ((w - 10.0) / hash)))
-                | _ -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 data.Format data.Value
-            | None -> ""
-        // A data bar or an icon set that shows no values.
-        let displayText = if hideValue then "" else displayText
+        match look.DataBar with
+        | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
+            // A plain bar from the left edge, behind the text, two pixels in from the cell's top and
+            // bottom as Excel draws it (the painter's too).
+            let percent = int (System.Math.Round (draw.To * 100.0))
+            add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
+            add "background-repeat" "no-repeat"
+            add "background-position" "0 2px"
+            add "background-size" "100% calc(100% - 4px)"
+            bar <- percent
+        | Some draw ->
+            // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
+            bar <- int (System.Math.Round ((draw.To - draw.From) * 100.0))
+            barDraw <- Some draw
+        | None -> ()
+        // The text: number-formatted (#### for a number that does not fit), none where a data bar
+        // or an icon set hides the value.
+        let displayText = look.Text
+        let measureText (text: string) = cellTextWidth text fontPx look.Bold look.Italic
         // Shrink to fit: one line of text wider than its cell is drawn smaller
         // (never larger), down to what fits between the cell's paddings.
-        match cellData with
-        | Some data when data.Format.ShrinkToFit && not data.Format.WrapText && data.Format.TextRotation = 0 && displayText <> "" ->
-            let indent = if data.Format.Indent > 0 then float data.Format.Indent * SpreadsheetCellText.mdwPx fontPx * 1.4 else 0.0
-            let room = w - 10.0 - indent
+        if look.Shrink && displayText <> "" then
+            let room = w - 10.0 - look.IndentLeft - look.IndentRight
             let width = measureText displayText
             if room > 0.0 && width > room then
                 add "font-size" (string (System.Math.Floor (max 1.0 (fontPx * room / width * 0.98) * 100.0) / 100.0) + "px")
-        | _ -> ()
         // Turned text: a line through the middle of the cell at the format's
         // angle (stacked text: upright letters one under the other).
-        let rotation = match cellData with Some data when displayText <> "" -> data.Format.TextRotation | _ -> 0
+        let rotation = if displayText <> "" then look.Rotation else 0
+        // Centred across the selection: the text is let out of its box over the run of cells it is
+        // centred across (`Paint.cellLook`) and centred there, in a box of its own that spans them.
+        let across =
+            if look.AcrossTo > col && displayText <> "" && rotation = 0 && endRow = row && endCol = col then
+                SpreadsheetLayout.columnLeft model (look.AcrossTo + 1) - SpreadsheetLayout.columnLeft model (col + 1)
+            else 0.0
+        if across > 0.0 then
+            add "overflow" "visible"
+            add "z-index" "1"
+            add "clip-path" ("inset(0px " + string (-(int across)) + "px 0px 0px)")
         // Text overflow: text wider than its cell runs over the empty cells
         // beside it (to the right when left-aligned, to the left when
         // right-aligned, both ways when centred) up to the first cell that
@@ -3798,9 +3702,8 @@ type Spreadsheet(container: Element) =
         // its box and clipped at the run of cells it may cover.
         let mutable wide = false
         let mutable crossed : (float * int) list = []
-        match cellData with
-        | Some data when displayText <> "" && endRow = row && endCol = col && icon.IsNone ->
-            match SpreadsheetLayout.textOverflowSides data.Format data.Value with
+        if displayText <> "" && endRow = row && endCol = col && icon.IsNone && across = 0.0 then
+            match SpreadsheetLayout.textOverflowSides look.Format look.Value with
             // (Not measured when even the widest glyphs would fit the cell.)
             | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 10.0 ->
                 let excess = measureText displayText - (w - 10.0)
@@ -3843,14 +3746,20 @@ type Spreadsheet(container: Element) =
                                         yield SpreadsheetLayout.columnLeft model (c + 1) - own, topLine
                                     | _ -> () ]
             | _ -> ()
-        | _ -> ()
-        node.Wide <- wide
+        node.Wide <- wide || across > 0.0
         setCssText cell (css.ToString())
         setAttribute cell "data-row" (string row)
         setAttribute cell "data-col" (string col)
         if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
         // (This also drops the icon and comment marker of the node's previous cell.)
-        if rotation = 0 then setTextContent cell displayText
+        if rotation = 0 && across = 0.0 then setTextContent cell displayText
+        elif rotation = 0 then
+            setTextContent cell ""
+            let centred = createElement "span"
+            setClassName centred "spreadsheet-across"
+            setTextContent centred displayText
+            setCssText centred ("position:absolute;left:0;top:0;right:" + string (-(int across)) + "px;padding:inherit;text-align:center;white-space:nowrap;pointer-events:none")
+            appendChild cell centred
         else
             setTextContent cell ""
             let turned = createElement "span"
@@ -3861,18 +3770,6 @@ type Spreadsheet(container: Element) =
                 else "transform:translate(-50%,-50%) rotate(" + string (-(Host.rotationDegrees rotation)) + "deg)"
             setCssText turned ("position:absolute;left:50%;top:50%;white-space:nowrap;line-height:normal;text-decoration:inherit;pointer-events:none;" + transform)
             appendChild cell turned
-        // The lines of the table's style above and below the cell, on a sheet with merged cells (where
-        // the edges are not worked out from the cells' formats with their table's look: `edgeBetween`).
-        match tableLook with
-        | Some { Look = look } when not plainSheet ->
-            let line (side: string) (edge: TableStyles.TableLine option) =
-                match edge with
-                | Some edge ->
-                    edgeChildren.Add (1, "position:absolute;pointer-events:none;left:0;right:0;" + side + ":0;height:0;border-" + side + ":" + borderCss { Style = edge.Style; Color = Some edge.Color })
-                | None -> ()
-            line "top" look.Top
-            line "bottom" look.Bottom
-        | _ -> ()
         // The weaker edge first: where two meet, the stronger is on top.
         if edgeChildren.Count > 0 then
             for _, style in edgeChildren |> Seq.sortBy fst do
@@ -3917,7 +3814,8 @@ type Spreadsheet(container: Element) =
             let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph draw.Family draw.Index
             let mark = createElement "span"
             setTextContent mark glyph
-            setCssText mark ("color:" + color + ";margin-right:3px;font-size:10px")
+            // (At the cell's left, whatever the alignment of its value, as Excel draws it.)
+            setCssText mark ("float:left;color:" + color + ";margin-right:3px;font-size:10px")
             setAttribute mark "data-cf-icon" (string draw.Index)
             setAttribute mark "data-cf-icon-set" draw.Family
             prependChild cell mark
@@ -4065,11 +3963,6 @@ type Spreadsheet(container: Element) =
             // Everything is drawn again when what the look of a cell depends
             // on, besides its own data, changed. With conditional formats a
             // cell's look depends on other cells.
-            let activeSheetId = sheetIdForIndex activeSheetIndex
-            let tables =
-                match workbook with
-                | Some wb -> wb.Tables |> Map.toList |> List.map snd |> List.filter (fun table -> table.SheetId = activeSheetId)
-                | None -> []
             let styleInputs : obj array =
                 [| box model.ConditionalFormats; box model.Threads; box model.Hyperlinks; box model.MergedCells; box model.ShowGridLines; box model.Tables
                    box model.ShowHeaders; box model.ShowFormulas; box model.ShowZeros
@@ -4141,7 +4034,7 @@ type Spreadsheet(container: Element) =
                                     not (obj.ReferenceEquals(node.NearAbove, near above c)) || not (obj.ReferenceEquals(node.NearLeft, near r before))
                                     || not (obj.ReferenceEquals(node.NearCorner, near above before))
                                 if not placed || merged || node.Wide || not (obj.ReferenceEquals(node.Data, dataRef)) || nearChanged () then
-                                    drawCell layer node r c x y w h pane data tables
+                                    drawCell layer node r c x y w h pane data
                     | false, _ ->
                         let node =
                             if freeCellNodes.Count > 0 then
@@ -4155,7 +4048,7 @@ type Spreadsheet(container: Element) =
                         node.Key <- key
                         node.Seen <- generation
                         cellNodes.[key] <- node
-                        drawCell layer node r c x y w h pane (cellAt r c) tables
+                        drawCell layer node r c x y w h pane (cellAt r c)
             let visitBlock (r0: int) (r1: int) (c0: int) (c1: int) =
                 for row = r0 to r1 do
                     if rowPrefix.[row + 1] > rowPrefix.[row] then

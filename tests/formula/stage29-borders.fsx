@@ -124,5 +124,19 @@ eq "the painter: the stronger border of the two" (coloured (conflict (line "thin
 eq "the painter: the upper cell's when it is stronger" (coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#ff0000", coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#0000ff") ([ 3.0 ], [])
 eq "the painter: the later cell's on a tie" (coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#0000ff", coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#ff0000") ([ 2.0 ], [])
 
+// The painter draws the edges the web grid draws (Layout.edgeAbove / edgeLeft): no grid line where a fill hides it, as Excel.
+let gridLinesOn (model: SpreadsheetModel) row col =
+    let viewport = Layout.defaultViewport 800.0 500.0
+    let rect = Layout.cellRect model viewport row col
+    let on (a: float) (b: float) = abs (a - b) < 0.5
+    Paint.buildPaintItems model viewport
+    |> List.filter (function
+        | Paint.GridLine (x1, y1, x2, y2, color, _) when color = "#a6a6a6" ->
+            (on y1 y2 && (on y1 rect.Y || on y1 (rect.Y + rect.Height)) && x1 >= rect.X - 0.5 && x2 <= rect.X + rect.Width + 0.5)
+            || (on x1 x2 && (on x1 rect.X || on x1 (rect.X + rect.Width)) && y1 >= rect.Y - 0.5 && y2 <= rect.Y + rect.Height + 0.5)
+        | _ -> false)
+    |> List.length
+eq "the painter: a fill hides the grid lines around its cell, a cell without one has its four" (gridLinesOn sheet 6 6, gridLinesOn sheet 10 5) (0, 4)
+
 printfn "stage29-borders: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

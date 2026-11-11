@@ -122,65 +122,196 @@ let private isSelected (selection: Selection) row col =
     | Range (sr, sc, er, ec) ->
         row >= sr && row <= er && col >= sc && col <= ec
 
-type private TableStyleLookup = {
-    Rows: Dictionary<int, ResizeArray<Table>>
-    IsEmpty: bool
+// ---- the look of a cell ------------------------------------------------------------
+
+/// How a cell looks: what every way of drawing it draws it with - the canvas, PDF and the native
+/// hosts (`buildCellPaintItems`) and the web grid's cell nodes (`Spreadsheet.drawCell`, which maps
+/// it to CSS). Worked out once, here, so that they cannot disagree about a cell; how each draws it
+/// (its fonts, its paddings) is its own.
+type CellLook = {
+    /// The cell's format with the look of its table's style under it and its conditional formats
+    /// over it (and `FilterButton` on a header cell of a table's auto-filter).
+    Format: CellFormat
+    /// What the style of its table gives it (`Layout.tableEntryAt`).
+    Table: TableLookEntry option
+    /// The value it shows: the sheet's view options applied (formulas as text, no zeros).
+    Value: CellValue
+    /// Its text: the value under its number format (`CellText.cellDisplayTextIn`: General numbers
+    /// to the digits that fit, #### for a number of a format code that does not fit); "" where a
+    /// data bar or an icon set shows no values. A line break of text that is not wrapped is not
+    /// shown (Excel draws such text on one line).
+    Text: string
+    /// Its fill: its own, else its table's; a conditional format's over both.
+    Fill: Color option
+    /// The colour of its text: a conditional format's, else the colour of its number format's
+    /// section (`[Red]`), else its own, else its table's. None: the default, black.
+    TextColor: Color option
+    /// In points.
+    FontSize: float
+    FontName: string option
+    Bold: bool
+    Italic: bool
+    Underline: bool
+    UnderlineDouble: bool
+    Strikethrough: bool
+    /// Where the text sits across the cell (`Layout.cellTextAlign`).
+    Align: TextAlign
+    /// The format's horizontal alignment, lower-cased: "" for General.
+    Horizontal: string
+    VerticalAlign: VerticalAlign
+    Wrap: bool
+    /// What the indent adds at the left / at the right of the text, in pixels: at the side the text
+    /// is aligned to (none for centred text).
+    IndentLeft: float
+    IndentRight: float
+    /// `CellFormat.TextRotation` (0: none).
+    Rotation: int
+    /// One line of text, drawn smaller where it is wider than its cell (shrink to fit; not for
+    /// wrapped or turned text).
+    Shrink: bool
+    /// Centred across the selection: the last column of the run of empty cells it is centred over;
+    /// -1 when it is not.
+    AcrossTo: int
+    /// A conditional format's data bar.
+    DataBar: DataBarDraw option
+    /// A conditional format's icon (of a set of more than one).
+    Icon: IconDraw option
 }
 
-let private emptyTableStyleLookup = {
-    Rows = Dictionary<int, ResizeArray<Table>>()
-    IsEmpty = true
-}
+let private lowerAlign (align: string option) : string =
+    match align with
+    | None -> ""
+    | Some ("left" | "center" | "right" | "top" | "bottom" | "general" | "fill" | "justify" | "distributed" as known) -> known
+    | Some other -> other.ToLowerInvariant()
 
-/// The styled tables of the sheet by the visible rows they cover.
-let private buildTableStyleLookup (model: SpreadsheetModel) (visible: VisibleRange) =
-    let rows = Dictionary<int, ResizeArray<Table>>()
-    for table in model.Tables do
-        match table.Style with
-        | Some style
-            when not style.Elements.IsEmpty
-              && table.EndRow - 1 >= visible.StartRow
-              && table.StartRow - 1 < visible.EndRowExclusive
-              && table.EndCol - 1 >= visible.StartCol
-              && table.StartCol - 1 < visible.EndColExclusive ->
-            let firstRow = max visible.StartRow (table.StartRow - 1)
-            let lastRow = min (visible.EndRowExclusive - 1) (table.EndRow - 1)
-            for row in firstRow .. lastRow do
-                match rows.TryGetValue row with
-                | true, rowTables -> rowTables.Add table
-                | false, _ ->
-                    let rowTables = ResizeArray<Table>()
-                    rowTables.Add table
-                    rows.[row] <- rowTables
-        | _ -> ()
-    if rows.Count = 0 then emptyTableStyleLookup
-    else { Rows = rows; IsEmpty = false }
+/// What one level of indent is, in pixels: about 1.4 of the font's digit width (measured against
+/// Excel: about 10 px at 11 pt).
+let indentUnit (fontPt: float) : float = mdwPx fontPt * 1.4
 
-/// The cell's format with the look of its table's style under it (header
-/// row, total row, bands, first / last column: `Model.tableCellLook`).
-let private tableStyleFormat row col (lookup: TableStyleLookup) (format: CellFormat) =
-    let mutable fmt = format
-    let mutable rowTables = Unchecked.defaultof<ResizeArray<Table>>
-    if lookup.Rows.TryGetValue(row, &rowTables) then
-        for table in rowTables do
-            match tableCellEntry table row col with
+/// The look of a cell with nothing in it, no table and no conditional format.
+let private emptyLook : CellLook =
+    { Format = defaultFormat; Table = None; Value = CellValue.Empty; Text = ""; Fill = None; TextColor = None
+      FontSize = 11.0; FontName = None; Bold = false; Italic = false; Underline = false; UnderlineDouble = false; Strikethrough = false
+      Align = AlignLeft; Horizontal = ""; VerticalAlign = VAlignBottom; Wrap = false; IndentLeft = 0.0; IndentRight = 0.0
+      Rotation = 0; Shrink = false; AcrossTo = -1; DataBar = None; Icon = None }
+
+/// The look of the cell (row, col) of a sheet (`CellLook`), which holds `data` (`getCell`: what is
+/// stored). `measure` measures its text where the painter knows its fonts (None: by Excel's digit
+/// width, `mdwPx`); `width` is the cell's width in pixels (a merged cell's whole width), what a
+/// number has to fit.
+let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData option) (measure: TextMeasurer option) (width: float) : CellLook =
+    if data.IsNone && model.Tables.IsEmpty && model.ConditionalFormats.IsEmpty then emptyLook
+    else
+        let addr = { Row = row; Col = col }
+        let own, stored =
+            match data with
+            | Some data -> data.Format, data.Value
+            | None -> defaultFormat, CellValue.Empty
+        let value = viewedValue model stored
+        // Under it the look of its table's style; a header cell of the table's filter has its button.
+        let table = if model.Tables.IsEmpty then None else tableEntryAt model.Tables row col
+        let withTable =
+            match table with
+            | None -> own
             | Some entry ->
-                let isHeader = row < table.StartRow - 1 + table.HeaderRowCount
-                let hasFilter =
-                    isHeader
-                    && (match table.AutoFilter with
-                        | Some (firstCol, lastCol) -> (col + 1) >= firstCol && (col + 1) <= lastCol
-                        | None -> false)
-                let styled = formatWithTableEntry entry fmt
-                fmt <- if hasFilter then { styled with FilterButton = true } else styled
-            | None -> ()
-    fmt
+                let styled = formatWithTableEntry entry own
+                let filterButton =
+                    model.Tables |> List.exists (fun table ->
+                        row >= table.StartRow - 1 && row < table.StartRow - 1 + table.HeaderRowCount
+                        && col >= table.StartCol - 1 && col <= table.EndCol - 1
+                        && (match table.AutoFilter with
+                            | Some (firstCol, lastCol) -> col + 1 >= firstCol && col + 1 <= lastCol
+                            | None -> false))
+                if filterButton && not styled.FilterButton then { styled with FilterButton = true } else styled
+        // Over it its conditional formats.
+        let effect =
+            if model.ConditionalFormats.IsEmpty then None
+            else Rbt.Spreadsheet.ConditionalFormatting.effectAt (Rbt.Spreadsheet.ConditionalFormatting.contextFor model) addr
+        let format =
+            match effect with
+            | Some effect -> Rbt.Spreadsheet.ConditionalFormatting.applyEffect effect withTable
+            | None -> withTable
+        let fontPt = match format.FontSize with Some size -> float size | None -> 11.0
+        let horizontal = lowerAlign format.HorizontalAlign
+        let rotation = format.TextRotation
+        let wrap = format.WrapText
+        let icon = match format.IconSet with Some icon when icon.Count > 1 -> Some icon | _ -> None
+        // The text. (A number shrunk to fit or turned is not fitted to the cell's width: shrinking
+        // is what makes it fit.)
+        let text =
+            match value with
+            | CellValue.Empty -> ""
+            | CellValue.String text -> text
+            | _ ->
+                let measureText =
+                    match measure with
+                    | Some m -> Some (fun (text: string) -> m text fontPt format.FontName format.Bold format.Italic)
+                    | None -> None
+                cellDisplayTextIn model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else width) format value
+        let text =
+            match format.DataBar, format.IconSet with
+            | Some bar, _ when bar.HideValue -> ""
+            | _, Some icon when icon.HideValue -> ""
+            | _ -> if not wrap && text.IndexOf '\n' >= 0 then text.Replace("\n", "") else text
+        let textColor =
+            match effect with
+            | Some { TextColor = Some color } -> Some color
+            | _ ->
+                let section =
+                    match format.NumberFormat with
+                    | Some code ->
+                        match unwrapFormulaValue value with
+                        | CellValue.Number n -> numberFormatColorForValue code n
+                        | _ -> None
+                    | None -> None
+                match section with
+                | Some _ -> section
+                | None -> format.TextColor
+        let align = cellTextAlign format value
+        let indentLeft, indentRight =
+            if format.Indent <= 0 then 0.0, 0.0
+            else
+                let indent = float format.Indent * indentUnit fontPt
+                match horizontal with
+                | "left" | "distributed" -> indent, 0.0
+                | "right" -> 0.0, indent
+                | "" | "general" ->
+                    match align with
+                    | AlignLeft -> indent, 0.0
+                    | AlignRight -> 0.0, indent
+                    | AlignCenter -> 0.0, 0.0
+                | _ -> 0.0, 0.0
+        let verticalAlign =
+            match lowerAlign format.VerticalAlign with
+            | "top" -> VAlignTop
+            | "center" | "middle" -> VAlignMiddle
+            | _ -> VAlignBottom
+        // "Center Across Selection": centred over the run of center-across cells to its right that
+        // hold nothing, as Excel does without merging them.
+        let acrossTo =
+            if horizontal <> "centercontinuous" then -1
+            else
+                let mutable last = col
+                let mutable next = col + 1
+                let mutable go = true
+                while go && next < model.ColCount do
+                    match getCell { Row = row; Col = next } model with
+                    | Some cell when lowerAlign cell.Format.HorizontalAlign = "centercontinuous"
+                                     && (match cell.Value with CellValue.Empty -> true | _ -> false) ->
+                        last <- next
+                        next <- next + 1
+                    | _ -> go <- false
+                last
+        { Format = format; Table = table; Value = value; Text = text; Fill = format.BgColor; TextColor = textColor
+          FontSize = fontPt; FontName = format.FontName; Bold = format.Bold; Italic = format.Italic
+          Underline = format.Underline; UnderlineDouble = format.UnderlineDouble; Strikethrough = format.Strikethrough
+          Align = align; Horizontal = horizontal; VerticalAlign = verticalAlign; Wrap = wrap
+          IndentLeft = indentLeft; IndentRight = indentRight; Rotation = rotation
+          Shrink = format.ShrinkToFit && not wrap && rotation = 0; AcrossTo = acrossTo
+          DataBar = format.DataBar; Icon = icon }
 
 let private isWhiteFill color =
     color = "#ffffff" || color = "#FFFFFF" || color = "white"
-
-let private cellKey row col =
-    (int64 row <<< 32) ^^^ (int64 col &&& 0xffffffffL)
 
 let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     [
@@ -269,25 +400,14 @@ let private borderColor (side: BorderStyle) : string =
 /// below.
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
-    let tableStyles = buildTableStyleLookup model visible
     let cells = visibleCells model viewport
-    let cellState (cell: _) =
+    // Selection is rendered as a separate overlay (see `selectionPaintItems`)
+    // so cursor moves don't invalidate the cached grid paint items.
+    let cellState (cell: CellGeometry) =
         let addr = cell.Address
-        let cellData = getCell addr model
-        let value = getCellValue addr model
-        let baseFormat = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-        let format =
-            if tableStyles.IsEmpty then baseFormat
-            else tableStyleFormat addr.Row addr.Col tableStyles baseFormat
-        // Conditional formats sit on top of the cell's own format and the
-        // table style: fills, font overrides, data bars, icons.
-        let format = Rbt.Spreadsheet.ConditionalFormatting.formatAt model addr format
-        // Selection is rendered as a separate overlay (see `selectionPaintItems`)
-        // so cursor moves don't invalidate the cached grid paint items.
-        let selected = false
-        let background = format.BgColor |> Option.defaultValue "#ffffff"
-        let zone = zoneForCell model addr.Row addr.Col
-        cell, format, value, selected, background, zone
+        // Its look (`cellLook`): its format with its table's look under it and its conditional formats over it.
+        let look = cellLook model addr.Row addr.Col (getCell addr model) viewport.Measurer cell.Rect.Width
+        cell, look, zoneForCell model addr.Row addr.Col
 
     let states = cells |> List.map cellState
 
@@ -296,16 +416,18 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // cell with a non-default fill is followed by another cell, the
         // second cell's fill would overdraw the first cell's right/bottom
         // stroke if we drew them in the same per-cell loop.
-        for (cell, _format, _value, _selected, background, zone) in states do
-            if not (isWhiteFill background) then
-                yield zone, FillRect (cell.Rect, background)
+        for (cell, look, zone) in states do
+            match look.Fill with
+            | Some fill when not (isWhiteFill fill) -> yield zone, FillRect (cell.Rect, fill)
+            | _ -> ()
 
         // Pass 1b: conditional-formatting data bars. Drawn on top of the
         // cell background but under borders / text — a horizontal bar
         // from the cell's left edge spanning fraction × width. Excel
         // insets the bar ~2 px vertically; mirror that so the gridline
         // stays visible above and below.
-        for (cell, format, _value, _selected, _background, zone) in states do
+        for (cell, look, zone) in states do
+            let format = look.Format
             match format.DataBar with
             | Some bar ->
                 let inset = 2.0
@@ -434,145 +556,47 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 if isHorizontal then [ GridLine (x1 - cap, y1, x2 + cap, y2, color, w) ]
                 else [ GridLine (x1, y1 - cap, x2, y2 + cap, color, w) ]
 
-        // Border collapse: when two adjacent cells both declare a border
-        // on their shared edge, Excel draws the heavier one and skips the
-        // lighter. Same-weight ties resolve in favour of the cell that
-        // "owns" the edge first in the natural emission order — for
-        // vertical edges that's the upper cell's bottom; for horizontal
-        // edges that's the left cell's right. Without this collapse,
-        // double + adjacent thin produced a doubled-line artifact and
-        // dashed borders got overpainted by the neighbour's solid edge.
-        let borderByAddr = Dictionary<int64, CellFormat>()
-        for (cell, format, _, _, _, _) in states do
-            borderByAddr.[cellKey cell.Address.Row cell.Address.Col] <- format
-        let neighborSide (row: int) (col: int) (side: CellFormat -> BorderStyle option) : BorderStyle option =
-            match borderByAddr.TryGetValue(cellKey row col) with
-            | true, format -> side format
-            | false, _ -> None
-        // Use OOXML border priority (not raw stroke width) for collapse:
-        // `double` outranks `thick` in Excel even though it paints thinner.
-        // Order: None < Hair < Dotted < Dashed-family < Thin < Medium <
-        // Thick < Double.
-        let weightOf (side: BorderStyle option) : int =
-            match side with
-            | None -> 0
-            | Some s -> borderPriority s.Style
-        // Gridlines (the always-on light cell outline) FIRST, as their own
-        // sub-pass, so explicit borders always draw on top. Excel hides the
-        // light gridline on any edge that carries an explicit border, so we
-        // draw the grey edge only when neither this cell nor its neighbour has
-        // a border there. Without this the grey gridline bleeds through a
-        // double border's gap (and gets half-covered by neighbouring grid
-        // strokes). Selected cells keep a full highlight box.
-        for (cell, format, _value, selected, _background, zone) in states do
+        // The edges: one line per edge two cells share, the one the web grid
+        // draws too (Layout.edgeAbove / edgeLeft: the stronger border of the
+        // two cells, each cell's own line else its table's; else a grid line,
+        // which the sheet's option or a fill of either cell hides). Each cell
+        // draws the edge above it and the edge to its left, along a merged
+        // cell edge by edge of its cells; the cells of the last row / column
+        // in view also the edges below / to their right. Grid lines first,
+        // so that borders are drawn over them.
+        let lastRow = visible.EndRowExclusive - 1
+        let lastCol = visible.EndColExclusive - 1
+        let gridItems = ResizeArray<ViewportZone * PaintItem>()
+        let borderItems = ResizeArray<ViewportZone * PaintItem>()
+        let edgeItems (zone: ViewportZone) (isHorizontal: bool) (x: float, y: float) (runs: (float * float * SharedEdge) list) =
+            for offset, length, edge in runs do
+                if length > 0.0 then
+                    let x1, y1 = if isHorizontal then x + offset, y else x, y + offset
+                    let x2, y2 = if isHorizontal then x1 + length, y1 else x1, y1 + length
+                    match edge with
+                    | EdgeGrid true -> gridItems.Add (zone, GridLine (x1, y1, x2, y2, gridLineColor, 1.0))
+                    | EdgeBorder side -> for item in emitBorderSide isHorizontal side (x1, y1) (x2, y2) do borderItems.Add (zone, item)
+                    | _ -> ()
+        for (cell, _look, zone) in states do
             let rect = cell.Rect
-            let r, c = cell.Address.Row, cell.Address.Col
-            if selected then
-                yield zone, StrokeRect (rect, "#217346", 2.0)
-            // Suppress the light grey screen gridlines when the sheet has
-            // `showGridLines="0"` (polished workbooks rely on explicit borders).
-            elif model.ShowGridLines then
-                let bordered (mine: BorderStyle option) nr nc nside =
-                    mine.IsSome || (neighborSide nr nc nside).IsSome
-                let g = gridLineColor
-                if not (bordered format.BorderTop (r - 1) c (fun f -> f.BorderBottom)) then
-                    yield zone, GridLine (rect.X, rect.Y, rect.X + rect.Width, rect.Y, g, 1.0)
-                if not (bordered format.BorderBottom (r + 1) c (fun f -> f.BorderTop)) then
-                    yield zone, GridLine (rect.X, rect.Y + rect.Height, rect.X + rect.Width, rect.Y + rect.Height, g, 1.0)
-                if not (bordered format.BorderLeft r (c - 1) (fun f -> f.BorderRight)) then
-                    yield zone, GridLine (rect.X, rect.Y, rect.X, rect.Y + rect.Height, g, 1.0)
-                if not (bordered format.BorderRight r (c + 1) (fun f -> f.BorderLeft)) then
-                    yield zone, GridLine (rect.X + rect.Width, rect.Y, rect.X + rect.Width, rect.Y + rect.Height, g, 1.0)
-        for (cell, format, _value, _selected, _background, zone) in states do
+            if rect.Width > 0.0 && rect.Height > 0.0 then
+                let r0, c0, r1, c1 =
+                    match cell.Merge with
+                    | Some m -> m.StartRow, m.StartCol, m.EndRow, m.EndCol
+                    | None -> cell.Address.Row, cell.Address.Col, cell.Address.Row, cell.Address.Col
+                let columnStart (c: int) = columnLeft model c
+                let rowStart (r: int) = rowTop model r
+                edgeItems zone true (rect.X, rect.Y) (edgeRuns c0 c1 columnStart (fun c -> edgeAbove model r0 c))
+                edgeItems zone false (rect.X, rect.Y) (edgeRuns r0 r1 rowStart (fun r -> edgeLeft model r c0))
+                if r1 >= lastRow then
+                    edgeItems zone true (rect.X, rect.Y + rect.Height) (edgeRuns c0 c1 columnStart (fun c -> edgeBelow model r1 c))
+                if c1 >= lastCol then
+                    edgeItems zone false (rect.X + rect.Width, rect.Y) (edgeRuns r0 r1 rowStart (fun r -> edgeRight model r c1))
+        yield! gridItems
+        yield! borderItems
+        for (cell, look, zone) in states do
             let rect = cell.Rect
-            let r, c = cell.Address.Row, cell.Address.Col
-            // Merged cells: Excel splits a box border across the merge's
-            // constituent cells (top-left carries left+top, top-right the
-            // right edge, bottom-left/-right the bottom edge, etc.).
-            // visibleCells yields only the merge primary — with the full
-            // merge Rect — and skips the trailing cells, so we gather each
-            // edge's style from the merge perimeter directly off the model
-            // rather than from the primary's own format. For a non-merged
-            // cell every edge list is the single cell, so this reduces to
-            // the previous `format.BorderX` behavior exactly.
-            let mr0, mc0, mr1, mc1 =
-                match cell.Merge with
-                | Some m -> m.StartRow, m.StartCol, m.EndRow, m.EndCol
-                | None -> r, c, r, c
-            let fmtAt row col =
-                getCell { Row = row; Col = col } model
-                |> Option.map (fun cd -> cd.Format)
-                |> Option.defaultValue defaultFormat
-            // Heaviest border style found along an edge of the merge.
-            let betterSide (best: BorderStyle option) (candidate: BorderStyle option) : BorderStyle option =
-                match best, candidate with
-                | None, Some side -> Some side
-                | Some current, Some side when borderPriority side.Style > borderPriority current.Style -> Some side
-                | _ -> best
-            let horizontalEdge row c0 c1 (pick: CellFormat -> BorderStyle option) =
-                let mutable best: BorderStyle option = None
-                for cc in c0 .. c1 do
-                    best <- betterSide best (pick (fmtAt row cc))
-                best
-            let verticalEdge r0 r1 col (pick: CellFormat -> BorderStyle option) =
-                let mutable best: BorderStyle option = None
-                for rr in r0 .. r1 do
-                    best <- betterSide best (pick (fmtAt rr col))
-                best
-            let bTop, bBottom, bLeft, bRight =
-                match cell.Merge with
-                | None -> format.BorderTop, format.BorderBottom, format.BorderLeft, format.BorderRight
-                | Some _ ->
-                    horizontalEdge mr0 mc0 mc1 (fun f -> f.BorderTop),
-                    horizontalEdge mr1 mc0 mc1 (fun f -> f.BorderBottom),
-                    verticalEdge mr0 mr1 mc0 (fun f -> f.BorderLeft),
-                    verticalEdge mr0 mr1 mc1 (fun f -> f.BorderRight)
-            // One line per shared edge (Model.resolveSharedBorder): the
-            // stronger style wins (double > thick > medium > thin > dashed),
-            // and of two equally strong ones the later cell's - the cell
-            // below / to the right.
-            // Top border: drawn unless the cell above has a strictly heavier bottom border.
-            match bTop with
-            | Some side ->
-                let aboveBottom = neighborSide (mr0 - 1) mc0 (fun f -> f.BorderBottom)
-                let mine = weightOf (Some side)
-                let neighbor = weightOf aboveBottom
-                if mine >= neighbor then
-                    for item in emitBorderSide true side (rect.X, rect.Y) (rect.X + rect.Width, rect.Y) do
-                        yield zone, item
-            | None -> ()
-            // Bottom border: drawn when it is heavier than the top border of the cell below.
-            match bBottom with
-            | Some side ->
-                let belowTop = neighborSide (mr1 + 1) mc0 (fun f -> f.BorderTop)
-                let mine = weightOf (Some side)
-                let neighbor = weightOf belowTop
-                if mine > neighbor then
-                    let y = rect.Y + rect.Height
-                    for item in emitBorderSide true side (rect.X, y) (rect.X + rect.Width, y) do
-                        yield zone, item
-            | None -> ()
-            // Left border: drawn unless the cell to the left has a strictly heavier right border.
-            match bLeft with
-            | Some side ->
-                let leftRight = neighborSide mr0 (mc0 - 1) (fun f -> f.BorderRight)
-                let mine = weightOf (Some side)
-                let neighbor = weightOf leftRight
-                if mine >= neighbor then
-                    for item in emitBorderSide false side (rect.X, rect.Y) (rect.X, rect.Y + rect.Height) do
-                        yield zone, item
-            | None -> ()
-            // Right border: drawn when it is heavier than the left border of the cell to the right.
-            match bRight with
-            | Some side ->
-                let rightLeft = neighborSide mr0 (mc1 + 1) (fun f -> f.BorderLeft)
-                let mine = weightOf (Some side)
-                let neighbor = weightOf rightLeft
-                if mine > neighbor then
-                    let x = rect.X + rect.Width
-                    for item in emitBorderSide false side (x, rect.Y) (x, rect.Y + rect.Height) do
-                        yield zone, item
-            | None -> ()
+            let format = look.Format
             // Diagonal strokes: down = top-left → bottom-right, up =
             // bottom-left → top-right. Cells set one or both via the
             // `diagonalUp` / `diagonalDown` border attributes. Style +
@@ -589,24 +613,16 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
             | None -> ()
 
         // Pass 3: text on top of all strokes/borders.
-        for (cell, format, value, _selected, _background, zone) in states do
-            // (The sheet's view options: formulas as text, no zeros.)
-            let value = viewedValue model value
-            let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
-            // Build the real-font measurer first so cellDisplayText can size
-            // its ##### overflow run against the glyph the renderer will
-            // actually draw, not the mdwPx approximation.
+        for (cell, look, zone) in states do
+            let format = look.Format
+            let value = look.Value
+            let fontPt = look.FontSize
             let measure =
                 viewport.Measurer
                 |> Option.map (fun m ->
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
-            let displayText = cellDisplayTextIn model.Date1904 measure cell.Rect.Width format value
-            // A data bar or an icon set that shows no values.
-            let displayText =
-                match format.DataBar, format.IconSet with
-                | Some bar, _ when bar.HideValue -> ""
-                | _, Some icon when icon.HideValue -> ""
-                | _ -> displayText
+            // (Its text, number-formatted to fit, "" where a data bar or an icon set hides it: `cellLook`.)
+            let displayText = look.Text
             // Cells in a hidden column (0 width) or hidden row (0 height) paint
             // nothing — Excel renders no text there, and without this guard the
             // hidden cell's text overflows into the next visible column (and a
@@ -615,48 +631,19 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // Indent past the conditional-formatting icon when present
                 // so the icon and the cell text don't overlap (Excel does
                 // the same — the icon occupies a ~16 px gutter).
-                let iconGutter = if format.IconSet.IsSome then 16.0 else 0.0
-                // Excel's `<alignment indent="N"/>` adds N units of leading
-                // padding. Measured against Excel (synthetic-cell-indent 11pt
-                // and the jumeirah model 12pt), one level ≈ 10 px at 96 dpi —
-                // roughly font-independent and ≈ 1.4× the max-digit width, NOT
-                // the 3× ("3 character widths") we used before, which indented
-                // ~2× too far. Applies from the LEFT for left/distributed, from
-                // the RIGHT for right align; ignored for center.
-                let indentPx =
-                    if format.Indent <= 0 then 0.0
-                    else
-                        let unit = mdwPx fontPt * 1.4
-                        float format.Indent * unit
-                let horizForIndent =
-                    format.HorizontalAlign |> Option.map (fun s -> s.ToLowerInvariant()) |> Option.defaultValue ""
-                let leftIndent =
-                    if indentPx > 0.0 && (horizForIndent = "left" || horizForIndent = "distributed") then indentPx
-                    else 0.0
-                let rightIndent =
-                    if indentPx > 0.0 && horizForIndent = "right" then indentPx
-                    else 0.0
+                let iconGutter = if look.Icon.IsSome then 16.0 else 0.0
+                // Excel's `<alignment indent="N"/>` adds N units of padding at
+                // the side the text is aligned to (`cellLook`).
+                let leftIndent = look.IndentLeft
+                let rightIndent = look.IndentRight
+                let horizForIndent = look.Horizontal
                 // "Center Across Selection" (`horizontal="centerContinuous"`):
-                // centre the text across the contiguous run of centerContinuous
-                // cells to the right that carry no content of their own — Excel
-                // does this without merging. Expand the base rect over the run.
+                // centred across the run of empty center-across cells to its
+                // right (`cellLook`). Expand the base rect over the run.
                 let baseRect =
-                    if horizForIndent = "centercontinuous" then
-                        let row = cell.Address.Row
-                        let mutable lastCol = cell.Address.Col
-                        let mutable c2 = cell.Address.Col + 1
-                        let mutable go = true
-                        while go && c2 < model.ColCount do
-                            let naddr = { Row = row; Col = c2 }
-                            let nfmt = getCell naddr model |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-                            let nHoriz = nfmt.HorizontalAlign |> Option.map (fun s -> s.ToLowerInvariant()) |> Option.defaultValue ""
-                            let nEmpty = match getCellValue naddr model with CellValue.Empty -> true | _ -> false
-                            if nHoriz = "centercontinuous" && nEmpty then lastCol <- c2; c2 <- c2 + 1
-                            else go <- false
-                        if lastCol > cell.Address.Col then
-                            let r = cellRect model viewport row lastCol
-                            { cell.Rect with Width = (r.X + r.Width) - cell.Rect.X }
-                        else cell.Rect
+                    if look.AcrossTo > cell.Address.Col then
+                        let r = cellRect model viewport cell.Address.Row look.AcrossTo
+                        { cell.Rect with Width = (r.X + r.Width) - cell.Rect.X }
                     else cell.Rect
                 let textRect =
                     { baseRect with
@@ -668,7 +655,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // clamped at 1 pt. We need to re-measure with the smaller
                 // size so the rest of the rendering uses the actual width.
                 let fontPt, measure =
-                    if not format.ShrinkToFit || format.WrapText then fontPt, measure
+                    if not look.Shrink then fontPt, measure
                     else
                         match measure with
                         | None -> fontPt, measure
@@ -683,32 +670,17 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                     |> Option.map (fun mm ->
                                         fun (s: string) -> mm s shrunk format.FontName format.Bold format.Italic)
                                 shrunk, shrunkMeasure
-                // Excel number-format section colour overrides the cell's
-                // font colour: `#,##0.00;[Red]-#,##0.00` paints negatives red
-                // even when the cellXf has no explicit fontColor.
-                let sectionColor =
-                    match format.NumberFormat, value with
-                    | Some code, Number n -> numberFormatColorForValue code n
-                    | Some code, Formula (_, Number n) -> numberFormatColorForValue code n
-                    | _ -> None
-                let color =
-                    sectionColor
-                    |> Option.orElse format.TextColor
-                    |> Option.defaultValue "#000000"
-                let align = cellTextAlign format value
+                // (A conditional format's colour, else the number format's section colour - `[Red]` -
+                // else the cell's own, else its table's: `cellLook`.)
+                let color = look.TextColor |> Option.defaultValue "#000000"
+                let align = look.Align
                 // Wrapping and manual `\n` line breaks only apply when wrapText
-                // is ON. With wrapText OFF, Excel renders on a single line and
-                // ignores any embedded break (shown as a space), so the row is
-                // not multi-line.
+                // is ON (unwrapped, the look's text has none).
                 let lines =
-                    if format.WrapText then
+                    if look.Wrap then
                         wrapLines measure textRect.Width fontPt displayText
-                    else [ displayText.Replace("\n", "") ]
-                let vAlign =
-                    match format.VerticalAlign |> Option.map (fun s -> s.ToLowerInvariant()) with
-                    | Some "top" -> VAlignTop
-                    | Some "center" | Some "middle" -> VAlignMiddle
-                    | _ -> VAlignBottom
+                    else [ displayText ]
+                let vAlign = look.VerticalAlign
                 let lineCount = lines.Length
                 let richRuns = Map.tryFind cell.Address model.RichRuns
                 // Text overflow: a line of text wider than its cell is drawn
@@ -877,7 +849,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // header cell whose column falls within the table's <autoFilter>
         // range. The triangle is drawn over the header's accent fill — same
         // color as the header text (white on a Medium-style accent).
-        for (cell, format, _value, _selected, _background, zone) in states do
+        for (cell, look, zone) in states do
+            let format = look.Format
             if format.FilterButton then
                 let color = format.TextColor |> Option.defaultValue "#FFFFFF"
                 // 7-px-wide, 4-px-tall triangle centered in a 16-px right-edge
@@ -897,7 +870,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // approximate with horizontal strokes of decreasing width since
         // the renderer has no fill-polygon primitive. The triangle's
         // hypotenuse goes from (right-5, top) down to (right, top+5).
-        for (cell, format, _value, _selected, _background, zone) in states do
+        for (cell, look, zone) in states do
+            let format = look.Format
             if format.HasComment then
                 let color = "#C00000"  // Excel's "note marker" red
                 let triSize = 5.0
@@ -916,7 +890,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // FilterButton already owns the dropdown styling for table
         // header cells; skip those to avoid doubled triangles.
         let hasValidations = not model.Validations.IsEmpty
-        for (cell, format, _value, _selected, _background, zone) in states do
+        for (cell, look, zone) in states do
+            let format = look.Format
             if (format.HasListDropdown || (hasValidations && showsListDropdown cell.Address model)) && not format.FilterButton then
                 let color = "#666666"
                 let buttonWidth = 16.0
@@ -934,7 +909,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // for a 3-set; interpolated for 4/5-sets). It conveys the same
         // low/mid/high signal the real icons do. Drawn in the 16 px
         // gutter the text was already indented past.
-        for (cell, format, _value, _selected, _background, zone) in states do
+        for (cell, look, zone) in states do
+            let format = look.Format
             match format.IconSet with
             | Some icon when icon.Count > 1 ->
                 // The icon's colour, and its shape where the set is one of
