@@ -535,13 +535,16 @@ checks['general-align'] = async () => {
             ['left', 'right', 'right', 'center', 'center', 'right', 'right', 'left', 'right', 'left']);
         const [numberLeft, numberRight] = gaps(2, 1), [textLeft, textRight] = gaps(1, 1);
         check('a number\'s ink at the cell\'s right, text\'s at its left', [numberRight <= 8, numberLeft > 40, textLeft <= 8, textRight > 40], [true, true, true, true]);
-        // A General number too wide for its cell still shows #### (never runs over); long text still runs right.
+        // A General number too wide for its cell is shown in the digits that fit, as Excel shows it (never runs over);
+        // one of a format code shows ####; long text still runs right.
         const long = 'General text that is much longer than one column';
-        grid.SetCell(12, 1, long); grid.SetCell(13, 1, '123456789012345678');
+        grid.SetCell(12, 1, long); grid.SetCell(13, 1, '123456789012345678'); grid.SetCell(14, 1, '123456789012345678');
+        grid.SelectCell(14, 1); grid.SetNumberFormat('0'); grid.SelectCell(20, 5);
         await frame();
         const clip = getComputedStyle(cellNode(host, 12, 1)).clipPath;
         check('long General text runs to the right only', [getComputedStyle(cellNode(host, 12, 1)).overflow, /inset\(0px -\d+px 0px( 0px)?\)/.test(clip)], ['visible', true]);
-        check('a wide General number shows #### in its cell', [/^#+$/.test(cellNode(host, 13, 1).textContent), getComputedStyle(cellNode(host, 13, 1)).overflow, alignOf(13, 1)], [true, 'hidden', 'right']);
+        check('a wide General number shows fewer digits in its cell (as Excel: 1.23...E+17)', [/^1\.23\d*E\+17$/.test(cellNode(host, 13, 1).textContent), getComputedStyle(cellNode(host, 13, 1)).overflow, alignOf(13, 1)], [true, 'hidden', 'right']);
+        check('a wide number of a format code shows #### in its cell', [/^#+$/.test(cellNode(host, 14, 1).textContent), getComputedStyle(cellNode(host, 14, 1)).overflow, alignOf(14, 1)], [true, 'hidden', 'right']);
         // The fixture Excel's pictures were taken of: the table's numbers at the right, its labels at the left.
         await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-table-styles.xlsx'));
         await frame();
@@ -605,7 +608,8 @@ checks['text-overflow'] = async () => {
         over = ink(5, 5); allowed = let_out(5, 5);
         check('centred: runs both ways, evenly', [over[0] > 50, over[1] > 50, Math.abs(over[0] - over[1]) <= 2, allowed[0] >= over[0], allowed[1] >= over[1]], [true, true, true, true, true]);
         // Numbers.
-        grid.SetCell(7, 1, '123456789012345678');
+        // (Of a format code: a General one would be shown in fewer digits, 1E+17, as Excel does.)
+        grid.SetCell(7, 1, '123456789012345678'); grid.SelectCell(7, 1); grid.SetNumberFormat('0');
         grid.SetCell(8, 1, '12.5');
         const { setColumnWidth } = await import('/spreadsheet/Model.js');
         grid.SetWorkbook([setColumnWidth(1, 40, grid.GetModel())], ['Sheet1'], 0);

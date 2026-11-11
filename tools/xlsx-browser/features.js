@@ -402,3 +402,90 @@ checks['chart-sheet-read-only'] = async () => {
     close();
     return lines;
 };
+
+// The web grid draws every cell with the look the painters (canvas, PDF, native hosts) draw it
+// with (`Paint.cellLook`), mapped to CSS: where the two disagreed, Excel's way. A workbook as
+// Excel writes it: a number format with a [Red] section, text centred across the selection, a
+// wrapped cell with a line break of its own, a tall row (bottom, Excel's default), General
+// numbers too long for their column, a conditional format's underline over a struck font, an
+// indent; then a plain data bar, an icon set and a table without a style through the host API.
+const STYLES_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml';
+const STYLES_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles';
+const LOOK_STYLES = DECL + `<styleSheet xmlns="${NS}"><numFmts count="1"><numFmt numFmtId="164" formatCode="0;[Red]-0"/></numFmts>`
+    + '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><strike/><sz val="11"/><name val="Calibri"/></font></fonts>'
+    + '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+    + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+    + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6">'
+    + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
+    + '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+    + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment horizontal="centerContinuous"/></xf>'
+    + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment wrapText="1"/></xf>'
+    + '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
+    + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment indent="2"/></xf>'
+    + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="1"><dxf><font><u/></font></dxf></dxfs></styleSheet>';
+const ICON_RULE = { type: 'iconSet', iconSet: '3TrafficLights1' };
+const inlineCell = (ref, text, style) => `<c r="${ref}"${style ? ` s="${style}"` : ''} t="inlineStr"><is><t xml:space="preserve">${text}</t></is></c>`;
+const LOOK_SHEET = '<sheetFormatPr defaultRowHeight="15"/><sheetData>'
+    + '<row r="1"><c r="A1" s="1"><v>-5</v></c><c r="B1" s="1"><v>5</v></c></row>'
+    + `<row r="2">${inlineCell('A2', 'Title', 2)}<c r="B2" s="2"/><c r="C2" s="2"/></row>`
+    + `<row r="3" ht="45" customHeight="1">${inlineCell('A3', 'one&#10;two', 3)}${inlineCell('B3', 'low')}</row>`
+    + '<row r="4"><c r="A4"><v>0.123456789123</v></c><c r="B4"><v>123456789012345678</v></c></row>'
+    + `<row r="5">${inlineCell('A5', 'x', 4)}${inlineCell('B5', 'in', 5)}</row>`
+    + '</sheetData><conditionalFormatting sqref="A5"><cfRule type="expression" dxfId="0" priority="1"><formula>TRUE</formula></cfRule></conditionalFormatting>';
+checks['cell-look-shared'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx(await excelPackage(LOOK_SHEET, { 'xl/styles.xml': [STYLES_TYPE, STYLES_REL, LOOK_STYLES] }));
+        const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await frame();
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const css = (row, col) => getComputedStyle(node(row, col));
+        const ink = (row, col) => { const range = document.createRange(); range.selectNodeContents(node(row, col)); return range.getBoundingClientRect(); };
+        check('a negative number of a [Red] section is red, the positive one is not', [css(0, 0).color, css(0, 1).color], ['rgb(255, 0, 0)', 'rgb(0, 0, 0)']);
+        const [a2, c2] = [node(1, 0).getBoundingClientRect(), node(1, 2).getBoundingClientRect()], title = ink(1, 0);
+        check('centred across the selection: over A2:C2, not in A2', Math.abs((title.left + title.right) / 2 - (a2.left + c2.right) / 2) <= 3, true);
+        const wrapped = ink(2, 0), lineHeight = parseFloat(css(2, 0).lineHeight);
+        check('a wrapped cell keeps its own line break: two lines', wrapped.height > 1.5 * lineHeight, true);
+        const low = ink(2, 1), b3 = node(2, 1).getBoundingClientRect();
+        check('in a tall row the text sits at the bottom (Excel\'s default)', b3.bottom - low.bottom <= 6, true);
+        check('General numbers to the digits their column has room for (Excel: 0.123457, 1.23E+17)', [node(3, 0).textContent, node(3, 1).textContent], ['0.123457', '1.23E+17']);
+        check('a conditional format\'s underline over a struck font: both', ['underline', 'line-through'].map((line) => css(4, 0).textDecorationLine.includes(line)), [true, true]);
+        check('an indent on General text pads its left', parseFloat(css(4, 1).paddingLeft) > 15, true);
+        // Through the host API.
+        grid.SetCell(0, 3, '5'); grid.SetCell(1, 3, '10'); grid.SetCell(2, 3, '1');
+        const bar = grid.AddConditionalFormat('D1:D2', { type: 'dataBar', min: { type: 'number', value: 0 }, max: { type: 'number', value: 10 }, color: '#FF0000' });
+        await frame();
+        check('a plain data bar is two pixels in from the cell\'s top and bottom', [/linear-gradient/.test(css(0, 3).backgroundImage), css(0, 3).backgroundPositionY, css(0, 3).backgroundSize], [true, '2px', '100% calc(100% - 4px)']);
+        grid.RemoveConditionalFormat(bar);
+        grid.AddConditionalFormat('D1:D3', ICON_RULE);
+        await frame();
+        const icon = node(0, 3).querySelector('[data-cf-icon]');
+        check('an icon at the left of its cell, its number at the right', [!!icon, !!icon && icon.getBoundingClientRect().left - node(0, 3).getBoundingClientRect().left <= 6, css(0, 3).textAlign], [true, true, 'right']);
+        grid.SetCell(0, 5, 'Name'); grid.SetCell(0, 6, 'Value'); grid.SetCell(1, 5, 'a'); grid.SetCell(1, 6, '1'); grid.SetCell(2, 5, 'b'); grid.SetCell(2, 6, '2');
+        grid.DefineTable('F1:G3', 'Plain'); grid.SetTableStyle('Plain', 'none');
+        await frame();
+        check('a table without a style draws as plain cells (no header fill, no bands)', [css(0, 5).backgroundColor, css(0, 5).fontWeight, css(0, 5).textAlign, css(2, 5).backgroundColor], ['rgb(255, 255, 255)', '400', 'start', 'rgb(255, 255, 255)']);
+        // Every cell: the grid's text, fill, colour and alignment are the painters' look.
+        const { cellLook } = await import('/spreadsheet/Paint.js');
+        const { getCell, CellAddress } = await import('/spreadsheet/Model.js');
+        const model = grid.GetModel();
+        const rgbOf = (hex) => hex ? `rgb(${parseInt(hex.slice(1, 3), 16)}, ${parseInt(hex.slice(3, 5), 16)}, ${parseInt(hex.slice(5, 7), 16)})` : null;
+        const differ = [];
+        for (let row = 0; row < 5; row++)
+            for (let col = 0; col < 7; col++) {
+                const cell = node(row, col);
+                if (!cell) continue;
+                const look = cellLook(model, row, col, getCell(new CellAddress(row, col), model), undefined, cell.getBoundingClientRect().width);
+                const style = getComputedStyle(cell);
+                const shown = [...cell.childNodes].filter((child) => child.nodeType === 3 || child.matches('.spreadsheet-rotated, .spreadsheet-across')).map((child) => child.textContent).join('');
+                const align = ['left', 'center', 'right'][look.Align.tag];
+                const got = [shown, style.backgroundColor, style.color, look.Horizontal === 'centercontinuous' ? 'center' : (style.textAlign === 'start' ? 'left' : style.textAlign)];
+                const want = [look.Text, rgbOf(look.Fill) ?? 'rgb(255, 255, 255)', rgbOf(look.TextColor) ?? 'rgb(0, 0, 0)', align];
+                if (JSON.stringify(got) !== JSON.stringify(want)) differ.push(`${row},${col}: ${JSON.stringify(got)} vs ${JSON.stringify(want)}`);
+            }
+        check('every cell: text, fill, colour and alignment as the painters\' look', differ, []);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

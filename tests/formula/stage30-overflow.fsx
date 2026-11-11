@@ -141,5 +141,32 @@ let generalSheet =
     |> setCell (at 3 1) { Value = CellValue.Boolean true; Format = defaultFormat; Comment = None }
 eq "the painter places them by the same rule" (alignPainted generalSheet "1234", alignPainted generalSheet "label", alignPainted generalSheet "TRUE") (Some Layout.AlignRight, Some Layout.AlignLeft, Some Layout.AlignCenter)
 
+// ---- the one look of a cell (Paint.cellLook): what the painters and the web grid draw ----------------
+// Where the painter and the web grid disagreed, Excel's way: an indent on General text pads its left,
+// a number format's [Red] section colours the text, centred across the selection spans the run of
+// empty center-across cells, a line break of unwrapped text is not shown, a number shrunk to fit is
+// not turned to ####.
+let lookOf (model: SpreadsheetModel) row col = Paint.cellLook model row col (getCell (at row col) model) None 64.0
+let lookSheet =
+    createEmpty 20 10
+    |> setCell (at 0 0) { text "indented" with Format = { defaultFormat with Indent = 2 } }
+    |> setCell (at 1 0) { Value = CellValue.Number -5.0; Format = { defaultFormat with NumberFormat = Some "0;[Red]-0" }; Comment = None }
+    |> setCell (at 2 0) (aligned "centerContinuous" "Title")
+    |> setCell (at 2 1) { aligned "centerContinuous" "" with Value = CellValue.Empty }
+    |> setCell (at 2 2) { aligned "centerContinuous" "" with Value = CellValue.Empty }
+    |> setCell (at 3 0) (text "one\ntwo")
+    |> setCell (at 4 0) { Value = CellValue.Number 123456789.0; Format = { defaultFormat with NumberFormat = Some "#,##0.00"; ShrinkToFit = true }; Comment = None }
+eq "look: an indent on General text pads its left" ((lookOf lookSheet 0 0).IndentLeft > 15.0, (lookOf lookSheet 0 0).IndentRight) (true, 0.0)
+eq "look: a [Red] section colours a negative number" (lookOf lookSheet 1 0).TextColor (Some "#FF0000")
+eq "look: centred across the run of empty center-across cells" (lookOf lookSheet 2 0).AcrossTo 2
+eq "look: unwrapped text shows no line break" (lookOf lookSheet 3 0).Text "onetwo"
+eq "look: a number shrunk to fit is not ####" (lookOf lookSheet 4 0).Text "123,456,789.00"
+let paintedText (model: SpreadsheetModel) row =
+    let rect = Layout.cellRect model (Layout.defaultViewport 900.0 500.0) row 0
+    Paint.buildPaintItems model (Layout.defaultViewport 900.0 500.0)
+    |> List.tryPick (function Paint.DrawText t when abs (t.Rect.Y - rect.Y) < 1.0 && t.Rect.X >= rect.X && t.Rect.X < rect.X + 30.0 -> Some t | _ -> None)
+eq "the painter: General text indented" ((paintedText lookSheet 0).Value.Rect.X - (Layout.cellRect lookSheet (Layout.defaultViewport 900.0 500.0) 0 0).X > 15.0) true
+eq "the painter: centred across the run" ((paintedText lookSheet 2).Value.Rect.Width > 250.0) true
+
 printfn "stage30-overflow: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

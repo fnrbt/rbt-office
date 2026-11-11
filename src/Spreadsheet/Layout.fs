@@ -268,15 +268,70 @@ let private borderFormatAt (model: SpreadsheetModel) (row: int) (col: int) : Cel
 let private mergeAt (model: SpreadsheetModel) (row: int) (col: int) : MergedCell option =
     if model.MergedCells.IsEmpty then None else findMergedCell { Row = row; Col = col } model
 
-/// A cell's fill hides the grid lines around it (a merged cell's is its first cell's).
-let private filledAt (model: SpreadsheetModel) (row: int) (col: int) =
-    let format =
-        match mergeAt model row col with
-        | Some merge -> borderFormatAt model merge.StartRow merge.StartCol
-        | None -> borderFormatAt model row col
-    match format with
-    | Some format -> format.BgColor.IsSome
-    | None -> false
+/// The look a table's style gives a cell (`Model.tableCellEntry`: looked up, worked out once a kind
+/// of row), of the table that holds it. None outside every table and in a table without a style.
+let tableEntryAt (tables: Table list) (row: int) (col: int) : TableLookEntry option =
+    match tables with
+    | [] -> None
+    | [ table ] -> tableCellEntry table row col
+    | _ -> tables |> List.tryPick (fun table -> tableCellEntry table row col)
+
+/// The edge two cells share, from what each holds and the look of its table: each cell's own line
+/// for the edge, else its table's line there; the stronger of the two (`resolveSharedBorder`); with
+/// neither, a grid line - unless the sheet shows none, or a fill of either cell (its own or its
+/// table's) hides it, as in Excel. `first` is the cell above / to the left (`hasFirst` false: the
+/// sheet's edge), `second` the cell below / to the right; `horizontal`: the edge between two rows.
+/// The one rule of every way a cell is drawn (the web grid's cell nodes, the canvas, PDF, the
+/// native hosts).
+let edgeBetween (showGridLines: bool)
+                (first: CellData option) (firstLook: TableLookEntry option)
+                (second: CellData option) (secondLook: TableLookEntry option)
+                (horizontal: bool) (hasFirst: bool) : SharedEdge =
+    let filled (data: CellData option) (look: TableLookEntry option) =
+        (match data with Some data -> data.Format.BgColor.IsSome | None -> false)
+        || (match look with Some entry -> entry.Look.Fill.IsSome | None -> false)
+    let firstLine =
+        if not hasFirst then None
+        else
+            let own = match first with Some data -> (if horizontal then data.Format.BorderBottom else data.Format.BorderRight) | None -> None
+            match own, firstLook with
+            | Some _, _ -> own
+            | None, Some entry -> if horizontal then entry.Bottom else entry.Right
+            | None, None -> None
+    let secondLine =
+        let own = match second with Some data -> (if horizontal then data.Format.BorderTop else data.Format.BorderLeft) | None -> None
+        match own, secondLook with
+        | Some _, _ -> own
+        | None, Some entry -> if horizontal then entry.Top else entry.Left
+        | None, None -> None
+    match resolveSharedBorder firstLine secondLine with
+    | Some line -> EdgeBorder line
+    | None -> EdgeGrid (showGridLines && not (hasFirst && filled first firstLook) && not (filled second secondLook))
+
+/// The runs of one kind of edge along a side of a cell that spans the rows (columns) `first ..
+/// last`: (offset from the cell's start, length, edge), the edge of each row (column) from
+/// `kindAt`, its start from `startOf`; hidden rows (columns) are passed over.
+let edgeRuns (first: int) (last: int) (startOf: int -> float) (kindAt: int -> SharedEdge) : (float * float * SharedEdge) list =
+    if first = last then [ 0.0, (startOf (last + 1) - startOf first), kindAt first ]
+    else
+        let runs = ResizeArray<float * float * SharedEdge>()
+        let origin = startOf first
+        for index in first .. last do
+            let size = startOf (index + 1) - startOf index
+            if size > 0.0 then
+                let kind = kindAt index
+                let offset = startOf index - origin
+                if runs.Count > 0 && (let (_, _, previous) = runs.[runs.Count - 1] in previous = kind) then
+                    let (start, length, _) = runs.[runs.Count - 1]
+                    runs.[runs.Count - 1] <- (start, length + size, kind)
+                else runs.Add (offset, size, kind)
+        List.ofSeq runs
+
+/// The cell whose look a cell of a merged cell has: the merged cell's first.
+let private ownerAt (model: SpreadsheetModel) (row: int) (col: int) : CellData option =
+    match mergeAt model row col with
+    | Some merge -> Map.tryFind { Row = merge.StartRow; Col = merge.StartCol } model.Cells
+    | None -> Map.tryFind { Row = row; Col = col } model.Cells
 
 let private sharedEdge (model: SpreadsheetModel) (firstRow: int) (firstCol: int) (secondRow: int) (secondCol: int) (horizontal: bool) : SharedEdge =
     let hasFirst = firstRow >= 0 && firstCol >= 0
@@ -287,17 +342,33 @@ let private sharedEdge (model: SpreadsheetModel) (firstRow: int) (firstCol: int)
             | Some a, Some b -> a.StartRow = b.StartRow && a.StartCol = b.StartCol
             | _ -> false)
     if inside then EdgeInside
+    elif model.MergedCells.IsEmpty then
+        let at (present: bool) (row: int) (col: int) = if present then Map.tryFind { Row = row; Col = col } model.Cells else None
+        let lookAt (present: bool) (row: int) (col: int) = if present then tableEntryAt model.Tables row col else None
+        edgeBetween model.ShowGridLines (at hasFirst firstRow firstCol) (lookAt hasFirst firstRow firstCol)
+                    (at hasSecond secondRow secondCol) (lookAt hasSecond secondRow secondCol) horizontal hasFirst
     else
+        // (A cell of a merged cell has its own lines - Excel keeps a merged cell's border on each of its
+        // cells - but its first cell's fill.)
         let side (present: bool) (row: int) (col: int) (pick: CellFormat -> BorderStyle option) =
             if present then borderFormatAt model row col |> Option.bind pick else None
-        let first = side hasFirst firstRow firstCol (fun format -> if horizontal then format.BorderBottom else format.BorderRight)
-        let second = side hasSecond secondRow secondCol (fun format -> if horizontal then format.BorderTop else format.BorderLeft)
+        let lookAt (present: bool) (row: int) (col: int) = if present then tableEntryAt model.Tables row col else None
+        let firstLook, secondLook = lookAt hasFirst firstRow firstCol, lookAt hasSecond secondRow secondCol
+        let line (own: BorderStyle option) (look: TableLookEntry option) (pick: TableLookEntry -> BorderStyle option) =
+            match own, look with
+            | Some _, _ -> own
+            | None, Some entry -> pick entry
+            | None, None -> None
+        let first = line (side hasFirst firstRow firstCol (fun format -> if horizontal then format.BorderBottom else format.BorderRight)) firstLook (fun entry -> if horizontal then entry.Bottom else entry.Right)
+        let second = line (side hasSecond secondRow secondCol (fun format -> if horizontal then format.BorderTop else format.BorderLeft)) secondLook (fun entry -> if horizontal then entry.Top else entry.Left)
         match resolveSharedBorder first second with
         | Some border -> EdgeBorder border
         | None ->
-            EdgeGrid (model.ShowGridLines
-                      && not (hasFirst && filledAt model firstRow firstCol)
-                      && not (hasSecond && filledAt model secondRow secondCol))
+            let filled (present: bool) (row: int) (col: int) (look: TableLookEntry option) =
+                present
+                && ((match ownerAt model row col with Some data -> data.Format.BgColor.IsSome | None -> false)
+                    || (match look with Some entry -> entry.Look.Fill.IsSome | None -> false))
+            EdgeGrid (model.ShowGridLines && not (filled hasFirst firstRow firstCol firstLook) && not (filled hasSecond secondRow secondCol secondLook))
 
 /// The edge above a cell: between it and the cell in the nearest row above
 /// that is shown (hidden rows have no part in it).
