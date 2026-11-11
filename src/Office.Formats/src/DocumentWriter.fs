@@ -1812,6 +1812,14 @@ let private generateParagraphWithHyperlinksAndImagesWithPageSetup (packageSetup:
             runs @ [element "w:r" [] [selfClosing "w:br" [("w:type", (if boolOrDefault false (para?ColumnBreakAfter) then "column" else "page"))]]]
         else runs
     let runs =
+        // (Word's mark of the page it started at the paragraph that none of its runs holds - a picture's run,
+        // which the model gives no mark: in a run of its own before them, so that a document written from the
+        // model has as many marks as the one read, and the pages Word started are counted alike.)
+        let runsHoldMark = optionalArray (para?Runs) |> Array.exists (fun run -> boolOrDefault false (run?RenderedPageBreakBefore))
+        if (optionalInt (para?RenderedPageBreakBefore)).IsSome && not runsHoldMark && splice.IsNone then
+            element "w:r" [] [selfClosing "w:lastRenderedPageBreak" []] :: runs
+        else runs
+    let runs =
         // (A page break the paragraph starts with: before its first run.)
         if boolOrDefault false (para?PageBreakAtStart) && not (splice.IsSome && boolOrDefault false (para?SpliceBreakKept)) then
             element "w:r" [] [selfClosing "w:br" [("w:type", "page")]] :: runs

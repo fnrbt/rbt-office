@@ -742,6 +742,35 @@ do
         (summary = [ (false, false, false); (true, true, false); (false, false, true); (false, false, true); (false, false, false) ])
         (sprintf "%A" summary)
 
+// Word's marks of the pages it started (w:lastRenderedPageBreak) in a hyperlink and in a field's result are
+// the editor's too, where they stand: a run of their own from the mark on. They were lost with the runs of the
+// link / the result made one: a save written from the model had fewer of them, and the read-again layout counted
+// Word's pages wrong from there (docx4j-getting-started, -headers-footers).
+do
+    let marked =
+        docxWithParts
+            ("<w:p><w:hyperlink w:anchor=\"x\"><w:r><w:t xml:space=\"preserve\">link, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>next page</w:t></w:r></w:hyperlink></w:p>"
+             + "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText>REF x \\h</w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+             + "<w:r><w:t xml:space=\"preserve\">result, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>on the next page</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>"
+             // (A simple field: what a save written from the model makes of a field.)
+             + "<w:p><w:fldSimple w:instr=\"REF x \\h\"><w:r><w:t xml:space=\"preserve\">simple, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>next</w:t></w:r></w:fldSimple></w:p>")
+            []
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            marked.Theme marked.Content marked.Images marked.Styles marked.NumberingDefinitions marked.Footnotes marked.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let marksOf (item: System.Collections.Generic.Dictionary<string, obj>) =
+        editorRunsOf item
+        |> Array.map (fun run -> string run.["Text"], (match run.TryGetValue "RenderedPageBreakBefore" with | true, (:? bool as value) -> value | _ -> false))
+        |> Array.toList
+    ok "a mark in a link is the link run's from it on" (marksOf items.[0] = [ ("link, ", false); ("next page", true) ]) (sprintf "%A" (marksOf items.[0]))
+    ok "a mark in a field's result is the result's run from it on"
+        (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "on the next page"))
+        (sprintf "%A" (marksOf items.[1]))
+    ok "and in a simple field's" (marksOf items.[2] |> List.exists (fun (text, mark) -> mark && text = "next")) (sprintf "%A" (marksOf items.[2]))
+
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

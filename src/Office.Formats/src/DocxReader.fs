@@ -1528,19 +1528,21 @@ module Docx =
             let texts = runs |> List.map (fun run -> wElem "t" run |> Option.bind Xml.text |> Option.defaultValue "")
             let result = String.concat "" texts
             let fieldType = fieldTypeFromCode code
-            let fieldOf (props: RunProperties) (part: string option) : Run =
+            // (A run of the result with Word's mark of a page it started: the part from it on has the mark.)
+            let marked (run: XmlNode) = (wElem "lastRenderedPageBreak" run).IsSome
+            let fieldOf (props: RunProperties) (part: string option) (renderedPageBreak: bool) : Run =
                 { Content = FieldRef { FieldType = fieldType; Code = code; Result = (if result = "" then None else Some result); Part = part }
                   Properties = props
                   BookmarkStart = None
                   BookmarkEnd = None
-                  RenderedPageBreakBefore = false
+                  RenderedPageBreakBefore = renderedPageBreak
                   RevisionId = None
                   RevisionType = None
                   RevisionAuthor = None
                   RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }
             // (A field of one run is of that run: a save writes it from there while it is as read.)
             let whole () =
-                let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None
+                let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None (runs |> List.exists marked)
                 [ match runs with
                   | [ XmlDsl.Element (_, _, _, span) ] -> { field with Source = span }
                   | _ -> field ]
@@ -1548,12 +1550,14 @@ module Docx =
             if runs.Length < 2 || computed then whole ()
             else
                 // The stretches of runs that are formatted alike.
-                let groups = ResizeArray<RunProperties * System.Text.StringBuilder>()
+                let groups = ResizeArray<RunProperties * System.Text.StringBuilder * bool>()
                 List.iter2 (fun (run: XmlNode) (text: string) ->
                     let props = runProps run
-                    if groups.Count > 0 && fst groups.[groups.Count - 1] = props then (snd groups.[groups.Count - 1]).Append(text) |> ignore
-                    else groups.Add ((props, System.Text.StringBuilder(text)))) runs texts
-                let parts = [ for (props, text) in groups do if text.Length > 0 then yield fieldOf props (Some (text.ToString())) ]
+                    let mark = marked run
+                    if groups.Count > 0 && not mark && (let (previous, _, _) = groups.[groups.Count - 1] in previous = props) then
+                        (let (_, builder, _) = groups.[groups.Count - 1] in builder.Append(text) |> ignore)
+                    else groups.Add ((props, System.Text.StringBuilder(text), mark))) runs texts
+                let parts = [ for (props, text, mark) in groups do if text.Length > 0 then yield fieldOf props (Some (text.ToString())) mark ]
                 if parts.Length < 2 then whole () else parts
 
     let fieldData (rNode: XmlNode) : Field option =
@@ -1639,7 +1643,10 @@ module Docx =
             resultBuilder.Append(textFromRun run) |> ignore
         let result = resultBuilder.ToString()
         let fieldType = fieldTypeFromCode code
-        let fieldOf (first: Run option) (part: string option) : Run =
+        let isMark (run: Run) = match run.Content with RenderedPageBreak -> true | _ -> false
+        // (Word's mark of a page it started in the result: the run of the result it stands before has it - a run
+        // of its own from there where the result is plain text, else the field's run.)
+        let fieldOf (first: Run option) (part: string option) (renderedPageBreak: bool) : Run =
             {
                 Content = FieldRef {
                     FieldType = fieldType
@@ -1650,7 +1657,7 @@ module Docx =
                 Properties = (match first with Some run -> run.Properties | None -> field.Properties)
                 BookmarkStart = first |> Option.bind (fun run -> run.BookmarkStart)
                 BookmarkEnd = first |> Option.bind (fun run -> run.BookmarkEnd)
-                RenderedPageBreakBefore = first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
+                RenderedPageBreakBefore = renderedPageBreak || first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
                 RevisionId = first |> Option.bind (fun run -> run.RevisionId)
                 RevisionType = first |> Option.bind (fun run -> run.RevisionType)
                 RevisionAuthor = first |> Option.bind (fun run -> run.RevisionAuthor)
@@ -1660,20 +1667,27 @@ module Docx =
                 Checkbox = None
                 Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
-        let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
+        let marked = field.ResultRuns |> Seq.exists isMark
+        let firstResultRun = field.ResultRuns |> Seq.tryFind (isMark >> not)
+        let whole () = [ fieldOf firstResultRun None marked ]
         let computed = ValueText.FieldCode.isComputed (code.ToUpperInvariant())
-        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
+        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ | RenderedPageBreak -> true | _ -> false)
         if field.ResultRuns.Count < 2 || computed || not plain then whole ()
         else
-            // The stretches of runs that are formatted alike.
-            let groups = ResizeArray<Run * System.Text.StringBuilder>()
+            // The stretches of runs that are formatted alike (one starts at a mark of Word's too).
+            let groups = ResizeArray<Run * System.Text.StringBuilder * bool>()
+            let mutable pendingMark = false
             for run in field.ResultRuns do
-                let text = textFromRun run
-                if groups.Count > 0 && (let (first, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
-                    (snd groups.[groups.Count - 1]).Append(text) |> ignore
-                else groups.Add ((run, System.Text.StringBuilder(text)))
+                if isMark run then pendingMark <- true
+                else
+                    let text = textFromRun run
+                    if groups.Count > 0 && not pendingMark && (let (first, _, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
+                        (let (_, builder, _) = groups.[groups.Count - 1] in builder.Append(text) |> ignore)
+                    else
+                        groups.Add ((run, System.Text.StringBuilder(text), pendingMark))
+                        pendingMark <- false
             if groups.Count < 2 then whole ()
-            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) ]
+            else [ for (first, text, mark) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) mark ]
 
     let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
         match stack with
@@ -1952,7 +1966,7 @@ module Docx =
                 DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
             }
             // (The w:r a link run is of, where it is one alone: docs/save-architecture.md.)
-            let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) =
+            let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) (renderedPageBreak: bool) =
                 RunToken {
                     Content = Link {
                         Text = text
@@ -1963,26 +1977,27 @@ module Docx =
                     Properties = props
                     BookmarkStart = None
                     BookmarkEnd = None
-                    RenderedPageBreakBefore = false
+                    RenderedPageBreakBefore = renderedPageBreak
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
                     RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = source
                 }
             // (Runs that are formatted alike are one run, as they were before each was read on its own: of the
-            // w:r of the first, where it is of that one alone.)
+            // w:r of the first, where it is of that one alone. A run that Word's mark of a page it started stands
+            // before is a run of its own, with the mark: see attachRunMarkers.)
             let texts =
                 runs
-                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties, r.Source) | _ -> None)
-                |> List.fold (fun (acc: (string * RunProperties * XmlDsl.Span) list) (text, props, source) ->
+                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties, r.Source, r.RenderedPageBreakBefore) | _ -> None)
+                |> List.fold (fun (acc: (string * RunProperties * XmlDsl.Span * bool) list) (text, props, source, mark) ->
                     match acc with
-                    | (previous, previousProps, previousSource) :: rest when previousProps = props ->
-                        (previous + text, props, (if previousSource = source then source else XmlDsl.Span.none)) :: rest
-                    | _ -> (text, props, source) :: acc) []
+                    | (previous, previousProps, previousSource, previousMark) :: rest when previousProps = props && not mark ->
+                        (previous + text, props, (if previousSource = source then source else XmlDsl.Span.none), previousMark) :: rest
+                    | _ -> (text, props, source, mark) :: acc) []
                 |> List.rev
             match texts with
-            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) XmlDsl.Span.none ]
-            | _ -> texts |> List.map (fun (text, props, source) -> linkRun text props source)
+            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) XmlDsl.Span.none false ]
+            | _ -> texts |> List.map (fun (text, props, source, mark) -> linkRun text props source mark)
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =

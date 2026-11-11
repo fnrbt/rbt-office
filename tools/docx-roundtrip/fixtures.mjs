@@ -189,6 +189,26 @@ const docs = [
         ],
     },
     {
+        // Word's marks of the pages it started stay in a save written from the model: before a picture a paragraph
+        // starts with, in a link, in a field's result (a save that lost them counted Word's pages wrong from there).
+        name: 'synthetic/rendered-page-marks',
+        body:
+            p('first page') +
+            `<w:p>${drawing('rId1', 457200, 457200).replace('<w:r><w:drawing>', '<w:r><w:lastRenderedPageBreak/><w:drawing>')}</w:p>` +
+            `<w:p><w:hyperlink w:anchor="x"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve">link, </w:t></w:r><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:lastRenderedPageBreak/><w:t>next page</w:t></w:r></w:hyperlink></w:p>` +
+            `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF x \\h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>` +
+            `<w:r><w:t xml:space="preserve">result, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>on the next page</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+        rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
+        extra: { 'word/media/body.png': PNG },
+        types: '<Default Extension="png" ContentType="image/png"/>',
+        expect: [
+            { part: 'word/document.xml', has: '<w:lastRenderedPageBreak/>(?:(?!</w:p>).)*<w:drawing>' },
+            // (Written as the editor holds them: the mark on its first character.)
+            { part: 'word/document.xml', has: 'link, </w:t>(?:(?!</w:p>).)*<w:hyperlink[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/><w:t>n</w:t>' },
+            { part: 'word/document.xml', has: 'result, </w:t>(?:(?!</w:p>).)*<w:lastRenderedPageBreak/><w:t>o</w:t>' },
+        ],
+    },
+    {
         name: 'synthetic/run-props',
         body:
             p('hidden', '', '<w:vanish/>') + p('double strike', '', '<w:dstrike/>') +
