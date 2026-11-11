@@ -102,6 +102,22 @@ check "layout: a part of the paragraph without what is kept before its first run
     (writeLayoutWith { KeptBefore = false; KeptAfter = true; Covered = [] } paraLaid [| AtItem runStarts.[2], "<R2/>" |])
     "<R2/>"
 
+// Edits made in the elements a layout keeps (a bookmark renamed or removed in a paragraph written from its source).
+let markedText = "<w:p><w:pPr/><w:proofErr w:type=\"spellStart\"/><w:bookmarkStart w:id=\"1\" w:name=\"old\"/><w:r><w:t>a</w:t></w:r><w:bookmarkEnd w:id=\"1\"/> <w:bookmarkStart w:id=\"2\" w:name=\"gone\"/><w:r><w:t>b</w:t></w:r><w:bookmarkEnd w:id=\"2\"/></w:p>"
+let markedNode = (el markedText).Node
+let markedLaid = (layout (fun node -> localName node = "r") (fun _ -> false) (fun _ -> false) ignore markedText markedNode (markedText.IndexOf "<w:proofErr")).Value
+let markedRuns = markedLaid.Children |> List.choose (function LaidItem (at, _) -> Some at | _ -> None) |> List.toArray
+let markAt (piece: string) = markedText.IndexOf piece
+check "writeLayoutEditing: a kept element's attribute set, another taken out with the white space before it, the rest its bytes"
+    (writeLayoutEditing wholeElement Word.order
+        (Map.ofList [ markAt "<w:bookmarkStart w:id=\"1\"", [ SetAttribute ("w:name", "new") ]
+                      markAt "<w:bookmarkStart w:id=\"2\"", [ Removed ]; markAt "<w:bookmarkEnd w:id=\"2\"", [ Removed ] ])
+        markedLaid [| AtItem markedRuns.[0], "<R0/>"; AtItem markedRuns.[1], "<R1/>" |])
+    "<w:proofErr w:type=\"spellStart\"/><w:bookmarkStart w:id=\"1\" w:name=\"new\"/><R0/><w:bookmarkEnd w:id=\"1\"/><R1/>"
+check "writeLayoutEditing with no edits is writeLayout"
+    (writeLayoutEditing wholeElement Word.order Map.empty markedLaid [| AtItem markedRuns.[0], "<R0/>"; AtItem markedRuns.[1], "<R1/>" |])
+    (writeLayout markedLaid [| AtItem markedRuns.[0], "<R0/>"; AtItem markedRuns.[1], "<R1/>" |])
+
 check "a run's properties put in go first, before what it holds" (edit "<w:r w:x=\"1\"><w:t>a</w:t></w:r>" [ SetChild ("w:rPr", "<w:rPr><w:b/></w:rPr>") ]) "<w:r w:x=\"1\"><w:rPr><w:b/></w:rPr><w:t>a</w:t></w:r>"
 check "SetText: the text set, the start tag as it was" (edit "<w:t>edit me</w:t>" [ SetText "Qedit me" ]) "<w:t>Qedit me</w:t>"
 check "SetText: escaped, and xml:space put in where white space at an end needs it" (edit "<w:t>a</w:t>" [ SetText " a&b" ]) "<w:t xml:space=\"preserve\"> a&amp;b</w:t>"

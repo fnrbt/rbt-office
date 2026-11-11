@@ -3293,7 +3293,7 @@ let private jsonWithoutTextOrMark (_run: obj) : string = jsNative
 [<Fable.Core.Emit("JSON.stringify(Object.assign({}, $0, { Text: undefined }))")>]
 let private jsonWithoutText (_run: obj) : string = jsNative
 
-let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (marksBefore: Map<int, string>) (ownBookmarks: Set<string>) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
+let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj array) (marksBefore: Map<int, string>) (ownBookmarks: Set<string>) (bookmarkEdits: Map<int, XmlPatch.ElementEdit list>) (leading: bool) (trailing: bool) (pieces: (obj * string * (string -> string)) list) (runXml: obj -> string) (wrapOf: obj -> string -> string) : string =
     let text = source.Layout.Text
     // The runs read, by source: the run objects the model had for each.
     let originalRuns = System.Collections.Generic.Dictionary<int, ResizeArray<obj>>()
@@ -3629,8 +3629,43 @@ let private splicedRuns (source: SpliceSource) (original: obj) (joined: obj arra
                  else
                      previousInSource <- false
                      yield XmlPatch.Outside, wrap run |]
-    XmlPatch.writeLayoutWith { KeptBefore = leading; KeptAfter = trailing; Covered = List.ofSeq covered } source.Layout written
+    XmlPatch.writeLayoutEditing { KeptBefore = leading; KeptAfter = trailing; Covered = List.ofSeq covered } XmlPatch.Word.order bookmarkEdits source.Layout written
 
+
+/// The bookmarks of a paragraph written from its source that the editor renamed or removed
+/// (renameBookmark / removeBookmark): the change made in the source's w:bookmarkStart and w:bookmarkEnd
+/// where they stand - its w:name set, or the two taken out (an end in another paragraph is taken out there) -
+/// as edits of the kept elements of the layout, by where each starts. The source's bookmarks stand where they
+/// are in the whole of a paragraph (see spliceSourceOf), so this is of the whole of one only: the bookmarks
+/// its runs had when it was read (SpliceOriginal) against those they have now. A bookmark the model never had
+/// (one where no run is there to have it) is not one of them: it stays.
+let private sourceBookmarkEdits (para: obj) (source: SpliceSource) (whole: bool) : Map<int, XmlPatch.ElementEdit list> =
+    if not whole || isNullOrUndefined (para?SpliceOriginal) then Map.empty
+    else
+        let startsIn (runs: obj array) : ModelText.BookmarkStart list =
+            runs |> List.ofArray |> List.collect (fun run ->
+                runBookmarkStarts run @ (runBookmarkEnds run |> List.choose (function ModelText.Opens start -> Some start | ModelText.Ends _ -> None)))
+        let endsIn (runs: obj array) : Set<string> =
+            runs |> List.ofArray |> List.collect (fun run ->
+                (runBookmarkStarts run |> List.filter (fun start -> start.EndsHere) |> List.map (fun start -> start.Id))
+                @ (runBookmarkEnds run |> List.choose (function ModelText.Ends id -> Some id | ModelText.Opens start when start.EndsHere -> Some start.Id | ModelText.Opens _ -> None)))
+            |> Set.ofList
+        let namesOf (starts: ModelText.BookmarkStart list) = starts |> List.map (fun start -> start.Id, start.Name) |> Map.ofList
+        let wasRuns, nowRuns = optionalArray (para?SpliceOriginal?Runs), optionalArray (para?Runs)
+        let wasStarts, nowStarts = namesOf (startsIn wasRuns), namesOf (startsIn nowRuns)
+        let wasEnds, nowEnds = endsIn wasRuns, endsIn nowRuns
+        XmlPatch.descendantsWhere (fun node -> XmlPatch.name node = "w:bookmarkStart" || XmlPatch.name node = "w:bookmarkEnd") source.Paragraph
+        |> List.choose (fun node ->
+            let at = (XmlPatch.span node).Start
+            match XmlPatch.attribute node "w:id" with
+            | Some id when XmlPatch.name node = "w:bookmarkStart" ->
+                match Map.tryFind id wasStarts, Map.tryFind id nowStarts with
+                | Some _, None -> Some (at, [ XmlPatch.Removed ])
+                | Some was, Some now when now <> was && now <> "" && XmlPatch.attribute node "w:name" <> Some now -> Some (at, [ XmlPatch.SetAttribute ("w:name", now) ])
+                | _ -> None
+            | Some id when wasEnds.Contains id && not (nowEnds.Contains id) -> Some (at, [ XmlPatch.Removed ])
+            | _ -> None)
+        |> Map.ofList
 
 paragraphSplicer <-
     { new ParagraphSplicer with
@@ -3686,7 +3721,7 @@ paragraphSplicer <-
                             |> List.choose (fun node -> XmlPatch.attribute node "w:id")
                             |> List.filter bookmarks.Contains
                             |> Set.ofList
-                    [ splicedRuns source para?SpliceOriginal joined marksBefore ownBookmarks (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
+                    [ splicedRuns source para?SpliceOriginal joined marksBefore ownBookmarks (sourceBookmarkEdits para source whole) (flag para?SpliceLeading) (flag para?SpliceTrailing) pieces runXml wrapOf ], source.Properties,
                     (if boolOrDefault false (para?SourceCopy) then source.CopyHead else source.Head))
         member _.MergeProperties source was now =
             mergedProperties "w:pPr" source (propertyElementsOf was) (propertyElementsOf now) }
