@@ -254,14 +254,14 @@ checks['table-entry'] = async () => {
         // ---- the look of the built-in styles ----
         await frames();
         const white = 'rgb(255, 255, 255)', black = 'rgb(0, 0, 0)';
-        check('Medium2: header in the accent with white bold text, banded rows', [look(0, 0), look(1, 0)[0], look(2, 0)[0]], [['rgb(68, 114, 196)', white, true], 'rgb(218, 227, 243)', white]);
+        check('Medium2: header in the accent with white bold text, banded rows', [look(0, 0), look(1, 0)[0], look(2, 0)[0]], [['rgb(68, 114, 196)', white, true], 'rgb(217, 225, 242)', white]);
         grid.SetTableStyle('Sales', 'TableStyleLight1'); await frames();
         // (A cell draws the line above it - the one under the header is the first row's -, a thin one as its grid line.)
         check('Light1: a bold header without a fill, grey bands, lines above and below the header', [look(0, 0), look(1, 0)[0], [node(0, 0), node(1, 0)].every((cell) => cell.querySelector('.spreadsheet-edge') !== null || getComputedStyle(cell).boxShadow.includes('rgb(0, 0, 0)'))], [[white, black, true], 'rgb(217, 217, 217)', true]);
         grid.SetTableStyle('Sales', 'TableStyleDark2'); await frames();
-        check('Dark2: dark fills, white text', [look(0, 0), look(1, 0).slice(0, 2), look(2, 0).slice(0, 2)], [[black, white, true], ['rgb(47, 85, 151)', white], ['rgb(68, 114, 196)', white]]);
+        check('Dark2: dark fills, white text', [look(0, 0), look(1, 0).slice(0, 2), look(2, 0).slice(0, 2)], [[black, white, true], ['rgb(48, 84, 150)', white], ['rgb(68, 114, 196)', white]]);
         grid.SetTableStyle('Sales', { name: 'TableStyleMedium9', showFirstColumn: true }); grid.SetTableTotalRow('Sales', true); await frames();
-        check('Medium9: bands in two tints, the first column and the total row in the accent', [look(1, 1)[0], look(2, 1)[0], look(1, 0), look(4, 1)], ['rgb(180, 199, 231)', 'rgb(218, 227, 243)', ['rgb(68, 114, 196)', white, true], ['rgb(68, 114, 196)', white, true]]);
+        check('Medium9: bands in two tints, the first column and the total row in the accent', [look(1, 1)[0], look(2, 1)[0], look(1, 0), look(4, 1)], ['rgb(180, 198, 231)', 'rgb(217, 225, 242)', ['rgb(68, 114, 196)', white, true], ['rgb(68, 114, 196)', white, true]]);
         grid.SetTableTotalRow('Sales', false); grid.SetTableStyle('Sales', 'TableStyleMedium2');
 
         // ---- saved and opened again ----
