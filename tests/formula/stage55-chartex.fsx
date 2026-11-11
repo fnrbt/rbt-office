@@ -62,8 +62,8 @@ match waterfall with
     let shown = texts scene
     ok "waterfall: the title, the legend's three entries, the categories, the values"
         ([ "Profit bridge"; "Increase"; "Decrease"; "Total"; "Start"; "Sales"; "Costs"; "Tax"; "End"; "100"; "50"; "-30"; "-20" ] |> List.forall (fun item -> List.contains item shown)) (sprintf "%A" shown)
-    // The bars, left to right (the legend's swatches are small squares above them).
-    let bars = rects scene |> List.filter (fun (_, y, w, h, fill) -> fill <> "#FFFFFF" && y > 40.0) |> List.sortBy (fun (x, _, _, _, _) -> x)
+    // The bars, left to right (the legend's swatches are small squares).
+    let bars = rects scene |> List.filter (fun (_, _, w, _, fill) -> fill <> "#FFFFFF" && w > 20.0) |> List.sortBy (fun (x, _, _, _, _) -> x)
     eq "waterfall: five bars: a total, an increase, two decreases, a total" (bars |> List.map (fun (_, _, _, _, fill) -> fill)) [ "#A5A5A5"; "#4472C4"; "#ED7D31"; "#ED7D31"; "#A5A5A5" ]
     match bars with
     | [ (_, startTop, _, startHeight, _); (_, salesTop, _, salesHeight, _); (_, costsTop, _, costsHeight, _); (_, taxTop, _, taxHeight, _); (_, endTop, _, endHeight, _) ] ->
@@ -74,7 +74,8 @@ match waterfall with
         ok "waterfall: the end total is where the decreases left it" (close (bottomOf taxTop taxHeight) endTop) (sprintf "%g / %g" (bottomOf taxTop taxHeight) endTop)
         ok "waterfall: half as much as a total is half as high" (close (salesHeight * 2.0) startHeight) (sprintf "%g / %g" salesHeight startHeight)
     | _ -> ok "waterfall: five bars" false (sprintf "%A" bars)
-    eq "waterfall: a line joins each bar to the next" (lines scene |> List.filter (fun (_, y1, _, y2, color) -> color = "#A6A6A6" && y1 = y2) |> List.length) 4
+    // (Light grey, as the gridlines: Excel 2019's own picture of synthetic-chartex.xlsx.)
+    eq "waterfall: a line joins each bar to the next, light grey" (lines scene |> List.filter (fun (x1, y1, x2, y2, color) -> color = "#D9D9D9" && y1 = y2 && x2 - x1 < 100.0) |> List.length) 4
 | None -> ()
 
 // ---- a funnel ---------------------------------------------------------------------------------------
@@ -206,6 +207,28 @@ for label, saved in [ "as it was opened", exported (book.Sheets |> Array.map (fu
     ok (sprintf "saved %s: the names the charts read through" label) (namesAgain = namesBefore && namesBefore.Length = 14) (sprintf "%A" namesAgain)
     let drawingsWithChartEx = parts |> Map.toList |> List.filter (fun (path, data) -> path.StartsWith "xl/drawings/drawing" && (text data).Contains "chartex")
     ok (sprintf "saved %s: the drawings still hold the charts" label) (drawingsWithChartEx.Length = 3) (sprintf "%A" (drawingsWithChartEx |> List.map fst))
+
+// ---- Excel's own waterfall (synthetic-chartex.xlsx, made by Excel 2019: build-chartex-fixture.vbs), where
+// Excel draws its parts at 360 x 216 pt (480 x 288 px), measured on Excel's picture of it ---------------------
+do
+    let wb, parts, theme = openBook "test-documents-excel/synthetic-chartex.xlsx"
+    let names (name: string) = wb.NamedRanges |> List.tryPick (fun known -> if known.Name = name then Some known.RefersTo else None)
+    let book = Bridge.Import.importWorkbook wb
+    let data : Charts.ChartData =
+        let model = resolveSheet book.Sheets.[0].Model
+        { Cells = (fun _ r0 c0 r1 c1 -> Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } model))))
+          Display = (fun cell -> Rbt.Spreadsheet.CellText.cellDisplayText None 1000.0 cell.Format cell.Value)
+          Format = (fun code value -> Rbt.Spreadsheet.CellText.formatNumberWithCodeIn false code value) }
+    match Charts.parseChartWith names theme (text parts.["xl/charts/chartEx1.xml"]) with
+    | Some chart ->
+        let scene = Charts.layoutChart theme data chart 480.0 288.0
+        let textAt (value: string) = scene.Items |> List.tryPick (fun item -> match item with Charts.PText (_, y, known, _, _, _, _, _, _) when known = value -> Some y | _ -> None)
+        let topGridline = lines scene |> List.filter (fun (x1, y1, x2, y2, _) -> y1 = y2 && x2 - x1 > 300.0) |> List.map (fun (_, y, _, _, _) -> y) |> List.fold min 1000.0
+        // (Excel: the legend's middle 50 px down, the axis' top - 180 - 78 px down.)
+        ok "Excel's waterfall: its legend under the title where Excel puts it (50 px down), the plot's top 78 px down"
+            (match textAt "Increase" with Some y -> abs (y - 50.0) <= 2.0 && abs (topGridline - 78.0) <= 2.0 | None -> false)
+            (sprintf "legend %A, top gridline %g" (textAt "Increase") topGridline)
+    | None -> ok "synthetic-chartex's waterfall is read" false "not read"
 
 printfn ""
 printfn "Stage 55 chartEx tests: %d passed, %d failed" pass fail

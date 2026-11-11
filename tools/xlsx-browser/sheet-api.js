@@ -2687,7 +2687,7 @@ checks['api-tables'] = async () => {
         check('the header cells hold the column names', [value('C1'), value('D1')], ['Column3', 'Amount2']);
         check('structured references resolve, here and on the other sheet', [value('G2'), value('G3'), value('G4'), value('G5'), value('G6'), value('Other!A1')], [60, 40, 4, 4, 600, 600]);
         check('one change, a new revision', [changes.splice(0).length, grid.GetRevision() !== r0, grid.GetTables().length], [1, true, 1]);
-        check('the grid draws the header and the bands of the style', [await look(0, 0), await look(1, 0), await look(2, 0), await look(3, 0)], [['rgb(68, 114, 196)', true], ['rgb(218, 227, 243)', false], ['rgb(255, 255, 255)', false], ['rgb(218, 227, 243)', false]]);
+        check('the grid draws the header and the bands of the style', [await look(0, 0), await look(1, 0), await look(2, 0), await look(3, 0)], [['rgb(68, 114, 196)', true], ['rgb(217, 225, 242)', false], ['rgb(255, 255, 255)', false], ['rgb(217, 225, 242)', false]]);
         grid.SetCell(1, 1, '15');
         check('an edit of the data recalculates the references on both sheets', [value('G2'), value('G3'), (grid.SetCell(1, 3, '150'), value('Other!A1')), value('G6')], [65, 40, 650, 650]);
         grid.SetCell(1, 1, '10'); grid.SetCell(1, 3, '100'); changes.splice(0);

@@ -10,9 +10,9 @@
 ///   scroll bar at the right; the first shown is `startItem`. The look is a custom style of the workbook
 ///   (`<x14:slicerStyle>` for the buttons, the `<tableStyle>` of the same name for the whole slicer and
 ///   its header) or a built-in one (SlicerStyleLight1 when none is named) in the workbook's theme.
-/// - a timeline (simplified): its caption, the selected period as text, the time level, and a strip of
-///   the periods of its level from the date it is scrolled to - the larger period's labels above, the
-///   period's below, the selected periods filled - and its scroll bar.
+/// - a timeline: its caption, the selected period as text, the time level, and a strip of the periods of
+///   its level from the date it is scrolled to - the larger period's label and each period's own above
+///   its block, the selected blocks filled - and its scroll bar (simplified: no arrows, no handles).
 ///
 /// Built-in slicer styles Light1-6 are Excel's own definitions as Excel copies them into a file when one
 /// is duplicated (the e-commerce dashboard has four: borders, fills, tints and greys); Other1-2, Dark1-6
@@ -117,7 +117,10 @@ let slicerLook (workbook: XlsxReader.Workbook) (name: string option) : SlicerLoo
            UnselectedWithData = element "unselectedItemWithData"
            UnselectedWithNoData = element "unselectedItemWithNoData" } : SlicerLook)
 
-/// The look of a timeline style (approximated for the built-in ones: TimeSlicerStyleLight1-6, Dark1-6).
+/// The look of a timeline style: a custom one of the workbook (its `<x15:timelineStyle>` elements, the
+/// `<tableStyle>` of the same name for the whole timeline and its header; an element it does not have is
+/// plain, as in Excel), or a built-in one - TimeSlicerStyleLight1-6 as Excel copies them into a file when
+/// one is duplicated, Dark1-6 approximated.
 let timelineLook (workbook: XlsxReader.Workbook) (name: string option) : TimelineLook =
     let theme = workbook.ThemeColors
     let name = name |> Option.orElse workbook.SlicerStyles.DefaultTimeline |> Option.defaultValue "TimeSlicerStyleLight1"
@@ -142,29 +145,32 @@ let timelineLook (workbook: XlsxReader.Workbook) (name: string option) : Timelin
               SelectedTimeBlock = { plain with Fill = Some accent }
               UnselectedTimeBlock = { plain with Fill = Some (tint accent -0.25) } }
         | None ->
+            // (Excel's TimeSlicerStyleLight1, accent n for LightN: the frame in the accent, the selected
+            // periods from the accent lighter 60% down to the accent, the others light grey, the labels grey.)
             let accent = themeColor theme (3 + (numberAfter "TimeSlicerStyleLight" |> Option.defaultValue 1)) "4472C4"
-            { Whole = boxed "D9D9D9" { plain with Fill = Some "FFFFFF"; FontColor = Some dark }
-              Header = { plain with FontColor = Some dark }
-              SelectionLabel = { plain with FontColor = Some "595959" }
-              TimeLevel = { plain with FontColor = Some accent }
-              PeriodLabel1 = { plain with FontColor = Some "595959" }
-              PeriodLabel2 = { plain with FontColor = Some "595959" }
-              SelectedTimeBlock = { plain with Fill = Some (tint accent 0.4) }
-              UnselectedTimeBlock = { plain with Fill = Some "E7E6E6" } }
+            let grey = tint dark 0.499984740745262
+            { Whole = boxed accent { plain with Fill = Some "FFFFFF"; FontColor = Some dark }
+              Header = { plain with FontColor = Some dark; Bold = Some true }
+              SelectionLabel = { plain with FontColor = Some (tint accent -0.249977111117893) }
+              TimeLevel = { plain with FontColor = Some grey }
+              PeriodLabel1 = { plain with FontColor = Some grey }
+              PeriodLabel2 = { plain with FontColor = Some grey }
+              SelectedTimeBlock = { plain with Fill = Some ("gradient(90;0 #" + tint accent 0.59999389629810485 + " 1;1 #" + accent + " 1)") }
+              UnselectedTimeBlock = { plain with Fill = Some (tint (themeColor theme 0 "FFFFFF") -0.14999847407452621) } }
     match workbook.SlicerStyles.Timelines |> List.tryFind (fun style -> style.Name = name) with
     | None -> builtIn
     | Some style ->
-        let element (kind: string) (fallback: Dxf) =
-            match style.Elements |> List.tryPick (fun (known, format) -> if known = kind then Some format else None) with
-            | Some format -> { fallback with Fill = format.Fill |> Option.orElse fallback.Fill; FontColor = format.FontColor |> Option.orElse fallback.FontColor; Bold = format.Bold |> Option.orElse fallback.Bold }
-            | None -> fallback
-        { builtIn with
-            SelectionLabel = element "selectionLabel" builtIn.SelectionLabel
-            TimeLevel = element "timeLevel" builtIn.TimeLevel
-            PeriodLabel1 = element "periodLabel1" builtIn.PeriodLabel1
-            PeriodLabel2 = element "periodLabel2" builtIn.PeriodLabel2
-            SelectedTimeBlock = element "selectedTimeBlock" builtIn.SelectedTimeBlock
-            UnselectedTimeBlock = element "unselectedTimeBlock" builtIn.UnselectedTimeBlock }
+        let element (kind: string) = style.Elements |> List.tryPick (fun (known, format) -> if known = kind then Some format else None) |> Option.defaultValue plain
+        let table = workbook.TableStyles |> List.tryFind (fun known -> known.Name = name)
+        let tableElement (kind: string) = table |> Option.bind (fun known -> known.Elements |> List.tryPick (fun item -> if item.Type = kind then Some item.Format else None)) |> Option.defaultValue plain
+        { Whole = tableElement "wholeTable"
+          Header = tableElement "headerRow"
+          SelectionLabel = element "selectionLabel"
+          TimeLevel = element "timeLevel"
+          PeriodLabel1 = element "periodLabel1"
+          PeriodLabel2 = element "periodLabel2"
+          SelectedTimeBlock = element "selectedTimeBlock"
+          UnselectedTimeBlock = element "unselectedTimeBlock" }
 
 // ---------------------------------------------------------------------------
 // Drawing
@@ -200,9 +206,13 @@ let private box (dxf: Dxf) (x: float) (y: float) (width: float) (height: float) 
     (match dxf.Fill with Some fill -> [ PRect (x, y, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
     @ edges dxf x y width height
 
-/// Margins of a slicer, pixels (Excel's are not in the file: measured by eye).
-let private margin = 6.0
+/// Margins of a slicer, pixels (Excel's are not in the file). Measured on Excel 2019's own picture of
+/// synthetic-slicers.xlsx at 100%: the buttons and the header's line 10 px in from the frame at the sides,
+/// the line 27 px below the top, the first row of buttons 32 px below it, a button's text 8 px into it.
+let private margin = 10.0
+let private bottomMargin = 6.0
 let private headerHeight = 30.0
+let private buttonPadding = 8.0
 let private columnGap = 4.0
 let private rowGap = 3.0
 let private scrollWidth = 10.0
@@ -253,14 +263,14 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
             let bold = look.Header.Bold |> Option.defaultValue false
             let color = look.Header.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             (match look.Header.Fill with Some fill -> [ PRect (0.0, 0.0, width, headerHeight, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
-            @ [ PText (margin + 2.0, headerHeight / 2.0, fitted textSize bold (width - 2.0 * margin - 4.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
-            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 4.0)
+            @ [ PText (margin, headerHeight / 2.0, fitted textSize bold (width - 2.0 * margin - 4.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
+            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 2.0)
     let buttons = slicerButtons data info
-    let top = if info.ShowCaption then headerHeight + 2.0 else margin
+    let top = if info.ShowCaption then headerHeight + 2.0 else bottomMargin
     let buttonHeight = max 4.0 (info.RowHeight / 9525.0)
     let columns = max 1 info.ColumnCount
     let rows = (buttons.Length + columns - 1) / columns
-    let fit = max 1 (int (floor ((height - top - margin + rowGap) / (buttonHeight + rowGap))))
+    let fit = max 1 (int (floor ((height - top - bottomMargin + rowGap) / (buttonHeight + rowGap))))
     let firstRow = min (info.StartItem / columns) (max 0 (rows - fit))
     let scrolls = rows > fit
     let inner = width - 2.0 * margin - (if scrolls then scrollWidth + columnGap else 0.0)
@@ -282,12 +292,13 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
             let bold = format.Bold |> Option.defaultValue false
             let color = format.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             box format x y buttonWidth buttonHeight
-            @ [ PText (x + buttonWidth / 2.0, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - 8.0) item.Label, textSize, hash color, "middle", bold, format.Italic |> Option.defaultValue false, 0.0) ])
+            // (The text at the button's left, as Excel sets it.)
+            @ [ PText (x + buttonPadding, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - buttonPadding - 4.0) item.Label, textSize, hash color, "start", bold, format.Italic |> Option.defaultValue false, 0.0) ])
     let scrollBar =
         if not scrolls then []
         else
             let x = width - margin - scrollWidth
-            let track = height - top - margin
+            let track = height - top - bottomMargin
             let thumb = max 12.0 (track * float fit / float rows)
             let thumbTop = top + (track - thumb) * float firstRow / float (max 1 (rows - fit))
             [ PRect (x, top, scrollWidth, track, Some "#F0F0F0", 1.0, None, 0.0, 0.0)
@@ -295,7 +306,7 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
     (match look.Whole.Fill with Some fill -> [ PRect (0.0, 0.0, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [ PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0) ])
     @ header
     // (The buttons stop at the bottom margin; what is below is cut off.)
-    @ [ PGroup (0.0, 0.0, width, height - margin + 1.0, buttonItems) ]
+    @ [ PGroup (0.0, 0.0, width, height - bottomMargin + 1.0, buttonItems) ]
     @ scrollBar
     @ edges look.Whole 0.0 0.0 width height
 
@@ -343,50 +354,59 @@ let selectionText (info: XlsxReader.TimelineInfo) : string =
         let a, b = name info.Level first, name info.Level last
         if a = b then a else a + " - " + b
 
-/// A timeline for a rectangle (simplified, see the module's notes).
+/// Where a timeline's parts are, pixels from its top left - measured on Excel 2019's own picture of
+/// synthetic-slicers.xlsx at 100% (a month 48.5 px wide; its label at its left, above its block).
+let private timelinePad = 8.0
+let private captionY = 12.0
+let private selectionY = 40.0
+let private largerY = 63.0
+let private periodY = 84.0
+let private blockY = 96.0
+let private blockHeight = 16.0
+let private timelineScrollY = 118.0
+
+/// A timeline for a rectangle (see the module's notes for what is simplified).
 let timelineItems (look: TimelineLook) (info: XlsxReader.TimelineInfo) (width: float) (height: float) : Primitive list =
     let color (dxf: Dxf) = hash (dxf.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000")
-    let mutable at = 4.0
+    // (The parts below the header and the labels move up when those are hidden.)
+    let lift = (if info.ShowHeader then 0.0 else 26.0) + (if info.ShowSelectionLabel || info.ShowTimeLevel then 0.0 else 24.0)
     let header =
         if not info.ShowHeader then []
-        else
-            at <- 30.0
-            [ PText (margin + 2.0, 15.0, fitted textSize false (width - 2.0 * margin) info.Caption, textSize, color look.Header, "start", look.Header.Bold |> Option.defaultValue false, false, 0.0) ]
+        else [ PText (timelinePad, captionY, fitted textSize false (width - 2.0 * timelinePad) info.Caption, textSize, color look.Header, "start", look.Header.Bold |> Option.defaultValue false, false, 0.0) ]
     let labels =
         if not (info.ShowSelectionLabel || info.ShowTimeLevel) then []
         else
-            let y = at + 10.0
-            at <- at + 22.0
-            (if info.ShowSelectionLabel then [ PText (margin + 2.0, y, selectionText info, 12.0, color look.SelectionLabel, "start", false, false, 0.0) ] else [])
+            let y = selectionY - (if info.ShowHeader then 0.0 else 26.0)
+            (if info.ShowSelectionLabel then [ PText (timelinePad, y, selectionText info, 10.0 * 96.0 / 72.0, color look.SelectionLabel, "start", false, false, 0.0) ] else [])
             @ (if info.ShowTimeLevel then
-                [ PText (width - margin - 2.0, y, (match info.Level with 0 -> "YEARS" | 1 -> "QUARTERS" | 3 -> "DAYS" | _ -> "MONTHS") + " ▾", 11.0, color look.TimeLevel, "end", false, false, 0.0) ]
+                [ PText (width - timelinePad - 2.0, y, (match info.Level with 0 -> "YEARS" | 1 -> "QUARTERS" | 3 -> "DAYS" | _ -> "MONTHS") + " ▾", 12.0, color look.TimeLevel, "end", false, false, 0.0) ]
                else [])
-    let periodWidth = match info.Level with 0 -> 64.0 | 1 -> 48.0 | 3 -> 24.0 | _ -> 40.0
+    let periodWidth = match info.Level with 0 -> 64.0 | 1 -> 64.0 | 3 -> 24.0 | _ -> 48.5
     let first =
         info.ScrollPosition
         |> Option.orElse (info.Bounds |> Option.map fst)
         |> Option.orElse (info.Selection |> Option.map fst)
         |> Option.defaultValue (DateTime.Today.Year, 1, 1)
-    let count = max 1 (int (ceil ((width - 2.0 * margin) / periodWidth)))
-    let upperY, bandY = at + 8.0, at + 16.0
-    let bandHeight = 16.0
-    let lowerY = bandY + bandHeight + 9.0
+    let count = max 1 (int (ceil ((width - 2.0 * timelinePad) / periodWidth)))
+    let upperY, lowerY, bandY = largerY - lift, periodY - lift, blockY - lift
     let periods =
         [ for offset in 0 .. count - 1 do
             let starts, ends, label, larger = periodAt info.Level first offset
-            let x = margin + float offset * periodWidth
+            let x = timelinePad + float offset * periodWidth
             let selected =
                 match info.Selection with
                 | Some (from, until) -> dateKey starts <= dateKey until && dateKey ends >= dateKey from
                 | None -> true
             let block = if selected then look.SelectedTimeBlock else look.UnselectedTimeBlock
-            yield PRect (x + 1.0, bandY, periodWidth - 2.0, bandHeight, block.Fill |> Option.map hash, 1.0, None, 0.0, 0.0)
-            yield PText (x + periodWidth / 2.0, lowerY, label, 11.0, color look.PeriodLabel2, "middle", false, false, 0.0)
-            if larger <> "" then yield PText (x + 1.0, upperY, larger, 11.0, color look.PeriodLabel1, "start", false, false, 0.0) ]
+            // (A fill is a colour or a gradient: a colour of a format is written without its #.)
+            let fill = block.Fill |> Option.map (fun fill -> if fill.StartsWith "gradient(" then fill else hash fill)
+            yield PRect (x, bandY, periodWidth - 1.0, blockHeight, fill, 1.0, None, 0.0, 0.0)
+            yield PText (x + 1.0, lowerY, label, 12.0, color look.PeriodLabel2, "start", false, false, 0.0)
+            if larger <> "" then yield PText (x + 1.0, upperY, larger, 12.0, color look.PeriodLabel1, "start", false, false, 0.0) ]
     let scrollBar =
         if not info.ShowHorizontalScrollbar then []
         else
-            let y = lowerY + 12.0
+            let y = timelineScrollY - lift
             let total =
                 match info.Bounds with
                 | Some ((y0, m0, _), (y1, m1, _)) ->
@@ -396,10 +416,10 @@ let timelineItems (look: TimelineLook) (info: XlsxReader.TimelineInfo) (width: f
                     | 3 -> (y1 - y0 + 1) * 366
                     | _ -> (y1 * 12 + m1) - (y0 * 12 + m0) + 1
                 | None -> count
-            let track = width - 2.0 * margin
+            let track = width - 2.0 * timelinePad
             let share = min 1.0 (float count / float (max 1 total))
-            [ PRect (margin, y, track, 8.0, Some "#F0F0F0", 1.0, None, 0.0, 0.0)
-              PRect (margin + 1.0, y + 1.0, max 12.0 (track * share - 2.0), 6.0, Some "#C1C1C1", 1.0, None, 0.0, 3.0) ]
+            [ PRect (timelinePad, y, track, 12.0, Some "#F0F0F0", 1.0, Some "#CDCDCD", 1.0, 0.0)
+              PRect (timelinePad + 14.0, y + 2.0, max 12.0 ((track - 28.0) * share), 8.0, Some "#C1C1C1", 1.0, None, 0.0, 0.0) ]
     (match look.Whole.Fill with Some fill -> [ PRect (0.0, 0.0, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [ PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0) ])
     @ header
     @ labels

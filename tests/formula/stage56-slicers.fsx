@@ -39,15 +39,16 @@ let rec flat (items: Charts.Primitive list) : Charts.Primitive list =
                 | other -> other)
         | other -> [ other ])
 let texts (items: Charts.Primitive list) = flat items |> List.choose (fun item -> match item with Charts.PText (_, _, value, _, _, _, _, _, _) -> Some value | _ -> None)
-/// The buttons drawn: (label, x, y, fill, text colour, bold), the label centred on its rectangle.
+/// The buttons drawn: (label, x, y, fill, text colour, bold), the label at the rectangle's left, 8 px in
+/// (as Excel 2019 draws it), centred on its height.
 let buttons (items: Charts.Primitive list) =
     let all = flat items
     all |> List.choose (fun item ->
         match item with
-        | Charts.PText (x, y, label, _, color, "middle", bold, _, _) ->
+        | Charts.PText (x, y, label, _, color, "start", bold, _, _) ->
             all |> List.tryPick (fun other ->
                 match other with
-                | Charts.PRect (rx, ry, w, h, fill, _, _, _, _) when abs (rx + w / 2.0 - x) < 0.01 && abs (ry + h / 2.0 - y) < 0.01 -> Some (label, rx, ry, fill, color, bold)
+                | Charts.PRect (rx, ry, w, h, fill, _, _, _, _) when abs (rx + 8.0 - x) < 0.01 && abs (ry + h / 2.0 - y) < 0.01 && w > 16.0 -> Some (label, rx, ry, fill, color, bold)
                 | _ -> None)
         | _ -> None)
 let noData : Charts.ChartData =
@@ -87,6 +88,11 @@ eq "the workbook's slicer and timeline styles: the defaults, the custom ones and
      syn.SlicerStyles.DefaultTimeline, syn.SlicerStyles.Timelines |> List.map (fun style -> style.Name, style.Elements |> List.map fst))
     (Some "SlicerStyleLight1", [ "Slicer Custom", [ "unselectedItemWithData"; "unselectedItemWithNoData"; "selectedItemWithData"; "selectedItemWithNoData" ] ],
      Some "TimeSlicerStyleLight1", [ "Timeline Custom", [ "selectedTimeBlock" ] ])
+// A timeline style's elements point into <x15:dxfs>, a list of their own, not into the slicer styles' <x14:dxfs>.
+eq "the custom timeline's selected periods: its <x15:dxfs> format (accent 6), the custom slicer's selected buttons theirs (orange)"
+    (syn.SlicerStyles.Timelines |> List.collect (fun style -> style.Elements) |> List.map (fun (_, dxf) -> dxf.Fill),
+     syn.SlicerStyles.Slicers |> List.collect (fun style -> style.Elements) |> List.filter (fst >> (=) "selectedItemWithData") |> List.map (fun (_, dxf) -> dxf.Fill))
+    ([ Some "70AD47" ], [ Some "FFC000" ])
 
 // ---- ... and drawn, through the drawing's anchors ------------------------------------------------------
 let drawer = Slicers.drawer syn
@@ -116,6 +122,11 @@ match sceneNamed syn drawer synData "Region" 240.0 200.0 with
     | [ (_, x0, y0, _, _, _); (_, x1, y1, _, _, _); (_, x2, y2, _, _, _); (_, x3, y3, _, _, _) ] ->
         ok "... North and South side by side, East and West under them" (y0 = y1 && x0 < x1 && y2 = y3 && y2 > y0 && x2 = x0 && x3 = x1) (sprintf "%A" shown)
         ok "... as high as the slicer says (241300 EMU: 25.33 px) with a gap" (abs (y2 - y0 - (241300.0 / 9525.0 + 3.0)) < 0.01) (sprintf "%g" (y2 - y0))
+        // (Excel 2019 at 100%: the buttons 10 px in from the frame at both sides, 4 px apart, the first row
+        // 32 px below the top, the header's line 27 px below it.)
+        eq "... where Excel puts them: 10 px in at both sides, 4 px apart, 32 px from the top" (x0, x1 + (x1 - x0 - 4.0), y0) (10.0, 230.0, 32.0)
+        ok "... the header's line 27 px down, from 10 px in to 10 px from the right"
+            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (10.0, 27.5, 230.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
     | _ -> ok "Region: four buttons" false (sprintf "%A" shown)
     eq "... in SlicerStyleLight1 in the theme: selected with data in accent 1 tint 60%, unselected white, selected without data tint 80% in grey text"
         (shown |> List.map (fun (_, _, _, fill, color, _) -> fill, color))
@@ -142,10 +153,17 @@ match sceneNamed syn drawer synData "Date" 600.0 140.0 with
     ok "the timeline: caption, selection in words, level, years and months"
         ([ "Date"; "Mar 2012 - Dec 2012"; "MONTHS ▾"; "2012"; "JAN"; "FEB"; "MAR"; "DEC"; "2013" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
     let blocks =
-        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, _, w, h, Some fill, _, _, _, _) when w > 30.0 && w < 40.0 && h = 16.0 -> Some (x, fill) | _ -> None) |> List.sortBy fst |> List.map snd
-    eq "... a block a month from January 2012: March to December in the custom style's green, the others grey"
-        (blocks |> List.truncate 14)
-        ([ "#E7E6E6"; "#E7E6E6" ] @ List.replicate 10 ("#" + theme.[9]) @ [ "#E7E6E6"; "#E7E6E6" ])
+        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, _, _, _) when w > 40.0 && w < 50.0 && h = 16.0 -> Some (x, y, fill) | _ -> None) |> List.sortBy (fun (x, _, _) -> x)
+    // (Excel 2019: a month 48.5 px wide; the custom style has only selectedTimeBlock, so the others have no fill.)
+    eq "... a block a month from January 2012, 48.5 px apart: March to December in the custom style's green, the others without a fill"
+        (blocks |> List.truncate 13 |> List.map (fun (_, _, fill) -> fill), blocks |> List.pairwise |> List.map (fun ((a, _, _), (b, _, _)) -> b - a) |> List.distinct)
+        ([ None; None ] @ List.replicate 10 (Some ("#" + theme.[9])) @ [ None ], [ 48.5 ])
+    let labelAt (value: string) = flat scene.Items |> List.tryPick (fun item -> match item with Charts.PText (x, y, known, _, _, anchor, _, _, _) when known = value -> Some (x, y, anchor) | _ -> None)
+    eq "... a month's label at its block's left, above it (as Excel), the year above that"
+        (match labelAt "MAR", labelAt "2012", blocks |> List.tryItem 2 with
+         | Some (x, y, anchor), Some (_, yearY, _), Some (blockX, blockY, _) -> Some (x - blockX, anchor, y < blockY, yearY < y)
+         | _ -> None)
+        (Some (1.0, "start", true, true))
 | None -> ok "the timeline is drawn" false "a placeholder"
 eq "a name the workbook has no slicer of: None (the frame says what it is)" (drawer "slicer" "Nothing" noData 100.0 100.0) None
 

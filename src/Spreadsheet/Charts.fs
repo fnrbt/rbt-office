@@ -1679,13 +1679,15 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                     entries |> List.iteri (fun index (text, kind) -> draw x (start + float index * size * 1.4 + size * 0.7) text kind)
                     if not legend.Overlay then (if legend.Position = "l" then left <- left + column + 6.0 else right <- right - column - 6.0)
                 | position ->
+                    // (Excel 2019 puts a legend at the top 8 px lower than below the title and the plot 24 px
+                    // further down: measured on synthetic-chartex.xlsx and the e-commerce dashboard.)
                     let total = entries |> List.sumBy (fst >> entryWidth)
-                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6
+                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6 + 8.0
                     let mutable x = (width - total) / 2.0
                     for text, kind in entries do
                         draw x y text kind
                         x <- x + entryWidth text
-                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6)
+                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6 + 24.0)
              | None -> ())
             // Where each bar starts and ends: a total from zero, every other point on from the last.
             let starts = Array.zeroCreate<float> count
@@ -1713,7 +1715,9 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
             let valSize, catSize = axisSize valAxis, axisSize catAxis
             if shows valAxis then left <- left + (ticks |> List.map (tickText >> textWidth valSize) |> List.fold max 0.0) + 6.0
             if shows catAxis then bottom <- bottom - catSize * 1.6
-            if labelSpec.IsSome then top <- top + labelSize * 1.2
+            // (Labels above the bars have the room the axis leaves over the highest; with no legend
+            // above, as much room as a label.)
+            if labelSpec.IsSome && not (match chart.Legend with Some legend -> legend.Position = "t" && not legend.Overlay | None -> false) then top <- top + labelSize * 1.2
             let plotTop, plotBottom = top, max (top + 1.0) bottom
             let yOf (amount: float) = plotBottom - (amount - minimum) / (maximum - minimum) * (plotBottom - plotTop)
             (match valAxis |> Option.bind (fun axis -> axis.Gridlines) |> strokeColor with
@@ -1731,8 +1735,9 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 let y0, y1 = yOf high, yOf low
                 add (PRect (x, y0, barWidth, max 1.0 (y1 - y0), fill |> Option.map fst, (match fill with Some (_, opacity) -> opacity | None -> 1.0),
                             (outline |> Option.map (fun (color, _, _) -> color)), (match outline with Some (_, lineWidth, _) -> lineWidth | None -> 0.0), 0.0))
+                // (The lines that join the bars: light grey, as the gridlines - Excel 2019's.)
                 if connectors && index < count - 1 then
-                    add (PLine (x + barWidth, yOf ends.[index], x + band, yOf ends.[index], "#A6A6A6", 0.75, None))
+                    add (PLine (x + barWidth, yOf ends.[index], x + band, yOf ends.[index], "#D9D9D9", 0.75, None))
                 match labelText index (value index) with
                 | Some text ->
                     let position = labelSpec |> Option.bind (fun spec -> spec.Position) |> Option.defaultValue "outEnd"

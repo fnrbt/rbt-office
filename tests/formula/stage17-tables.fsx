@@ -147,7 +147,7 @@ check "style header fill"   hdr.BgColor (Some "#4472C4")
 check "style header white"  hdr.TextColor (Some "#FFFFFF")
 check "style header bold"    hdr.Bold true
 check "style header filter btn" hdr.FilterButton true
-check "style stripe row0"   (fmtAt styledM 1 0).BgColor (Some "#DAE3F3")   // East, even data idx
+check "style stripe row0"   (fmtAt styledM 1 0).BgColor (Some "#D9E1F2")   // East, even data idx
 check "style no stripe row1" (fmtAt styledM 2 0).BgColor None               // West, odd data idx
 // A table whose style has no elements (a runner that bakes the styling itself) is left untouched.
 let importedStyleModel =

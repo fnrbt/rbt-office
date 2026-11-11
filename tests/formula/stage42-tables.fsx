@@ -58,7 +58,7 @@ let style = Some (Ops.tableStyleNamed Ops.defaultTableStyleName)
 // ---- names ---------------------------------------------------------------------------
 eq "column names from header cells" (Ops.uniqueColumnNames [ "Region"; "Amount"; ""; "Amount"; "amount"; " " ]) [ "Region"; "Amount"; "Column3"; "Amount2"; "amount3"; "Column6" ]
 eq "the first free TableN" (Ops.freeTableName wb0) "Table1"
-eq "a built-in style's fills" (Ops.tableStyleFills "TableStyleMedium2", Ops.tableStyleFills "TableStyleLight1" |> fst) (("#4472C4", "#DAE3F3"), "#000000")
+eq "a built-in style's fills" (Ops.tableStyleFills "TableStyleMedium2", Ops.tableStyleFills "TableStyleLight1" |> fst) (("#4472C4", "#D9E1F2"), "#000000")
 
 // ---- define ----------------------------------------------------------------------------
 let defined, name = Ops.defineTable "DefineTable" "sheet1" (range 0 0 3 3) (Some "Sales") true style wb0
