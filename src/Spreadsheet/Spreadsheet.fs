@@ -146,6 +146,36 @@ let private browserTextWidth (text: string) (fontSize: float) (fontName: string)
 [<Emit("(function(text,fontSize,bold,italic){const g=globalThis.__rbSpreadsheetCellMeasure||(globalThis.__rbSpreadsheetCellMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px Arial, sans-serif';const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3)")>]
 let private cellTextWidth (text: string) (fontSize: float) (bold: bool) (italic: bool): float = jsNative
 
+// ---- PDF in the browser ----------------------------------------------------------------------
+/// The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the bundle dist/spreadsheet-pdf, which shares this
+/// bundle's modules): loaded when a PDF is first asked for, not with the grid.
+type private SheetPdfModule =
+    abstract exportSheets: string * string * obj array * obj array -> byte[]
+    abstract pdfSheet: SpreadsheetModel * string * (int * int * float * float * float * float * SpreadsheetPaint.PaintItem list) list -> obj
+    abstract fontFace: string * string * bool * bool * byte[] -> obj
+    abstract pngPictures: obj list -> byte[] array
+    abstract withPictures: (byte[] -> (string * byte[]) option) * obj list -> obj list
+
+[<Emit("import(\"../spreadsheet-pdf/Pdf.js\")")>]
+let private importSheetPdf () : JS.Promise<SheetPdfModule> = jsNative
+
+/// A PNG as JPEG, drawn by the browser over white (the PDF writer's browser build embeds JPEG as it is but
+/// cannot decode PNG); null when the browser cannot read it.
+[<Emit("(async (data) => { try { const bitmap = await createImageBitmap(new Blob([data])); const canvas = document.createElement('canvas'); canvas.width = bitmap.width; canvas.height = bitmap.height; const ctx = canvas.getContext('2d'); ctx.fillStyle = '#FFFFFF'; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.drawImage(bitmap, 0, 0); const jpeg = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92)); return jpeg ? new Uint8Array(await jpeg.arrayBuffer()) : null; } catch (_) { return null; } })($0)")>]
+let private pngAsJpeg (data: byte[]) : JS.Promise<byte[]> = jsNative
+
+[<Emit("Promise.all($0)")>]
+let private allPromises (promises: JS.Promise<'T> array) : JS.Promise<'T array> = jsNative
+
+/// Bytes a host hands (a Uint8Array, an ArrayBuffer or an array of numbers) as a Uint8Array; null otherwise.
+[<Emit("($0 instanceof Uint8Array ? $0 : ($0 instanceof ArrayBuffer ? new Uint8Array($0) : (Array.isArray($0) ? Uint8Array.from($0) : null)))")>]
+let private bytesOfHost (value: obj) : byte[] = jsNative
+
+/// Print a PDF through the browser: in a hidden frame of the page, with the browser's print dialog; resolves
+/// once the dialog was opened (the frame is taken away a minute later, or when the next print starts).
+[<Emit("(new Promise((resolve, reject) => { const old = document.querySelector('iframe[data-spreadsheet-print]'); if (old) old.remove(); const url = URL.createObjectURL(new Blob([$0], { type: 'application/pdf' })); const frame = document.createElement('iframe'); frame.setAttribute('data-spreadsheet-print', ''); frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'; frame.onload = () => { try { frame.contentWindow.focus(); frame.contentWindow.print(); resolve(); } catch (e) { reject(e); } setTimeout(() => { frame.remove(); URL.revokeObjectURL(url); }, 60000); }; frame.src = url; document.body.appendChild(frame); }))")>]
+let private printPdfInFrame (pdf: byte[]) : JS.Promise<unit> = jsNative
+
 [<Emit("$0.fillStyle = $5; $0.font = ($6 ? 'bold ' : '') + ($7 ? 'italic ' : '') + $4 + 'px ' + $9 + ', sans-serif'; $0.textBaseline = 'alphabetic'; $0.textAlign = $8; $0.fillText($1, $2, $3)")>]
 let private canvasText (ctx: obj) (text: string) (x: float) (y: float) (fontSize: float) (color: string) (bold: bool) (italic: bool) (align: string) (fontName: string): unit = jsNative
 
@@ -903,6 +933,28 @@ type Spreadsheet(container: Element) =
         | [] -> None
         | [ table ] -> tableCellEntry table row col
         | _ -> tables |> List.tryPick (fun own -> tableCellEntry own row col)
+    /// The faces of the PDF export (`SetPdfFonts`): (face name, family, bold, italic, TrueType bytes).
+    let mutable pdfFonts : (string * string * bool * bool * byte[]) array = [||]
+    /// The faces a host hands (`SetPdfFonts`, `ExportPdf`'s fonts).
+    let pdfFontsArg (memberName: string) (fonts: obj) : (string * string * bool * bool * byte[]) array =
+        if Host.isNullish fonts then [||]
+        elif not (Host.isJsArray fonts) then Host.hostFail memberName "the fonts are an array of { faceName, family, bold, italic, data }"
+        else
+            (unbox<obj array> fonts) |> Array.mapi (fun at face ->
+                if not (Host.isJsObject face) then Host.hostFail memberName (sprintf "font %d is not { faceName, family, bold, italic, data }" at)
+                let field (upper: string) (lower: string) = if Host.isNullish (Host.getKey face upper) then Host.getKey face lower else Host.getKey face upper
+                let family = field "Family" "family"
+                if Host.jsTypeOf family <> "string" then Host.hostFail memberName (sprintf "font %d has no family (a face is { faceName, family, bold, italic, data })" at)
+                let family = unbox<string> family
+                let bold = Host.jsTypeOf (field "Bold" "bold") = "boolean" && unbox<bool> (field "Bold" "bold")
+                let italic = Host.jsTypeOf (field "Italic" "italic") = "boolean" && unbox<bool> (field "Italic" "italic")
+                let data = bytesOfHost (field "Data" "data")
+                if isNull data then Host.hostFail memberName (sprintf "font %d (%s) has no data (its TrueType bytes: a Uint8Array or an ArrayBuffer)" at family)
+                let named = field "FaceName" "faceName"
+                let faceName =
+                    if Host.jsTypeOf named = "string" && unbox<string> named <> "" then unbox<string> named
+                    else family + (match bold, italic with | true, true -> "-BoldItalic" | true, false -> "-Bold" | false, true -> "-Italic" | _ -> "")
+                faceName.Replace(" ", ""), family, bold, italic, data)
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
         match xlsxSource, sheet.SourceSheet with
         | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
@@ -8057,6 +8109,91 @@ type Spreadsheet(container: Element) =
                         "header" ==> sectionObj header (at + 1)
                         "footer" ==> sectionObj footer (at + 1) ]))
         ]
+
+    /// The faces the PDF export sets text in (`ExportPdf`): [{ faceName, family, bold, italic, data }] -
+    /// the TrueType bytes (Uint8Array / ArrayBuffer) of each face of a family; `faceName` is the face's
+    /// name in the PDF (default: the family with -Bold / -Italic / -BoldItalic, without spaces). The
+    /// `FontFace` records a host makes for Word's PDF (`new FontFace(faceName, family, bold, italic, data)`
+    /// of word-pdf/Pdf.js, fields FaceName, Family, Bold, Italic, Data) are taken as they are: one set of
+    /// faces for both editors. Without faces a PDF has no text. null clears them.
+    member _.SetPdfFonts(fonts: obj) : unit =
+        pdfFonts <- pdfFontsArg "SetPdfFonts" fonts
+
+    /// The PDF of the sheet on display, of its selection or of the whole workbook, as Excel prints it: each
+    /// sheet by its page setup - print area, print titles, scaling or fitting to pages, orientation, paper,
+    /// margins, centring, headers and footers, grid lines and headings, page order, manual breaks (the pages of
+    /// `GetPrintPages`) - with its charts, shapes and pictures. `options` (all optional): { what: "sheet"
+    /// (default) | "selection" (the cells selected, as Excel's Print Selection: the sheet's setup without
+    /// its print area) | "workbook" (every visible worksheet, one after the other), sheetIndex (for
+    /// "sheet"; default the one on display), fileName (what &F prints; default ""), defaultFont (the family
+    /// of cells that name none; default "Calibri"), fonts (as SetPdfFonts, for this export only) }.
+    /// Resolves to the PDF's bytes (Uint8Array). The PDF writer is loaded with the first export
+    /// (dist/spreadsheet-pdf), not with the grid.
+    member this.ExportPdf(?options: obj) : JS.Promise<byte[]> =
+        let memberName = "ExportPdf"
+        let options = defaultArg options null
+        if not (Host.isNullish options) then
+            if not (Host.isJsObject options) then Host.hostFail memberName "the options are { what, sheetIndex, fileName, defaultFont, fonts }"
+            for key in Host.keysOf options do
+                if not (List.contains key [ "what"; "sheetIndex"; "fileName"; "defaultFont"; "fonts" ]) then
+                    Host.hostFail memberName (sprintf "the options have no \"%s\" (they are what, sheetIndex, fileName, defaultFont, fonts)" key)
+        let get (key: string) = if Host.isNullish options then null else Host.getKey options key
+        let what = Host.optionalArg (Host.stringArg memberName "what") (get "what") |> Option.defaultValue "sheet"
+        let fileName = Host.optionalArg (Host.stringArg memberName "fileName") (get "fileName") |> Option.defaultValue ""
+        let defaultFont = Host.optionalArg (Host.stringArg memberName "defaultFont") (get "defaultFont") |> Option.defaultValue "Calibri"
+        let fonts = if Host.isNullish (get "fonts") then pdfFonts else pdfFontsArg memberName (get "fonts")
+        if model.EditingCell.IsSome then finishEditing true |> ignore
+        // The sheets, each with the charts and shapes drawn over its cells.
+        let withOverlays (index: int) (sheet: SpreadsheetModel) =
+            let sceneOf (xml: string) (width: float) (height: float) =
+                try
+                    drawingPartsOf sheet
+                    |> Option.bind (fun parts -> SpreadsheetCharts.objectScene parts (chartDataReading (ResizeArray())) xml width height)
+                with error ->
+                    reportError "drawing" (box error)
+                    None
+            sheet, sheetNames.[index], SpreadsheetPaint.drawingOverlays sceneOf (Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes sheet)
+        let chosen =
+            match what with
+            | "sheet" ->
+                let index =
+                    match Host.optionalArg (Host.intArg memberName "sheetIndex") (get "sheetIndex") with
+                    | None -> activeSheetIndex
+                    | Some index when index >= 0 && index < sheets.Length -> index
+                    | Some index -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
+                [ withOverlays index (sheetModelAt index) ]
+            | "selection" ->
+                let r0, c0, r1, c1 =
+                    match model.Selection with
+                    | SingleCell (r, c) -> r, c, r, c
+                    | Range (sr, sc, er, ec) -> min sr er, min sc ec, max sr er, max sc ec
+                let area = { From = { Row = r0; Col = c0 }; To = { Row = r1; Col = c1 } }
+                let selected = { model with PageSetup = { model.PageSetup with PrintArea = Some area; ExtraPrintAreas = [] } }
+                [ withOverlays activeSheetIndex selected ]
+            | "workbook" ->
+                let visible = this.SheetVisibility()
+                [ for index in 0 .. sheets.Length - 1 do
+                    if visible.[index] && sheetKindAt index = "worksheet" then yield withOverlays index (sheetModelAt index) ]
+            | other -> Host.hostFail memberName (sprintf "\"%s\" is not what a PDF is made of (\"sheet\", \"selection\" or \"workbook\")" other)
+        (importSheetPdf ()).``then``(fun (pdf: SheetPdfModule) ->
+            let sheetList = chosen |> List.map (fun (sheet, name, overlays) -> pdf.pdfSheet (sheet, name, overlays))
+            let pictures = pdf.pngPictures sheetList
+            let converted = allPromises (pictures |> Array.map pngAsJpeg)
+            converted.``then``(fun (jpegs: byte[] array) ->
+                let replace (data: byte[]) =
+                    match pictures |> Array.tryFindIndex (fun known -> obj.ReferenceEquals(known, data)) with
+                    | Some at when not (isNull jpegs.[at]) -> Some ("image/jpeg", jpegs.[at])
+                    | _ -> None
+                let sheetList = if pictures.Length = 0 then sheetList else pdf.withPictures (replace, sheetList)
+                let faces = fonts |> Array.map (fun (faceName, family, bold, italic, data) -> pdf.fontFace (faceName, family, bold, italic, data))
+                pdf.exportSheets (defaultFont, fileName, faces, List.toArray sheetList)))
+        |> unbox<JS.Promise<byte[]>>
+
+    /// Print through the browser: the PDF of `ExportPdf(options)` in a hidden frame of the page, with the
+    /// browser's print dialog (its pages are the PDF's, as Excel prints them). Resolves once the dialog was
+    /// opened.
+    member this.PrintPdf(?options: obj) : JS.Promise<unit> =
+        (this.ExportPdf(defaultArg options null)).``then``(fun (pdf: byte[]) -> printPdfInFrame pdf) |> unbox<JS.Promise<unit>>
 
     /// Change the page setup of a sheet (the active one, or `sheetIndex`):
     /// `changes` is the object of GetPageSetup with only the keys to change

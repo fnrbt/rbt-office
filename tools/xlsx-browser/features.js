@@ -402,3 +402,91 @@ checks['chart-sheet-read-only'] = async () => {
     close();
     return lines;
 };
+
+// What a PDF holds, read back: its pages and the strings its pages show (each content stream's text
+// operators, the streams inflated: the glyph codes of the embedded subsets, which are the same for two
+// PDFs set in the same font files).
+const latin1 = (bytes) => { let text = ''; for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return text; };
+const inflate = async (bytes) => new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate'))).arrayBuffer());
+export const pdfSummary = async (bytes) => {
+    const text = latin1(bytes);
+    const pages = (text.match(/\/Type\s*\/Page(?![a-zA-Z])/g) ?? []).length;
+    const shown = [];
+    let drawing = 0;
+    const streamPattern = /<<((?:(?!>>\s*stream)[\s\S])*)>>\s*stream\r?\n/g;
+    let match;
+    while ((match = streamPattern.exec(text))) {
+        const start = match.index + match[0].length, end = text.indexOf('endstream', start);
+        if (end < 0) break;
+        let body = bytes.subarray(start, end);
+        if (/\/FlateDecode/.test(match[1])) { try { body = await inflate(body); } catch { continue; } }
+        const ops = latin1(body);
+        if (!/\bBT\b|\bre\b|\bc\b/.test(ops)) continue;
+        for (const run of ops.matchAll(/(<[0-9A-Fa-f\s]*>|\((?:\\.|[^\\)])*\))\s*Tj|\[((?:[^\]])*)\]\s*TJ/g)) shown.push(run[0].replace(/\s*T[jJ]$/, ''));
+        drawing += (ops.match(/(^|\s)(re|c|l)(\s|$)/g) ?? []).length;
+    }
+    return { pages, shown, drawing };
+};
+
+// The PDF of a sheet in the browser (src/Spreadsheet.Pdf in dist/spreadsheet-pdf, loaded when first
+// asked for): the dashboard of dashboard-sales-analysis.xlsx - charts and conditional formatting - by its
+// page setup, with the fonts of RB_WORD_FONT_DIR; its pages and text are those of the .NET PDF of the same
+// sheet (tools/spreadsheet-pdf-runner, SHEET_PDF_REFERENCE) when that is given.
+const PDF_FONTS = [['Calibri', 'calibri'], ['Arial', 'arial']].flatMap(([family, file]) =>
+    [[false, false, ''], [true, false, file === 'calibri' ? 'b' : 'bd'], [false, true, 'i'], [true, true, file === 'calibri' ? 'z' : 'bi']]
+        .map(([bold, italic, suffix]) => ({ family, bold, italic, file: file + suffix + '.ttf' })));
+checks['sheet-pdf'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const pdfLoaded = () => performance.getEntriesByType('resource').some((entry) => /\/spreadsheet-pdf\//.test(entry.name));
+        await grid.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+        // (The pivot sheets the dashboard's charts read are converted, as the .NET runner reads them: a chart
+        // of a sheet not converted yet draws the cache of its part, which here is not what those cells hold.)
+        for (let index = 1; index <= 6; index++) grid.SwitchSheet(index);
+        grid.SwitchSheet(0);
+        check('the PDF writer is not loaded with the grid', pdfLoaded(), false);
+        const fonts = [];
+        for (const face of PDF_FONTS) {
+            const response = await fetch('/font?name=' + face.file);
+            if (response.ok) fonts.push({ family: face.family, bold: face.bold, italic: face.italic, data: new Uint8Array(await response.arrayBuffer()) });
+        }
+        if (fonts.length < PDF_FONTS.length) note(`fonts: ${fonts.length} of ${PDF_FONTS.length} faces found (RB_WORD_FONT_DIR): text is not compared`);
+        grid.SetPdfFonts(fonts);
+        const bytes = await grid.ExportPdf({ fileName: 'dashboard-sales-analysis' });
+        check('then loaded, once', [pdfLoaded(), performance.getEntriesByType('resource').filter((entry) => /\/spreadsheet-pdf\/Pdf\.js$/.test(entry.name)).length], [true, 1]);
+        if (window.keepPdf) { let binary = ''; for (const b of bytes) binary += String.fromCharCode(b); await window.keepPdf('browser-dashboard.pdf', btoa(binary)); }
+        const summary = await pdfSummary(bytes);
+        const printed = grid.GetPrintPages(0);
+        check('a PDF of the pages GetPrintPages lays out', [latin1(bytes.subarray(0, 5)), summary.pages, summary.pages > 0], ['%PDF-', printed.pageCount, true]);
+        check('with its charts drawn (paths) and, with fonts, its text', [summary.drawing > 200, fonts.length === 0 || summary.shown.length > 50], [true, true]);
+        const reference = await fetch('/sheet-pdf-reference');
+        if (reference.ok && fonts.length === PDF_FONTS.length) {
+            const dotnet = await pdfSummary(new Uint8Array(await reference.arrayBuffer()));
+            check('the .NET PDF of the sheet: the same pages', summary.pages, dotnet.pages);
+            const sorted = (list) => [...list].sort();
+            const a = sorted(summary.shown), b = sorted(dotnet.shown);
+            const missing = b.filter((run, i) => run !== a[i]).length;
+            check('... and the same text', [a.length, missing], [b.length, 0]);
+            note(`browser ${summary.pages} pages, ${summary.shown.length} text runs, ${summary.drawing} path segments; .NET ${dotnet.pages} pages, ${dotnet.shown.length} text runs, ${dotnet.drawing} path segments`);
+        } else note('no .NET PDF to compare with (SHEET_PDF_REFERENCE)');
+        // The selection, the whole workbook.
+        grid.SelectRange(0, 0, 4, 2);
+        const selection = await pdfSummary(await grid.ExportPdf({ what: 'selection' }));
+        check('the selection: one page', selection.pages, 1);
+        const visible = grid.SheetVisibility();
+        const expected = grid.GetSheetNames().reduce((n, _, i) => n + (visible[i] && grid.GetSheetKind(i) === 'worksheet' ? Math.max(1, grid.GetPrintPages(i).pageCount) : 0), 0);
+        const whole = await pdfSummary(await grid.ExportPdf({ what: 'workbook' }));
+        check('the workbook: every visible worksheet\'s pages', whole.pages, expected);
+        const thrown = async (call) => { try { await call(); return null; } catch (e) { return String(e.message); } };
+        check('ExportPdf refuses what it is not', [/^ExportPdf: /.test(await thrown(() => grid.ExportPdf({ what: 'page' })) ?? ''), /^ExportPdf: /.test(await thrown(() => grid.ExportPdf({ size: 1 })) ?? ''), /^SetPdfFonts: /.test(await thrown(() => grid.SetPdfFonts([{ family: 'X' }])) ?? '')], [true, true, true]);
+        // Printing: the PDF in a hidden frame, the browser's print dialog.
+        const printing = grid.PrintPdf();
+        await Promise.race([printing, new Promise((resolve) => setTimeout(resolve, 5000))]);
+        const frame = document.querySelector('iframe[data-spreadsheet-print]');
+        check('PrintPdf: the PDF in a hidden frame of the page', [!!frame, frame && frame.style.visibility, frame && /^blob:/.test(frame.src)], [true, 'hidden', true]);
+        if (frame) frame.remove();
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
