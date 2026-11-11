@@ -263,8 +263,11 @@ module Page =
     let contentBottom pageHeight marginBottom pageTop =
         pageTop + pageHeight - marginBottom
 
-    let minBodyTop paddingTop fontSize pageTop =
-        pageTop + max paddingTop (fontSize * 2.0)
+    /// Where a paragraph's first line starts: at the body's top, whatever the size of its text (it was
+    /// at least twice the text's size down: a title larger than half the top margin went that much further
+    /// down - sample-2's 55 pt titles 71 pt - and ran its page over).
+    let minBodyTop (paddingTop: float) (_fontSize: float) (pageTop: float) =
+        pageTop + paddingTop
 
     let private addHeaderParagraphCount total value =
         if total > headerParagraphCountLimit then total

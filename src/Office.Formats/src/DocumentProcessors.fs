@@ -15,15 +15,15 @@ module TypeConversion =
     /// CSS-pixels; font sizes were the last value still flowing through as
     /// points, which caused 75%-of-correct glyph sizes everywhere.
     /// Input: "24" (Word half-points) -> Output: 16.0 (12pt as 16 CSS-px).
-    /// Default: 11pt rendered as 14.666... CSS-px.
+    /// Default (no size stated anywhere): Word's 10pt, rendered as 13.333... CSS-px.
     let fontSizeToPoints (size: string option) : float =
         let pt =
             match size with
             | Some s ->
                 match System.Double.TryParse(s) with
                 | (true, v) -> v / 2.0
-                | _ -> 11.0
-            | None -> 11.0
+                | _ -> 10.0
+            | None -> 10.0
         pt * 96.0 / 72.0
 
     /// Normalize color from Word format to CSS format
@@ -179,7 +179,7 @@ module StyleResolution =
         Italic = false
         Underline = false
         Strike = false
-        // CSS px like every parsed size (fontSizeToPoints): 11pt. A bare 11.0 here
+        // CSS px like every parsed size (fontSizeToPoints): Word's 10pt. A bare 11.0 here
         // was 11px = 8.25pt for any document that never states w:sz.
         FontSize = TypeConversion.fontSizeToPoints None
         CharacterSpacing = 0.0

@@ -704,8 +704,8 @@ let private paraMetadata styleMap resolver useDocumentMarkForPureEmpty defaultMi
             ParagraphBorders = paraBorders props.ParagraphBorders
             ParagraphBorderBefore = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top)
             ParagraphBorderAfter = resolvedParaProps.ParagraphBorders |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom)
-            PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false
-            PageBreakAfter = para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false)
+            PageBreakBefore = props.PageBreakBefore |> Option.defaultValue false || fst (DocxReader.paragraphPageBreaks para)
+            PageBreakAfter = snd (DocxReader.paragraphPageBreaks para)
             ColumnBreakAfter = props.ColumnBreak && (para.Runs |> List.exists (fun run -> match run.Content with | DocxReader.PageBreak -> true | _ -> false))
             SectionVerticalAlign = props.SectionVerticalAlign
             OutlineLevel = para.Properties.OutlineLevel |> intOpt

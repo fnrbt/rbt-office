@@ -216,6 +216,44 @@ const docs = [
         ],
     },
     {
+        // A page break a paragraph starts with is a break before it (its text starts the next page), saved where it
+        // stood - as the run before the paragraph's text, not as w:pageBreakBefore; one after the text stays after it.
+        // (A paragraph that is a break and nothing else: a break after it - Word keeps its mark on the page.)
+        name: 'synthetic/page-break-at-start',
+        body:
+            p('first page') +
+            `<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts page two</w:t></w:r></w:p>` +
+            `<w:p><w:r><w:t>then a break</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>` +
+            p('page three') + `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` + p('page four'),
+        expect: [
+            { part: 'word/document.xml', has: '<w:p>(<w:pPr>(?:(?!</w:pPr>).)*</w:pPr>)?<w:r><w:br w:type="page"/></w:r>(?:(?!</w:p>).)*tarts page two</w:t>' },
+            { part: 'word/document.xml', has: 'then a break</w:t></w:r><w:r><w:br w:type="page"/></w:r></w:p>' },
+            { part: 'word/document.xml', lacks: 'pageBreakBefore' },
+            { part: 'word/document.xml', kept: '<w:p><w:r><w:br w:type="page"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts page two</w:t></w:r></w:p>' },
+        ],
+    },
+    {
+        // Word's marks of the pages it started stay in a save written from the model: before a picture a paragraph
+        // starts with, in a link, in a field's result (a save that lost them counted Word's pages wrong from there).
+        name: 'synthetic/rendered-page-marks',
+        body:
+            p('first page') +
+            `<w:p>${drawing('rId1', 457200, 457200).replace('<w:r><w:drawing>', '<w:r><w:lastRenderedPageBreak/><w:drawing>')}</w:p>` +
+            `<w:p><w:hyperlink w:anchor="x"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve">link, </w:t></w:r><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:lastRenderedPageBreak/><w:t>next page</w:t></w:r></w:hyperlink></w:p>` +
+            `<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> REF x \\h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r>` +
+            `<w:r><w:t xml:space="preserve">result, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>on the next page</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>`,
+        rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
+        extra: { 'word/media/body.png': PNG },
+        types: '<Default Extension="png" ContentType="image/png"/>',
+        expect: [
+            { part: 'word/document.xml', has: '<w:lastRenderedPageBreak/>(?:(?!</w:p>).)*<w:drawing>' },
+            // (Written as the editor holds them: the mark on its first character.)
+            { part: 'word/document.xml', has: 'link, </w:t>(?:(?!</w:p>).)*<w:hyperlink[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/><w:t>n</w:t>' },
+            // (A field's mark is its run's, at the start of the result.)
+            { part: 'word/document.xml', has: '<w:fldSimple[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/>' },
+        ],
+    },
+    {
         name: 'synthetic/run-props',
         body:
             p('hidden', '', '<w:vanish/>') + p('double strike', '', '<w:dstrike/>') +

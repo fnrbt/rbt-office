@@ -1653,19 +1653,21 @@ module Docx =
             let texts = runs |> List.map (fun run -> wElem "t" run |> Option.bind Xml.text |> Option.defaultValue "")
             let result = String.concat "" texts
             let fieldType = fieldTypeFromCode code
-            let fieldOf (props: RunProperties) (part: string option) : Run =
+            // (A run of the result with Word's mark of a page it started: the part from it on has the mark.)
+            let marked (run: XmlNode) = (wElem "lastRenderedPageBreak" run).IsSome
+            let fieldOf (props: RunProperties) (part: string option) (renderedPageBreak: bool) : Run =
                 { Content = FieldRef { FieldType = fieldType; Code = code; Result = (if result = "" then None else Some result); Part = part }
                   Properties = props
                   BookmarkStarts = []
                   BookmarkEnds = []
-                  RenderedPageBreakBefore = false
+                  RenderedPageBreakBefore = renderedPageBreak
                   RevisionId = None
                   RevisionType = None
                   RevisionAuthor = None
                   RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }
             // (A field of one run is of that run: a save writes it from there while it is as read.)
             let whole () =
-                let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None
+                let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None (runs |> List.exists marked)
                 [ match runs with
                   | [ XmlDsl.Element (_, _, _, span) ] -> { field with Source = span }
                   | _ -> field ]
@@ -1673,12 +1675,14 @@ module Docx =
             if runs.Length < 2 || computed then whole ()
             else
                 // The stretches of runs that are formatted alike.
-                let groups = ResizeArray<RunProperties * System.Text.StringBuilder>()
+                let groups = ResizeArray<RunProperties * System.Text.StringBuilder * bool>()
                 List.iter2 (fun (run: XmlNode) (text: string) ->
                     let props = runProps run
-                    if groups.Count > 0 && fst groups.[groups.Count - 1] = props then (snd groups.[groups.Count - 1]).Append(text) |> ignore
-                    else groups.Add ((props, System.Text.StringBuilder(text)))) runs texts
-                let parts = [ for (props, text) in groups do if text.Length > 0 then yield fieldOf props (Some (text.ToString())) ]
+                    let mark = marked run
+                    if groups.Count > 0 && not mark && (let (previous, _, _) = groups.[groups.Count - 1] in previous = props) then
+                        (let (_, builder, _) = groups.[groups.Count - 1] in builder.Append(text) |> ignore)
+                    else groups.Add ((props, System.Text.StringBuilder(text), mark))) runs texts
+                let parts = [ for (props, text, mark) in groups do if text.Length > 0 then yield fieldOf props (Some (text.ToString())) mark ]
                 if parts.Length < 2 then whole () else parts
 
     let fieldData (rNode: XmlNode) : Field option =
@@ -1764,7 +1768,9 @@ module Docx =
             resultBuilder.Append(textFromRun run) |> ignore
         let result = resultBuilder.ToString()
         let fieldType = fieldTypeFromCode code
-        let fieldOf (first: Run option) (part: string option) : Run =
+        let isMark (run: Run) = match run.Content with RenderedPageBreak -> true | _ -> false
+        // (Word's mark of a page it started in the result: the field's run has it.)
+        let fieldOf (first: Run option) (part: string option) (renderedPageBreak: bool) : Run =
             {
                 Content = FieldRef {
                     FieldType = fieldType
@@ -1775,7 +1781,7 @@ module Docx =
                 Properties = (match first with Some run -> run.Properties | None -> field.Properties)
                 BookmarkStarts = first |> Option.map (fun run -> run.BookmarkStarts) |> Option.defaultValue []
                 BookmarkEnds = first |> Option.map (fun run -> run.BookmarkEnds) |> Option.defaultValue []
-                RenderedPageBreakBefore = first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
+                RenderedPageBreakBefore = renderedPageBreak || first |> Option.exists (fun run -> run.RenderedPageBreakBefore)
                 RevisionId = first |> Option.bind (fun run -> run.RevisionId)
                 RevisionType = first |> Option.bind (fun run -> run.RevisionType)
                 RevisionAuthor = first |> Option.bind (fun run -> run.RevisionAuthor)
@@ -1785,8 +1791,12 @@ module Docx =
                 Checkbox = None
                 Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
-        let whole () = [ fieldOf (if field.ResultRuns.Count > 0 then Some field.ResultRuns.[0] else None) None ]
+        let marked = field.ResultRuns |> Seq.exists isMark
+        let firstResultRun = field.ResultRuns |> Seq.tryFind (isMark >> not)
+        let whole () = [ fieldOf firstResultRun None marked ]
         let computed = ValueText.FieldCode.isComputed (code.ToUpperInvariant())
+        // (A result with a mark is the field's one run, which has the mark - at the result's start: a field of one
+        // run is written from its source, see collapseComplexFieldTokens.)
         let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
         if field.ResultRuns.Count < 2 || computed || not plain then whole ()
         else
@@ -1798,7 +1808,7 @@ module Docx =
                     (snd groups.[groups.Count - 1]).Append(text) |> ignore
                 else groups.Add ((run, System.Text.StringBuilder(text)))
             if groups.Count < 2 then whole ()
-            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) ]
+            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) false ]
 
     let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
         match stack with
@@ -2072,7 +2082,7 @@ module Docx =
                 DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
             }
             // (The w:r a link run is of, where it is one alone: docs/save-architecture.md.)
-            let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) =
+            let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) (renderedPageBreak: bool) =
                 RunToken {
                     Content = Link {
                         Text = text
@@ -2083,26 +2093,27 @@ module Docx =
                     Properties = props
                     BookmarkStarts = []
                     BookmarkEnds = []
-                    RenderedPageBreakBefore = false
+                    RenderedPageBreakBefore = renderedPageBreak
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
                     RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = source
                 }
             // (Runs that are formatted alike are one run, as they were before each was read on its own: of the
-            // w:r of the first, where it is of that one alone.)
+            // w:r of the first, where it is of that one alone. A run that Word's mark of a page it started stands
+            // before is a run of its own, with the mark: see attachRunMarkers.)
             let texts =
                 runs
-                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties, r.Source) | _ -> None)
-                |> List.fold (fun (acc: (string * RunProperties * XmlDsl.Span) list) (text, props, source) ->
+                |> List.choose (fun r -> match r.Content with | Text t when t <> "" -> Some (t, hyperlinkRunProps r.Properties, r.Source, r.RenderedPageBreakBefore) | _ -> None)
+                |> List.fold (fun (acc: (string * RunProperties * XmlDsl.Span * bool) list) (text, props, source, mark) ->
                     match acc with
-                    | (previous, previousProps, previousSource) :: rest when previousProps = props ->
-                        (previous + text, props, (if previousSource = source then source else XmlDsl.Span.none)) :: rest
-                    | _ -> (text, props, source) :: acc) []
+                    | (previous, previousProps, previousSource, previousMark) :: rest when previousProps = props && not mark ->
+                        (previous + text, props, (if previousSource = source then source else XmlDsl.Span.none), previousMark) :: rest
+                    | _ -> (text, props, source, mark) :: acc) []
                 |> List.rev
             match texts with
-            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) XmlDsl.Span.none ]
-            | _ -> texts |> List.map (fun (text, props, source) -> linkRun text props source)
+            | [] -> [ linkRun "" (runs |> List.tryHead |> Option.map (fun r -> hyperlinkRunProps r.Properties) |> Option.defaultValue defaultProps) XmlDsl.Span.none false ]
+            | _ -> texts |> List.map (fun (text, props, source, mark) -> linkRun text props source mark)
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =
@@ -2531,6 +2542,8 @@ module Docx =
         | Some name when Ns.stripNs name = "p" ->
             [ Para (paragraphWithRenderedBreakCounter (Some renderedBreakCounter) child) ]
         | Some name when Ns.stripNs name = "tbl" ->
+            // (Its rows start pages too: the paragraphs after it are counted from Word's page.)
+            renderedBreakCounter.Value <- renderedBreakCounter.Value + List.length (Ns.descendantsNs "lastRenderedPageBreak" child)
             [ Tbl (table child) ]
         | Some name when Ns.stripNs name = "sdt" ->
             match Ns.childNs "sdtContent" child with
@@ -5254,14 +5267,36 @@ let extractText (doc: WordDocument) : string =
     |> List.map contentText
     |> String.concat "\n\n"
 
+/// Where a paragraph's page breaks (w:br w:type="page") stand: (at its start, after it). One the paragraph
+/// starts with - before any of its text, pictures or fields; bookmarks and Word's marks of where it started a
+/// page are none - and that has text after it is a break before the paragraph: its text starts the next page.
+/// Any other is a break after its text, as the model has it - a paragraph that is a page break and nothing
+/// else too: Word keeps its mark on the page the break ends (its w:lastRenderedPageBreak is in the next
+/// paragraph). (A column break stays a break after: see ColumnBreak.)
+let paragraphPageBreaks (para: Paragraph) : bool * bool =
+    let isBreak (run: Run) = match run.Content with PageBreak -> true | _ -> false
+    let isNothing (run: Run) =
+        match run.Content with
+        | BookmarkStart _ | BookmarkEnd _ | RenderedPageBreak | Text "" -> true
+        | _ -> false
+    let rec leading (runs: Run list) =
+        match runs with
+        | run :: rest when isNothing run -> leading rest
+        | run :: rest when isBreak run && not para.Properties.ColumnBreak && rest |> List.exists (fun other -> not (isNothing other) && not (isBreak other)) ->
+            true, List.exists isBreak rest
+        | _ -> false, List.exists isBreak runs
+    leading para.Runs
+
 // Convert DocumentContent to EditorParagraph format for Word editor
+/// Text no style, no document default and no run gives a size is 10 pt in Word
+/// (w:sz's own default, 20 half-points), not the 11 pt of Normal in Word's template.
 let private wordFontSizeToPoints (fontSize: string option) =
     match fontSize with
     | Some value ->
         match System.Double.TryParse(value) with
         | true, halfPoints -> (halfPoints / 2.0) * 96.0 / 72.0
-        | false, _ -> 11.0 * 96.0 / 72.0
-    | None -> 11.0 * 96.0 / 72.0
+        | false, _ -> 10.0 * 96.0 / 72.0
+    | None -> 10.0 * 96.0 / 72.0
 
 /// w:position is in half-points and the editor (Paint) takes points. It used to
 /// go through wordFontSizeToPoints, which turned it into px and, worse, turned
@@ -6071,9 +6106,8 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 maxSize
             // (Only a page break of its own: a paragraph that ends a section is followed by a new page
             // when the section after it starts on one, which that section's properties say.)
-            let pageBreakAfter =
-                para.Runs
-                |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
+            // (One it starts with is a break before it: see paragraphPageBreaks.)
+            let pageBreakAtStart, pageBreakAfter = paragraphPageBreaks para
             let bookmarkRunProps (run: Run) =
                 explicitRunFields styleMap effectiveParaProps run @ [
                     "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
@@ -6334,9 +6368,11 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
                 "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
                 "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
-                "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
+                "PageBreakBefore" ==> (if pageBreakAtStart then Some true else effectiveParaProps.PageBreakBefore)
                 // The break is the style's, or the reader's own (see PageBreakBeforeDerived): not the paragraph's.
                 "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
+                // (A w:br w:type="page" the paragraph starts with, saved as that.)
+                "PageBreakAtStart" ==> pageBreakAtStart
                 "StyleWidowControl" ==> effectiveParaProps.WidowControl
                 "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
                 "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")

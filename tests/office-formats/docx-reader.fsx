@@ -299,9 +299,30 @@ ok "column-separator-read"
    (partsDoc.PageSetup |> Option.bind (fun setup -> setup.Columns) |> Option.exists (fun columns -> columns.Count = 2 && columns.Separator))
    (sprintf "%A" (partsDoc.PageSetup |> Option.map (fun setup -> setup.Columns)))
 ok "picture-is-not-a-shape" partsDoc.Shapes.IsEmpty (sprintf "%d shapes" partsDoc.Shapes.Length)
-ok "default-run-size-is-11pt-in-px"
-   (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 11.0 * 96.0 / 72.0) < 1e-9)
+// Text whose size no style, no document default and no run states is 10 pt in Word (w:sz's
+// default of 20 half-points), not the 11 pt of Normal in Word's own template.
+ok "default-run-size-is-10pt-in-px"
+   (abs (DocumentProcessors.StyleResolution.defaultRunProps.FontSize - 10.0 * 96.0 / 72.0) < 1e-9)
    (string DocumentProcessors.StyleResolution.defaultRunProps.FontSize)
+do
+    let unsized =
+        docxWithParts
+            "<w:p><w:r><w:t>no size anywhere</w:t></w:r></w:p>"
+            [ "word/styles.xml", sprintf "<w:styles %s><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Arial\"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style></w:styles>" wNs ]
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            unsized.Theme unsized.Content unsized.Images unsized.Styles unsized.NumberingDefinitions unsized.Footnotes unsized.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let sizes =
+        items
+        |> Array.collect (fun item ->
+            match item.TryGetValue "Runs" with
+            | true, (:? (obj array) as runs) -> runs |> Array.map (fun run -> Math.Round(unbox<float> ((run :?> System.Collections.Generic.Dictionary<string, obj>).["FontSize"]) * 72.0 / 96.0, 2))
+            | _ -> [||])
+        |> Array.toList
+    ok "a run no style sizes is 10 pt" (sizes = [ 10.0 ]) (sprintf "%A" sizes)
 
 // ----- explicit (direct) run and paragraph formatting for the editor ---------
 // The editor objects carry effective formatting; ExplicitX says what was set on
@@ -757,6 +778,82 @@ do
     ok "xml:space on the root: the text of runs keeps its spaces, by the parser" (texts (XmlDsl.parse xml) = [ " "; "no\u00A0"; " a " ]) (sprintf "%A" (texts (XmlDsl.parse xml)))
     ok "... and by the scanner" (scanned |> Option.map texts = Some [ " "; "no\u00A0"; " a " ]) (sprintf "%A" scanned)
     ok "... whitespace between elements stays nothing" (scanned |> Option.map strays = Some 0) ""
+
+// A paragraph that starts with a w:lastRenderedPageBreak is where Word started a page: which one
+// is the number of those marks up to it - also the marks of the table rows before it.
+do
+    let body =
+        "<w:body xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\">"
+        + "<w:p><w:r><w:t>first page</w:t></w:r></w:p>"
+        + "<w:tbl><w:tr><w:tc><w:p><w:r><w:lastRenderedPageBreak/><w:t>row on page 1</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"
+        + "<w:p><w:r><w:lastRenderedPageBreak/><w:t>page 2</w:t></w:r></w:p>"
+        + "<w:p><w:r><w:t>text, then </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>page 3</w:t></w:r></w:p>"
+        + "<w:p><w:r><w:lastRenderedPageBreak/><w:t>page 4</w:t></w:r></w:p>"
+        + "</w:body>"
+    let marks =
+        DocxReader.Docx.bodyContent (XmlDsl.parse body)
+        |> List.choose (function DocxReader.Para para -> Some para.Properties.RenderedPageBreakBefore | _ -> None)
+    ok "rendered page marks are counted through tables" (marks = [ None; Some 2; None; Some 4 ]) (sprintf "%A" marks)
+
+// A w:br w:type="page" a paragraph starts with (before its text; a bookmark or Word's mark of a page it
+// started is not text) is a break before the paragraph: its text is on the next page
+// (phpword-sample-11: "Images" went on a page of its own, and its text and picture on the next).
+// Anywhere else it is a break after the paragraph's text - in a paragraph that is a break and nothing else
+// too (Word keeps its mark on the page: its w:lastRenderedPageBreak is in the next paragraph).
+do
+    let breaks =
+        docxWithParts
+            ("<w:p><w:r><w:t>before</w:t></w:r></w:p>"
+             + "<w:p><w:bookmarkStart w:id=\"1\" w:name=\"b\"/><w:r><w:br w:type=\"page\"/></w:r><w:r><w:lastRenderedPageBreak/><w:t>starts with a break</w:t></w:r></w:p>"
+             + "<w:p><w:r><w:t>text, then</w:t></w:r><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+             + "<w:p><w:r><w:br w:type=\"page\"/></w:r></w:p>"
+             + "<w:p><w:r><w:t>after</w:t></w:r></w:p>")
+            []
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            breaks.Theme breaks.Content breaks.Images breaks.Styles breaks.NumberingDefinitions breaks.Footnotes breaks.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let field (name: string) (item: System.Collections.Generic.Dictionary<string, obj>) =
+        match item.TryGetValue name with
+        | true, (:? bool as value) -> value
+        | true, (:? (bool option) as value) -> value = Some true
+        | _ -> false
+    let summary = items |> Array.map (fun item -> field "PageBreakBefore" item, field "PageBreakAtStart" item, field "PageBreakAfter" item) |> Array.toList
+    ok "a page break a paragraph starts with is a break before it"
+        (summary = [ (false, false, false); (true, true, false); (false, false, true); (false, false, true); (false, false, false) ])
+        (sprintf "%A" summary)
+
+// Word's marks of the pages it started (w:lastRenderedPageBreak) in a hyperlink and in a field's result are
+// the editor's too: a link's run of its own from the mark on, the field's run. They were lost with the runs of the
+// link / the result made one: a save written from the model had fewer of them, and the read-again layout counted
+// Word's pages wrong from there (docx4j-getting-started, -headers-footers).
+do
+    let marked =
+        docxWithParts
+            ("<w:p><w:hyperlink w:anchor=\"x\"><w:r><w:t xml:space=\"preserve\">link, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>next page</w:t></w:r></w:hyperlink></w:p>"
+             + "<w:p><w:r><w:fldChar w:fldCharType=\"begin\"/></w:r><w:r><w:instrText>REF x \\h</w:instrText></w:r><w:r><w:fldChar w:fldCharType=\"separate\"/></w:r>"
+             + "<w:r><w:t xml:space=\"preserve\">result, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>on the next page</w:t></w:r><w:r><w:fldChar w:fldCharType=\"end\"/></w:r></w:p>"
+             // (A simple field: what a save written from the model makes of a field.)
+             + "<w:p><w:fldSimple w:instr=\"REF x \\h\"><w:r><w:t xml:space=\"preserve\">simple, </w:t></w:r><w:r><w:lastRenderedPageBreak/><w:t>next</w:t></w:r></w:fldSimple></w:p>")
+            []
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items =
+        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
+            marked.Theme marked.Content marked.Images marked.Styles marked.NumberingDefinitions marked.Footnotes marked.Endnotes
+        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+    let marksOf (item: System.Collections.Generic.Dictionary<string, obj>) =
+        editorRunsOf item
+        |> Array.map (fun run -> string run.["Text"], (match run.TryGetValue "RenderedPageBreakBefore" with | true, (:? bool as value) -> value | _ -> false))
+        |> Array.toList
+    ok "a mark in a link is the link run's from it on" (marksOf items.[0] = [ ("link, ", false); ("next page", true) ]) (sprintf "%A" (marksOf items.[0]))
+    // (A complex field's result is the field's one run, with the mark: a field of one run is saved from its source.)
+    ok "a mark in a field's result is the field run's"
+        (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "result, on the next page"))
+        (sprintf "%A" (marksOf items.[1]))
+    ok "and in a simple field's" (marksOf items.[2] |> List.exists (fun (text, mark) -> mark && text = "next")) (sprintf "%A" (marksOf items.[2]))
 
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail

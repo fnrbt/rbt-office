@@ -38,7 +38,7 @@ try {
     check(`most documents are read front first (${frontFirst} of ${corpus.length})`, frontFirst >= corpus.length * 0.7, true);
 
     // ---- a long document in an editor: shown before it is read -------------------
-    // docx4j-getting-started with its body repeated 8 times (some 600 pages).
+    // docx4j-getting-started with its body repeated 8 times (some 400 pages (since a page Word recorded as started is not started again - layout/page-parity - 49 pages repeated 8 times: 392 with these checks' fonts; Word has 45 pages of it)).
     const zip = await window.JSZip.loadAsync(await bytesOf('/repo/tests/test-documents-wild/docx4j-getting-started.docx'));
     const xml = await zip.file('word/document.xml').async('string');
     const open = xml.indexOf('>', xml.indexOf('<w:body')) + 1, close = xml.lastIndexOf('</w:body>'), sect = xml.lastIndexOf('<w:sectPr', close);
@@ -63,7 +63,7 @@ try {
     const linesOf = (e) => JSON.stringify(Word.getLayoutLines(e).map((line) => [line.BlockIndex, line.LineIndex, line.Page, Math.round(line.Y), Math.round(line.Height)]));
     const wholeLines = linesOf(whole);
     const wholeFonts = Word.getRequiredFonts(wholePackage).map((face) => `${face.family}|${face.bold}|${face.italic}`).sort();
-    check('a long document', [pageCount > 500, wholeText.length > 500000], [true, true]);
+    check('a long document', [pageCount > 350, wholeText.length > 500000], [true, true]);
 
     // Opened front first: the package comes with the first blocks, the editor shows them.
     t0 = performance.now();
