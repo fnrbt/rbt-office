@@ -1,6 +1,6 @@
 # Excel Parity Tracker
 
-Last updated: 2026-05-20 UTC.
+Last updated: 2026-11-10 UTC.
 
 This tracker is for deciding what to fix next and recording which parity
 surfaces have actually been checked. It complements
@@ -51,6 +51,54 @@ surfaces have actually been checked. It complements
 - [x] Browser/Fable screenshot pass for imported XLSX fixtures: 85/85
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
+
+## Excel 2019 checks of 2026-11-10 (0.1.29, branch `sheet/excel-checks`)
+
+How: the VM (`winvm`) had no desktop session, so Excel ran straight from SSH (`cscript` over `ssh winvm`;
+it needs `C:\Windows\System32\config\systemprofile\Desktop` and the SysWOW64 one, created on the VM for
+this). Excel's pictures of a range: `tools/excel-parity/export-ranges.vbs` (CopyPicture as on screen,
+pasted into an empty chart and exported as PNG at 100%; or a PDF of the range); ours:
+`tools/excel-parity/shoot-browser-sheets.mjs` (the web component, the sheet scrolled to the same cell).
+Colours were compared cell by cell, positions by the rows and columns of ink in both pictures.
+
+- **Open-all** (`run.mjs --keep`, `open-all.vbs`): 111 workbooks, 333 saves (as opened, a cell typed, a row
+  and a column inserted). Excel refuses none of a workbook whose original it opens. It refused
+  `synthetic-slicers.xlsx` itself (and so its saves): a timeline style's formats pointed into `<x14:dxfs>`;
+  Excel keeps them in `<x15:dxfs>` (fixed in the fixture and the reader; the new fixture opens; its saves
+  and those of the new `synthetic-chartex.xlsx` were not opened yet: the VM went off the network). Differences in used cells / characters are the check's own edits (18 characters typed, a table's
+  new column named `Column1`), as before.
+- **Table styles** (`synthetic-table-styles.xlsx`, 11 tables): 80 of 272 cells had another fill than
+  Excel's, every one a tint 1-2 off in a channel (`#DAE3F3` for Excel's `#D9E1F2` ...). Tints are now
+  Excel's integer HLS (`Xlsx.applyColorTint`, 250 of 250 against Excel, `tests/formula/excel-2019-tints.tsv`):
+  0 of 272 differ. Line colours cannot be compared exactly in Excel's picture (its lines are blended); their
+  places are the same. pandas-test_decimal (Medium7) and the dashboards' tables: same.
+- **Slicers**: margins measured on Excel's picture: buttons and header line 10 px in from the frame (were 6),
+  the line 27 px down (25), a button's text at its left 8 px in (was centred); now within 1 px. Left: the
+  header's two buttons (multi-select, clear filter) are not drawn; the caption and button text are wider in
+  Chromium than Excel's Calibri ("Region" bold 48 px vs 41) - the browser's font, not the layout; the
+  dashboards' Century Gothic slicers ("Centr..." in Excel) fit their text in ours.
+- **Timeline**: was a strip with labels under it, 40 px a month; Excel puts the year and each month's label
+  above the block, at its left, 48.5 px a month, blocks 96 px down; a custom style draws only its own
+  elements. Now within 1 px vertically (caption, selection, year, months, strip 96-111 px both). Left: the
+  scroll bar is a plain track (Excel's has arrows and is 4 px lower); the clear-filter button is not drawn;
+  ours draws the last, partly shown month to the frame's edge (Excel stops 15 px before it).
+- **Waterfall** (`synthetic-chartex.xlsx`, Excel's own; the e-commerce "Waterfall Chart"): connector lines
+  were `#A6A6A6`, Excel's are light grey as the gridlines (`#D9D9D9`, 0.75 pt); legend 8 px and plot top 24 px
+  too high (Excel: legend 50 px, axis top 78-80 px down at 480 x 288 px; ours now 49.6 and 77.6). Labels
+  outside the bars: same place. Left: Excel's plot bottom is ~5 px higher; its data labels are a little
+  smaller.
+- **Funnel** (`synthetic-chartex.xlsx`): bars and labels in place (bar left 57 px Excel, 60 ours). Left: our
+  bars are 46.5 px of a 49 px pitch (gap ~2.5 px), Excel's 44.5 of 48.75 (gap ~4.25 px) with the same
+  `gapWidth` 0.06; Excel draws a light vertical axis line at the bars' left, ours none.
+- **The e-commerce dashboard's "Category wise Profit" waterfall** was an empty frame until its data sheet was
+  visited (a chartEx part keeps no copy of its points; the sheet was not converted): now drawn on first
+  display.
+- Found, not fixed (the grid's cell painting is another branch's): in the web component a number in a cell
+  of General alignment is drawn at the cell's left (`text-align: start`); Excel puts it at the right
+  (every number of the table-styles and chartEx sheets).
+- **Formula oracle** (`dump-values.vbs`, `compare-values.fsx`) after the sort/recalc changes of 0.1.29:
+  50480 of 50496 cells agree, the 16 others XIRR within Excel's stated accuracy, 77 left out, 21 workbooks
+  (one more than at the last run: synthetic-table-styles' 21 total-row formulas). No new disagreement.
 
 ## Real-world: dcf-stock-analysis.xlsx + conditional-formatting-tutorial.xlsx
 
@@ -374,9 +422,8 @@ Known gaps:
   definition (`src/Spreadsheet/TableStyles.fs`, from ECMA-376 `presetTableStyles.xml`);
   custom styles from `<tableStyles>` of styles.xml. Elements are laid over each other in
   Excel's order, each element's lines on the edges of the block it covers.
-- Not compared with Excel yet (the VM was unreachable): `synthetic-table-styles.xlsx`
-  is the fixture to compare.
-- Tints are 1 off in a channel against Excel (floating-point HLS, `Xlsx.applyColorTint`).
+- Compared with Excel 2019's picture of `synthetic-table-styles.xlsx` (2026-11-10, see above): every
+  cell's fill is Excel's since tints are worked out in Excel's integer HLS (`Xlsx.applyColorTint`).
 - Filter button rendering is native PNG only; PDF and Fable/web paths ignore it.
 
 Checks to add:
@@ -385,7 +432,7 @@ Checks to add:
   `tools/excel-parity/make-table-styles-fixture.py`; `tests/formula/stage54-tablestyles.fsx`).
 - [x] Table with explicit cell styles overriding table style (stage48: a cell's own fill wins,
   black text is the default font's).
-- [ ] Excel's PDF of `synthetic-table-styles.xlsx` against ours.
+- [x] Excel's picture of `synthetic-table-styles.xlsx` against ours (fills: 0 of 272 cells differ).
 - [ ] Filter button crop in native PNG, PDF, and Fable/web.
 
 Likely files:
