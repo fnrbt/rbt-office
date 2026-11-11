@@ -66,6 +66,10 @@ The shared browser dialog batch implements **C5–C6** in `OfficeUiDialog`. All 
 
 Verification: the runner's Fable compilation and **seven Chromium dialog cases** passed, plus keyboard, focus, ARIA, retained-tab/validation, replacement and disposal checks. A genuine Word hyperlink dialog left document/history unchanged on Cancel and applied exactly one undoable command on acceptance. A separate visual browser smoke inspected both tabs, edited values, observed the live preview and submitted once with Enter. The initial runner-local Fable 5 manifest was removed so it inherits repository Fable 4.28; Vite rewrites the private build entry before module discovery. The initial select-keyboard check incorrectly opened the native popup before testing collapsed-select navigation; it now focuses the select and tests native Home/ArrowDown behavior. Existing Word compiler warnings remain. No full release gate, Firefox/Safari, native dialog run, physical IME or complete browser-shell wiring is claimed. Next review item: **C7**, the current capability matrix and historical-document separation.
 
+The documentation batch implements **C7**. The roadmap now owns one [current capability matrix](continuation-roadmap.md#current-capability-matrix), based on code commit `adb77f90`, separating import, preservation, rendering, editing, API exposure, shell reachability and platform evidence. Architecture/UI/competitor audits are explicitly historical. Incorrect Spreadsheet PDF “.NET only” claims and obsolete roadmap tasks are corrected: the browser module and APIs exist, while menu/native-shell wiring and fresh PDF verification remain separate. Source inspection also confirms that WordShell Save and native Word Open/Save/PDF are not completed product workflows. No new runtime behavior or release certification is claimed by this documentation-only batch.
+
+Documentation verification: **18 local links/anchors** resolved, and the matrix has **ten capability rows with all eight status columns**. No builds or runtime suites were rerun for this documentation-only change; earlier results remain dated evidence.
+
 
 
 ## Recommendation

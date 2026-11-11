@@ -1,6 +1,8 @@
 # UI audit: rbt-office (`@rbt/office` 0.1.29 / master `52f54a15`) and redbat's host
 
 2026-11-11. This is a read-only audit: nothing was edited in rbt-office or redbat-test. Its 71 screenshots were taken in a session scratch folder and are not kept in the repo:
+
+**Historical snapshot:** use the [current capability matrix](continuation-roadmap.md#current-capability-matrix) for today's implementation/API/shell/platform status. Redbat and competitor observations here were not rerun during the correctness review; implementation follow-through is separate from the original screenshots.
 - `redbat-*.png`: redbat's editors, from the adoption harness build (made from `redbat-office` at `8d62b0d9e`). Its `SpreadsheetEditor.tsx`, `WordEditor.tsx` and `SheetDialogs.tsx` are byte-identical to redbat-test's.
 - `comp-*.png`: rbt-office's own browser UI from `dist/` (built 2026-11-10), through a scratch vite page: `WordShell.mount`, `createSpreadsheet` with `createSpreadsheetShell` and `createFormulaBar`, and the dialog specs through `OfficeUiDialog.renderDialog`.
 
@@ -86,7 +88,7 @@ Legend:
 | Comments | y | y | n | y | Redbat `CommentDialog` (`SheetDialogs.tsx:240`) with threads; the context menu has new / edit / delete comment. No comments pane listing them all. |
 | Hyperlinks | y | y | n | y | `HyperlinkDialog` `:392`; context menu. |
 | Page setup | y | y | n | y | Redbat `PageSetupDialog` (`:746`): orientation, paper, scale / fit, titles, print area, grid lines, headings, centring, page order, page breaks, printed-page list (`redbat-sheet-12-…png`). Header / footer text: not editable there (`raw` read only). Spec `pageSetupDialog` (`SpreadsheetUi.fs:710`) is unused. |
-| Print / PDF | **n** | n | n | **n** | No print or PDF in the browser (the writer is .NET only; alpha decision: to close). The shell's File ▸ Print PDF sends `printPdf`, which nothing handles. |
+| Print / PDF (corrected) | y | API | host callback | not rechecked | Browser `ExportPdf` / `PrintPdf` and the packaged writer exist. The shell's menu delegates `printPdf` to the host; source availability is not proof of a wired or verified end-user print workflow. See the current matrix. |
 | Zoom | y | y | n | y | Status bar −/%/+ (`:1389-1397`). |
 | Status bar sum / average / count | y | y | n | y | `GetStatus` → Average, Count, Sum (`:1378-1386`). No min / max / numerical count choice. The average shows raw decimals ("12,923,077.0754"). |
 | View options | y | y | n | y | Grid lines, headers, formulas, page break preview (View menu). |
@@ -145,7 +147,7 @@ Legend:
 
 6. **Word: no paragraph indents** (first-line, hanging, left / right) and no paragraph dialog. There is spacing only.
 7. **Word: no page setup** (margins, orientation, paper size) in redbat.
-8. **Print / PDF: none in either redbat editor.** Word's exporter is registered but has no button; the spreadsheet has no browser PDF.
+8. **Print / PDF shell reachability:** the original redbat audit found no button in either editor. Correction: the spreadsheet does have browser PDF/print APIs; current redbat wiring was not rechecked.
 9. **Spreadsheet: charts cannot be inserted or edited.**
 10. **Word: comments and tracked changes can't be added, listed, accepted or rejected.** There is no review pane; the engine API has all of it.
 11. **Word: lists can't change bullet or number style or restart numbering.** No table properties (borders, shading, widths) and no paragraph borders.

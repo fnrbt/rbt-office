@@ -2,6 +2,8 @@
 
 As of 2026-11-11. Our side: `@rbt/office` 0.1.29 plus `master`, checked against the docs **and** `src/`. Competitor side: vendor docs, release notes, resellers and press found by web search in this session. Nothing was tested hands-on. **unverified** means no source was found this session; "(prior)" means general knowledge that wasn't re-checked.
 
+**Historical comparison, not the current feature checklist.** The roadmap's [current capability matrix](continuation-roadmap.md#current-capability-matrix) is authoritative for our implementation, API/shell reachability and tested platforms. In particular, the old spreadsheet PDF/.NET-only claims below are superseded: the browser module and `ExportPdf` / `PrintPdf` exist; complete shell wiring and fresh release verification are separate. Pivot structural movement, Chromium full-height scrolling and shared-dialog coverage have also changed. Competitor claims and historical benchmark/oracle numbers have not been revalidated.
+
 ## 1. Summary
 
 - **Where we stand out:** we are one of very few editors that are **fully client-side, page-accurate and keep what they don't model** for both docx and xlsx.

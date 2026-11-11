@@ -2,6 +2,8 @@
 
 2026-11-11, `master` at `e32373f7`. Read-only: nothing in the repo was edited, built or run. Line counts are `wc -l` of the source files (comments included). Ranges inside a file such as "drawCell 3416-3978" come from reading where its definitions start and end, so they are approximate.
 
+**Status policy:** this is a historical architectural audit, with explicitly dated follow-through below. Use the roadmap's [current capability matrix](continuation-roadmap.md#current-capability-matrix) for implementation, API/shell reachability and platform verification. Original line counts and proposed migrations are not current completion claims. Spreadsheet PDF's .NET-only claims are corrected below.
+
 **Native spreadsheet follow-through (2026-11-11):** the S4–S6 correctness changes retain complete `Workbook` snapshots rather than sheet-array snapshots and use the shared `Recalc` engine. `Workbook.updateSheetModelWithTables` keeps model-level table changes and the formula registry consistent. The Wisp host accepts imported context with `createWithWorkbook` / `replaceWorkbook`; `exportWorkbook` writes current names, name metadata, visibility, active sheet and iteration, remapping stable local-name scopes only at the XLSX boundary. Sheet insertion, rename and deletion use workbook reference-rewriting operations and undo as complete transactions. The audit tables and line counts below remain the original snapshot; a portable controller extraction is still outstanding, not claimed by these correctness fixes. Verification is recorded in `systematic-review-2026-11-11.md`.
 
 For Widgets, use `createStateFromWorkbook` / `replaceWorkbook` when opening imported context; `createState` is for fresh model arrays. Treat both hosts' sheet/name/index signals as UI projections and make content changes through their transaction functions, not direct signal assignments. The native gate now includes both host regression suites and the Wisp executable smoke.
@@ -110,7 +112,7 @@ The .NET hosts come in pairs on two toolkits:
 | Selection | `Model.Selection`, `Paint.selectionPaintItems` | DOM selection rectangles per pane | Painted | **D** (drawing) |
 | Undo | `Model.Command` / `History` (functions `Undo` / `Redo`) | `pushValueNeutral`, `bookSteps` / `runBookStep` | Snapshots of the sheet array (`UndoStack: (SpreadsheetModel[] * int) list`) ×2 | **D** |
 | Scrolling / virtualisation | `Layout.visibleCells` / `visibleRange` | A native scroll container, node pools recycled in `render`, frozen panes as sticky wrappers | `viewportWidget` with scroll offsets into `Paint.buildViewportPaintItems` | – |
-| PDF / print | `Pagination` 287, `PrintHeaderFooter` 330 | **none** (alpha gap) | `Spreadsheet.Pdf` 1,831 (net10.0; not in `build:fable`, though it uses only `Paint` / `Layout` and `Rbt.Pdf`, which ships Fable sources); `Png.fs` 161 | – |
+| PDF / print (corrected) | `Pagination`, `PrintHeaderFooter`, shared PDF backend | `Spreadsheet.Pdf` is in `build:fable`; `ExportPdf` / `PrintPdf` use the browser module | Same backend available to .NET; native shell wiring is separate | See current matrix for verification limits |
 | Host API | – | Members 6745-10343 (~3,600, JS-shaped `obj` arguments), `HostShapes` 1,308 (JS object conversion), `Tabs` 184 | – | – |
 | VBA | `SpreadsheetVba` 1,137 (partly Emit) | – | `spreadsheet-wisp` runs it | – |
 | UI specs | `SpreadsheetUi.fs` 1,033 (menus, toolbar rows, formula bar, sheet tabs, 13 dialogs) | – | – | – |
@@ -143,7 +145,7 @@ The .NET hosts come in pairs on two toolkits:
 | **Rbt.Renderer** 0.1.4 | The `Cmd` scene language (FillRect, paths, groups, clip, glyph runs, images…), its rasteriser and GPU backends, `Text.FontData` | Its `Rbt.Renderer.Core` (Cmd, Types, Text, Pcf) has `fable/` sources and netstandard; **rbt-office references only the net10.0 `Rbt.Renderer`** | The native and Wisp hosts' `toRendererCommand` / `appendPaintItem` / `GridRender` |
 | **Rbt.Widgets** 0.1.2 (+ `Rbt.Widgets.Platform`) | The "Composit" retained widget toolkit: `canvas`, scroll widgets, `Platform.clipboard`, key / pointer events | No (net10.0) | `word-native`, `spreadsheet-native`, the native, PDF and Excel test runners |
 | **Rbt.Wisp** 0.1.0 | A Solid-style reactive UI on Rbt.Renderer (`signal`, `refSignal`, `dyn`, layout, the Atrium theme, modal, menu, segmented, slider…) | No (net10.0) | `word-wisp`, `spreadsheet-wisp`, `office-wisp` (the spec renderer) |
-| **Rbt.Pdf** 0.1.4 | A PDF writer (Doc, Draw, Color, Font, Image) | **Yes**: `fable/Rbt.Pdf.fs` | `Word.Pdf` (both platforms), `Spreadsheet.Pdf` (.NET only by build choice) |
+| **Rbt.Pdf** 0.1.4 | A PDF writer (Doc, Draw, Color, Font, Image) | **Yes**: `fable/Rbt.Pdf.fs` | `Word.Pdf` and `Spreadsheet.Pdf` (browser and .NET; corrected) |
 | **Rbt.Vb** 0.1.2 | VBA / VBScript interpreter | Yes | `WordVba`, `SpreadsheetVba` |
 
 Note: `FableUI.Reactive` (browser) and `Wisp.Reactive` (.NET) are the same model (signals, effects, computations) written twice in two repositories.
@@ -218,7 +220,7 @@ Smaller ones:
 - Two undo designs per editor (commands in the browser, snapshots on .NET).
 - Chart scene to SVG vs scene to paint items, plus a third painter in `excel-native-runner/ChartRender.fs` (855).
 - `src/Grid` dead code (770 compiled, 557 not).
-- `Spreadsheet.Pdf` kept out of the Fable build.
+- Spreadsheet PDF is already included in the Fable build; shell integration and release verification remain separate from backend availability.
 
 ## 5. Target architecture
 
@@ -312,9 +314,8 @@ Sizes are rough: S under ~300 lines changed, M ~300-1,500, L ~1,500-4,000, XL mo
    - This fixes General numbers drawn at the left (an alpha item) and removes the legacy `#4472C4` table look branch.
    - Harness: the existing cell-style checks plus a new "number of General alignment at the right" check.
 2. **Spreadsheet PDF in the browser (S-M; an alpha item).** Done on branch `sheet/pdf-in-browser` (2026-11-11): `dist/spreadsheet-pdf`, `ExportPdf` / `PrintPdf` / `SetPdfFonts` (`docs/spreadsheet-host-api.md` §PDF and printing). What the audit missed: Rbt.Pdf's Fable sources need `Rbt.OpenType.Core` (its `Inflate`); compiled from the net10.0 project, three `TryParse` calls of `DocxReader` were ambiguous (span overloads) and `Char.ConvertToUtf32` in `Pdf.fs` is not in Fable; Rbt.Pdf's browser build cannot decode PNG (the component has the browser turn PNG pictures into JPEG); and a Fable bundle of a project carries its own copy of its references (a second Model, Paint, fable-library ... of 2.5 MB loaded beside the grid's), which `scripts/share-bundle-modules.mjs` points back at `dist/spreadsheet`.
-   - Add `src/Spreadsheet.Pdf` to `build:fable`. It uses only `Paint` / `Layout` / `Pagination` and Rbt.Pdf, which has Fable sources.
-   - Replace `Png.fs` use with a browser image path, and expose `ExportPdf` on the component.
-   - It proves the "paint items to a second backend" path in the browser before the grid depends on it.
+   - Implemented in current source: `src/Spreadsheet.Pdf` is in `build:fable`; the component converts PNG pictures for the browser PDF backend and exposes `ExportPdf` / `PrintPdf`.
+   - Remaining: wire the advertised shell action and verify PDF/print on the supported browser/release matrix. Do not create a second writer or treat backend availability as a completed shell workflow.
 3. **A painted grid in the browser, behind a flag (M-L).**
    - Paint the body cells, headers, grid lines, selection and freeze dividers on a canvas from `Paint.buildViewportPaintItems` and `selectionPaintItems`. The code exists as `renderPortablePaintToCanvas`.
    - Keep these as DOM for now:
