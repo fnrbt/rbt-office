@@ -132,7 +132,7 @@ dotnet build word-native/Rbt.WordWidgets.fsproj
 dotnet build word-wisp/Rbt.WordWisp.fsproj
 dotnet build spreadsheet-wisp/Rbt.SpreadsheetWisp.fsproj
 dotnet build spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj      # each: 0 Error(s)
-pnpm run build                        # 7 x "Fable compilation finished"
+pnpm run build                        # 8 x "Fable compilation finished"
 ```
 Browser harnesses, run per branch before merging: `tools/word-browser/{run,perf}.mjs`, `tools/docx-roundtrip/roundtrip.mjs`, `tools/xlsx-browser/{run,perf}.mjs`.
 
