@@ -617,6 +617,11 @@ let wholeElement = { KeptBefore = true; KeptAfter = true; Covered = [] }
 /// written is taken out, with what stood just before it; one with no place in the layout is new.
 let rec writeLayout (laid: Layout) (written: (Placed * string) array) : string = writeLayoutWith wholeElement laid written
 and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string) array) : string =
+    writeLayoutEditing how (fun _ -> []) Map.empty laid written
+/// As writeLayoutWith, with edits made in elements the layout keeps: `keptEdits` is, by where a kept element
+/// starts, the edits made in it (`Removed` takes it out, with the white space before it); `order` is the schema
+/// order of what an edit puts in. Every other kept element is its bytes.
+and writeLayoutEditing (how: LayoutWrite) (order: SchemaOrder) (keptEdits: Map<int, ElementEdit list>) (laid: Layout) (written: (Placed * string) array) : string =
     let out = System.Text.StringBuilder()
     let slice (range: int * int) = let (a, b) = range in laid.Text.Substring(a, b - a)
     let chainOf = System.Collections.Generic.Dictionary<int, int list>()
@@ -640,7 +645,13 @@ and writeLayoutWith (how: LayoutWrite) (laid: Layout) (written: (Placed * string
             | LaidKept (start, chain) ->
                 if started && (at.IsSome || how.KeptAfter) then
                     moveTo chain
-                    out.Append(slice laid.Leads.[start]).Append(laid.Text, start, laid.KeptEnds.[start] - start) |> ignore
+                    match Map.tryFind start keptEdits with
+                    | Some edits when List.contains Removed edits -> ()
+                    | Some edits when not edits.IsEmpty ->
+                        match tryScanAt laid.Text start laid.KeptEnds.[start] (System.Collections.Generic.HashSet<string>()) with
+                        | Some kept -> out.Append(slice laid.Leads.[start]).Append(applyAt order laid.Text kept edits) |> ignore
+                        | None -> out.Append(slice laid.Leads.[start]).Append(laid.Text, start, laid.KeptEnds.[start] - start) |> ignore
+                    | _ -> out.Append(slice laid.Leads.[start]).Append(laid.Text, start, laid.KeptEnds.[start] - start) |> ignore
                 rest <- rest.Tail
     let mutable placedAny = false
     for placed, xml in written do
