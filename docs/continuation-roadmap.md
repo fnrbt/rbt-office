@@ -2,6 +2,24 @@
 
 Written 2026-10-12, when work was halted to move to another machine; next steps revised 2026-11-02; status of 2026-11-04 in *Where it stopped* below. Picks up the fix / release / adopt loop on rbt-office (Word + Spreadsheet) and its adoption in redbat. Everything needed is on the remotes; nothing below depends on the old machine's temp directories.
 
+## The initial release (1.0) - the focus from 2026-11-11
+
+Everything below this section serves it or waits for it. 1.0 is the first release meant for people outside redbat: `@rbt/office` as a Word and a spreadsheet editor that a web page embeds and that runs entirely in the browser (no server), with its host API documented, a demo page, and sample files that show it at its best. The 0.1.x releases go on as before (gate, release, adopt in redbat) on the way there.
+
+**Open decisions (the user's):** where 1.0 is published (the Forge registry only, or public npm too) and under what licence; whether 1.0 ships the editor shell (toolbar, dialogs: `src/Word/WordShell.fs`, `src/Spreadsheet/Toolbar.fs`) as a supported part or only the canvas component with the host building its own UI; which browsers it supports (only Chromium is tested; Firefox is untested, Safari never run).
+
+**Must be true for 1.0** (each a gate run before the release, not an agent's report):
+1. **No save loses anything.** Word and Excel open every save of the corpus with the original's text, pages and values (the open-all checks of `docs/word-parity.md`, `docs/excel-parity.md`, run on the release candidate). What is open: a bookmark renamed or removed in a spliced paragraph keeps its old name (Backlog, Word); block-level content controls (rows, cells, repeating sections) lose their binding; the spaces lost between runs in saves written from the model.
+2. **Pages are Word's.** The round-trip set's page counts within one page of Word's, every document listed with its count (`layout/page-parity-2` is the current step).
+3. **What a first-time user does works:** open, scroll, type, format, lists, tables, pictures, undo, find and replace, copy and paste (a pasted screenshot is not pasted yet; a copy across table cells is not a table), print and PDF. Spreadsheet: enter values and formulas, fill, sort, filter, insert rows and columns, charts updating, freeze panes; numbers of General alignment drawn at the cell's right (now at the left); the last rows reachable at every zoom.
+4. **The browsers it says it supports pass the browser harnesses** (`tools/word-browser`, `tools/xlsx-browser`), at least Chromium and Firefox; the font-dependent Word checks made independent of the machine's fonts.
+5. **Performance budgets kept** (`tools/word-browser/perf.mjs`, `tools/xlsx-browser/perf.mjs`, the 600-page document and the 846,000-cell sheet), written down as numbers a release must meet.
+6. **Showcase files** (`tests/showcase/`, branch `corpus/showcase`): a handful of polished documents and workbooks made in Word and Excel, each with a live edit for a video, rendered by us as Word and Excel render them (their differences listed and fixed or designed around), saved without loss.
+7. **Packaging:** version 1.0.0, a changelog, the host API docs (`docs/word-host-api.md`, `docs/spreadsheet-host-api.md`) checked against the exports, a demo page that opens a file, edits it and saves it, and a feature list honest about what is not there.
+8. **Compared with the other web editors** (`docs/feature-comparison.md`): every gap a first-time evaluator would notice either closed or said in the feature list.
+
+**Not in 1.0:** writable VBA object models and macros in the browser component (step 4 of *Next steps*); native hosts; real-time co-editing; pivot refresh from the cache; chartEx maps, sunbursts and treemaps beyond their placeholders.
+
 ## Where things stand (2026-11-10)
 
 - **Released:** `v0.1.28` (published; `v0.1.27` tagged, its publish failed - see the `master` row). `.forge/publish-npm` now turns off the SDK's own installation checks; `tools/redbat-adoption/forge-status.mjs` takes `FORGE_BASE` (the instance moved to `http://10.34.110.114:18082`) and `RBT_CLIENT` (an installed `@rbt/client`).
@@ -27,7 +45,7 @@ Written 2026-10-12, when work was halted to move to another machine; next steps 
 
 redbat (`cardillion-mega` remote): `master` has the 0.1.26 adoption (`e322ec0ad`, harness 1095/1095 - the sample document nine pages, its layout Word's; build the harness with `tools/redbat-adoption/harness-keep`). Before it, the 0.1.22 adoption (harness 1104/1104 with `word-new18`, `sheet-new18`; the host no longer draws its own Word shape frame, nor handles header text box double clicks or Ctrl+Enter; the name box goes where GoTo goes; View has a page break preview). On a new machine branch from `master`.
 
-## Next steps, in order
+## Next steps, in order (steps 2, 3 and 5 are 1.0 work: see *The initial release*)
 
 1. **One save path** (`docs/save-architecture.md`): every save through one writer that splices the source's bytes - an untouched node is its bytes, a changed one its source with typed edits, what the model does not hold kept at its place - instead of patching some edits and writing the rest from the model, where whatever the model has no field for is lost. Branch `refactor/one-save`: step 1 done (`cbd0ae59`: `XmlNode.Element` has a `Span`, the scanner keeps the part's text as it is; `xml-source.fsx` checks the corpus against .NET's parser). Next, step 2: paragraphs and runs record their spans, and every character of the buffer where in the source it came from (the run, and its `w:t` / `w:tab` / `w:br`), so the writer copies what is unchanged. This replaces fixing model-save losses one by one (inline content controls: `fix/sdt` has them threaded through as fields, superseded, kept as a test).
 2. **Saves that Word and Excel take as they should.** What is left: the page counts of `docx-5mb`, `docx4j-repeating-section`, `file-sample` in saves written from the model; block-level content controls (rows, cells, repeating sections) lose their binding; compare formatting too, not only text length and pages. Done: every synthetic fixture opens in Word and Excel; the open-all checks of both are routine (`run.mjs --keep`, `open-all.vbs`).
