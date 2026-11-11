@@ -508,6 +508,51 @@ checks['export-package-parts'] = async () => {
     return lines;
 };
 
+// Excel's General alignment, in the cell nodes: numbers and dates at the right of their cell,
+// text at the left, booleans and errors centred; an explicit alignment over it. (The nodes
+// drew a number at the left, where Excel's pictures of synthetic-table-styles have it at the right.)
+checks['general-align'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const alignOf = (row, col) => { const align = getComputedStyle(cellNode(host, row, col)).textAlign; return align === 'start' ? 'left' : align; };
+        // The ink of a cell's text, relative to the cell's box: [gap at the left, gap at the right].
+        const gaps = (row, col) => {
+            const node = cellNode(host, row, col), range = document.createRange();
+            range.selectNodeContents(node);
+            const text = [...range.getClientRects()].reduce((box, r) => ({ left: Math.min(box.left, r.left), right: Math.max(box.right, r.right) }), { left: Infinity, right: -Infinity });
+            const box = node.getBoundingClientRect();
+            return [Math.round(text.left - box.left), Math.round(box.right - text.right)];
+        };
+        const entries = ['Text', '1234', '2024-01-15', 'TRUE', '=NA()', '=2+3', '12%', '1234', 'Text', "'1234"];
+        entries.forEach((entry, i) => grid.SetCell(1 + i, 1, entry));
+        grid.SelectCell(8, 1); grid.ApplyFormat('alignLeft');
+        grid.SelectCell(9, 1); grid.ApplyFormat('alignRight');
+        grid.SelectCell(20, 5);
+        await frame();
+        check('text left, numbers / dates / formulas giving numbers right, booleans and errors centred, explicit over General',
+            entries.map((_, i) => alignOf(1 + i, 1)),
+            ['left', 'right', 'right', 'center', 'center', 'right', 'right', 'left', 'right', 'left']);
+        const [numberLeft, numberRight] = gaps(2, 1), [textLeft, textRight] = gaps(1, 1);
+        check('a number\'s ink at the cell\'s right, text\'s at its left', [numberRight <= 8, numberLeft > 40, textLeft <= 8, textRight > 40], [true, true, true, true]);
+        // A General number too wide for its cell still shows #### (never runs over); long text still runs right.
+        const long = 'General text that is much longer than one column';
+        grid.SetCell(12, 1, long); grid.SetCell(13, 1, '123456789012345678');
+        await frame();
+        const clip = getComputedStyle(cellNode(host, 12, 1)).clipPath;
+        check('long General text runs to the right only', [getComputedStyle(cellNode(host, 12, 1)).overflow, /inset\(0px -\d+px 0px( 0px)?\)/.test(clip)], ['visible', true]);
+        check('a wide General number shows #### in its cell', [/^#+$/.test(cellNode(host, 13, 1).textContent), getComputedStyle(cellNode(host, 13, 1)).overflow, alignOf(13, 1)], [true, 'hidden', 'right']);
+        // The fixture Excel's pictures were taken of: the table's numbers at the right, its labels at the left.
+        await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-table-styles.xlsx'));
+        await frame();
+        check('synthetic-table-styles: B4 (12) and I7 at the right, A4 / B3 (labels) at the left',
+            [[3, 1], [6, 8], [3, 0], [2, 1]].map(([row, col]) => [cellNode(host, row, col).textContent !== '', alignOf(row, col)]),
+            [[true, 'right'], [true, 'right'], [true, 'left'], [true, 'left']]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Text wider than its cell runs over the empty cells beside it, up to the first filled one
 // (measured from the DOM); numbers never do - one that does not fit shows ####.
 checks['text-overflow'] = async () => {

@@ -7,11 +7,6 @@ open Rbt.Spreadsheet.CellText
 
 type Color = string
 
-type TextAlign =
-    | AlignLeft
-    | AlignCenter
-    | AlignRight
-
 type VerticalAlign =
     | VAlignTop
     | VAlignMiddle
@@ -120,33 +115,6 @@ let vectorTestScene : PaintItem list =
           VecPath ([ VMove (160.0, 0.0); VLine (190.0, 0.0); VLine (190.0, -70.0); VLine (160.0, -70.0); VClose ], Some "#70AD47", Some ("#000000", 0.75))
           VecPath ([ VMove (200.0, 0.0); VLine (230.0, 0.0); VLine (230.0, -110.0); VLine (200.0, -110.0); VClose ], Some "#70AD47", Some ("#000000", 0.75))
           VecPath ([ VMove (240.0, 0.0); VLine (270.0, 0.0); VLine (270.0, -45.0); VLine (240.0, -45.0); VClose ], Some "#70AD47", Some ("#000000", 0.75)) ]) ]
-
-/// Excel's General horizontal alignment puts numbers/booleans on the right,
-/// strings on the left, and errors in the center. Explicit alignment on
-/// CellFormat overrides this default.
-let rec private generalAlign (value: CellValue): TextAlign =
-    match value with
-    | Number _ -> AlignRight
-    | Boolean _ -> AlignCenter
-    | Error _ -> AlignCenter
-    | Formula (_, cached) -> generalAlign cached
-    | CellValue.Empty -> AlignLeft
-    | _ -> AlignLeft
-
-let private alignFromFormat (format: CellFormat) (value: CellValue): TextAlign =
-    match format.HorizontalAlign with
-    | Some "center" -> AlignCenter
-    // "Center Across Selection" — the text is centred (across a run of
-    // centerContinuous cells; the run rect is computed at paint time).
-    | Some "centerContinuous" -> AlignCenter
-    | Some "right" -> AlignRight
-    | Some "left" -> AlignLeft
-    | _ ->
-        // A `@` (Text) number format makes Excel treat the value as text, so
-        // even a number is General-aligned left rather than right.
-        match format.NumberFormat with
-        | Some nf when nf.Trim() = "@" -> AlignLeft
-        | _ -> generalAlign value
 
 let private isSelected (selection: Selection) row col =
     match selection with
@@ -727,7 +695,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     sectionColor
                     |> Option.orElse format.TextColor
                     |> Option.defaultValue "#000000"
-                let align = alignFromFormat format value
+                let align = cellTextAlign format value
                 // Wrapping and manual `\n` line breaks only apply when wrapText
                 // is ON. With wrapText OFF, Excel renders on a single line and
                 // ignores any embedded break (shown as a space), so the row is

@@ -117,5 +117,29 @@ let bordered = across |> setCell (at 2 3) { Value = CellValue.Empty; Format = { 
 eq "a border the text crosses is drawn"
     (Paint.buildPaintItems bordered (Layout.defaultViewport 1200.0 400.0) |> List.filter (function Paint.GridLine (_, _, _, _, color, _) -> color = "#ff0000" | _ -> false) |> List.length) 1
 
+// ---- General alignment ---------------------------------------------------------
+// Excel's General rule, one for every painter (the web grid's cell nodes use it too):
+// numbers and dates right, text left, booleans and errors centred, explicit over it.
+let alignOf align numberFormat value =
+    Layout.cellTextAlign { defaultFormat with HorizontalAlign = align; NumberFormat = numberFormat } value
+eq "General: a number right" (alignOf None None (CellValue.Number 12.0)) Layout.AlignRight
+eq "General: a date (a number with a date format) right" (alignOf None (Some "yyyy-mm-dd") (CellValue.Number 45306.0)) Layout.AlignRight
+eq "General: text left" (alignOf None None (CellValue.String "abc")) Layout.AlignLeft
+eq "General: a boolean centred" (alignOf None None (CellValue.Boolean true)) Layout.AlignCenter
+eq "General: an error centred" (alignOf None None (CellValue.Error "#N/A")) Layout.AlignCenter
+eq "General: a formula by what it gives" (alignOf None None (CellValue.Formula ("=1+1", CellValue.Number 2.0)), alignOf None None (CellValue.Formula ("=\"a\"", CellValue.String "a"))) (Layout.AlignRight, Layout.AlignLeft)
+eq "`general` written out is General" (alignOf (Some "general") None (CellValue.Number 1.0)) Layout.AlignRight
+eq "a Text (@) format: a number left" (alignOf None (Some "@") (CellValue.Number 12.0)) Layout.AlignLeft
+eq "explicit over General" (alignOf (Some "left") None (CellValue.Number 1.0), alignOf (Some "right") None (CellValue.String "a"), alignOf (Some "center") None (CellValue.Number 1.0), alignOf (Some "centerContinuous") None (CellValue.String "a")) (Layout.AlignLeft, Layout.AlignRight, Layout.AlignCenter, Layout.AlignCenter)
+let alignPainted (model: SpreadsheetModel) (wanted: string) =
+    Paint.buildViewportPaintItems model viewport
+    |> List.tryPick (fun painted -> match painted.Item with Paint.DrawText drawn when drawn.Text = wanted -> Some drawn.Align | _ -> None)
+let generalSheet =
+    createEmpty 20 6
+    |> setCell (at 1 1) { Value = CellValue.Number 1234.0; Format = defaultFormat; Comment = None }
+    |> setCell (at 2 1) (text "label")
+    |> setCell (at 3 1) { Value = CellValue.Boolean true; Format = defaultFormat; Comment = None }
+eq "the painter places them by the same rule" (alignPainted generalSheet "1234", alignPainted generalSheet "label", alignPainted generalSheet "TRUE") (Some Layout.AlignRight, Some Layout.AlignLeft, Some Layout.AlignCenter)
+
 printfn "stage30-overflow: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
