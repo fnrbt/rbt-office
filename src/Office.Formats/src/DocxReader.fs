@@ -3415,7 +3415,7 @@ module Notes =
 module Shapes =
     let private emuToPixels emu = emu / 9525.0
 
-    let private parseFloat value =
+    let private parseFloat (value: string) =
         match System.Double.TryParse(value) with
         | true, parsed -> Some parsed
         | false, _ -> None
@@ -4085,7 +4085,7 @@ let getMimeType (path: string) : string = ValueText.mediaTypeOf path
 
 let private wordTwipsToPixels value =
     value
-    |> Option.bind (fun text ->
+    |> Option.bind (fun (text: string) ->
         match System.Double.TryParse(text) with
         | true, parsed -> Some (parsed / 15.0)
         | false, _ -> None)
@@ -6750,7 +6750,7 @@ let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinit
                 | None, None -> None
 
             let intOption value =
-                value |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
+                value |> Option.bind (fun (value: string) -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
 
             let convertCell rowIndex (cell: TableCell) : obj =
                 let paragraphStyle = tableParagraphStyleProperties rowIndex

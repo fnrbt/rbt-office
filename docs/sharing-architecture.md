@@ -301,7 +301,7 @@ Sizes are rough: S under ~300 lines changed, M ~300-1,500, L ~1,500-4,000, XL mo
    - Make `drawCell` read it and map it to CSS.
    - This fixes General numbers drawn at the left (an alpha item) and removes the legacy `#4472C4` table look branch.
    - Harness: the existing cell-style checks plus a new "number of General alignment at the right" check.
-2. **Spreadsheet PDF in the browser (S-M; an alpha item).**
+2. **Spreadsheet PDF in the browser (S-M; an alpha item).** Done on branch `sheet/pdf-in-browser` (2026-11-11): `dist/spreadsheet-pdf`, `ExportPdf` / `PrintPdf` / `SetPdfFonts` (`docs/spreadsheet-host-api.md` §PDF and printing). What the audit missed: Rbt.Pdf's Fable sources need `Rbt.OpenType.Core` (its `Inflate`); compiled from the net10.0 project, three `TryParse` calls of `DocxReader` were ambiguous (span overloads) and `Char.ConvertToUtf32` in `Pdf.fs` is not in Fable; Rbt.Pdf's browser build cannot decode PNG (the component has the browser turn PNG pictures into JPEG); and a Fable bundle of a project carries its own copy of its references (a second Model, Paint, fable-library ... of 2.5 MB loaded beside the grid's), which `scripts/share-bundle-modules.mjs` points back at `dist/spreadsheet`.
    - Add `src/Spreadsheet.Pdf` to `build:fable`. It uses only `Paint` / `Layout` / `Pagination` and Rbt.Pdf, which has Fable sources.
    - Replace `Png.fs` use with a browser image path, and expose `ExportPdf` on the component.
    - It proves the "paint items to a second backend" path in the browser before the grid depends on it.

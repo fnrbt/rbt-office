@@ -24,7 +24,8 @@
 // exported bytes back with the Office.Formats bundle.
 // With no files it takes every workbook under tests/real-world and
 // tests/test-documents-excel that has a part under xl/media, xl/charts or
-// xl/drawings. Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16023).
+// xl/drawings. Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16023); for the sheet-pdf check RB_WORD_FONT_DIR (fonts),
+// SHEET_PDF_REFERENCE (the .NET PDF to compare with) and SHEET_PDF_OUT (where the PDFs it made are written).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,6 +62,7 @@ if (files.length === 0) {
             } catch { /* not a zip: not for this check */ }
         }
 }
+const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(repo, 'artifacts/fonts/windows'));
 const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSync(file)]));
 // Workbooks the component checks open, by path relative to the repository.
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
@@ -112,6 +114,10 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
     if (url.pathname === '/component') return send(200, 'text/html', componentPage);
     if (/^\/[\w-]+\.js$/.test(url.pathname) && fs.existsSync(path.join(here, url.pathname.slice(1)))) return send(200, 'text/javascript', fs.readFileSync(path.join(here, url.pathname.slice(1))));
+    // The TrueType fonts the PDF checks set text in: RB_WORD_FONT_DIR (as the .NET PDF runners), else artifacts/fonts/windows.
+    if (url.pathname === '/font') { const name = path.basename(url.searchParams.get('name') ?? ''); const file = path.join(fontDir, name); return name && fs.existsSync(file) ? send(200, 'application/octet-stream', fs.readFileSync(file)) : send(404, 'text/plain', 'no font'); }
+    // The .NET PDF of the sheet the sheet-pdf check exports (SHEET_PDF_REFERENCE: tools/spreadsheet-pdf-runner's output), to compare with.
+    if (url.pathname === '/sheet-pdf-reference') return process.env.SHEET_PDF_REFERENCE && fs.existsSync(process.env.SHEET_PDF_REFERENCE) ? send(200, 'application/pdf', fs.readFileSync(process.env.SHEET_PDF_REFERENCE)) : send(404, 'text/plain', 'no reference');
     if (url.pathname === '/fixture') { const name = url.searchParams.get('name'); const data = fixtures.get(name) ?? componentFixture(name); return data ? send(200, 'application/octet-stream', data) : send(404, 'text/plain', 'no fixture'); }
     const file = path.join(dist, path.normalize(url.pathname));
     if (file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) return send(200, 'text/javascript', fs.readFileSync(file));
@@ -179,6 +185,8 @@ try {
             else if (type === 'up') await componentTab.mouse.up(options);
             else throw new Error('realMouse: ' + type);
         });
+        // SHEET_PDF_OUT: a directory the PDF checks write the PDFs they made into (keepPdf(name, base64)), for a look.
+        await componentTab.exposeFunction('keepPdf', (name, base64) => { if (process.env.SHEET_PDF_OUT) { fs.mkdirSync(process.env.SHEET_PDF_OUT, { recursive: true }); fs.writeFileSync(path.join(process.env.SHEET_PDF_OUT, path.basename(name)), Buffer.from(base64, 'base64')); } });
         await componentTab.exposeFunction('realKey', async (key) => { await componentTab.keyboard.press(key); });
         await componentTab.exposeFunction('realType', async (text) => { await componentTab.keyboard.type(text); });
         for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
