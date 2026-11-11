@@ -254,5 +254,32 @@ let sizedSheet =
 ok "print sizes: a tall default row makes more pages than the short one"
     ((Pagination.paginatePrinted sizedSheet).Pages.Length > (Pagination.paginatePrinted { sizedSheet with DefaultRowHeight = 15.0 }).Pages.Length) ""
 
+// Several sheets in one PDF (the browser component's "workbook"): each by its own setup, one after the other.
+do
+    let cells n = [ for r in 0 .. n - 1 -> { Row = r; Col = 0 }, { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None } ] |> Map.ofList
+    let short = { createEmpty 200 20 with Cells = cells 10 }
+    let long = { createEmpty 200 20 with Cells = cells 150; PageSetup = { defaultPageSetup with Orientation = LandscapeOrientation } }
+    let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "f" }
+    let pdf = Render.toBytesOfSheets options [ Render.pdfSheet short "Short" []; Render.pdfSheet long "Long" [] ]
+    let expected = (Pagination.paginatePrinted short).Pages.Length + (Pagination.paginatePrinted long).Pages.Length
+    ok "sheets: one PDF of every sheet's pages" (pdfPageCount pdf = expected && expected > 2) (sprintf "%d pages, %d expected" (pdfPageCount pdf) expected)
+    let widths =
+        System.Text.RegularExpressions.Regex.Matches(System.Text.Encoding.Latin1.GetString pdf, @"/MediaBox\s*\[\s*0\s+0\s+([0-9.]+)")
+        |> Seq.map (fun m -> float m.Groups.[1].Value) |> Seq.distinct |> Seq.sort |> List.ofSeq
+    ok "sheets: each in its own orientation" (widths = [ 612.0; 792.0 ]) (sprintf "%A" widths)
+    ok "sheets: none is a blank page" (pdfPageCount (Render.toBytesOfSheets options []) = 1) ""
+    // A picture the browser hands as JPEG instead of its PNG (pngPictures / withPictures).
+    let png = Array.append [| 0x89uy; 0x50uy; 0x4Euy; 0x47uy; 0x0Duy; 0x0Auy; 0x1Auy; 0x0Auy |] (Array.zeroCreate 20)
+    let anchor : DrawingAnchor =
+        { Kind = "twoCell"; FromRow = 0; FromCol = 1; FromOffsetX = 0.0; FromOffsetY = 0.0; ToRow = Some 3; ToCol = Some 3; ToOffsetX = 0.0; ToOffsetY = 0.0
+          X = 0.0; Y = 0.0; Width = None; Height = None; EditAs = None }
+    let pictured = { short with Drawings = [ { Id = 1; Anchor = anchor; Name = None; Description = None; Content = Picture ("image/png", "png", png) } ] }
+    let listed = Render.pngPictures [ Render.pdfSheet pictured "P" [] ]
+    let jpeg = [| 0xFFuy; 0xD8uy; 0xFFuy |]
+    let swapped = Render.withPictures (fun data -> if obj.ReferenceEquals(data, png) then Some ("image/jpeg", jpeg) else None) [ Render.pdfSheet pictured "P" [] ]
+    let content = match swapped.Head.Model.Drawings.Head.Content with Picture (kind, _, data) -> kind, data.Length | _ -> "", 0
+    ok "pictures: the PNG listed, then drawn from the JPEG handed for it" (listed.Length = 1 && obj.ReferenceEquals(listed.[0], png) && content = ("image/jpeg", 3)) (sprintf "%d, %A" listed.Length content)
+
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

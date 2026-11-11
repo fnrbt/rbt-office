@@ -111,7 +111,7 @@ let private fontCoversAllText (ttf: PdfFont.TrueTypeFont) (text: string) =
         let ch = text.[i]
         let cp, width =
             if System.Char.IsHighSurrogate ch && i + 1 < text.Length && System.Char.IsLowSurrogate text.[i + 1] then
-                System.Char.ConvertToUtf32(ch, text.[i + 1]), 2
+                0x10000 + ((int ch - 0xD800) <<< 10) + (int text.[i + 1] - 0xDC00), 2
             else int ch, 1
         if not (ttf.Cmap.ContainsKey cp) then
             covered <- false
@@ -140,7 +140,7 @@ let private segmentMixedByFont
         let ch = text.[i]
         let cp, width =
             if System.Char.IsHighSurrogate ch && i + 1 < text.Length && System.Char.IsLowSurrogate text.[i + 1] then
-                System.Char.ConvertToUtf32(ch, text.[i + 1]), 2
+                0x10000 + ((int ch - 0xD800) <<< 10) + (int text.[i + 1] - 0xDC00), 2
             else int ch, 1
         let face = fontFor cp
         match currentFace with
@@ -1287,14 +1287,17 @@ let private appendSectionOps
 /// contains the anchor, offset into that page's content band — so it paginates
 /// with the grid. Positions use the print model's own widths, keeping them
 /// consistent with the cell content around them.
-let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
-                (overlays: (int * int * float * float * float * float * PaintItem list) list) : byte[] =
-    let maxPrintCol, maxPrintRow = printDimensionBounds model overlays
-    let model =
-        model
-        |> withCommentMarkersForPrint
-        |> withPrintColumnWidths maxPrintCol
-        |> withPrintRowHeights maxPrintRow
+/// One sheet of a PDF: the sheet (its page setup is what it prints), its name (what `&A` prints) and the
+/// charts and shapes drawn over its cells (`Paint.drawingOverlays`).
+type PdfSheet = {
+    Model: SpreadsheetModel
+    SheetName: string
+    Overlays: (int * int * float * float * float * float * PaintItem list) list
+}
+
+/// The PDF of sheets, one after the other in one document (a workbook printed whole): each sheet
+/// laid out on its pages by its own page setup, the fonts embedded once for all of them.
+let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
     let builder = PdfDoc.create ()
     let imageNames = EmbeddedImages builder
 
@@ -1339,171 +1342,6 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                         total <- total + scaleWidth (snd face) s
                     total
             | _ -> approx ()
-
-    // Compute pagination from PageSetup. Empty workbook → one blank page.
-    let pagination = Pagination.paginate model
-    let ps = model.PageSetup
-    // (A landscape page is the wider way round, however the setup holds the paper's size.)
-    let pageWidthPt, pageHeightPt = Pagination.orientedPageSize ps
-    let leftMarginPt = ps.Margins.Left * 72.0
-    let rightMarginPt = ps.Margins.Right * 72.0
-    let topMarginPt = ps.Margins.Top * 72.0
-    let bottomMarginPt = ps.Margins.Bottom * 72.0
-    let headerMarginPt = ps.Margins.Header * 72.0
-    let footerMarginPt = ps.Margins.Footer * 72.0
-
-    let pages = pagination.Pages |> List.toArray
-    let totalPages = max 1 pages.Length
-    let maxColIndex =
-        let mutable maxCol = 0
-        for page in pages do
-            maxCol <- max maxCol page.ColEnd
-        match pagination.RepeatCols with
-        | Some (_, b) -> maxCol <- max maxCol b
-        | None -> ()
-        for _, fc, _, _, _, _, _ in overlays do
-            maxCol <- max maxCol fc
-        maxCol
-    let maxRowIndex =
-        let mutable maxRow = 0
-        for page in pages do
-            maxRow <- max maxRow page.RowEnd
-        match pagination.RepeatRows with
-        | Some (_, b) -> maxRow <- max maxRow b
-        | None -> ()
-        for fr, _, _, _, _, _, _ in overlays do
-            maxRow <- max maxRow fr
-        maxRow
-    let geometry = buildPrintGeometry model maxRowIndex maxColIndex
-    let repeatColsWidthPx =
-        pagination.RepeatCols
-        |> Option.map (fun (a, b) -> geometry.Col.Sum a b)
-        |> Option.defaultValue 0.0
-    let repeatRowsHeightPx =
-        pagination.RepeatRows
-        |> Option.map (fun (a, b) -> geometry.Row.Sum a b)
-        |> Option.defaultValue 0.0
-
-    // Page items are streamed. When fonts are available, glyph collection
-    // makes a first pass over the pages so font subsetting can run before
-    // PDF pages are emitted, but we avoid retaining every page's PaintItem
-    // list at once.
-    let printGridLines = ps.Options.GridLines
-    let printHeadings = ps.Options.Headings
-    // When PrintOptions.Headings is on, every content band shifts right /
-    // down by these to make room for the column-letter strip on top and
-    // the row-number strip on the left. Pagination has already shrunk the
-    // per-page area by the same amounts, so manual breaks land in the
-    // right place.
-    let headingsColPx, headingsRowPx = Pagination.headingsOffsets ps
-    let overlaysByPage =
-        if List.isEmpty overlays || pages.Length = 0 then
-            [||]
-        else
-            // A drawing belongs to every page it reaches on (cut off at the page's edge); one beside a
-            // print area to none; without any page that reaches it, to the first (a model without its drawings).
-            let spanOf (sum: int -> int -> float) (first: int) (last: int) = sum 0 (first - 1), sum 0 last
-            let byPage = Array.init pages.Length (fun _ -> ResizeArray<_>())
-            for overlay in overlays do
-                let fr, fc, fox, foy, width, height, _ = overlay
-                let left = geometry.Col.Sum 0 (fc - 1) + fox
-                let top = geometry.Row.Sum 0 (fr - 1) + foy
-                let mutable placed = false
-                pages |> Array.iteri (fun index slice ->
-                    let colStart, colEnd = spanOf geometry.Col.Sum slice.ColStart slice.ColEnd
-                    let rowStart, rowEnd = spanOf geometry.Row.Sum slice.RowStart slice.RowEnd
-                    if left < colEnd && left + max width 1.0 > colStart && top < rowEnd && top + max height 1.0 > rowStart then
-                        byPage.[index].Add overlay
-                        placed <- true)
-                if not placed && List.isEmpty (printAreasOf model.PageSetup) then byPage.[0].Add overlay
-            byPage
-
-    // (What the overlays draw is not painted again as the frames of the cell slices.)
-    let paintedModel =
-        if List.isEmpty overlays then model
-        else { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with KeptObject _ -> false | _ -> true) }
-
-    let appendBand (emit: PaintItem -> unit)
-                   (rowStart: int) (rowEnd: int)
-                   (colStart: int) (colEnd: int)
-                   (offsetX: float) (offsetY: float) =
-        if printGridLines then
-            let mutable sawContent = false
-            let mutable addedGrid = false
-            let addGrid () =
-                if not addedGrid then
-                    iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
-                    addedGrid <- true
-            iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
-                if not sawContent then
-                    sawContent <- true
-                    match item with
-                    | FillRect _ ->
-                        emit item
-                        addGrid ()
-                    | _ ->
-                        addGrid ()
-                        emit item
-                else
-                    emit item)
-            if not sawContent then
-                addGrid ()
-        else
-            iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
-
-    let emitPageItems (i: int) (emit: PaintItem -> unit) =
-        if i < pages.Length then
-            let slice = pages.[i]
-            // Body: rows × cols of the slice, offset by repeat band sizes.
-            appendBand
-                emit
-                slice.RowStart slice.RowEnd
-                slice.ColStart slice.ColEnd
-                (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
-            // Repeat-rows band (above body, full width): repeat rows × slice cols.
-            match pagination.RepeatRows with
-            | Some (rs, re) when re >= rs ->
-                appendBand
-                    emit
-                    rs re
-                    slice.ColStart slice.ColEnd
-                    (headingsColPx + repeatColsWidthPx) headingsRowPx
-            | _ -> ()
-            // Repeat-cols band (left of body, full height): slice rows × repeat cols.
-            match pagination.RepeatCols with
-            | Some (cs, ce) when ce >= cs ->
-                appendBand
-                    emit
-                    slice.RowStart slice.RowEnd
-                    cs ce
-                    headingsColPx (headingsRowPx + repeatRowsHeightPx)
-            | _ -> ()
-            // Repeat corner (top-left): repeat rows × repeat cols.
-            match pagination.RepeatRows, pagination.RepeatCols with
-            | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
-                appendBand emit rs re cs ce headingsColPx headingsRowPx
-            | _ -> ()
-            if printHeadings then
-                for item in headingItems geometry model slice pagination do
-                    emit item
-            // Inject anchored overlays (charts/sparklines) onto the page whose slice
-            // contains each anchor cell, offset into that page's content band. Done
-            // before GID collection so overlay text fonts get subset too.
-            if i < overlaysByPage.Length && overlaysByPage.[i].Count > 0 then
-                let baseX = headingsColPx + repeatColsWidthPx
-                let baseY = headingsRowPx + repeatRowsHeightPx
-                let colStartPx = geometry.Col.Sum 0 (slice.ColStart - 1)
-                let rowStartPx = geometry.Row.Sum 0 (slice.RowStart - 1)
-                let clip =
-                    { X = baseX; Y = baseY
-                      Width = geometry.Col.Sum slice.ColStart slice.ColEnd
-                      Height = geometry.Row.Sum slice.RowStart slice.RowEnd }
-                for fr, fc, fox, foy, _, _, locItems in overlaysByPage.[i] do
-                    let gx = geometry.Col.Sum 0 (fc - 1) + fox
-                    let gy = geometry.Row.Sum 0 (fr - 1) + foy
-                    let tx = baseX + (gx - colStartPx)
-                    let ty = baseY + (gy - rowStartPx)
-                    emit (Clipped (clip, locItems |> List.map (shiftItem tx ty)))
 
     // Collect used GIDs across every page's items, plus header / footer
     // sections (so their glyphs land in the subset too).
@@ -1558,67 +1396,378 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
             for child in children do
                 recordPaintItemGids child
         | _ -> ()
-    if canDrawText then
-        for pageIdx in 0 .. totalPages - 1 do
-            emitPageItems pageIdx recordPaintItemGids
+    let planSheet (sheet: PdfSheet) =
+        let options = { options with SheetName = sheet.SheetName }
+        let model = sheet.Model
+        let overlays = sheet.Overlays
+        let maxPrintCol, maxPrintRow = printDimensionBounds model overlays
+        let model =
+            model
+            |> withCommentMarkersForPrint
+            |> withPrintColumnWidths maxPrintCol
+            |> withPrintRowHeights maxPrintRow
+        // Compute pagination from PageSetup. Empty workbook → one blank page.
+        let pagination = Pagination.paginate model
+        let ps = model.PageSetup
+        // (A landscape page is the wider way round, however the setup holds the paper's size.)
+        let pageWidthPt, pageHeightPt = Pagination.orientedPageSize ps
+        let leftMarginPt = ps.Margins.Left * 72.0
+        let rightMarginPt = ps.Margins.Right * 72.0
+        let topMarginPt = ps.Margins.Top * 72.0
+        let bottomMarginPt = ps.Margins.Bottom * 72.0
+        let headerMarginPt = ps.Margins.Header * 72.0
+        let footerMarginPt = ps.Margins.Footer * 72.0
 
-    // Pick the (header, footer) variant for a 1-indexed page number. When
-    // DifferentFirst is set, page 1 uses FirstHeader/FirstFooter; when
-    // DifferentOddEven is set, even pages use EvenHeader/EvenFooter; all
-    // remaining pages fall through to OddHeader/OddFooter. A flag whose
-    // variant slot is None renders nothing on that page — matches Excel's
-    // behavior (DifferentOddEven=1 + EvenHeader missing = blank even pages).
-    let pickHeaderFooter (pageNum1: int) : string option * string option =
-        let hf = ps.HeaderFooter
-        if hf.DifferentFirst && pageNum1 = 1 then hf.FirstHeader, hf.FirstFooter
-        elif hf.DifferentOddEven && pageNum1 % 2 = 0 then hf.EvenHeader, hf.EvenFooter
-        else hf.OddHeader, hf.OddFooter
+        let pages = pagination.Pages |> List.toArray
+        let totalPages = max 1 pages.Length
+        let maxColIndex =
+            let mutable maxCol = 0
+            for page in pages do
+                maxCol <- max maxCol page.ColEnd
+            match pagination.RepeatCols with
+            | Some (_, b) -> maxCol <- max maxCol b
+            | None -> ()
+            for _, fc, _, _, _, _, _ in overlays do
+                maxCol <- max maxCol fc
+            maxCol
+        let maxRowIndex =
+            let mutable maxRow = 0
+            for page in pages do
+                maxRow <- max maxRow page.RowEnd
+            match pagination.RepeatRows with
+            | Some (_, b) -> maxRow <- max maxRow b
+            | None -> ()
+            for fr, _, _, _, _, _, _ in overlays do
+                maxRow <- max maxRow fr
+            maxRow
+        let geometry = buildPrintGeometry model maxRowIndex maxColIndex
+        let repeatColsWidthPx =
+            pagination.RepeatCols
+            |> Option.map (fun (a, b) -> geometry.Col.Sum a b)
+            |> Option.defaultValue 0.0
+        let repeatRowsHeightPx =
+            pagination.RepeatRows
+            |> Option.map (fun (a, b) -> geometry.Row.Sum a b)
+            |> Option.defaultValue 0.0
 
-    let headerFooterTemplateCache = System.Collections.Generic.Dictionary<string, HeaderFooter.Template>()
-    let parsedHeaderFooter raw =
-        match headerFooterTemplateCache.TryGetValue raw with
-        | true, template -> template
-        | false, _ ->
-            let template = HeaderFooter.parse raw
-            headerFooterTemplateCache.[raw] <- template
-            template
-    let resolveHeaderFooter ctx raw =
-        HeaderFooter.resolveTemplate ctx (parsedHeaderFooter raw)
+        // Page items are streamed. When fonts are available, glyph collection
+        // makes a first pass over the pages so font subsetting can run before
+        // PDF pages are emitted, but we avoid retaining every page's PaintItem
+        // list at once.
+        let printGridLines = ps.Options.GridLines
+        let printHeadings = ps.Options.Headings
+        // When PrintOptions.Headings is on, every content band shifts right /
+        // down by these to make room for the column-letter strip on top and
+        // the row-number strip on the left. Pagination has already shrunk the
+        // per-page area by the same amounts, so manual breaks land in the
+        // right place.
+        let headingsColPx, headingsRowPx = Pagination.headingsOffsets ps
+        let overlaysByPage =
+            if List.isEmpty overlays || pages.Length = 0 then
+                [||]
+            else
+                // A drawing belongs to every page it reaches on (cut off at the page's edge); one beside a
+                // print area to none; without any page that reaches it, to the first (a model without its drawings).
+                let spanOf (sum: int -> int -> float) (first: int) (last: int) = sum 0 (first - 1), sum 0 last
+                let byPage = Array.init pages.Length (fun _ -> ResizeArray<_>())
+                for overlay in overlays do
+                    let fr, fc, fox, foy, width, height, _ = overlay
+                    let left = geometry.Col.Sum 0 (fc - 1) + fox
+                    let top = geometry.Row.Sum 0 (fr - 1) + foy
+                    let mutable placed = false
+                    pages |> Array.iteri (fun index slice ->
+                        let colStart, colEnd = spanOf geometry.Col.Sum slice.ColStart slice.ColEnd
+                        let rowStart, rowEnd = spanOf geometry.Row.Sum slice.RowStart slice.RowEnd
+                        if left < colEnd && left + max width 1.0 > colStart && top < rowEnd && top + max height 1.0 > rowStart then
+                            byPage.[index].Add overlay
+                            placed <- true)
+                    if not placed && List.isEmpty (printAreasOf model.PageSetup) then byPage.[0].Add overlay
+                byPage
 
-    // Build header/footer page contexts and pre-resolve all text so we
-    // can register its glyphs for subsetting before embedding fonts.
-    // `&P` honors `firstPageNumber` when `useFirstPageNumber` is set;
-    // `&N` keeps reporting the physical page count (Excel doesn't add
-    // the first-page offset to N).
-    let firstPageOffset =
-        if ps.UseFirstPageNumber then ps.FirstPageNumber - 1 else 0
-    let resolvedHFs =
-        Array.init totalPages (fun pageIdx ->
-            let ctx : HeaderFooter.PageContext =
-                { PageNumber = pageIdx + 1 + firstPageOffset
-                  TotalPages = totalPages
-                  SheetName = options.SheetName
-                  FileName = options.FileName
-                  FilePath = ""
-                  Now = DateTime.Now }
-            let headerRaw, footerRaw = pickHeaderFooter (pageIdx + 1)
-            let header = headerRaw |> Option.map (resolveHeaderFooter ctx)
-            let footer = footerRaw |> Option.map (resolveHeaderFooter ctx)
-            header, footer)
-    for (header, footer) in resolvedHFs do
-        match header with
-        | Some section ->
-            recordStyled section.Left
-            recordStyled section.Center
-            recordStyled section.Right
-        | None -> ()
-        match footer with
-        | Some section ->
-            recordStyled section.Left
-            recordStyled section.Center
-            recordStyled section.Right
-        | None -> ()
+        // (What the overlays draw is not painted again as the frames of the cell slices.)
+        let paintedModel =
+            if List.isEmpty overlays then model
+            else { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with KeptObject _ -> false | _ -> true) }
 
+        let appendBand (emit: PaintItem -> unit)
+                       (rowStart: int) (rowEnd: int)
+                       (colStart: int) (colEnd: int)
+                       (offsetX: float) (offsetY: float) =
+            if printGridLines then
+                let mutable sawContent = false
+                let mutable addedGrid = false
+                let addGrid () =
+                    if not addedGrid then
+                        iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
+                        addedGrid <- true
+                iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
+                    if not sawContent then
+                        sawContent <- true
+                        match item with
+                        | FillRect _ ->
+                            emit item
+                            addGrid ()
+                        | _ ->
+                            addGrid ()
+                            emit item
+                    else
+                        emit item)
+                if not sawContent then
+                    addGrid ()
+            else
+                iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
+
+        let emitPageItems (i: int) (emit: PaintItem -> unit) =
+            if i < pages.Length then
+                let slice = pages.[i]
+                // Body: rows × cols of the slice, offset by repeat band sizes.
+                appendBand
+                    emit
+                    slice.RowStart slice.RowEnd
+                    slice.ColStart slice.ColEnd
+                    (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
+                // Repeat-rows band (above body, full width): repeat rows × slice cols.
+                match pagination.RepeatRows with
+                | Some (rs, re) when re >= rs ->
+                    appendBand
+                        emit
+                        rs re
+                        slice.ColStart slice.ColEnd
+                        (headingsColPx + repeatColsWidthPx) headingsRowPx
+                | _ -> ()
+                // Repeat-cols band (left of body, full height): slice rows × repeat cols.
+                match pagination.RepeatCols with
+                | Some (cs, ce) when ce >= cs ->
+                    appendBand
+                        emit
+                        slice.RowStart slice.RowEnd
+                        cs ce
+                        headingsColPx (headingsRowPx + repeatRowsHeightPx)
+                | _ -> ()
+                // Repeat corner (top-left): repeat rows × repeat cols.
+                match pagination.RepeatRows, pagination.RepeatCols with
+                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
+                    appendBand emit rs re cs ce headingsColPx headingsRowPx
+                | _ -> ()
+                if printHeadings then
+                    for item in headingItems geometry model slice pagination do
+                        emit item
+                // Inject anchored overlays (charts/sparklines) onto the page whose slice
+                // contains each anchor cell, offset into that page's content band. Done
+                // before GID collection so overlay text fonts get subset too.
+                if i < overlaysByPage.Length && overlaysByPage.[i].Count > 0 then
+                    let baseX = headingsColPx + repeatColsWidthPx
+                    let baseY = headingsRowPx + repeatRowsHeightPx
+                    let colStartPx = geometry.Col.Sum 0 (slice.ColStart - 1)
+                    let rowStartPx = geometry.Row.Sum 0 (slice.RowStart - 1)
+                    let clip =
+                        { X = baseX; Y = baseY
+                          Width = geometry.Col.Sum slice.ColStart slice.ColEnd
+                          Height = geometry.Row.Sum slice.RowStart slice.RowEnd }
+                    for fr, fc, fox, foy, _, _, locItems in overlaysByPage.[i] do
+                        let gx = geometry.Col.Sum 0 (fc - 1) + fox
+                        let gy = geometry.Row.Sum 0 (fr - 1) + foy
+                        let tx = baseX + (gx - colStartPx)
+                        let ty = baseY + (gy - rowStartPx)
+                        emit (Clipped (clip, locItems |> List.map (shiftItem tx ty)))
+
+        if canDrawText then
+            for pageIdx in 0 .. totalPages - 1 do
+                emitPageItems pageIdx recordPaintItemGids
+
+        // Pick the (header, footer) variant for a 1-indexed page number. When
+        // DifferentFirst is set, page 1 uses FirstHeader/FirstFooter; when
+        // DifferentOddEven is set, even pages use EvenHeader/EvenFooter; all
+        // remaining pages fall through to OddHeader/OddFooter. A flag whose
+        // variant slot is None renders nothing on that page — matches Excel's
+        // behavior (DifferentOddEven=1 + EvenHeader missing = blank even pages).
+        let pickHeaderFooter (pageNum1: int) : string option * string option =
+            let hf = ps.HeaderFooter
+            if hf.DifferentFirst && pageNum1 = 1 then hf.FirstHeader, hf.FirstFooter
+            elif hf.DifferentOddEven && pageNum1 % 2 = 0 then hf.EvenHeader, hf.EvenFooter
+            else hf.OddHeader, hf.OddFooter
+
+        let headerFooterTemplateCache = System.Collections.Generic.Dictionary<string, HeaderFooter.Template>()
+        let parsedHeaderFooter raw =
+            match headerFooterTemplateCache.TryGetValue raw with
+            | true, template -> template
+            | false, _ ->
+                let template = HeaderFooter.parse raw
+                headerFooterTemplateCache.[raw] <- template
+                template
+        let resolveHeaderFooter ctx raw =
+            HeaderFooter.resolveTemplate ctx (parsedHeaderFooter raw)
+
+        // Build header/footer page contexts and pre-resolve all text so we
+        // can register its glyphs for subsetting before embedding fonts.
+        // `&P` honors `firstPageNumber` when `useFirstPageNumber` is set;
+        // `&N` keeps reporting the physical page count (Excel doesn't add
+        // the first-page offset to N).
+        let firstPageOffset =
+            if ps.UseFirstPageNumber then ps.FirstPageNumber - 1 else 0
+        let resolvedHFs =
+            Array.init totalPages (fun pageIdx ->
+                let ctx : HeaderFooter.PageContext =
+                    { PageNumber = pageIdx + 1 + firstPageOffset
+                      TotalPages = totalPages
+                      SheetName = options.SheetName
+                      FileName = options.FileName
+                      FilePath = ""
+                      Now = DateTime.Now }
+                let headerRaw, footerRaw = pickHeaderFooter (pageIdx + 1)
+                let header = headerRaw |> Option.map (resolveHeaderFooter ctx)
+                let footer = footerRaw |> Option.map (resolveHeaderFooter ctx)
+                header, footer)
+        for (header, footer) in resolvedHFs do
+            match header with
+            | Some section ->
+                recordStyled section.Left
+                recordStyled section.Center
+                recordStyled section.Right
+            | None -> ()
+            match footer with
+            | Some section ->
+                recordStyled section.Left
+                recordStyled section.Center
+                recordStyled section.Right
+            | None -> ()
+
+        // (The pages are added once the fonts of every sheet are embedded.)
+        fun (faceTtfMap: Map<string, PdfFont.TrueTypeFont>) (faceResourceMap: Map<string, string>) (faceRemapMap: Map<string, Map<int, int>>) (loadedFaceNames: string list) ->
+            // Header/footer ops live in PDF coords directly. Excel scales H/F text
+            // by the page's print scale when `headerFooter/@scaleWithDoc` is true
+            // (its default). When false, the H/F text stays at its raw size even
+            // though the body is scaled. `hfFontSizePt` is the raw fallback size;
+            // `hfTextScale` is the multiplier we apply to every H/F glyph size.
+            // Excel's print PDF uses Calibri 11 (workbook default) for unstyled
+            // H/F runs — verified by glyph cap-height pixel-counting against
+            // synthetic-print-chrome ("FIRST" renders 9 px tall in Excel = 11pt).
+            let hfFontSizePt = 11.0
+            let hfTextScale =
+                if ps.HeaderFooter.ScaleWithDoc then pagination.Scale else 1.0
+            let hfScaledFontSizePt = hfFontSizePt * hfTextScale
+            let printableLeftPt = leftMarginPt
+            let printableRightPt = pageWidthPt - rightMarginPt
+            let maxSectionFontSize (section: HeaderFooter.StyledSection) =
+                let mutable maxFontSize = hfScaledFontSizePt
+                for run in section.Runs do
+                    if not (String.IsNullOrEmpty run.Text) then
+                        let fontSize = (run.FontSize |> Option.defaultValue hfFontSizePt) * hfTextScale
+                        if fontSize > maxFontSize then
+                            maxFontSize <- fontSize
+                maxFontSize
+            let maxHeaderFooterFontSize (section: HeaderFooter.Section) =
+                max (max (maxSectionFontSize section.Left) (maxSectionFontSize section.Center)) (maxSectionFontSize section.Right)
+            let headerBaselineYPt (section: HeaderFooter.Section) =
+                // Excel anchors header text from the top header margin. Large H/F
+                // runs therefore push the baseline down; a fixed 10 pt baseline puts
+                // 16 pt runs visibly too high. Excel leaves a little leading above
+                // larger text, so don't subtract the full max size.
+                // The -0.75 pt nudge (= 1 px at 96 dpi) drops the baseline so our
+                // glyph tops align with Excel's print-PDF header position. Verified
+                // by pixel-counting "FIRST" in synthetic-print-chrome: Excel's
+                // glyph tops at y=35, ours used to sit at y=34 without this nudge.
+                let fontSizePt = maxHeaderFooterFontSize section
+                let anchoredSizePt =
+                    if fontSizePt > hfScaledFontSizePt then max hfScaledFontSizePt (fontSizePt - 1.5)
+                    else hfScaledFontSizePt
+                pageHeightPt - headerMarginPt - anchoredSizePt - 0.75
+            let footerBaselineYPt =
+                // Excel places footer text a little higher than the raw footer
+                // margin baseline. A fixed lift matches both normal 10 pt footers
+                // and the synthetic 16 pt mixed-run footer crop.
+                footerMarginPt + 4.5
+            let appendStyledSectionOps (ops: ResizeArray<PdfDraw.DrawOp>) styled baselineYPt xAlign =
+                appendSectionOps ops options faceTtfMap faceResourceMap faceRemapMap
+                    printableLeftPt printableRightPt
+                    styled hfFontSizePt hfTextScale baselineYPt xAlign
+            let appendHeaderFooterOps ops (section: HeaderFooter.Section) baselineYPt =
+                appendStyledSectionOps ops section.Left baselineYPt AlignLeft
+                appendStyledSectionOps ops section.Center baselineYPt AlignCenter
+                appendStyledSectionOps ops section.Right baselineYPt AlignRight
+
+            // Emit one PDF page per page slice (or one blank page when the
+            // pagination is empty).
+            let printableWidthPt = pageWidthPt - leftMarginPt - rightMarginPt
+            let printableHeightPt = pageHeightPt - topMarginPt - bottomMarginPt
+            for pageIdx in 0 .. totalPages - 1 do
+                // Per-page content extent in points, accounting for heading strips
+                // and repeat bands. Excel centers each page individually against its
+                // own filled area, so a partly-filled last page still centers on
+                // what's actually drawn rather than the full printable rectangle.
+                let leftPtOffset, topPtOffset =
+                    if pages.Length = 0 then leftMarginPt, topMarginPt
+                    else
+                        let slice = pages.[pageIdx]
+                        let bodyWidthPx =
+                            headingsColPx + repeatColsWidthPx
+                            + geometry.Col.Sum slice.ColStart slice.ColEnd
+                        let bodyHeightPx =
+                            headingsRowPx + repeatRowsHeightPx
+                            + geometry.Row.Sum slice.RowStart slice.RowEnd
+                        let bodyWidthPt = bodyWidthPx * pxToPt * pagination.Scale
+                        let bodyHeightPt = bodyHeightPx * pxToPt * pagination.Scale
+                        let extraLeft =
+                            if ps.Options.HorizontalCentered && bodyWidthPt < printableWidthPt
+                            then (printableWidthPt - bodyWidthPt) / 2.0
+                            else 0.0
+                        let extraTop =
+                            if ps.Options.VerticalCentered && bodyHeightPt < printableHeightPt
+                            then (printableHeightPt - bodyHeightPt) / 2.0
+                            else 0.0
+                        leftMarginPt + extraLeft, topMarginPt + extraTop
+                let placement =
+                    { LeftPtOffset = leftPtOffset
+                      TopPtOffset = topPtOffset
+                      PageHeightPt = pageHeightPt
+                      Scale = pagination.Scale
+                      BlackAndWhite = ps.BlackAndWhite
+                      ImageName = imageNames.NameOf }
+                let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
+                let sz v = v * pxToPt * placement.Scale
+                let xPt x = placement.LeftPtOffset + sz x
+                let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+                let mutable gridBatchActive = false
+                let mutable gridBatchColor = ""
+                let mutable gridBatchWidth = 0.0
+                let flushGridBatch () =
+                    if gridBatchActive then
+                        ops.Add PdfDraw.Stroke
+                        gridBatchActive <- false
+                let appendGridLine x1 y1 x2 y2 color width =
+                    let color = bwStroke placement.BlackAndWhite color
+                    if not gridBatchActive || gridBatchColor <> color || gridBatchWidth <> width then
+                        flushGridBatch ()
+                        ops.Add(PdfDraw.SetStrokeColor (parseHexColor color))
+                        ops.Add(PdfDraw.SetLineWidth (sz width))
+                        ops.Add(PdfDraw.SetDash ([], 0.0))
+                        gridBatchActive <- true
+                        gridBatchColor <- color
+                        gridBatchWidth <- width
+                    ops.Add(PdfDraw.MoveTo (xPt x1, yPdf y1))
+                    ops.Add(PdfDraw.LineTo (xPt x2, yPdf y2))
+                let appendItem item =
+                    match item with
+                    | GridLine (x1, y1, x2, y2, color, width) ->
+                        appendGridLine x1 y1 x2 y2 color width
+                    | _ ->
+                        flushGridBatch ()
+                        appendTranslatedItem options faceTtfMap faceResourceMap faceRemapMap placement ops item
+                emitPageItems pageIdx appendItem
+                flushGridBatch ()
+                let header, footer = resolvedHFs.[pageIdx]
+                match header with
+                | Some section ->
+                    appendHeaderFooterOps ops section (headerBaselineYPt section)
+                | None -> ()
+                match footer with
+                | Some section ->
+                    appendHeaderFooterOps ops section footerBaselineYPt
+                | None -> ()
+                PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
+
+    let addSheets = sheets |> List.map planSheet
+    // An empty list of sheets is a document of one blank page.
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
     let embedFace (face: FontFace) =
         match parsed.TryGetValue face.FaceName with
@@ -1674,139 +1823,16 @@ let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
                 result.Add face.FaceName
         resizeArrayToList result
 
-    // Header/footer ops live in PDF coords directly. Excel scales H/F text
-    // by the page's print scale when `headerFooter/@scaleWithDoc` is true
-    // (its default). When false, the H/F text stays at its raw size even
-    // though the body is scaled. `hfFontSizePt` is the raw fallback size;
-    // `hfTextScale` is the multiplier we apply to every H/F glyph size.
-    // Excel's print PDF uses Calibri 11 (workbook default) for unstyled
-    // H/F runs — verified by glyph cap-height pixel-counting against
-    // synthetic-print-chrome ("FIRST" renders 9 px tall in Excel = 11pt).
-    let hfFontSizePt = 11.0
-    let hfTextScale =
-        if ps.HeaderFooter.ScaleWithDoc then pagination.Scale else 1.0
-    let hfScaledFontSizePt = hfFontSizePt * hfTextScale
-    let printableLeftPt = leftMarginPt
-    let printableRightPt = pageWidthPt - rightMarginPt
-    let maxSectionFontSize (section: HeaderFooter.StyledSection) =
-        let mutable maxFontSize = hfScaledFontSizePt
-        for run in section.Runs do
-            if not (String.IsNullOrEmpty run.Text) then
-                let fontSize = (run.FontSize |> Option.defaultValue hfFontSizePt) * hfTextScale
-                if fontSize > maxFontSize then
-                    maxFontSize <- fontSize
-        maxFontSize
-    let maxHeaderFooterFontSize (section: HeaderFooter.Section) =
-        max (max (maxSectionFontSize section.Left) (maxSectionFontSize section.Center)) (maxSectionFontSize section.Right)
-    let headerBaselineYPt (section: HeaderFooter.Section) =
-        // Excel anchors header text from the top header margin. Large H/F
-        // runs therefore push the baseline down; a fixed 10 pt baseline puts
-        // 16 pt runs visibly too high. Excel leaves a little leading above
-        // larger text, so don't subtract the full max size.
-        // The -0.75 pt nudge (= 1 px at 96 dpi) drops the baseline so our
-        // glyph tops align with Excel's print-PDF header position. Verified
-        // by pixel-counting "FIRST" in synthetic-print-chrome: Excel's
-        // glyph tops at y=35, ours used to sit at y=34 without this nudge.
-        let fontSizePt = maxHeaderFooterFontSize section
-        let anchoredSizePt =
-            if fontSizePt > hfScaledFontSizePt then max hfScaledFontSizePt (fontSizePt - 1.5)
-            else hfScaledFontSizePt
-        pageHeightPt - headerMarginPt - anchoredSizePt - 0.75
-    let footerBaselineYPt =
-        // Excel places footer text a little higher than the raw footer
-        // margin baseline. A fixed lift matches both normal 10 pt footers
-        // and the synthetic 16 pt mixed-run footer crop.
-        footerMarginPt + 4.5
-    let appendStyledSectionOps (ops: ResizeArray<PdfDraw.DrawOp>) styled baselineYPt xAlign =
-        appendSectionOps ops options faceTtfMap faceResourceMap faceRemapMap
-            printableLeftPt printableRightPt
-            styled hfFontSizePt hfTextScale baselineYPt xAlign
-    let appendHeaderFooterOps ops (section: HeaderFooter.Section) baselineYPt =
-        appendStyledSectionOps ops section.Left baselineYPt AlignLeft
-        appendStyledSectionOps ops section.Center baselineYPt AlignCenter
-        appendStyledSectionOps ops section.Right baselineYPt AlignRight
-
-    // Emit one PDF page per page slice (or one blank page when the
-    // pagination is empty).
-    let printableWidthPt = pageWidthPt - leftMarginPt - rightMarginPt
-    let printableHeightPt = pageHeightPt - topMarginPt - bottomMarginPt
-    for pageIdx in 0 .. totalPages - 1 do
-        // Per-page content extent in points, accounting for heading strips
-        // and repeat bands. Excel centers each page individually against its
-        // own filled area, so a partly-filled last page still centers on
-        // what's actually drawn rather than the full printable rectangle.
-        let leftPtOffset, topPtOffset =
-            if pages.Length = 0 then leftMarginPt, topMarginPt
-            else
-                let slice = pages.[pageIdx]
-                let bodyWidthPx =
-                    headingsColPx + repeatColsWidthPx
-                    + geometry.Col.Sum slice.ColStart slice.ColEnd
-                let bodyHeightPx =
-                    headingsRowPx + repeatRowsHeightPx
-                    + geometry.Row.Sum slice.RowStart slice.RowEnd
-                let bodyWidthPt = bodyWidthPx * pxToPt * pagination.Scale
-                let bodyHeightPt = bodyHeightPx * pxToPt * pagination.Scale
-                let extraLeft =
-                    if ps.Options.HorizontalCentered && bodyWidthPt < printableWidthPt
-                    then (printableWidthPt - bodyWidthPt) / 2.0
-                    else 0.0
-                let extraTop =
-                    if ps.Options.VerticalCentered && bodyHeightPt < printableHeightPt
-                    then (printableHeightPt - bodyHeightPt) / 2.0
-                    else 0.0
-                leftMarginPt + extraLeft, topMarginPt + extraTop
-        let placement =
-            { LeftPtOffset = leftPtOffset
-              TopPtOffset = topPtOffset
-              PageHeightPt = pageHeightPt
-              Scale = pagination.Scale
-              BlackAndWhite = ps.BlackAndWhite
-              ImageName = imageNames.NameOf }
-        let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
-        let sz v = v * pxToPt * placement.Scale
-        let xPt x = placement.LeftPtOffset + sz x
-        let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
-        let mutable gridBatchActive = false
-        let mutable gridBatchColor = ""
-        let mutable gridBatchWidth = 0.0
-        let flushGridBatch () =
-            if gridBatchActive then
-                ops.Add PdfDraw.Stroke
-                gridBatchActive <- false
-        let appendGridLine x1 y1 x2 y2 color width =
-            let color = bwStroke placement.BlackAndWhite color
-            if not gridBatchActive || gridBatchColor <> color || gridBatchWidth <> width then
-                flushGridBatch ()
-                ops.Add(PdfDraw.SetStrokeColor (parseHexColor color))
-                ops.Add(PdfDraw.SetLineWidth (sz width))
-                ops.Add(PdfDraw.SetDash ([], 0.0))
-                gridBatchActive <- true
-                gridBatchColor <- color
-                gridBatchWidth <- width
-            ops.Add(PdfDraw.MoveTo (xPt x1, yPdf y1))
-            ops.Add(PdfDraw.LineTo (xPt x2, yPdf y2))
-        let appendItem item =
-            match item with
-            | GridLine (x1, y1, x2, y2, color, width) ->
-                appendGridLine x1 y1 x2 y2 color width
-            | _ ->
-                flushGridBatch ()
-                appendTranslatedItem options faceTtfMap faceResourceMap faceRemapMap placement ops item
-        emitPageItems pageIdx appendItem
-        flushGridBatch ()
-        let header, footer = resolvedHFs.[pageIdx]
-        match header with
-        | Some section ->
-            appendHeaderFooterOps ops section (headerBaselineYPt section)
-        | None -> ()
-        match footer with
-        | Some section ->
-            appendHeaderFooterOps ops section footerBaselineYPt
-        | None -> ()
-        PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
-
+    if List.isEmpty addSheets then
+        PdfDoc.addPage builder (612.0, 792.0) [] [] [] |> ignore
+    for addPages in addSheets do
+        addPages faceTtfMap faceResourceMap faceRemapMap loadedFaceNames
     PdfDoc.toBytes builder
+
+/// Render one sheet to PDF with its overlays (charts and shapes drawn over its cells).
+let toBytesWith (options: RenderOptions) (model: SpreadsheetModel)
+                (overlays: (int * int * float * float * float * float * PaintItem list) list) : byte[] =
+    toBytesOfSheets options [ { Model = model; SheetName = options.SheetName; Overlays = overlays } ]
 
 /// Render to PDF with no overlays (the common case).
 let toBytes (options: RenderOptions) (model: SpreadsheetModel) : byte[] =
@@ -1829,3 +1855,70 @@ let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : by
             ops.Add op
     PdfDoc.addPage builder (pageWidthPt, pageHeightPt) [] (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
     PdfDoc.toBytes builder
+
+// ---- pictures for a writer that cannot decode PNG ----------------------------------------------------
+// Rbt.Pdf embeds a JPEG as it is and decodes a PNG to embed its pixels - on .NET; its browser build
+// cannot (no inflate of PNG data there). The browser component hands the PNG pictures of the sheets it
+// exports to the browser, which draws them as JPEG (`pngPictures`, `withPictures`).
+
+let private isPngData (data: byte[]) =
+    data.Length > 8 && data.[0] = 0x89uy && data.[1] = 0x50uy && data.[2] = 0x4Euy && data.[3] = 0x47uy
+
+let rec private itemPictures (add: byte[] -> unit) (item: PaintItem) =
+    match item with
+    | DrawImage (_, image) when isPngData image.Data -> add image.Data
+    | VecGroup (_, children) | Clipped (_, children) -> children |> List.iter (itemPictures add)
+    | _ -> ()
+
+/// The PNG pictures of the sheets (their pictures and those in their overlays), each once.
+let pngPictures (sheets: PdfSheet list) : byte[] array =
+    let found = ResizeArray<byte[]>()
+    let add (data: byte[]) = if not (found.Exists (fun known -> obj.ReferenceEquals(known, data))) then found.Add data
+    for sheet in sheets do
+        for drawing in sheet.Model.Drawings do
+            match drawing.Content with
+            | Picture (_, _, data) when isPngData data -> add data
+            | _ -> ()
+        for _, _, _, _, _, _, items in sheet.Overlays do
+            items |> List.iter (itemPictures add)
+    found.ToArray()
+
+/// The sheets with each picture whose data `replace` gives other data for (by reference: the arrays of
+/// `pngPictures`) drawn from that instead.
+let withPictures (replace: byte[] -> (string * byte[]) option) (sheets: PdfSheet list) : PdfSheet list =
+    let rec item (paint: PaintItem) =
+        match paint with
+        | DrawImage (rect, image) ->
+            match replace image.Data with
+            | Some (contentType, data) -> DrawImage (rect, { image with ContentType = contentType; Data = data })
+            | None -> paint
+        | VecGroup (transform, children) -> VecGroup (transform, children |> List.map item)
+        | Clipped (rect, children) -> Clipped (rect, children |> List.map item)
+        | _ -> paint
+    sheets |> List.map (fun sheet ->
+        { sheet with
+            Model =
+                { sheet.Model with
+                    Drawings =
+                        sheet.Model.Drawings |> List.map (fun drawing ->
+                            match drawing.Content with
+                            | Picture (_, extension, data) ->
+                                match replace data with
+                                | Some (contentType, other) -> { drawing with Content = Picture (contentType, extension, other) }
+                                | None -> drawing
+                            | _ -> drawing) }
+            Overlays = sheet.Overlays |> List.map (fun (r, c, x, y, w, h, items) -> r, c, x, y, w, h, items |> List.map item) })
+
+/// A face from what a host hands (the record of Word.Pdf's `FontFace` has the same fields, in the same
+/// order: a host makes its faces once for both).
+let fontFace (faceName: string) (family: string) (bold: bool) (italic: bool) (data: byte[]) : FontFace =
+    { FaceName = faceName; Family = family; Bold = bold; Italic = italic; Data = data }
+
+/// For the browser component: the PDF of `sheets` (each the sheet, its name, its overlays) with `fonts`.
+let exportSheets (defaultFamily: string) (fileName: string) (fonts: FontFace array) (sheets: PdfSheet array) : byte[] =
+    let options = { DefaultFontFamily = defaultFamily; Fonts = List.ofArray fonts; CjkFallback = []; SheetName = ""; FileName = fileName }
+    toBytesOfSheets options (List.ofArray sheets)
+
+/// A sheet of `exportSheets`.
+let pdfSheet (model: SpreadsheetModel) (sheetName: string) (overlays: (int * int * float * float * float * float * PaintItem list) list) : PdfSheet =
+    { Model = model; SheetName = sheetName; Overlays = overlays }
