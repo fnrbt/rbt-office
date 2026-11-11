@@ -205,7 +205,8 @@ const docs = [
             { part: 'word/document.xml', has: '<w:lastRenderedPageBreak/>(?:(?!</w:p>).)*<w:drawing>' },
             // (Written as the editor holds them: the mark on its first character.)
             { part: 'word/document.xml', has: 'link, </w:t>(?:(?!</w:p>).)*<w:hyperlink[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/><w:t>n</w:t>' },
-            { part: 'word/document.xml', has: 'result, </w:t>(?:(?!</w:p>).)*<w:lastRenderedPageBreak/><w:t>o</w:t>' },
+            // (A field's mark is its run's, at the start of the result.)
+            { part: 'word/document.xml', has: '<w:fldSimple[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/>' },
         ],
     },
     {

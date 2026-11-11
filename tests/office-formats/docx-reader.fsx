@@ -743,7 +743,7 @@ do
         (sprintf "%A" summary)
 
 // Word's marks of the pages it started (w:lastRenderedPageBreak) in a hyperlink and in a field's result are
-// the editor's too, where they stand: a run of their own from the mark on. They were lost with the runs of the
+// the editor's too: a link's run of its own from the mark on, the field's run. They were lost with the runs of the
 // link / the result made one: a save written from the model had fewer of them, and the read-again layout counted
 // Word's pages wrong from there (docx4j-getting-started, -headers-footers).
 do
@@ -766,8 +766,9 @@ do
         |> Array.map (fun run -> string run.["Text"], (match run.TryGetValue "RenderedPageBreakBefore" with | true, (:? bool as value) -> value | _ -> false))
         |> Array.toList
     ok "a mark in a link is the link run's from it on" (marksOf items.[0] = [ ("link, ", false); ("next page", true) ]) (sprintf "%A" (marksOf items.[0]))
-    ok "a mark in a field's result is the result's run from it on"
-        (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "on the next page"))
+    // (A complex field's result is the field's one run, with the mark: a field of one run is saved from its source.)
+    ok "a mark in a field's result is the field run's"
+        (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "result, on the next page"))
         (sprintf "%A" (marksOf items.[1]))
     ok "and in a simple field's" (marksOf items.[2] |> List.exists (fun (text, mark) -> mark && text = "next")) (sprintf "%A" (marksOf items.[2]))
 

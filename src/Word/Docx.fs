@@ -1806,7 +1806,22 @@ let private unsetFontSizePixels = 10.0 * 96.0 / 72.0
 /// formatting a run merely inherits from its paragraph / character style is
 /// left out of the file (ExplicitX = null) instead of being written on every run.
 let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) itemType headingLevel (para: ParagraphBlock) =
-    let buffer = para.Buffer
+    // (A field's run that Word's mark of a page it started stands before is held as two runs - the mark on
+    // its first character, as the import makes it -: it is the one run of the field it was read as, with the mark.
+    // A field of one run is written from its source while it is the run read.)
+    let buffer =
+        let rec merge (runs: TextBuffer.Run list) =
+            match runs with
+            | Text first :: Text rest :: tail
+                when first.Style.RenderedPageBreakBefore && first.Style.FieldCode.IsSome
+                     && rest.Start = first.Start + first.Length
+                     && rest.Style = { first.Style with RenderedPageBreakBefore = false } ->
+                Text { first with Length = first.Length + rest.Length } :: merge tail
+            | run :: tail -> run :: merge tail
+            | [] -> []
+        let marksField =
+            para.Buffer.Runs |> List.exists (function Text run -> run.Style.RenderedPageBreakBefore && run.Style.FieldCode.IsSome | _ -> false)
+        if marksField then { para.Buffer with Runs = merge para.Buffer.Runs } else para.Buffer
     let metadata = para.Metadata
     // What the document's own styles give this paragraph (not the editor's
     // built-in look, which the file does not hold).

@@ -1644,8 +1644,7 @@ module Docx =
         let result = resultBuilder.ToString()
         let fieldType = fieldTypeFromCode code
         let isMark (run: Run) = match run.Content with RenderedPageBreak -> true | _ -> false
-        // (Word's mark of a page it started in the result: the run of the result it stands before has it - a run
-        // of its own from there where the result is plain text, else the field's run.)
+        // (Word's mark of a page it started in the result: the field's run has it.)
         let fieldOf (first: Run option) (part: string option) (renderedPageBreak: bool) : Run =
             {
                 Content = FieldRef {
@@ -1671,23 +1670,20 @@ module Docx =
         let firstResultRun = field.ResultRuns |> Seq.tryFind (isMark >> not)
         let whole () = [ fieldOf firstResultRun None marked ]
         let computed = ValueText.FieldCode.isComputed (code.ToUpperInvariant())
-        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ | RenderedPageBreak -> true | _ -> false)
+        // (A result with a mark is the field's one run, which has the mark - at the result's start: a field of one
+        // run is written from its source, see collapseComplexFieldTokens.)
+        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
         if field.ResultRuns.Count < 2 || computed || not plain then whole ()
         else
-            // The stretches of runs that are formatted alike (one starts at a mark of Word's too).
-            let groups = ResizeArray<Run * System.Text.StringBuilder * bool>()
-            let mutable pendingMark = false
+            // The stretches of runs that are formatted alike.
+            let groups = ResizeArray<Run * System.Text.StringBuilder>()
             for run in field.ResultRuns do
-                if isMark run then pendingMark <- true
-                else
-                    let text = textFromRun run
-                    if groups.Count > 0 && not pendingMark && (let (first, _, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
-                        (let (_, builder, _) = groups.[groups.Count - 1] in builder.Append(text) |> ignore)
-                    else
-                        groups.Add ((run, System.Text.StringBuilder(text), pendingMark))
-                        pendingMark <- false
+                let text = textFromRun run
+                if groups.Count > 0 && (let (first, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
+                    (snd groups.[groups.Count - 1]).Append(text) |> ignore
+                else groups.Add ((run, System.Text.StringBuilder(text)))
             if groups.Count < 2 then whole ()
-            else [ for (first, text, mark) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) mark ]
+            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) false ]
 
     let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
         match stack with
