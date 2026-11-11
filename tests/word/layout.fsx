@@ -1630,6 +1630,22 @@ let splitBreaks =
     splitBreakDoc.Blocks |> List.choose (function Doc.Paragraph para -> Some (para.Metadata.PageBreakBefore, Doc.ParagraphExplicit.has Doc.ParagraphExplicit.PageBreakRunBefore para.Metadata) | _ -> None)
 check "a split paragraph's break stays before its first part" splitBreaks [ (true, true); (false, false) ]
 
+// ---------------------------------------------------------------------------
+// A paragraph's first line starts where the paragraph does, whatever its size:
+// text larger than half the top margin went down by twice its size less the
+// margin (sample-2: a 55 pt title on a 39 pt margin started 71 pt down, every
+// one-page section ran over on to a second page - 120 pages where Word has 60).
+// ---------------------------------------------------------------------------
+let largeTextTop =
+    let narrowTop = { settings with PaddingTop = 52.0 }
+    let para =
+        { paragraph "large-title" "Lorem Ipsum" with
+            Buffer = ofString "Lorem Ipsum" |> applyStyle 0 11 (fun style -> { style with FontSize = 73.33 })
+            Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } }
+    let layout, _ = layoutParagraphAtWithRange narrowTop measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 52.0 0.0 para Map.empty
+    layout.Lines.Head.Y
+check "a large paragraph's first line is at the paragraph's top" largeTextTop 52.0
+
 printfn ""
 printfn "Word layout tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
