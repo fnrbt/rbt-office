@@ -152,9 +152,9 @@ let private baseline (font: Rbt.Renderer.Text.FontData) fontPx (text: P.PaintTex
 let private alignedX font fontPx (text: P.PaintText) =
     let width = Rbt.Renderer.Text.measureWidth font fontPx text.Text
     match text.Align with
-    | P.AlignLeft -> text.Rect.X
-    | P.AlignCenter -> text.Rect.X + max 0.0 ((text.Rect.Width - width) / 2.0)
-    | P.AlignRight -> text.Rect.X + max 0.0 (text.Rect.Width - width)
+    | L.AlignLeft -> text.Rect.X
+    | L.AlignCenter -> text.Rect.X + max 0.0 ((text.Rect.Width - width) / 2.0)
+    | L.AlignRight -> text.Rect.X + max 0.0 (text.Rect.Width - width)
 
 let private textCommands (text: P.PaintText) =
     if String.IsNullOrEmpty text.Text || text.Rect.Width <= 0.0 || text.Rect.Height <= 0.0 then []

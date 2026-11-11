@@ -465,6 +465,36 @@ let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list 
             })
     ]
 
+// ---- horizontal alignment --------------------------------------------------------
+
+type TextAlign =
+    | AlignLeft
+    | AlignCenter
+    | AlignRight
+
+/// Where a cell's text sits across its cell - the one rule of every way a
+/// cell is drawn (the web grid's cell nodes, the canvas, PDF, print, the
+/// native hosts). An explicit alignment says so; General (none, `general`,
+/// and the ones drawn from the left: `fill`, `justify`, `distributed`) is
+/// Excel's: numbers (and so dates and times) to the right, booleans and
+/// errors centred, text to the left - and a value of a `@` (Text) number
+/// format is text, a number too. A formula is placed by what it gives.
+let cellTextAlign (format: CellFormat) (value: CellValue) : TextAlign =
+    match format.HorizontalAlign |> Option.map (fun align -> align.ToLowerInvariant()) with
+    | Some "center" -> AlignCenter
+    // "Center Across Selection": centred (across the run of centerContinuous cells).
+    | Some "centercontinuous" -> AlignCenter
+    | Some "right" -> AlignRight
+    | Some "left" -> AlignLeft
+    | _ ->
+        match format.NumberFormat with
+        | Some code when code.Trim() = "@" -> AlignLeft
+        | _ ->
+            match unwrapFormulaValue value with
+            | CellValue.Number _ -> AlignRight
+            | CellValue.Boolean _ | CellValue.Error _ -> AlignCenter
+            | _ -> AlignLeft
+
 // ---- text overflow ------------------------------------------------------------
 // Excel lets text that is wider than its cell run over the empty cells next
 // to it: to the right for left-aligned text, to the left for right-aligned,

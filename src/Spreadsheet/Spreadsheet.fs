@@ -1323,14 +1323,14 @@ type Spreadsheet(container: Element) =
                  | None -> ())
                 let align =
                     match text.Align with
-                    | SpreadsheetPaint.AlignCenter -> "center"
-                    | SpreadsheetPaint.AlignRight -> "right"
-                    | SpreadsheetPaint.AlignLeft -> "left"
+                    | SpreadsheetLayout.AlignCenter -> "center"
+                    | SpreadsheetLayout.AlignRight -> "right"
+                    | SpreadsheetLayout.AlignLeft -> "left"
                 let x =
                     match text.Align with
-                    | SpreadsheetPaint.AlignCenter -> text.Rect.X + text.Rect.Width / 2.0
-                    | SpreadsheetPaint.AlignRight -> text.Rect.X + text.Rect.Width
-                    | SpreadsheetPaint.AlignLeft -> text.Rect.X
+                    | SpreadsheetLayout.AlignCenter -> text.Rect.X + text.Rect.Width / 2.0
+                    | SpreadsheetLayout.AlignRight -> text.Rect.X + text.Rect.Width
+                    | SpreadsheetLayout.AlignLeft -> text.Rect.X
                 // Approximate Calibri's em-relative metrics (asc 0.952, desc
                 // -0.266, lineHeight 1.218). Browser canvas doesn't expose
                 // font metrics portably, so we accept a small drift for
@@ -1381,9 +1381,9 @@ type Spreadsheet(container: Element) =
                     let textWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
                     let startX =
                         match text.Align with
-                        | SpreadsheetPaint.AlignCenter -> x - textWidth / 2.0
-                        | SpreadsheetPaint.AlignRight -> x - textWidth
-                        | SpreadsheetPaint.AlignLeft -> x
+                        | SpreadsheetLayout.AlignCenter -> x - textWidth / 2.0
+                        | SpreadsheetLayout.AlignRight -> x - textWidth
+                        | SpreadsheetLayout.AlignLeft -> x
                     let endX = startX + textWidth
                     if text.Underline || text.UnderlineDouble then
                         let y = baseline + max 1.0 (text.FontSize * 0.12)
@@ -3503,9 +3503,14 @@ type Spreadsheet(container: Element) =
             match format.HorizontalAlign with
             | Some "centerContinuous" -> add "text-align" "center"
             | Some "distributed" -> add "text-align" "justify"
-            | Some "fill" | Some "general" -> ()
-            | Some align -> add "text-align" align
-            | None -> ()
+            | Some "justify" -> add "text-align" "justify"
+            | _ ->
+                // Explicit or General: the one rule of every painter (numbers to the right,
+                // booleans and errors centred; the style sheet's default is the left).
+                match SpreadsheetLayout.cellTextAlign format data.Value with
+                | SpreadsheetLayout.AlignRight -> add "text-align" "right"
+                | SpreadsheetLayout.AlignCenter -> add "text-align" "center"
+                | SpreadsheetLayout.AlignLeft -> if format.HorizontalAlign = Some "left" then add "text-align" "left"
             // Where the text sits in the height of the cell. One line of text
             // is centred by the cell's line height (the node's default look);
             // top and bottom give the line its own height and, for bottom,
