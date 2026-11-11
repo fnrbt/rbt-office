@@ -6,7 +6,14 @@ Written 2026-10-12, when work was halted to move to another machine; next steps 
 
 Everything below this section serves it or waits for it. The alpha is the first release meant for people outside redbat: `@rbt/office` as a Word and a spreadsheet editor that a web page embeds and that runs entirely in the browser (no server), with its host API documented, a demo page, and sample files that show it at its best. The 0.1.x releases go on as before (gate, release, adopt in redbat) on the way there.
 
-**Open decisions (the user's):** where the alpha is published (the Forge registry only, or public npm too) and under what licence; whether the alpha ships the editor shell (toolbar, dialogs: `src/Word/WordShell.fs`, `src/Spreadsheet/Toolbar.fs`) as a supported part or only the canvas component with the host building its own UI; which browsers it supports (only Chromium is tested; Firefox is untested, Safari never run).
+**Three ways to run it, one code base** (the user's direction, 2026-11-11):
+- **Embedded, no UI:** the document widget alone - a Word page view or a sheet grid that a host draws its own UI around (what redbat does today: it builds its toolbar, menus and dialogs in Solid and takes only the engines, `docs/ui-audit.md`).
+- **In the browser with our UI, no server:** the widget plus a complete toolbar, menus, dialogs and panels from `@rbt/office`.
+- **On .NET as a desktop app** (not Fable): the same widget and a desktop UI.
+
+The document widget (model, layout, painting, input, editing, import and save) is shared close to 100% between the browser and .NET; only the surface it draws on and the events it gets are per platform. The UI can be separate per platform, sharing what it can: the commands, the dialog and menu specs (`src/OfficeUi/Specs.fs`), their state and validation, with thin renderers (DOM in the browser, `Rbt.Widgets` on the desktop). Where this is not true today is the first thing to find out: the spreadsheet's web grid is DOM nodes (`src/Grid`, the cell nodes' `text-align`) while the desktop one paints (`spreadsheet-native/SpreadsheetGrid.fs`); our browser UI layers reach no host and are broken in places (`docs/ui-audit.md`).
+
+**Open decisions (the user's):** where the alpha is published (the Forge registry only, or public npm too) and under what licence; which browsers it supports (only Chromium is tested; Firefox is untested, Safari never run).
 
 **Must be true for the alpha** (each a gate run before the release, not an agent's report):
 1. **No save loses anything.** Word and Excel open every save of the corpus with the original's text, pages and values (the open-all checks of `docs/word-parity.md`, `docs/excel-parity.md`, run on the release candidate). What is open: a bookmark renamed or removed in a spliced paragraph keeps its old name (Backlog, Word); block-level content controls (rows, cells, repeating sections) lose their binding; the spaces lost between runs in saves written from the model.
