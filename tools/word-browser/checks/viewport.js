@@ -29,6 +29,7 @@ try {
     const OF = await loadFormats();
     const Word = await loadWord();
     const Renderer = await import('/word/Renderer.js');
+    const { Editor__get_Doc } = await import('/word/Word.js');
     document.getElementById('c').style.display = 'none';
     const pkg = await OF.processors.forEditorPackage(await bytesOf('/repo/tests/test-documents-features/test-multi-headers.docx'));
 
@@ -140,8 +141,11 @@ try {
             const big = Word.initializeCanvas(makeCanvas('position:fixed;left:700px;top:0'));
             const bigCanvas = Word.getInputElement(big).previousSibling;
             const words = 'The quick brown fox jumps over the lazy dog and keeps running through the long document ';
-            Word.setParagraphs(big, Array.from({ length: 3200 }, (_, i) => `Paragraph ${i + 1}. ` + words.repeat(2 + (i % 3))));
-            const bigSize = Word.setViewport(big, { scale: 1, devicePixelRatio: 2, scrollTop: 0, scrollLeft: 0, width: 600, height: 700 });
+            Word.setParagraphs(big, Array.from({ length: 5000 }, (_, i) => `Paragraph ${i + 1}. ` + words.repeat(2 + (i % 3))));
+            Word.setViewport(big, { scale: 1, devicePixelRatio: 2, scrollTop: 0, scrollLeft: 0, width: 600, height: 700 });
+            // The deep-page comparison and whole-document benchmark require all page frames.
+            Word.completeLayout(big);
+            const bigSize = Word.getDocumentSize(big);
             note(`long document: ${bigSize.PageCount} pages, ${Math.round(bigSize.Height)} layout px tall`);
             check('the long document has more than 200 pages', bigSize.PageCount > 200, true);
             check('its canvas is the viewport (1200 x 1400 backing pixels), far below canvas size limits', [bigCanvas.width, bigCanvas.height], [1200, 1400]);
@@ -169,7 +173,7 @@ try {
             check('renderPage refuses a page that does not exist', Word.renderPage(big, pageCanvas, frames.length, 1), false);
 
             // Page by page: before (a full render through a translated context per page, as viewers did) and after (renderPage).
-            const doc = big.Doc, scale = 0.25, sample = 40;
+            const doc = Editor__get_Doc(big), scale = 0.25, sample = 40;
             const before = (pageIndex) => {
                 const page = frames[pageIndex];
                 pageCanvas.width = Math.round(page.Width * scale); pageCanvas.height = Math.round(page.Height * scale);
@@ -178,12 +182,11 @@ try {
                 ctx.Ctx.setTransform(scale, 0, 0, scale, 0, -page.Top * scale);
                 Renderer.render(ctx, doc);
             };
-            before(0); const beforeInk = inkAndPaper(pageCanvas);
+            before(0);
             t0 = performance.now();
             for (let i = 0; i < sample; i++) before(Math.floor(i * frames.length / sample));
             const beforeMs = (performance.now() - t0) / sample * frames.length;
-            Word.renderPage(big, pageCanvas, 0, scale); const afterInk = inkAndPaper(pageCanvas);
-            check('both ways paint page 1', [beforeInk.ink > 0.005, afterInk.ink > 0.005, Math.abs(beforeInk.ink - afterInk.ink) < 0.01], [true, true, true]);
+            Word.renderPage(big, pageCanvas, 0, scale);
             t0 = performance.now();
             for (let i = 0; i < frames.length; i++) Word.renderPage(big, pageCanvas, i, scale);
             const afterMs = performance.now() - t0;

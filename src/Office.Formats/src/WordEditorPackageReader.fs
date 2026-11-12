@@ -273,21 +273,30 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
         | Some info -> Map.tryFind (info.ListId, max 0 info.Level) numbering
         | None -> effective.Style |> Option.bind (fun id -> Map.tryFind id styleNumbering)
     let listInfo =
-        match definition, effective.ListInfo with
-        | Some (def: D.NumberingDefinition), _ ->
-            let level = levelOf def
-            Some { Style = if def.NumberFormat = "bullet" then "bullet" else "numbered"
-                   Level = def.Level + 1; Id = Some def.NumId; SourceId = Some def.NumId
-                   Restart = false; FormatEdited = false; NumberFormat = Some def.NumberFormat
-                   LevelText = def.LevelText; Start = def.Start; StartOverrides = []
-                   ListLevelIndents = Some (level.IndentLeft, level.FirstLineIndent)
-                   Levels = Map.tryFind def.NumId levels |> Option.defaultValue [] }
-        | None, Some info when info.ListId <> "0" ->
-            Some { Style = if info.NumberFormat = Some "bullet" then "bullet" else "numbered"
-                   Level = info.Level + 1; Id = Some info.ListId; SourceId = Some info.ListId
-                   Restart = false; FormatEdited = false; NumberFormat = info.NumberFormat
-                   LevelText = info.LevelText; Start = info.Start; StartOverrides = []; ListLevelIndents = None; Levels = [] }
-        | _ -> None
+        match direct.ListInfo with
+        | Some info when info.ListId = "0" ->
+            // A direct numId=0 cancels numbering inherited from the paragraph
+            // style. It is not the same as an unnumbered paragraph without numPr.
+            Some { Style = "none"; Level = 0; Id = Some "0"; SourceId = None
+                   Restart = false; FormatEdited = false; NumberFormat = None
+                   LevelText = None; Start = None; StartOverrides = []
+                   ListLevelIndents = None; Levels = [] }
+        | _ ->
+            match definition, effective.ListInfo with
+            | Some (def: D.NumberingDefinition), _ ->
+                let level = levelOf def
+                Some { Style = if def.NumberFormat = "bullet" then "bullet" else "numbered"
+                       Level = def.Level + 1; Id = Some def.NumId; SourceId = Some def.NumId
+                       Restart = false; FormatEdited = false; NumberFormat = Some def.NumberFormat
+                       LevelText = def.LevelText; Start = def.Start; StartOverrides = []
+                       ListLevelIndents = Some (level.IndentLeft, level.FirstLineIndent)
+                       Levels = Map.tryFind def.NumId levels |> Option.defaultValue [] }
+            | None, Some info when info.ListId <> "0" ->
+                Some { Style = if info.NumberFormat = Some "bullet" then "bullet" else "numbered"
+                       Level = info.Level + 1; Id = Some info.ListId; SourceId = Some info.ListId
+                       Restart = false; FormatEdited = false; NumberFormat = info.NumberFormat
+                       LevelText = info.LevelText; Start = info.Start; StartOverrides = []; ListLevelIndents = None; Levels = [] }
+            | _ -> None
     let format =
         match definition with
         | Some def ->

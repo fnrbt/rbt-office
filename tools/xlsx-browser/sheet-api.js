@@ -3386,12 +3386,17 @@ checks['api-recalc-more'] = async () => {
         now = stepIs('a defined name: calculated by the engine', 'Sheet1!A1:C11');
         check('... its user has a value, and only it (with what reads it) was evaluated', [now.rows[8][1], now.evaluated >= 1 && now.evaluated <= 3], ['48', true]);
         both((grid) => grid.SetDefinedName('Rate', '=Sheet1!$B$2'));
-        check('a name changed', [stepIs('a name changed: by the engine', 'Sheet1!A1:C11').rows[8][1]], ['96']);
+        now = stepIs('a name changed: by the engine', 'Sheet1!A1:C11');
+        check('a name changed: only its user and dependents were evaluated', [now.rows[8][1], now.evaluated >= 1 && now.evaluated <= 3], ['96', true]);
         both((grid) => grid.Undo());
-        check('... undone', [stepIs('the undo of a name: by the engine', 'Sheet1!A1:C11').rows[8][1]], ['48']);
+        now = stepIs('the undo of a name: by the engine', 'Sheet1!A1:C11');
+        check('... undone without recalculating unrelated formulas', [now.rows[8][1], now.evaluated >= 1 && now.evaluated <= 3], ['48', true]);
         both((grid) => grid.DeleteDefinedName('Rate'));
-        check('a name deleted: #NAME?', /NAME/.test(stepIs('a name deleted: by the engine', 'Sheet1!A1:C11').rows[8][1]), true);
+        now = stepIs('a name deleted: by the engine', 'Sheet1!A1:C11');
+        check('a name deleted: only its user and dependents were evaluated', [/NAME/.test(now.rows[8][1]), now.evaluated >= 1 && now.evaluated <= 3], [true, true]);
         both((grid) => grid.Undo());
+        now = stepIs('the undo of a deleted name: by the engine', 'Sheet1!A1:C11');
+        check('... restored without recalculating unrelated formulas', [now.rows[8][1], now.evaluated >= 1 && now.evaluated <= 3], ['48', true]);
 
         // ---- a filter: only SUBTOTAL / AGGREGATE and what reads them ----
         both((grid) => { grid.SetAutoFilter('A1:C6'); grid.SetFilter(0, { values: ['a'] }); });

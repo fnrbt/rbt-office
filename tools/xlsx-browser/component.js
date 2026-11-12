@@ -400,7 +400,15 @@ checks['export-edited'] = async () => {
             check(`${short}: pictures`, b.map((s) => s.images.map((i) => [i.type, i.bytes, i.sum])), a.map((s) => s.images.map((i) => [i.type, i.bytes, i.sum])));
             check(`${short}: charts and other kept objects`, b.map((s) => s.objects.map((o) => [o.kind, o.name])), a.map((s) => s.objects.map((o) => [o.kind, o.name])));
             check(`${short}: threaded comments`, b.map((s) => s.threads.length), a.map((s) => s.threads.length));
-            check(`${short}: chart, theme and embedded parts byte for byte`, changedParts(await partsOf(original, KEPT_PARTS), await partsOf(saved, KEPT_PARTS)), []);
+            // Structural edits move chart bindings; chart-reference-edits covers
+            // their plotted values and save/reopen behavior, not byte identity.
+            const keptBefore = await partsOf(original, KEPT_PARTS), keptAfter = await partsOf(saved, KEPT_PARTS);
+            for (const path of Object.keys(keptBefore)) {
+                if (/^xl\/charts\/chart\d+\.xml$/.test(path)) {
+                    delete keptBefore[path]; delete keptAfter[path];
+                }
+            }
+            check(`${short}: other chart, theme and embedded parts byte for byte`, changedParts(keptBefore, keptAfter), []);
             check(`${short}: every media part is in the saved package`, mediaContents(await partsOf(saved, MEDIA_PARTS)), mediaContents(await partsOf(original, MEDIA_PARTS)));
             // What was exported opens in the grid again, with the edits.
             await grid.ImportXlsx(saved.slice());

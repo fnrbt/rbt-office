@@ -4475,8 +4475,7 @@ type Spreadsheet(container: Element) as this =
                 let before = axesState model
                 model <- change model
                 if before <> axesState model then
-                    if activeSheetIndex < revisionSheets.Length then revisionSheets.[activeSheetIndex] <- model
-                    if activeSheetIndex < notifiedSheets.Length then notifiedSheets.[activeSheetIndex] <- model
+                    absorbViewState <- true
                     render()
             elif changeAxes description change then render()
         if number "data-first" >= 0 then

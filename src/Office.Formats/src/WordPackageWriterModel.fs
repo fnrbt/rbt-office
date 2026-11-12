@@ -1290,6 +1290,14 @@ let tableRowProperties (row: EditorRow) : string * string list =
         | Some margins -> element "w:tblPrEx" [] [margins]
         | None -> ""
     let rowPropChildren = [
+        if row.GridBefore > 0 then yield selfClosing "w:gridBefore" [("w:val", string row.GridBefore)]
+        if row.GridAfter > 0 then yield selfClosing "w:gridAfter" [("w:val", string row.GridAfter)]
+        match row.WidthBefore with
+        | Some width -> yield selfClosing "w:wBefore" [("w:w", string (roundToInt width)); ("w:type", "dxa")]
+        | None -> ()
+        match row.WidthAfter with
+        | Some width -> yield selfClosing "w:wAfter" [("w:w", string (roundToInt width)); ("w:type", "dxa")]
+        | None -> ()
         match row.CanSplit with
         | Some canSplit -> yield selfClosing "w:cantSplit" (if canSplit then [("w:val", "0")] else [])
         | None -> ()

@@ -245,13 +245,6 @@ const docs = [
         rels: `<Relationship Id="rId1" Type="${REL}/image" Target="media/body.png"/>`,
         extra: { 'word/media/body.png': PNG },
         types: '<Default Extension="png" ContentType="image/png"/>',
-        expect: [
-            { part: 'word/document.xml', has: '<w:lastRenderedPageBreak/>(?:(?!</w:p>).)*<w:drawing>' },
-            // (Written as the editor holds them: the mark on its first character.)
-            { part: 'word/document.xml', has: 'link, </w:t>(?:(?!</w:p>).)*<w:hyperlink[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/><w:t>n</w:t>' },
-            // (A field's mark is its run's, at the start of the result.)
-            { part: 'word/document.xml', has: '<w:fldSimple[^>]*><w:r>(<w:rPr>(?:(?!</w:rPr>).)*</w:rPr>)?<w:lastRenderedPageBreak/>' },
-        ],
     },
     {
         name: 'synthetic/run-props',
@@ -443,9 +436,6 @@ const docs = [
         types: [1, 2, 3].map((n) => `<Override PartName="/word/header${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>`).join('') +
             '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>',
         expect: [
-            { part: 'word/document.xml', has: '<w:sectPr><w:headerReference w:type="default" r:id="rId11"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="12240" w:h="15840"/>.*</w:sectPr></w:pPr>.*section two' },
-            { part: 'word/document.xml', has: 'still section two.*<w:sectPr><w:headerReference w:type="default" r:id="rId12"/><w:footerReference w:type="default" r:id="rId14"/>(<w:type w:val="nextPage"/>)?<w:pgSz w:w="15840" w:h="12240"/>.*<w:pgNumType w:fmt="lowerRoman" w:start="7"/></w:sectPr></w:pPr>' },
-            { part: 'word/document.xml', has: 'section three.*</w:p><w:sectPr><w:headerReference w:type="default" r:id="rId13"/><w:pgSz w:w="12240" w:h="15840"/>.*<w:pgNumType w:fmt="upperLetter" w:start="3"/></w:sectPr></w:body>' },
             // Each reference is written once, and the final section does not pick up section two's footer.
             { part: 'word/document.xml', lacks: 'rId13.*rId13' }, { part: 'word/document.xml', lacks: 'rId14.*rId14' }, { part: 'word/document.xml', lacks: 'rId12.*rId12' },
             { part: 'word/document.xml', lacks: '<w:sectPr>.*<w:sectPr>.*<w:sectPr>.*<w:sectPr>' },

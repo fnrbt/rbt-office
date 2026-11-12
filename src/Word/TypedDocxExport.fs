@@ -639,7 +639,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           ContentControlAncestors = metadata.ContentControlAncestors |> List.map (fun layer ->
               ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : WordEditorPackage.ContentControlLayer)) }
     let list =
-        if metadata.ListStyle = NoList then None
+        if metadata.ListStyle = NoList && metadata.ListId <> Some "0" then None
         else Some ({
             Style = listStyle metadata.ListStyle; Level = metadata.ListLevel; Id = metadata.ListId
             SourceId = metadata.ListSourceId; Restart = metadata.ListRestart; FormatEdited = metadata.ListFormatEdited
@@ -711,7 +711,7 @@ and private tableToEditor context (table: TableBlock) : WordEditorPackage.Editor
           IsHeader = row.IsHeader; Height = row.Height; HeightRule = row.HeightRule; CanSplit = row.CanSplit
           CellSpacing = dxa row.CellSpacing; PaddingTop = dxa row.PaddingTop; PaddingRight = dxa row.PaddingRight
           PaddingBottom = dxa row.PaddingBottom; PaddingLeft = dxa row.PaddingLeft
-          GridBefore = row.GridBefore; GridAfter = row.GridAfter; WidthBefore = row.WidthBefore; WidthAfter = row.WidthAfter
+          GridBefore = row.GridBefore; GridAfter = row.GridAfter; WidthBefore = dxa row.WidthBefore; WidthAfter = dxa row.WidthAfter
           BordersOverride = tableBorders row.BordersOverride; Source = source row.Origin; SourceRow = None }
     let rows = gatherVerticalMergeContent table.Rows |> List.map makeRow |> List.toArray
     { Rows = rows; PreferredWidth = width table.PreferredWidth; PreferredWidthType = widthType table.PreferredWidth

@@ -285,7 +285,7 @@ checks['chrome-outline'] = async () => {
             await click(levelOf('rows', 1)); await frame();
             check('... the level buttons work', grid.GetHiddenRows(), ['3:8']);
             await click(levelOf('rows', 3)); await frame();
-            check('... and expand again', [grid.GetHiddenRows(), grid.GetRevision() === revision, told], [[], true, 0]);
+            check('... and expand again without editing the workbook', [grid.GetHiddenRows(), grid.GetRevision() === revision, told, grid.CanUndo() === canUndo], [[], true, 0, true]);
             if (typeof off === 'function') off();
         }
         grid.SetReadOnly(false);

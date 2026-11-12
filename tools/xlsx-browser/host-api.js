@@ -748,10 +748,8 @@ checks['dispose-releases'] = async () => {
             await new Promise((resolve) => setTimeout(resolve, 150));
             const registered = count(() => true);
             const onGrid = count((target) => target instanceof Node && host.contains(target));
-            const nodes = [...host.querySelectorAll('*')];
-            const bodyChildren = document.body.children.length;
             grid.Dispose();
-            return { registered, onGrid, weak: new WeakRef(grid), model: new WeakRef(grid.GetModel()), hostNode: host, nodes: nodes.length };
+            return { registered, onGrid, weak: new WeakRef(grid), model: new WeakRef(grid.GetModel()), hostNode: host };
         };
         const result = await run();
         check('the grid had listeners on the document and on its own nodes', [result.registered > 10, result.onGrid > 5], [true, true]);
@@ -759,6 +757,9 @@ checks['dispose-releases'] = async () => {
         check('its nodes are out of the page', [result.hostNode.querySelector('.spreadsheet-container'), document.querySelectorAll('.spreadsheet-container').length], [null, 0]);
         result.hostNode.remove();
         delete result.hostNode;
+        // The listener tracker itself owns every target, including detached nodes.
+        // Release those roots before asking whether the grid is collectible.
+        live.clear();
         // A disposed grid nobody holds is collected, with its workbook.
         let collected = false;
         for (let attempt = 0; attempt < 5 && !collected; attempt++) {

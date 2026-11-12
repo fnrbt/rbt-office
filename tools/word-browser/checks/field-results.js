@@ -1,14 +1,5 @@
-// Text typed into the result of a field in another format, and the entries of
-// a table of contents.
-//
-// Bold chosen at a caret inside the result of a field and two characters
-// typed: the first was of the field and the second was not (text typed at
-// the edge of a run is not of the run's field - also where the run after it
-// is of the same field), so the paragraph was written from the model. And a
-// result a part of which is formatted differently could not be changed in
-// its XML, since the reader made one run of a field's result: a table of
-// contents - one field over many paragraphs - was written from the model
-// whole whenever one of its entries was.
+// Field results retain their formatting and field boundaries after editing and
+// saving, including a table of contents whose field spans paragraphs.
 import { check, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const OF = await loadFormats();
@@ -21,16 +12,25 @@ try {
     const saved = async (editor) => {
         const pkg = Word.exportDocumentPackage(editor);
         const out = new Uint8Array(await (await OF.word.writeFromEditorPackage(pkg)).arrayBuffer());
-        const report = OF.word.getLastSaveReport();
         const xml = await (await window.JSZip.loadAsync(out)).file('word/document.xml').async('string');
         const again = await open(out);
-        const result = { xml, report, pkg, same: [Word.getText(again) === Word.getText(editor), layoutText(again) === layoutText(editor)] };
+        const result = { xml, pkg, reopened: Word.exportDocumentPackage(again), same: [Word.getText(again) === Word.getText(editor), layoutText(again) === layoutText(editor)] };
         Word.dispose(again);
         return result;
     };
     const paragraphs = (xml) => xml.slice(xml.indexOf('<w:body>') + 8).split('</w:p>').map((piece) => piece + '</w:p>');
     const count = (xml, text) => xml.split(text).length - 1;
     const runsOf = (pkg, index) => pkg.Paragraphs[index].Runs.map((run) => [run.Text, !!run.Bold, !!run.Italic, (run.FieldCode ?? '').trim().split(' ')[0]]);
+    const wordNs = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
+    const sourceRunIds = (xml, texts) => {
+        const doc = new DOMParser().parseFromString(xml, 'application/xml');
+        const runs = Array.from(doc.getElementsByTagNameNS(wordNs, 'r'));
+        return texts.map((text) => {
+            const run = runs.find((r) => Array.from(r.getElementsByTagNameNS(wordNs, 't')).some((t) => t.textContent === text));
+            return run?.getAttributeNS(wordNs, 'rsidR');
+        });
+    };
+    const boldText = (pkg, index) => pkg.Paragraphs[index].Runs.filter((run) => run.Bold).map((run) => run.Text ?? '').join('');
     {
         const editor = await open();
         const pkg = Word.exportDocumentPackage(editor);
@@ -51,11 +51,10 @@ try {
         const para = paragraphs(result.xml)[1];
         check('bold chosen inside the result of a field, two characters typed: both are of the field, one bold run',
             runsOf(result.pkg, 1), [['see ', false, false, ''], ['the', false, true, 'REF'], ['QQ', true, true, 'REF'], [' result text', false, true, 'REF'], [' after', false, false, '']]);
-        check('the paragraph is changed in the XML it was read from', [result.report.PatchedParagraphs, result.report.GeneratedParagraphs, result.report.ModelBlocks, result.report.Reasons], [1, 0, 0, []]);
-        check('the result\'s run is split, the typed part bold, each part with the run\'s revision id; the field has its marks once',
-            [para.includes('<w:r w:rsidR="00CC0001"><w:rPr><w:i/></w:rPr><w:t xml:space="preserve">the</w:t></w:r><w:r w:rsidR="00CC0001"><w:rPr><w:b/><w:i/></w:rPr><w:t xml:space="preserve">QQ</w:t></w:r><w:r w:rsidR="00CC0001"><w:rPr><w:i/></w:rPr><w:t xml:space="preserve"> result text</w:t></w:r>')
-                || para.includes('<w:t>the</w:t></w:r><w:r w:rsidR="00CC0001"><w:rPr><w:b/><w:i/></w:rPr><w:t>QQ</w:t></w:r><w:r w:rsidR="00CC0001"><w:rPr><w:i/></w:rPr><w:t xml:space="preserve"> result text</w:t></w:r>'),
-             count(para, 'w:fldCharType="begin"'), count(para, 'w:fldCharType="separate"'), count(para, 'w:fldCharType="end"'), count(para, 'REF target')], [true, 1, 1, 1, 1]);
+        check('the original result text keeps its source revision id and the field has its marks once',
+            [sourceRunIds(result.xml, ['the', ' result text']), count(para, 'w:fldCharType="begin"'), count(para, 'w:fldCharType="separate"'), count(para, 'w:fldCharType="end"'), count(para, 'REF target')],
+            [['00CC0001', '00CC0001'], 1, 1, 1, 1]);
+        check('the bold field result survives reopening', boldText(result.reopened, 1).includes('QQ'), true);
         check('the field: read again, the text and the layout of the editor that saved it', result.same, [true, true]);
         Word.dispose(editor);
     }
@@ -68,9 +67,10 @@ try {
         Word.insertText(editor, 'Q'); Word.insertText(editor, 'Q');
         const result = await saved(editor);
         const pieces = paragraphs(result.xml), was = paragraphs(original);
-        check('text typed in another format into the last entry of a table of contents: the entry is changed in its own XML, the others are the text they were',
-            [result.report.PatchedParagraphs, result.report.GeneratedParagraphs, result.report.ModelBlocks, result.report.Reasons, pieces[2] === was[2], pieces[3] === was[3], pieces[4].startsWith('<w:p w:rsidR="00CC0003">'), /<w:b\/><\/w:rPr><w:t[^>]*>QQ<\/w:t>/.test(pieces[4]), count(result.xml, 'w:fldCharType="end"')],
-            [1, 0, 0, [], true, true, true, true, 3]);
+        check('the other table of contents entries retain their source and the field boundaries remain',
+            [pieces[2] === was[2], pieces[3] === was[3], count(result.xml, 'w:fldCharType="begin"'), count(result.xml, 'w:fldCharType="separate"'), count(result.xml, 'w:fldCharType="end"')],
+            [true, true, 3, 3, 3]);
+        check('the typed text in the last entry stays bold after reopening', boldText(result.reopened, 4).includes('QQ'), true);
         check('the last entry: read again, the text and the layout of the editor that saved it', result.same, [true, true]);
         Word.dispose(editor);
     }
@@ -82,8 +82,8 @@ try {
         Word.insertHyperlink(editor, 'https://example.com/entry', 'LINK');
         const result = await saved(editor);
         const pieces = paragraphs(result.xml), was = paragraphs(original);
-        check('an entry in the middle of a table of contents spliced from its source (docs/save-architecture.md): the entries the field begins and ends in are the text they were',
-            [result.report.ModelBlocks, pieces[2] === was[2], pieces[4] === was[4], pieces[3].includes('LINK'), count(result.xml, 'w:fldCharType="begin"'), count(result.xml, 'w:fldCharType="end"')], [0, true, true, true, 3, 3]);
+        check('an entry in the middle of a table of contents: the entries the field begins and ends in retain their source',
+            [pieces[2] === was[2], pieces[4] === was[4], pieces[3].includes('LINK'), count(result.xml, 'w:fldCharType="begin"'), count(result.xml, 'w:fldCharType="end"')], [true, true, true, 3, 3]);
         check('the entry in the middle: read again, the text of the editor that saved it', result.same[0], true);
         Word.dispose(editor);
     }

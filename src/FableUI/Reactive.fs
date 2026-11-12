@@ -13,7 +13,6 @@ type Computation = {
 }
 
 let mutable private currentComputation: Computation option = None
-let private computationStack = Stack<Computation>()
 let private pendingComputations = HashSet<Computation>()
 let mutable private isScheduled = false
 let mutable private isFlushing = false
@@ -81,15 +80,13 @@ let effect (fn: unit -> unit) : EffectDisposable =
             for cleanup in cleanups do cleanup()
             cleanups.Clear()
 
-            match currentComputation with
-            | Some outer -> computationStack.Push(outer)
-            | None -> ()
+            let previous = currentComputation
 
             let computation = { Execute = execute; Cleanups = cleanups; Level = 1 }
             currentComputation <- Some computation
             try fn ()
             finally
-                currentComputation <- if computationStack.Count > 0 then Some(computationStack.Pop()) else None
+                currentComputation <- previous
                 cleanups <- computation.Cleanups
 
     execute ()

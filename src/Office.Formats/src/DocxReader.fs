@@ -3228,26 +3228,55 @@ let selfContainedXml (rootAttributes: Map<string, string>) (xml: string) : strin
 let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : DocumentContent list =
     match root with
     | XmlDsl.Element(_, attrs, _, _) ->
+        // A control can inherit declarations from any ancestor, not only the
+        // part root. Its group is the source offset of the enclosing w:sdt.
+        let rec controlScopes inherited node =
+            match node with
+            | XmlDsl.Element(name, own, children, span) ->
+                let scope =
+                    own
+                    |> Map.fold (fun scope key value ->
+                        if key = "mc:Ignorable" || (Ns.declaredPrefix key).IsSome then Map.add key value scope
+                        else scope) inherited
+                let nested = children |> List.collect (controlScopes scope)
+                if Ns.stripNs name = "sdt" then (string span.Start, scope) :: nested else nested
+            | _ -> []
+        let scopes = lazy (controlScopes attrs root |> Map.ofList)
+        let complete group xml =
+            match xml with
+            | None -> None
+            | Some value ->
+                let scope = group |> Option.bind (fun key -> Map.tryFind key scopes.Value) |> Option.defaultValue attrs
+                Some (selfContainedXml scope value)
+        let completedLayers = lazy (System.Collections.Generic.Dictionary<ContentControlLayer, ContentControlLayer>())
+        let completeLayer (layer: ContentControlLayer) =
+            match completedLayers.Value.TryGetValue layer with
+            | true, completed -> completed
+            | _ ->
+                let completed = { layer with Xml = complete (Some layer.Group) layer.Xml }
+                completedLayers.Value.Add(layer, completed)
+                completed
         blocks
         |> mapBlockParagraphs (fun para ->
             let props = para.Properties
             { para with
                 Properties = {
                     props with
-                        ContentControlXml = props.ContentControlXml |> Option.map (selfContainedXml attrs)
-                        ContentControlAncestors = props.ContentControlAncestors |> List.map (fun layer ->
-                            { layer with Xml = layer.Xml |> Option.map (selfContainedXml attrs) })
+                        ContentControlXml = complete props.ContentControlGroup props.ContentControlXml
+                        ContentControlAncestors = props.ContentControlAncestors |> List.map completeLayer
                 } })
         |> List.map (function
             | Tbl table ->
                 Tbl {
                     table with
-                        ContentControlXml = table.ContentControlXml |> Option.map (selfContainedXml attrs)
-                        ContentControlAncestors = table.ContentControlAncestors |> List.map (fun layer ->
-                            { layer with Xml = layer.Xml |> Option.map (selfContainedXml attrs) })
+                        ContentControlXml = complete table.ContentControlGroup table.ContentControlXml
+                        ContentControlAncestors = table.ContentControlAncestors |> List.map completeLayer
                 }
             | block -> block)
         |> mapBlockRuns (fun run ->
+            let run =
+                if run.ContentControls.IsEmpty then run
+                else { run with ContentControls = run.ContentControls |> List.map completeLayer }
             match run.Content with
             | Image ({ Opaque = Some opaque } as image) ->
                 { run with Content = Image { image with Opaque = Some { opaque with Xml = selfContainedXml attrs opaque.Xml } } }

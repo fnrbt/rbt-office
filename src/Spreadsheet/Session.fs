@@ -1060,8 +1060,6 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
             | Some next ->
                 let previous = workbook
                 workbook <- next
-                engine <- None
-                calculated <- None
                 calculate None beforeFull
                 let label = match command with SetDefinedName _ -> "Define name" | DeleteDefinedName _ -> "Delete name"
                 record (defaultArg description label) previous
@@ -1362,8 +1360,10 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
             if historyBySheet then applied <- Set.remove step.After applied
             if atTip then
                 workbook <- restoreSnapshot step step.BeforeWorkbook (defaultArg restoreActiveSheet false)
-                calculated <- Some workbook
-                engine <- None
+                if not (sameMap before.Names workbook.Names) then calculate None None
+                else
+                    calculated <- Some workbook
+                    engine <- None
                 revision <- step.Before
             else
                 let previous = workbook
@@ -1392,8 +1392,10 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
             if historyBySheet then applied <- Set.add step.After applied
             if atTip then
                 workbook <- restoreSnapshot step step.AfterWorkbook (defaultArg restoreActiveSheet false)
-                calculated <- Some workbook
-                engine <- None
+                if not (sameMap before.Names workbook.Names) then calculate None None
+                else
+                    calculated <- Some workbook
+                    engine <- None
                 revision <- step.After
             else
                 let previous = workbook

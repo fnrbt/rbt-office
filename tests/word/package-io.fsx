@@ -97,6 +97,32 @@ check "changed comment written through shared writer" "changed comment" (text st
 let reopened = storyEdited |> write false |> load
 check "edited note reopens" (Some "changed note") (reopened.Package.Notes |> List.tryFind (fun note -> note.Id = "2") |> Option.map (fun note -> note.Text))
 
+// Inline control properties inherit declarations from their enclosing paragraph,
+// not the part root. Model-only saves must carry that scope with the properties.
+let w14 = "http://schemas.microsoft.com/office/word/2010/wordml"
+let checkboxParagraph =
+    "<w:p xmlns:w14=\"" + w14 + "\" xmlns:custom=\"urn:checkbox-property\">"
+    + "<w:sdt><w:sdtPr><w:id w:val=\"42\"/><w14:checkbox><w14:checked w14:val=\"1\"/>"
+    + "<custom:property custom:val=\"kept\"/></w14:checkbox></w:sdtPr>"
+    + "<w:sdtContent><w:r><w:t>☒</w:t></w:r></w:sdtContent></w:sdt></w:p>"
+let checkboxSource =
+    originals
+    |> Map.add "word/document.xml" (wrap "document" ("<w:body>" + checkboxParagraph
+        + "<w:p><w:r><w:footnoteReference w:id=\"2\"/></w:r></w:p>"
+        + "<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rHeader\"/></w:sectPr></w:body>"))
+    |> Map.add "word/header1.xml" (wrap "hdr" checkboxParagraph)
+    |> Map.add "word/footnotes.xml" (wrap "footnotes" ("<w:footnote w:id=\"2\">" + checkboxParagraph + "</w:footnote>"))
+    |> packageBytes
+let checkboxDoc = load checkboxSource
+let checkboxPackage = Docx.exportTypedDocumentPackage checkboxDoc
+let checkboxParts = DocumentWriter.writeTypedPackageBytes { checkboxPackage with Unchanged = false; RegenerateAll = true } |> parts
+for path in [ "word/document.xml"; "word/header1.xml"; "word/footnotes.xml" ] do
+    let xml = XDocument.Parse checkboxParts.[path]
+    let controls = xml.Descendants(XName.Get("checkbox", w14)) |> Seq.toList
+    check (path + " checkbox survives with its namespace") 1 controls.Length
+    check (path + " checkbox state survives") "1" (controls.Head.Element(XName.Get("checked", w14)).Attribute(XName.Get("val", w14)).Value)
+    check (path + " custom control namespace survives") "kept" (controls.Head.Element(XName.Get("property", "urn:checkbox-property")).Attribute(XName.Get("val", "urn:checkbox-property")).Value)
+
 let fresh = empty |> setCursor "block-0" 0 |> insertText "new document"
 check "new document saves and reopens without a source" "new document" (fresh |> write false |> load |> fun value -> paragraphsOfBlocks value.Blocks |> List.head |> fun p -> Rbt.Word.TextBuffer.toString p.Buffer)
 let newGroup =

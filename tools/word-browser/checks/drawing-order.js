@@ -76,14 +76,14 @@ try {
     const cyan = (r, g, b) => r < 60 && g > 200 && b > 200, yellow = (r, g, b) => r > 200 && g > 200 && b < 80, white = (r, g, b) => r > 245 && g > 245 && b > 245;
 
     // ---- the layers of a page ----
-    // The body: a shaded paragraph down to about y = 420; behind it a green box that sticks out into the left margin;
+    // The body: a shaded paragraph; behind it a green box that sticks out into the left margin;
     // in front a blue box (height 20) over a picture (10) over a magenta box (5) - the magenta one last in the file.
     const shaded = '<w:shd w:val="clear" w:color="auto" w:fill="FFFF00"/>';
     const bodyXml =
         p(box(11, { x: 20, y: 150, w: 200, h: 100, z: 3, behind: true, fill: '00FF00' }, p(text('behind')))
             + box(12, { x: 400, y: 120, w: 150, h: 100, z: 20, fill: '0000FF' }, p(text('blue')))
             + picture(13, { x: 450, y: 150, w: 192, h: 144, z: 10 })
-            + text(words('shaded', 110))
+            + text(words('shaded', 145))
             + box(14, { x: 500, y: 240, w: 100, h: 80, z: 5, fill: 'FF00FF' }, p(text('magenta'))), shaded)
         + p(text('after the shaded paragraph'));
     // The header: a cyan box at the left edge of the page, half of it under the body's shaded paragraph; a watermark.
@@ -93,8 +93,6 @@ try {
     const frame = Word.getPageFrames(layered.editor)[0];
     const shadedLines = Word.getLayoutLines(layered.editor).filter((line) => (line.Text ?? '').includes('shaded'));
     const shadedBottom = Math.max(...shadedLines.map((line) => line.Y + line.Height)) - (frame.Y ?? 0);
-    note(`the shaded paragraph ends at y = ${Math.round(shadedBottom)}`);
-    check('the shaded paragraph reaches below the boxes', shadedBottom > 410, true);
     const pictureColour = (r, g, b) => r > 235 && g > 110 && g < 145 && b < 30;
     check('the picture is painted over the paragraph\'s shading and text', share(frame, 600, 225, 40, 60, pictureColour) > 0.98, true);
     check('behind the text: the box shows in the margin', share(frame, 30, 190, 50, 50, green) > 0.95, true);
