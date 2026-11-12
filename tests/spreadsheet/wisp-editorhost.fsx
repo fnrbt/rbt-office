@@ -87,7 +87,7 @@ applyChange osClipboard (fun m ->
     setCell addr { old with Format = { old.Format with Bold = true } } m) |> ignore
 applyNoHistory osClipboard (fun m -> { m with Selection = Range (0, 0, 0, 1) }) |> ignore
 assertEq "copy exports TSV" true (copySelection osClipboard)
-assertEq "exported TSV" "alpha\t42" clipboardText
+assertEq "exported TSV" "alpha\t42\r\n" clipboardText
 let beforeFailedCut = osClipboard.Workbook.Value
 let beforeFailedRevision = revision osClipboard
 clipboardWriteError <- Some "write denied"
@@ -119,7 +119,11 @@ let blankEdges = create [| createEmpty 10 10 |] [| "Data" |] 0
 applyCellEdit blankEdges 0 0 "a\"b" |> ignore
 applyNoHistory blankEdges (fun m -> { m with Selection = Range (0, 0, 1, 2) }) |> ignore
 copySelection blankEdges |> ignore
-assertEq "explicit range exports quoted text and trailing blank geometry" "\"a\"\"b\"\t\t\r\n\t\t" clipboardText
+assertEq "explicit range exports quoted text and trailing blank geometry" "\"a\"\"b\"\t\t\r\n\t\t\r\n" clipboardText
+applyNoHistory blankEdges (fun m -> { m with Selection = Range (0, 0, 1, 0) }) |> ignore
+copySelection blankEdges |> ignore
+assertEq "external parser retains an empty last row in a single-column copy" [| [| "a\"b" |]; [| "" |] |]
+    (Rbt.Spreadsheet.Session.clipboardRowsOfText clipboardText)
 
 let reentrant = create [| createEmpty 10 10 |] [| "Data" |] 0
 applyCellEdit reentrant 0 0 "source" |> ignore

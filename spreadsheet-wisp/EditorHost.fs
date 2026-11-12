@@ -389,8 +389,8 @@ let private clipboardText (model: M.SpreadsheetModel) (data: M.ClipboardData) =
     let result = System.Text.StringBuilder()
     // serializeSelection supplies sparse cells in row/column order.
     let mutable cells = data.Cells
+    // Terminate every record: otherwise a final empty single-column row disappears.
     for row in 0 .. maxRow do
-        if row > 0 then result.Append("\r\n") |> ignore
         for col in 0 .. maxCol do
             if col > 0 then result.Append('\t') |> ignore
             match cells with
@@ -405,6 +405,7 @@ let private clipboardText (model: M.SpreadsheetModel) (data: M.ClipboardData) =
                 else result.Append(value) |> ignore
                 cells <- rest
             | _ -> ()
+        result.Append("\r\n") |> ignore
     result.ToString()
 
 let private captureSelection (st: EditorState) isCut =
