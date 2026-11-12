@@ -2471,7 +2471,7 @@ module Docx =
                 match Xml.name child |> Option.map Ns.stripNs with
                 | Some "tc" ->
                     let cell = tableCell child
-                    [ if layers.IsEmpty then cell else { cell with EnclosingControls = layers } ]
+                    [ if List.isEmpty layers then cell else { cell with EnclosingControls = layers } ]
                 | Some "sdt" ->
                     Ns.childNs "sdtContent" child
                     |> Option.map (cellsIn (layers @ [ contentControlProps child ]))
