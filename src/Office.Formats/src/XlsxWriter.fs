@@ -1630,8 +1630,12 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                   if rule.StopIfTrue then XmlPatch.SetAttribute ("stopIfTrue", "1")
                   else XmlPatch.RemoveAttribute "stopIfTrue" ]
     let extBlocks = ResizeArray<string>()
-    let extBlock (sqref: string) (ruleXml: string) =
-        extBlocks.Add (sprintf "<x14:conditionalFormatting xmlns:xm=\"%s\">%s<xm:sqref>%s</xm:sqref></x14:conditionalFormatting>" xmNamespace ruleXml (escaped sqref))
+    let extBlock (cf: XlsxReader.ConditionalFormat) (ruleXml: string) =
+        let attributes =
+            [ yield attr "xmlns:xm" xmNamespace
+              for name, value in cf.GroupAttributes do
+                  if name <> "sqref" && name <> "xmlns:xm" then yield attr name value ]
+        extBlocks.Add (sprintf "<x14:conditionalFormatting %s>%s<xm:sqref>%s</xm:sqref></x14:conditionalFormatting>" (String.concat " " attributes) ruleXml (escaped cf.Range))
     let main =
         formats
         |> List.filter (fun cf -> not (List.isEmpty cf.Rules))
@@ -1647,7 +1651,7 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                     | Some xml, extension ->
                         let written = sourceRule xml rule priority
                         if extension |> Option.exists (fun ext -> ext.InExtList) then
-                            extBlock cf.Range written
+                            extBlock cf written
                             ""
                         else written
                     // In the x14 list only.
@@ -1670,7 +1674,7 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                             | _ ->
                                 (rule.Formulas |> List.map (fun f -> "<xm:f>" + escaped f + "</xm:f>") |> String.concat "")
                                 + (match ext.Dxf with Some dxf -> dxfXml "x14:dxf" dxf | None -> "")
-                        extBlock cf.Range (sprintf "<x14:cfRule %s id=\"%s\">%s</x14:cfRule>" (String.concat " " (ruleAttrs rule priority false)) id body)
+                        extBlock cf (sprintf "<x14:cfRule %s id=\"%s\">%s</x14:cfRule>" (String.concat " " (ruleAttrs rule priority false)) id body)
                         ""
                     | _ ->
                         let barExt = rule.Ext |> Option.bind (fun ext -> ext.DataBar)
@@ -1703,7 +1707,7 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                                         if bar.Border && not bar.NegativeBarBorderColorSameAsPositive then yield "negativeBarBorderColorSameAsPositive=\"0\""
                                         if bar.AxisPosition <> "automatic" then yield attr "axisPosition" bar.AxisPosition
                                     ]
-                                    extBlock cf.Range
+                                    extBlock cf
                                         (sprintf "<x14:cfRule type=\"dataBar\" id=\"%s\"><x14:dataBar %s>%s%s%s%s%s%s</x14:dataBar></x14:cfRule>"
                                             id (String.concat " " barAttrs)
                                             (bar.Cfvo |> List.map x14Cfvo |> String.concat "")

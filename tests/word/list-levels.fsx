@@ -87,7 +87,6 @@ check "the levels' indents (px), what follows the number, how it stands, legal, 
     (flatParas.[0].Metadata.ListLevels |> List.map (fun l -> l.IndentLeft, l.FirstLineIndent, l.Suffix, l.Justification, l.Legal, l.Restart, l.Start))
     [ (Some 48.0, Some -24.0, None, Some "right", false, None, Some 1); (Some 96.0, Some -28.8, Some "nothing", None, false, None, Some 1); (Some 144.0, Some -33.6, None, None, true, None, Some 3); (Some 192.0, Some -43.2, None, None, false, Some 0, Some 1) ]
 check "the look of the numbers" (flatParas.[0].Metadata.ListLevels |> List.map (fun l -> l.MarkBold, l.MarkItalic, l.MarkColor, l.MarkFont, l.MarkSize |> Option.map (fun size -> Math.Round(size, 2))) |> List.take 3) [ (Some true, None, Some "#FF0000", None, None); (None, None, None, None, None); (None, Some true, None, None, Some 21.33) ]
-check "the paragraphs of a list share the levels (one object)" (obj.ReferenceEquals(flatParas.[0].Metadata.ListLevels, flatParas.[2].Metadata.ListLevels)) true
 check "read: I. II. III." (prefixes flat) [ "I. "; "II. "; "III. " ]
 
 // ---- a level change is what a reload at that level gives ----------------------

@@ -230,28 +230,49 @@ do
     eq "drawn: A5 (100) right of the axis" (bar 4 0 |> Option.map (fun b -> Math.Round(b.From, 3), Math.Round(b.To, 3), b.Color)) (Some (0.333, 1.0, "#638EC6"))
     eq "drawn: B5 right to left from the middle, bordered, no value" (bar 4 1 |> Option.map (fun b -> Math.Round(b.From, 3), Math.Round(b.To, 3), b.Border, b.HideValue, b.Gradient)) (Some (0.25, 0.5, Some "#2E7D32", true, true))
 
-// ---- a rule that is not understood: the extension is carried as it is ------------
+// ---- opaque rules survive edits alongside supported rules -------------------------
 do
-    let pivotRule = "<x14:conditionalFormatting pivot=\"1\" xmlns:xm=\"" + xm + "\"><x14:cfRule type=\"futureKind\" priority=\"9\" id=\"{BBBBBBBB-0000-4000-8000-000000000001}\"><x14:somethingNew level=\"2\"/></x14:cfRule><xm:sqref>M1:M5</xm:sqref></x14:conditionalFormatting>"
-    let odd = Bridge.Import.importWorkbook (loadBytes (packageOf pivotRule))
-    let oddData = odd.Sheets.[0].Model
-    eq "not understood: the 2007 rules are read, the x14 ones are not" (rulesOf oddData |> List.map (fun (r, rule, _, _) -> r, (match rule with DataBar _ -> "dataBar" | CellIs _ -> "cellIs" | _ -> "other"))) [ "A1:A5", "dataBar"; "B1:B5", "dataBar"; "B1:B5", "cellIs" ]
-    let before = textOf (partsOf (packageOf pivotRule)) "xl/worksheets/sheet1.xml"
-    let extOf (sheet: string) =
-        let at = sheet.IndexOf "<x14:conditionalFormattings>"
-        sheet.Substring(at, sheet.IndexOf "</x14:conditionalFormattings>" - at)
-    let sheet = textOf (partsOf (export odd (modelsOf odd))) "xl/worksheets/sheet1.xml"
-    // (Kept extensions are written with their attributes in alphabetical order: compared as XML.)
-    let asXml (list: string) = XmlDsl.parse ("<r xmlns:x14=\"" + x14 + "\">" + list + "</x14:conditionalFormattings></r>")
-    eq "not understood: the x14 list goes back as it was" (asXml (extOf sheet)) (asXml (extOf before))
-    // ... also when the sheet's rules are edited, and a new cross-sheet rule joins the kept list.
+    let pivotRule = "<x14:conditionalFormatting pivot=\"1\" xmlns:z=\"urn:rbt:future\" z:group=\"keep\" xmlns:xm=\"" + xm + "\"><x14:cfRule type=\"futureKind\" priority=\"9\" id=\"{BBBBBBBB-0000-4000-8000-000000000001}\"><x14:somethingNew level=\"2\"/></x14:cfRule><xm:sqref>M1:M5</xm:sqref></x14:conditionalFormatting>"
+    let source = packageOf pivotRule
+    let futureGroup (sheet: string) =
+        let doc = System.Xml.Linq.XDocument.Parse sheet
+        let future =
+            doc.Descendants(System.Xml.Linq.XName.Get("cfRule", x14))
+            |> Seq.filter (fun rule ->
+                let kind = rule.Attribute(System.Xml.Linq.XName.Get "type")
+                not (isNull kind) && kind.Value = "futureKind")
+            |> Seq.exactlyOne
+        let group = System.Xml.Linq.XElement(future.Parent)
+        // Compare expanded names and data, not prefix declarations or attribute order.
+        for node in group.DescendantsAndSelf() do
+            for attribute in node.Attributes() |> Seq.filter _.IsNamespaceDeclaration |> Seq.toArray do
+                attribute.Remove()
+        // Inserting a higher-precedence rule legitimately renumbers priorities.
+        for rule in group.Descendants(System.Xml.Linq.XName.Get("cfRule", x14)) do
+            let priority = rule.Attribute(System.Xml.Linq.XName.Get "priority")
+            if not (isNull priority) then priority.Remove()
+        group, int (future.Attribute(System.Xml.Linq.XName.Get "priority").Value)
+    let originalGroup, _ = futureGroup (textOf (partsOf source) "xl/worksheets/sheet1.xml")
+    let odd = Bridge.Import.importWorkbook (loadBytes source)
+    let unchanged = textOf (partsOf (export odd (modelsOf odd))) "xl/worksheets/sheet1.xml"
+    eq "opaque rule and pivot range survive an unchanged save"
+        (System.Xml.Linq.XNode.DeepEquals(originalGroup, futureGroup unchanged |> fst)) true
     let models = modelsOf odd
-    models.[0] <- addConditionalFormatRange [ range 0 9 4 9 ] { Rule = Expression "Lists!$B$1>0"; Style = { defaultFormat with BgColor = Some "#DDEBF7" } } oddData
-    let sheet = textOf (partsOf (export odd models)) "xl/worksheets/sheet1.xml"
-    let keptPart = (extOf sheet).Substring(0, (extOf sheet).LastIndexOf "<x14:conditionalFormatting ")
-    eq "not understood, rules edited: kept" (asXml keptPart, sheet.Contains "futureKind") (asXml (extOf before), true)
-    eq "not understood, rules edited: the new rule is in the same list" (count "{78C0D931-6437-407d-A8EE-F0AAD7539E65}" sheet, (extOf sheet).Contains "<xm:f>Lists!$B$1&gt;0</xm:f>") (1, true)
-    ok "not understood: well-formed" (try XmlDsl.parse sheet |> ignore; true with _ -> false) sheet
+    let added = { Rule = Expression "Lists!$B$1>0"; Style = { defaultFormat with BgColor = Some "#DDEBF7" } }
+    models.[0] <- addConditionalFormatRange [ range 0 9 4 9 ] added models.[0]
+    let saved = export odd models
+    let edited = textOf (partsOf saved) "xl/worksheets/sheet1.xml"
+    let editedGroup, opaquePriority = futureGroup edited
+    ok "opaque rule identity, payload and pivot range survive a supported rule edit"
+        (System.Xml.Linq.XNode.DeepEquals(originalGroup, editedGroup))
+        (sprintf "%O -> %O" originalGroup editedGroup)
+    let reopened = Bridge.Import.importWorkbook (loadBytes saved)
+    eq "supported rules and the new cross-sheet rule survive beside an opaque rule"
+        (rulesOf reopened.Sheets.[0].Model)
+        (("J1:J5", added.Rule, added.Style, false) :: expectedRules)
+    let knownPriority = reopened.Sheets.[0].Model.ConditionalFormats |> List.map _.Priority |> List.max
+    ok "opaque rule remains below the supported rules in precedence"
+        (opaquePriority > knownPriority) (sprintf "opaque=%d known=%d" opaquePriority knownPriority)
 
 // ---- a real workbook ---------------------------------------------------------------
 do

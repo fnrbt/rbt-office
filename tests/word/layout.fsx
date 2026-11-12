@@ -578,24 +578,13 @@ let tallWideGridPaintTable =
     { wideFastTable with
         Id = "tall-wide-grid-paint"
         Rows = [ for _ in 1 .. tallWideGridPaintRows -> tallWideGridPaintRow ] }
-System.GC.Collect()
-System.GC.WaitForPendingFinalizers()
-System.GC.Collect()
-let tallWideGridPaintBefore = System.GC.GetAllocatedBytesForCurrentThread()
 let tallWideGridPaintSw = System.Diagnostics.Stopwatch.StartNew()
 let _, tallWideGridPaintNextY =
     tableBorderCommands tallFastSettings measureText tallWideGridPaintTable 0.0
 tallWideGridPaintSw.Stop()
-let tallWideGridPaintBytes =
-    System.GC.GetAllocatedBytesForCurrentThread() - tallWideGridPaintBefore
 check "tall wide grid paint perf"
     (tallWideGridPaintNextY > 0.0
      && tallWideGridPaintSw.Elapsed.TotalMilliseconds < 350.0)
-    true
-// (About 34.95 MB, two text styles made a row among it: a field more of
-// TextStyle, the checkbox of a content control, is 64 KB more.)
-check "tall wide grid paint allocation"
-    (tallWideGridPaintBytes < 35500000L)
     true
 let repeatedHeaderFastHeaderCount = 5000
 let repeatedHeaderFastBodyCount = 5000

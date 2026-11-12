@@ -4662,15 +4662,15 @@ module ConditionalFormats =
         |> List.filter (fun child -> match child with XmlDsl.Element (name, _, _, _) -> Ns.stripNs name = local | _ -> false)
 
     /// The x14 rules of a sheet (`<x14:conditionalFormatting>` blocks of its
-    /// extension list): (sqref, rule node) in document order.
-    let private x14RuleNodes (sheet: XmlNode) : (string * XmlNode) list =
+    /// extension list): (sqref, owning group, rule node) in document order.
+    let private x14RuleNodes (sheet: XmlNode) : (string * XmlNode * XmlNode) list =
         match Ns.childNs "extLst" sheet with
         | None -> []
         | Some extLst ->
             Ns.descendantsNs "conditionalFormatting" extLst
             |> List.collect (fun block ->
                 let sqref = directChildren "sqref" block |> List.tryHead |> Option.bind Xml.text |> Option.map (fun text -> text.Trim()) |> Option.defaultValue ""
-                directChildren "cfRule" block |> List.map (fun rule -> sqref, rule))
+                directChildren "cfRule" block |> List.map (fun rule -> sqref, block, rule))
 
     /// Every x14 rule with a range is represented as a rule, even if its
     /// type is unknown: the writer can then carry that one opaque rule without
@@ -4678,7 +4678,7 @@ module ConditionalFormats =
     /// An extension with an unlocated rule is retained whole instead.
     let x14Understood (sheet: XmlNode) : bool =
         x14RuleNodes sheet
-        |> List.forall (fun (sqref, rule) ->
+        |> List.forall (fun (sqref, _, rule) ->
             sqref <> "" || Xml.attr "type" rule = Some "dataBar")
 
     let private x14Cfvo (parent: XmlNode) : (string * string option) list =
@@ -4768,7 +4768,7 @@ module ConditionalFormats =
         let x14 = if x14Understood sheet then x14RuleNodes sheet else []
         // The x14 data bar a 2007 data bar names by id (`<x14:id>` in the rule's own extension).
         let barsById = System.Collections.Generic.Dictionary<string, XmlNode>()
-        for _, rule in x14 do
+        for _, _, rule in x14 do
             match Xml.attr "type" rule, Xml.attr "id" rule, Ns.childNs "dataBar" rule with
             | Some "dataBar", Some id, Some bar -> barsById.[id] <- bar
             | _ -> ()
@@ -4799,11 +4799,16 @@ module ConditionalFormats =
                         | _ -> [] }))
         let extOnly =
             x14
-            |> List.choose (fun (sqref, ruleNode) ->
+            |> List.choose (fun (sqref, group, ruleNode) ->
                 match Xml.attr "id" ruleNode with
                 | Some id when paired.Contains id -> None
                 | _ when sqref = "" -> None
-                | _ -> Some { Range = sqref; Rules = [ x14Rule themeColors ruleNode ]; GroupAttributes = [] })
+                | _ ->
+                    let attributes =
+                        match group with
+                        | Element (_, attrs, _, _) -> Map.toList attrs
+                        | _ -> []
+                    Some { Range = sqref; Rules = [ x14Rule themeColors ruleNode ]; GroupAttributes = attributes })
         main @ extOnly
 
     /// Parse the `<dxfs>` table out of styles.xml. Each `<dxf>` carries a

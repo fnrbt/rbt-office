@@ -62,7 +62,21 @@ let private listLevel (value: WordEditorPackage.ListLevel) : ListLevelDefinition
       MarkFont = value.MarkFont; MarkBold = value.MarkBold; MarkItalic = value.MarkItalic
       MarkColor = value.MarkColor; MarkSize = value.MarkSize }
 
-let private metadata (item: WordEditorPackage.EditorParagraph) =
+type LevelCache = System.Collections.Generic.Dictionary<WordEditorPackage.ListLevel list, ListLevelDefinition list>
+
+let newLevelCache () = LevelCache(HashIdentity.Structural)
+
+let private convertedLevels (cache: LevelCache) levels =
+    if List.isEmpty levels then []
+    else
+        match cache.TryGetValue levels with
+        | true, converted -> converted
+        | false, _ ->
+            let converted = List.map listLevel levels
+            cache.Add(levels, converted)
+            converted
+
+let private metadata cache (item: WordEditorPackage.EditorParagraph) =
     let f = item.Formatting
     let listStyle =
         match item.List |> Option.map (fun x -> x.Style.ToLowerInvariant()) with
@@ -108,7 +122,7 @@ let private metadata (item: WordEditorPackage.EditorParagraph) =
         ListNumberFormat = listValue (fun x -> x.NumberFormat); ListLevelText = listValue (fun x -> x.LevelText)
         ListStart = listValue (fun x -> x.Start)
         ListStartOverrides = item.List |> Option.map (fun x -> x.StartOverrides) |> Option.defaultValue []
-        ListLevels = if listStyle = NoList then [] else item.List |> Option.map (fun x -> List.map listLevel x.Levels) |> Option.defaultValue []
+        ListLevels = if listStyle = NoList then [] else item.List |> Option.map (fun x -> convertedLevels cache x.Levels) |> Option.defaultValue []
         IndentLeft = f.IndentLeft; IndentRight = f.IndentRight; FirstLineIndent = f.FirstLineIndent
         RightTabPosition = f.RightTabPosition; RightTabLeader = f.RightTabLeader
         TabStops = f.TabStops |> List.map (fun x -> { Position = x.Position; Alignment = x.Alignment; Leader = x.Leader })
@@ -242,8 +256,8 @@ let private nextId () =
     sprintf "imported-block-%d" (System.Threading.Interlocked.Increment &importedBlockCounter)
 #endif
 
-let private paragraph (item: WordEditorPackage.EditorParagraph) : ParagraphBlock =
-    { Id = nextId (); Buffer = buffer item.Runs; Metadata = metadata item }
+let private paragraph cache (item: WordEditorPackage.EditorParagraph) : ParagraphBlock =
+    { Id = nextId (); Buffer = buffer item.Runs; Metadata = metadata cache item }
 
 let private geometry (shape: WordEditorPackage.EditorTextBox) =
     let segment (op, p: float array) =
@@ -262,10 +276,10 @@ let private geometry (shape: WordEditorPackage.EditorTextBox) =
     | "" | "rect" -> GeoRect
     | preset -> GeoPreset preset
 
-let rec private shape (item: WordEditorPackage.EditorTextBox) : TextBoxBlock =
+let rec private shape cache (item: WordEditorPackage.EditorTextBox) : TextBoxBlock =
     { defaultTextBox with
         Id = nextId (); SourceShapeId = item.ShapeId; SourceShapeKind = item.ShapeKind
-        Content = paragraphs item.Paragraphs; X = item.X; Y = item.Y
+        Content = paragraphs cache item.Paragraphs; X = item.X; Y = item.Y
         PositionHRelativeFrom = item.PositionHRelativeFrom; PositionVRelativeFrom = item.PositionVRelativeFrom
         Width = item.Width; Height = item.Height
         FillColor = if item.NoFill then None else Option.orElse (Some "#FFFFFF") item.FillColor
@@ -279,14 +293,14 @@ let rec private shape (item: WordEditorPackage.EditorTextBox) : TextBoxBlock =
         BorderDash = item.BorderDash; Name = item.Name; InsetLeft = item.InsetLeft; InsetTop = item.InsetTop
         InsetRight = item.InsetRight; InsetBottom = item.InsetBottom; VerticalAnchor = item.VerticalAnchor
         AutoFit = item.AutoFit; NoTextWrap = item.NoTextWrap; FitText = item.FitText; Opacity = item.Opacity
-        Children = item.Children |> Array.map shape |> Array.toList; ChildSpace = item.ChildSpace
+        Children = item.Children |> Array.map (shape cache) |> Array.toList; ChildSpace = item.ChildSpace
         ImageSource = item.ImageSource; SourceXml = item.SourceXml }
-and private paragraphs items =
-    items |> Array.choose (function WordEditorPackage.Paragraph p -> Some (paragraph p) | _ -> None) |> Array.toList
-and private table (item: WordEditorPackage.EditorTable) : TableBlock =
+and private paragraphs cache items =
+    items |> Array.choose (function WordEditorPackage.Paragraph p -> Some (paragraph cache p) | _ -> None) |> Array.toList
+and private table cache (item: WordEditorPackage.EditorTable) : TableBlock =
     let cell (c: WordEditorPackage.EditorCell) : TableCell =
-        { Content = paragraphs c.Paragraphs
-          NestedTables = c.NestedTables |> Array.map (fun t -> let result = table t in { result with Rows = WordLayout.Table.distributeVerticalMergeContent result.Rows }) |> Array.toList
+        { Content = paragraphs cache c.Paragraphs
+          NestedTables = c.NestedTables |> Array.map (fun t -> let result = table cache t in { result with Rows = WordLayout.Table.distributeVerticalMergeContent result.Rows }) |> Array.toList
           NestedTableAnchors = Array.toList c.NestedTableAnchors; ColSpan = max 1 c.ColSpan
           BackgroundColor = c.BackgroundColor; Shading = Option.map shading c.Shading; Width = c.Width
           PreferredWidth = width c.PreferredWidth c.PreferredWidthType; BorderColor = c.BorderColor; BorderWidth = c.BorderWidth
@@ -317,16 +331,16 @@ and private table (item: WordEditorPackage.EditorTable) : TableBlock =
           ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : ContentControlLayer))
       Look = item.Look |> Option.map (fun x -> { FirstRow = x.FirstRow; LastRow = x.LastRow; FirstColumn = x.FirstColumn; LastColumn = x.LastColumn; HorizontalBanding = x.HorizontalBanding; VerticalBanding = x.VerticalBanding }) }
 
-let importBlock item =
+let importBlock cache item =
     match item with
     | WordEditorPackage.Paragraph p ->
-        let result = paragraph p
+        let result = paragraph cache p
         match p.HeadingLevel with Some level -> Heading (min 3 (max 1 level), result) | None -> Paragraph result
-    | WordEditorPackage.Table t -> Table (table t)
-    | WordEditorPackage.TextBox s -> TextBox (shape s)
+    | WordEditorPackage.Table t -> Table (table cache t)
+    | WordEditorPackage.TextBox s -> TextBox (shape cache s)
 
-let private blocks (items: WordEditorPackage.EditorBlock array) =
-    let mapped = Array.map importBlock items
+let private blocks cache (items: WordEditorPackage.EditorBlock array) =
+    let mapped = Array.map (importBlock cache) items
     let idAt i =
         if i < 0 || i >= mapped.Length then None else
         match mapped.[i] with Paragraph p | Heading (_, p) -> Some p.Id | Table t -> Some t.Id | TextBox _ -> None
@@ -415,20 +429,20 @@ let rec inferredStylesOfBlock item =
 let private paragraphBlocks blocks =
     blocks |> List.choose (function Paragraph p | Heading (_, p) -> Some p | _ -> None)
 
-let importPackage (package: WordEditorPackage.EditorPackage) : Document =
-    let body = blocks package.Blocks
+let importPackageWithCache cache (package: WordEditorPackage.EditorPackage) : Document =
+    let body = blocks cache package.Blocks
     let parts (items: WordEditorPackage.HeaderFooterPart array) =
-        items |> Array.map (fun p -> { Kind = p.Kind; RelationshipId = p.RelationshipId; Blocks = blocks p.Blocks } : HeaderFooterPart) |> Array.toList
+        items |> Array.map (fun p -> { Kind = p.Kind; RelationshipId = p.RelationshipId; Blocks = blocks cache p.Blocks } : HeaderFooterPart) |> Array.toList
     let headers = parts package.HeaderParts
     let footers = parts package.FooterParts
     let stories kind (items: WordEditorPackage.Story array) =
         items |> Array.map (fun s ->
             { NoteType = kind; Id = s.Id; Kind = s.Kind; HasMark = Option.defaultValue true s.HasMark
-              MarkStyle = s.MarkStyle; Text = Option.defaultValue "" s.Text; Blocks = blocks s.Blocks } : NoteBody) |> Array.toList
+              MarkStyle = s.MarkStyle; Text = Option.defaultValue "" s.Text; Blocks = blocks cache s.Blocks } : NoteBody) |> Array.toList
     let comments =
         package.Comments |> Array.map (fun c ->
             { Id = c.Id; Author = c.Author; Date = c.Date; Initials = c.Initials
-              Text = Option.defaultValue "" c.Text; Blocks = blocks c.Blocks } : CommentBody) |> Array.toList
+              Text = Option.defaultValue "" c.Text; Blocks = blocks cache c.Blocks } : CommentBody) |> Array.toList
     let styles =
         let seen = System.Collections.Generic.HashSet<string * string>()
         seq {
@@ -467,3 +481,5 @@ let importPackage (package: WordEditorPackage.EditorPackage) : Document =
                                             Comments = comments; Theme = package.Theme; Preserved = package.Preserved; ImportedStyles = styles } }
     if package.Preserved.IsNone then doc
     else { doc with Package = { doc.Package with Imported = Some { Document = doc } } }
+
+let importPackage package = importPackageWithCache (newLevelCache ()) package

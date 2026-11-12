@@ -49,12 +49,15 @@ let private paragraphsFromBlocks blocks =
         | TextBox _ -> None)
 
 /// Convert the JavaScript package shape at the browser boundary.
-let private importEditorObject (package: obj) : Document =
+let private importEditorObjectWithCache cache (package: obj) : Document =
 #if FABLE_COMPILER
-    package |> WordEditorPackage.packageOfEditorObject |> TypedDocxImport.importPackage
+    package |> WordEditorPackage.packageOfEditorObject |> TypedDocxImport.importPackageWithCache cache
 #else
     invalidOp "JavaScript package adapters are only available in the browser"
 #endif
+
+let private importEditorObject package =
+    importEditorObjectWithCache (TypedDocxImport.newLevelCache ()) package
 
 let importFromEditor (editorParagraphs: obj array) : Document =
     importEditorObject (createObj [ "Paragraphs" ==> editorParagraphs ])
@@ -170,6 +173,7 @@ type ProgressiveImport = {
     // (Kept between the steps.)
     StyleList: ResizeArray<NamedStyle>
     StylesSeen: Dictionary<string, Dictionary<string, unit>>
+    LevelCache: TypedDocxImport.LevelCache
     /// The id of the block of each item of the body ("": an item that has none).
     ItemBlockIds: ResizeArray<string>
     CommentBodies: CommentBody list
@@ -274,7 +278,7 @@ let private consumeProgressive (state: ProgressiveImport) : unit =
         for item in typedItems do
             for style in TypedDocxImport.inferredStylesOfBlock item do
                 addStyleIfNew state.StyleList state.StylesSeen style
-            match TypedDocxImport.importBlock item with
+            match TypedDocxImport.importBlock state.LevelCache item with
             | TextBox textBox ->
                 // (The reader gives the anchor as an index into the items.)
                 let anchor =
@@ -317,6 +321,7 @@ let private consumeProgressive (state: ProgressiveImport) : unit =
         state.Document <- document
         state.Complete <- complete
         if failed.IsSome then state.Failed <- failed
+        if complete || failed.IsSome then state.LevelCache.Clear()
         // What the document was when it was read (see PackageData.Imported).
         state.Imported.Document <- { document with Package = { document.Package with Imported = None } }
         let step = { Appended = blocks; Extend = extend; Complete = complete; Failed = failed; Faces = null }
@@ -326,7 +331,8 @@ let private consumeProgressive (state: ProgressiveImport) : unit =
             if state.Listeners.Contains listener then listener step
 
 let private beginProgressive (package: obj) : ProgressiveImport =
-    let front = importEditorObject (createObj [
+    let levelCache = TypedDocxImport.newLevelCache ()
+    let front = importEditorObjectWithCache levelCache (createObj [
         "Paragraphs" ==> [||]
         "Styles" ==> package?Styles
         "Theme" ==> package?Theme
@@ -356,6 +362,7 @@ let private beginProgressive (package: obj) : ProgressiveImport =
           Listeners = ResizeArray()
           StyleList = styleList
           StylesSeen = stylesSeen
+          LevelCache = levelCache
           ItemBlockIds = ResizeArray()
           CommentBodies = comments
           Imported = imported
