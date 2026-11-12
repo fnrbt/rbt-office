@@ -4,11 +4,31 @@
 #r "../../office-wisp/bin/Debug/net10.0/Rbt.Renderer.dll"
 #r "../../office-wisp/bin/Debug/net10.0/Platform.dll"
 #r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.OfficeNative.dll"
+#r "../../office-wisp/bin/Debug/net10.0/Rbt.OfficeWisp.dll"
 #r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.WordNative.dll"
 #load "../../word-wisp/EditorHost.fs"
 
 open Rbt.Word.Document
 open Rbt.WordWisp.EditorHost
+
+// Deterministic transport: exercise host policy without requiring an X11 server in unit tests.
+let mutable clipboardContents: Wisp.OfficeClipboard.Contents = { Text = ""; Token = None }
+let mutable clipboardWriteError: string option = None
+let mutable clipboardReadError: string option = None
+let clipboard: ClipboardTransport =
+    { WriteText = fun text ->
+        match clipboardWriteError with
+        | Some error -> Error error
+        | None ->
+            let token = System.Guid.NewGuid().ToString("N")
+            clipboardContents <- { Text = text; Token = Some token }
+            Ok token
+      ReadText = fun () ->
+        match clipboardReadError with
+        | Some error -> Error error
+        | None -> Ok clipboardContents }
+let create doc = createWithClipboard clipboard doc
+let externalText text = clipboardContents <- { Text = text; Token = None }
 
 let mutable checks = 0
 let check name expected actual =
@@ -202,7 +222,7 @@ check "redo after no-op restores saved range color" (Some "#123456", false)
 
 let pasteHost = create (empty |> setCursor "block-0" 0)
 shortcut pasteHost "b"
-Clip.text <- "pasted"
+externalText "pasted"
 shortcut pasteHost "v"
 check "pasted text uses pending bold" ("pasted", true)
     ((styledText pasteHost "block-0" |> fst), (styledText pasteHost "block-0" |> snd).Bold)
@@ -210,7 +230,7 @@ undo pasteHost |> ignore
 check "pending-style paste is one undo step" "" (styledText pasteHost "block-0" |> fst)
 let multilinePaste = create (empty |> setCursor "block-0" 0)
 shortcut multilinePaste "b"
-Clip.text <- "first\nsecond"
+externalText "first\nsecond"
 shortcut multilinePaste "v"
 let multilineParagraphs = multilinePaste.Doc.Value.Blocks |> List.choose (function Paragraph p -> Some p | _ -> None)
 check "multiline paste applies pending formatting to each paragraph"
@@ -471,6 +491,7 @@ let richSource =
     create (empty |> setCursor "block-0" 0 |> insertText "Bold" |> setSelection
         { BlockId = "block-0"; Offset = 0 } { BlockId = "block-0"; Offset = 4 })
 executeCommand richSource (character Rbt.Word.Session.CharacterCommand.Bold) None |> ignore
+let richTransfer = richSource.Session.CaptureClipboard(fun clip -> clip.Text) |> Option.get
 shortcut richSource "c"
 let richTarget = create (empty |> setCursor "block-0" 0)
 shortcut richTarget "v"
@@ -480,6 +501,24 @@ check "Wisp cross-host copy keeps rich character formatting and atomic paste" ("
      richTarget.Session.History.Undos.Length)
 undo richTarget |> ignore
 check "rich paste undo leaves target empty" "" (styledText richTarget "block-0" |> fst)
+let collisionTarget =
+    create (empty |> setCursor "block-0" 0 |> insertText "Bold" |> setSelection
+        { BlockId = "block-0"; Offset = 0 } { BlockId = "block-0"; Offset = 4 })
+shortcut collisionTarget "c"
+shortcut richSource "c"
+shortcut collisionTarget "v"
+check "cross-host identical text takes current owner's formatting, not recipient's prior capture" ("Bold", true)
+    (styledText collisionTarget "block-0" |> fun (text, style) -> text, style.Bold)
+// A new owner can publish identical text: equality is not proof of rich provenance.
+externalText "Bold"
+shortcut richTarget "v"
+check "external identical text pastes plainly, not from stale rich payload" ("Bold", false)
+    (styledText richTarget "block-0" |> fun (text, style) -> text, style.Bold)
+undo richTarget |> ignore
+externalText "Outside"
+shortcut richTarget "v"
+check "external clipboard text replaces an old in-process capture" "Outside" (styledText richTarget "block-0" |> fst)
+undo richTarget |> ignore
 shortcut richSource "x"
 check "Wisp cut removes selected source in one undo step" ("", 2)
     ((findParagraph richSource.Doc.Value "block-0").Value.Buffer |> Rbt.Word.TextBuffer.toString,
@@ -488,8 +527,47 @@ undo richSource |> ignore
 check "cut undo restores selected formatted text" ("Bold", true)
     (styledText richSource "block-0" |> fun (text, style) -> text, style.Bold)
 
+let failedCut = create (empty |> setCursor "block-0" 0 |> insertText "Keep" |> setSelection
+    { BlockId = "block-0"; Offset = 0 } { BlockId = "block-0"; Offset = 4 })
+let mutable clipboardStatus = ""
+failedCut.ReportError <- fun error -> clipboardStatus <- error
+let beforeCutDoc, beforeCutHistory = failedCut.Doc.Value, failedCut.Session.History
+clipboardWriteError <- Some "selection unavailable"
+shortcut failedCut "x"
+check "failed OS write does not cut or record history" ("Keep", true, true, "Clipboard write failed: selection unavailable")
+    (styledText failedCut "block-0" |> fst, obj.ReferenceEquals(beforeCutDoc, failedCut.Doc.Value),
+     obj.ReferenceEquals(beforeCutHistory, failedCut.Session.History), clipboardStatus)
+clipboardWriteError <- None
+shortcut failedCut "c"
+clipboardReadError <- Some "selection unavailable"
+let beforePasteDoc, beforePasteHistory = failedCut.Doc.Value, failedCut.Session.History
+shortcut failedCut "v"
+check "read failure neither pastes stale capture nor changes history" (true, true, "Clipboard read failed: selection unavailable")
+    (obj.ReferenceEquals(beforePasteDoc, failedCut.Doc.Value),
+     obj.ReferenceEquals(beforePasteHistory, failedCut.Session.History), clipboardStatus)
+clipboardReadError <- None
+
+let replacedClipboard = create (empty |> setCursor "block-0" 0 |> insertText "Bold" |> setSelection
+    { BlockId = "block-0"; Offset = 0 } { BlockId = "block-0"; Offset = 4 })
+executeCommand replacedClipboard (character Rbt.Word.Session.CharacterCommand.Bold) None |> ignore
+shortcut replacedClipboard "c"
+replaceDocument replacedClipboard (empty |> setCursor "block-0" 0)
+let afterReplace = create (empty |> setCursor "block-0" 0)
+shortcut afterReplace "v"
+check "replacing source clears rich provenance without clearing OS text" ("Bold", false)
+    (styledText afterReplace "block-0" |> fun (text, style) -> text, style.Bold)
+let disposedClipboard = create (empty |> setCursor "block-0" 0 |> insertText "Bold" |> setSelection
+    { BlockId = "block-0"; Offset = 0 } { BlockId = "block-0"; Offset = 4 })
+executeCommand disposedClipboard (character Rbt.Word.Session.CharacterCommand.Bold) None |> ignore
+shortcut disposedClipboard "c"
+dispose disposedClipboard
+let afterDispose = create (empty |> setCursor "block-0" 0)
+shortcut afterDispose "v"
+check "disposing source clears rich provenance but retains OS text" ("Bold", false)
+    (styledText afterDispose "block-0" |> fun (text, style) -> text, style.Bold)
+
 let trackedPaste = create (empty |> setCursor "block-0" 0)
-let richTransfer = Clip.capture.Value
+// The capture is the session's transferable value, not an in-process clipboard fallback.
 let trackedOutcome =
     trackedPaste.Session.PasteClipboard(richTransfer.Text, richTransfer.Html, (fun _ -> Some richTransfer.Clip),
                                         Some ("Paste author", "2026-11-12T12:00:00Z"))

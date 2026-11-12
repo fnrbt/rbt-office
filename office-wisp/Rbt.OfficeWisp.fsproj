@@ -6,6 +6,7 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Clipboard.fs" />
     <Compile Include="OfficeShell.fs" />
   </ItemGroup>
   <ItemGroup>

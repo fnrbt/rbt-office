@@ -293,9 +293,9 @@ let main argv =
         let fmt () = cellFormatAt st
         { PrintPdf = (fun () -> status.Value <- "PDF export not wired in Wisp app")
           OpenFindReplace = openFindReplaceDialog
-          Cut = (fun () -> EH.cutSelection st |> ignore; status.Value <- "Cut")
-          Copy = (fun () -> EH.copySelection st |> ignore; status.Value <- "Copied")
-          Paste = (fun () -> if EH.pasteFromClipboard st then status.Value <- "Pasted" else status.Value <- "Clipboard empty")
+          Cut = (fun () -> EH.cutSelection st |> ignore; status.Value <- st.ClipboardStatus.Value)
+          Copy = (fun () -> EH.copySelection st |> ignore; status.Value <- st.ClipboardStatus.Value)
+          Paste = (fun () -> EH.pasteFromClipboard st |> ignore; status.Value <- st.ClipboardStatus.Value)
           Undo = (fun () -> EH.undo st |> ignore)
           Redo = (fun () -> EH.redo st |> ignore)
           ToggleBold = (fun () -> format st Session.ToggleBold)
@@ -442,7 +442,11 @@ let main argv =
                 | _ -> ()
             else
                 match KeyMap.translate kc shift with
-                | Some key -> EH.handleKey st { Key = key; Shift = shift; Ctrl = ctrl; Alt = alt } |> ignore; Scheduler.requestFrame ()
+                | Some key ->
+                    EH.handleKey st { Key = key; Shift = shift; Ctrl = ctrl; Alt = alt } |> ignore
+                    if ctrl && not alt && (key.Equals("c", StringComparison.OrdinalIgnoreCase) || key.Equals("x", StringComparison.OrdinalIgnoreCase) || key.Equals("v", StringComparison.OrdinalIgnoreCase)) && st.EditingCell.Value.IsNone then
+                        status.Value <- st.ClipboardStatus.Value
+                    Scheduler.requestFrame ()
                 | None -> ()
         Wisp.Host.run "wisp-spreadsheet" appW appH view
         0

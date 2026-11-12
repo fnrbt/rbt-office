@@ -57,6 +57,7 @@ let main argv =
              | Some path, Some _ -> "Opened " + IO.Path.GetFileName path
              | Some path, None -> "Open failed: " + path
              | None, _ -> "Ready")
+    st.ReportError <- fun message -> status.Value <- message
 
     let writeTo path =
         let snapshot = st.Session.CaptureSave()
@@ -243,6 +244,7 @@ let main argv =
     | Some i when i + 1 < argv.Length ->
         (argv |> Array.tryPick (fun (a: string) -> match Double.TryParse a with true, v -> Some v | _ -> None)) |> Option.iter (fun v -> scrollY.Value <- v)
         Wisp.Host.shot 1200 820 view argv.[i + 1]
+        EH.dispose st
         printfn "wrote %s" argv.[i + 1]; 0
     | _ ->
         // Editor keys flow through here (no focused field on the page); chrome fields, when open, take focus first.
@@ -258,4 +260,5 @@ let main argv =
                 | Some key -> EH.handleKey st (pageWidth lastW) { Key = key; Shift = shift; Ctrl = ctrl; Alt = alt } |> ignore; Scheduler.requestFrame ()
                 | None -> ()
         Wisp.Host.run "wisp-word" 1200 820 view
+        EH.dispose st
         0

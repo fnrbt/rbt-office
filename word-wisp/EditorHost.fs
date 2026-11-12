@@ -16,15 +16,23 @@ module WR = Rbt.WordNative.Render
 
 type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 
-/// In-process clipboard: text for external callers and a rich transfer for
-/// selections copied by this host.
-module Clip =
-    let mutable text = ""
-    let mutable capture: Rbt.Word.Session.ClipboardCapture option = None
+/// Clipboard data stays rich only while the OS transport proves ownership of this write.
+module private Clip =
+    let mutable capture: (string * Rbt.Word.Session.ClipboardCapture) option = None
+
+type ClipboardTransport =
+    { WriteText: string -> Result<string, string>
+      ReadText: unit -> Result<Wisp.OfficeClipboard.Contents, string> }
+
+let private systemClipboard =
+    { WriteText = Wisp.OfficeClipboard.writeText
+      ReadText = Wisp.OfficeClipboard.readText }
 
 type EditorState =
     { Session: Rbt.Word.Session.EditingSession
       Doc: RefSignal<Document>
+      Clipboard: ClipboardTransport
+      mutable ReportError: string -> unit
       mutable DragAnchor: Position option
       ResolveImage: string -> Framebuffer option
       LayoutCache: LayoutCache }
@@ -40,11 +48,14 @@ let private historyDepth = 50
 let private createLayoutCache () =
     { Doc = None; LayoutDoc = None; Settings = None; Layouts = None }
 
-let create (doc: Document) : EditorState =
+let createWithClipboard (clipboard: ClipboardTransport) (doc: Document) : EditorState =
     { Session = Rbt.Word.Session.EditingSession(doc, maxHistory = historyDepth)
-      Doc = refSignal doc; DragAnchor = None
+      Doc = refSignal doc; Clipboard = clipboard; ReportError = (fun error -> eprintfn "[wisp-word] %s" error)
+      DragAnchor = None
       ResolveImage = WR.createImageResolver ()
       LayoutCache = createLayoutCache () }
+
+let create (doc: Document) : EditorState = createWithClipboard systemClipboard doc
 
 let private insertWithPending (st: EditorState) text doc =
     let inserted = st.Session.WithPendingFormat(doc, insertText text doc)
@@ -71,7 +82,15 @@ let private handleCommand st command =
 
 
 
+/// Release this host's rich transfer without altering the OS clipboard.
+let dispose (st: EditorState) =
+    match Clip.capture with
+    | Some (_, capture) when obj.ReferenceEquals(capture.Epoch, st.Session.Epoch) ->
+        Clip.capture <- None
+    | _ -> ()
+
 let replaceDocument (st: EditorState) (doc: Document) =
+    dispose st
     st.Session.Replace doc
     st.DragAnchor <- None
     st.Doc.Value <- st.Session.Document
@@ -221,22 +240,35 @@ let handleKey (st: EditorState) (width: float) (ev: KeyEvent) : bool =
         elif isCtrl "z" then undo st
         elif isCtrl "y" then redo st
         elif isCtrl "c" || isCtrl "x" then
-            match st.Session.CaptureClipboard(fun clip -> clip.Text) with
+            // Private provenance marker also identifies rich clips with no plain text.
+            match st.Session.CaptureClipboard(fun _ -> System.Guid.NewGuid().ToString("N")) with
             | Some capture ->
-                Clip.text <- capture.Text
-                Clip.capture <- Some capture
-                if isCtrl "x" then st.Session.CommitCut(capture, None) |> Option.iter (publishClipboard >> ignore)
+                match st.Clipboard.WriteText capture.Text with
+                | Ok token ->
+                    Clip.capture <- Some (token, capture)
+                    if isCtrl "x" then st.Session.CommitCut(capture, None) |> Option.iter (publishClipboard >> ignore)
+                | Error error ->
+                    Clip.capture <- None
+                    st.ReportError("Clipboard write failed: " + error)
             | None -> ()
             true
         elif isCtrl "v" then
-            let html, decode =
-                match Clip.capture with
-                | Some capture when Clip.text = capture.Text ->
-                    if obj.ReferenceEquals(capture.Epoch, st.Session.Epoch) then
-                        capture.Html, Rbt.Word.Session.noExternalClip
-                    else capture.Html, (fun _ -> Some capture.Clip)
-                | _ -> "", Rbt.Word.Session.noExternalClip
-            publishClipboard (st.Session.PasteClipboard(Clip.text, html, decode, None))
+            match st.Clipboard.ReadText() with
+            | Error error ->
+                Clip.capture <- None
+                st.ReportError("Clipboard read failed: " + error)
+                true
+            | Ok contents ->
+                let html, decode =
+                    match Clip.capture, contents.Token with
+                    | Some (token, capture), Some current when token = current ->
+                        if obj.ReferenceEquals(capture.Epoch, st.Session.Epoch) then
+                            capture.Html, Rbt.Word.Session.noExternalClip
+                        else capture.Html, (fun _ -> Some capture.Clip)
+                    | _ ->
+                        Clip.capture <- None
+                        "", Rbt.Word.Session.noExternalClip
+                publishClipboard (st.Session.PasteClipboard(contents.Text, html, decode, None))
         elif isCtrl "b" then formatCharacter st Rbt.Word.Session.CharacterCommand.Bold; true
         elif isCtrl "i" then formatCharacter st Rbt.Word.Session.CharacterCommand.Italic; true
         elif isCtrl "u" then formatCharacter st Rbt.Word.Session.CharacterCommand.Underline; true

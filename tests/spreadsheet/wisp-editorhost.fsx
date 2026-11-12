@@ -17,6 +17,30 @@
 open Rbt.Spreadsheet.Model
 open Rbt.SpreadsheetWisp.EditorHost
 
+let mutable clipboardText = ""
+let mutable clipboardToken : string option = None
+let mutable clipboardSerial = 0
+let mutable clipboardWriteError : string option = None
+let mutable clipboardReadError : string option = None
+let transport : ClipboardTransport =
+    { WriteText = fun text ->
+        match clipboardWriteError with
+        | Some problem -> Result.Error problem
+        | None ->
+            clipboardSerial <- clipboardSerial + 1
+            clipboardText <- text
+            let token = string clipboardSerial
+            clipboardToken <- Some token
+            Ok token
+      ReadText = fun () ->
+        match clipboardReadError with
+        | Some problem -> Result.Error problem
+        | None -> Ok { Text = clipboardText; Token = clipboardToken } }
+let create sheets names active =
+    let state = Rbt.SpreadsheetWisp.EditorHost.create sheets names active
+    state.ClipboardTransport <- transport
+    state
+
 let fail name detail =
     failwithf "%s failed: %s" name detail
 
@@ -53,6 +77,65 @@ let value st r c = getCellValue { Row = r; Col = c } (activeModel st)
 let cached st r c = value st r c |> unwrapFormulaValue
 let ok = function Result.Ok () -> () | Result.Error message -> failwith message
 let key name = { Key = name; Shift = false; Ctrl = false; Alt = false }
+
+let osClipboard = create [| createEmpty 10 10 |] [| "Data" |] 0
+applyCellEdit osClipboard 0 0 "alpha" |> ignore
+applyCellEdit osClipboard 0 1 "42" |> ignore
+applyChange osClipboard (fun m ->
+    let addr = { Row = 0; Col = 0 }
+    let old = getCell addr m |> Option.get
+    setCell addr { old with Format = { old.Format with Bold = true } } m) |> ignore
+applyNoHistory osClipboard (fun m -> { m with Selection = Range (0, 0, 0, 1) }) |> ignore
+assertEq "copy exports TSV" true (copySelection osClipboard)
+assertEq "exported TSV" "alpha\t42" clipboardText
+let beforeFailedCut = osClipboard.Workbook.Value
+let beforeFailedRevision = revision osClipboard
+clipboardWriteError <- Some "write denied"
+assertEq "failed cut reports failure" false (cutSelection osClipboard)
+assertEq "failed cut retains workbook and revision" (true, beforeFailedRevision)
+    (obj.ReferenceEquals(beforeFailedCut, osClipboard.Workbook.Value), revision osClipboard)
+assertEq "failed cut is visible" "Clipboard: write denied" osClipboard.ClipboardStatus.Value
+clipboardWriteError <- None
+setFocus osClipboard 2 0
+clipboardReadError <- Some "read denied"
+assertEq "failed read never pastes internal clipboard" false (pasteFromClipboard osClipboard)
+assertEq "failed read leaves destination empty" Empty (value osClipboard 2 0)
+assertEq "failed read is visible" "Clipboard: read denied" osClipboard.ClipboardStatus.Value
+clipboardReadError <- None
+clipboardToken <- None
+assertEq "same text from external owner pastes" true (pasteFromClipboard osClipboard)
+assertEq "identical external text does not use rich formatting" false
+    ((getCell { Row = 2; Col = 0 } (activeModel osClipboard) |> Option.get).Format.Bold)
+assertEq "external TSV values" (String "alpha", Number 42.0) (value osClipboard 2 0, value osClipboard 2 1)
+clipboardText <- "\"line1\nline2\"\t5"
+setFocus osClipboard 3 0
+assertEq "external quoted TSV pastes" true (pasteFromClipboard osClipboard)
+assertEq "external quoted TSV values" (String "line1\nline2", Number 5.0) (value osClipboard 3 0, value osClipboard 3 1)
+clipboardText <- ""
+setFocus osClipboard 4 0
+assertEq "empty external clipboard is ignored" false (pasteFromClipboard osClipboard)
+
+let blankEdges = create [| createEmpty 10 10 |] [| "Data" |] 0
+applyCellEdit blankEdges 0 0 "a\"b" |> ignore
+applyNoHistory blankEdges (fun m -> { m with Selection = Range (0, 0, 1, 2) }) |> ignore
+copySelection blankEdges |> ignore
+assertEq "explicit range exports quoted text and trailing blank geometry" "\"a\"\"b\"\t\t\r\n\t\t" clipboardText
+
+let reentrant = create [| createEmpty 10 10 |] [| "Data" |] 0
+applyCellEdit reentrant 0 0 "source" |> ignore
+applyCellEdit reentrant 1 0 "other" |> ignore
+setFocus reentrant 0 0
+let beforeReentrantCut = revision reentrant
+reentrant.ClipboardTransport <-
+    { transport with
+        WriteText = fun text ->
+            setFocus reentrant 1 0
+            transport.WriteText text }
+assertEq "selection change during transfer aborts cut" false (cutSelection reentrant)
+assertEq "reentrant cut preserves cells and history" (String "source", String "other", beforeReentrantCut)
+    (value reentrant 0 0, value reentrant 1 0, revision reentrant)
+assertEq "reentrant cut preserves new selection" (1, 0) (focusCell (activeModel reentrant))
+assertEq "reentrant cut error visible" "Clipboard: workbook changed during clipboard transfer" reentrant.ClipboardStatus.Value
 
 let chain = create [| createEmpty 20 10; createEmpty 20 10; createEmpty 20 10 |] [| "Data"; "Middle"; "Result" |] 0
 applyCellEdit chain 0 0 "4" |> ignore
@@ -337,7 +420,8 @@ startEditing events 0 0 (Some "99")
 let replacement = W.createWorkbook () |> W.withDate1904 true
 replaceWorkbook events replacement
 assertEq "replacement cancels pending entry" false (commitEdit events)
-assertEq "replacement clears clipboard" false (pasteFromClipboard events)
+assertEq "replacement retains OS text as a plain paste" true (pasteFromClipboard events)
+assertEq "replacement never revives copied formula provenance" (Number 2.0) (value events 0 0)
 addSheet events "New" |> ok
 assertEq "new sheet keeps workbook date system" true (activeModel events).Date1904
 
@@ -376,8 +460,7 @@ applyCellEdit dateHistory 0 0 "1904-01-01" |> ignore
 assertEq "date entry uses restored date system" (Number 1462.0) (cached dateHistory 0 0)
 
 module S = Rbt.Spreadsheet.Session
-// The shared text-paste command retains quoted TSV and selection/merge semantics;
-// Wisp itself deliberately uses its internal rich clipboard instead of an OS adapter.
+// The shared text-paste command retains quoted TSV and selection/merge semantics.
 let textPasteModel = { createEmpty 10 8 with MergedCells = [ { StartRow = 3; StartCol = 1; EndRow = 3; EndCol = 2 } ] }
 let textPaste = create [| textPasteModel |] [| "Data" |] 0
 let pastedCell r c =

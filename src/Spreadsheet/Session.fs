@@ -632,24 +632,33 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
             else ExternalPaste
 
     member _.CaptureClipboard(sheetId: SheetId, isCut: bool, text: string,
-                              ?textOf: ClipboardData -> string, ?beforeFull: unit -> Workbook,
-                              ?afterCalculate: Workbook -> Workbook) : Result<bool, string> =
+                              ?textOf: ClipboardData -> string, ?transfer: string -> Result<unit, string>,
+                              ?beforeFull: unit -> Workbook, ?afterCalculate: Workbook -> Workbook) : Result<bool, string> =
         match Map.tryFind sheetId workbook.Sheets with
         | None -> Result.Error "no such sheet"
         | Some _ ->
             loadClipboardSheet sheetId
             let model = workbook.Sheets.[sheetId].Model
+            let capturedWorkbook = workbook
+            let capturedEpoch, capturedRevision = epoch, revision
             let data = serializeSelection model.Selection model isCut
             let text = match textOf with Some render -> render data | None -> text
-            clearClipboard ()
-            clipboard <- Some { SourceSheet = sheetId; Data = data; Text = text }
-            if not isCut then Ok false
-            else
-                let previous = workbook
-                workbook <- changeSheet sheetId (clearSelectionCells model.Selection) workbook
-                let didChange = finishClipboard sheetId "Cut" previous beforeFull afterCalculate
-                if didChange then cutRevision <- Some revision
-                Ok didChange
+            let transferResult = match transfer with Some send -> send text | None -> Ok ()
+            match transferResult with
+            | Result.Error problem -> Result.Error problem
+            | Ok () when not (obj.ReferenceEquals(workbook, capturedWorkbook))
+                         || epoch <> capturedEpoch || revision <> capturedRevision ->
+                Result.Error "workbook changed during clipboard transfer"
+            | Ok () ->
+                clearClipboard ()
+                clipboard <- Some { SourceSheet = sheetId; Data = data; Text = text }
+                if not isCut then Ok false
+                else
+                    let previous = workbook
+                    workbook <- changeSheet sheetId (clearSelectionCells model.Selection) workbook
+                    let didChange = finishClipboard sheetId "Cut" previous beforeFull afterCalculate
+                    if didChange then cutRevision <- Some revision
+                    Ok didChange
 
     member _.PasteClipboard(sheetId: SheetId, ?beforeFull: unit -> Workbook,
                             ?afterCalculate: Workbook -> Workbook) : Result<bool, string> =

@@ -12,6 +12,10 @@ module GR = Rbt.SpreadsheetNative.GridRender
 
 type KeyEvent = { Key: string; Shift: bool; Ctrl: bool; Alt: bool }
 
+type ClipboardTransport =
+    { WriteText: string -> Result<string, string>
+      ReadText: unit -> Result<Wisp.OfficeClipboard.Contents, string> }
+
 
 type EditorState =
     { Session: Session.Session
@@ -25,7 +29,10 @@ type EditorState =
       VisibleHeight: Signal<float>
       EditingCell: Signal<(int * int) option>
       EditBuffer: Signal<string>
-      DragAnchor: Signal<(int * int) option> }
+      DragAnchor: Signal<(int * int) option>
+      ClipboardStatus: Signal<string>
+      mutable ClipboardToken: string option
+      mutable ClipboardTransport: ClipboardTransport }
 
 let createWithWorkbook (wb: Workbook.Workbook) =
     let entries = wb.SheetOrder |> List.map (fun id -> wb.Sheets.[id]) |> List.toArray
@@ -40,7 +47,10 @@ let createWithWorkbook (wb: Workbook.Workbook) =
       VisibleHeight = signal 520.0
       EditingCell = signal None
       EditBuffer = signal ""
-      DragAnchor = signal None }
+      DragAnchor = signal None
+      ClipboardStatus = signal ""
+      ClipboardToken = None
+      ClipboardTransport = { WriteText = Wisp.OfficeClipboard.writeText; ReadText = Wisp.OfficeClipboard.readText } }
 
 let create (sheets: M.SpreadsheetModel array) (names: string array) (activeIndex: int) =
     let sheets = if sheets.Length = 0 then [| M.createEmpty 100 26 |] else sheets
@@ -66,6 +76,7 @@ let private install (st: EditorState) (wb: Workbook.Workbook) =
 
 let replaceWorkbook (st: EditorState) wb =
     st.Session.Replace(wb, markSaved = true)
+    st.ClipboardToken <- None
     install st st.Session.Workbook
     st.EditingCell.Value <- None
     st.EditBuffer.Value <- ""
@@ -363,25 +374,80 @@ let selectionSummary (st: EditorState) =
     sprintf "Cell %s   %d filled" (activeCellRef st) (Map.count (activeModel st).Cells)
 
 
-let copySelection (st: EditorState) =
-    match st.Session.CaptureClipboard(st.Session.Workbook.ActiveSheet, false, "") with
-    | Ok _ -> true
-    | Error _ -> false
+let private clipboardText (model: M.SpreadsheetModel) (data: M.ClipboardData) =
+    // Bound whole-axis copies, but retain the blank cells of an explicit range.
+    let wholeRows, wholeCols =
+        match model.Selection with
+        | M.Range (r0, c0, r1, c1) -> r0 = 0 && r1 = model.RowCount - 1, c0 = 0 && c1 = model.ColCount - 1
+        | _ -> false, false
+    let usedRow, usedCol =
+        data.Cells |> List.fold (fun (lastRow, lastCol) (row, col, _) -> max lastRow row, max lastCol col) (0, 0)
+    let height = data.SourceEndRow - data.SourceStartRow
+    let width = data.SourceEndCol - data.SourceStartCol
+    let maxRow = if wholeRows then min height usedRow else height
+    let maxCol = if wholeCols then min width usedCol else width
+    let result = System.Text.StringBuilder()
+    // serializeSelection supplies sparse cells in row/column order.
+    let mutable cells = data.Cells
+    for row in 0 .. maxRow do
+        if row > 0 then result.Append("\r\n") |> ignore
+        for col in 0 .. maxCol do
+            if col > 0 then result.Append('\t') |> ignore
+            match cells with
+            | (cellRow, cellCol, cell) :: rest when cellRow = row && cellCol = col ->
+                let value = Rbt.Spreadsheet.CellText.cellDisplayTextIn model.Date1904 None 1.0e6 cell.Format cell.Value
+                if value.Contains('\t') || value.Contains('\r') || value.Contains('\n') || value.Contains('"') then
+                    result.Append('"') |> ignore
+                    for ch in value do
+                        if ch = '"' then result.Append('"') |> ignore
+                        result.Append(ch) |> ignore
+                    result.Append('"') |> ignore
+                else result.Append(value) |> ignore
+                cells <- rest
+            | _ -> ()
+    result.ToString()
 
-let cutSelection (st: EditorState) =
-    match st.Session.CaptureClipboard(st.Session.Workbook.ActiveSheet, true, "") with
+let private captureSelection (st: EditorState) isCut =
+    let mutable token = None
+    let transfer text =
+        match st.ClipboardTransport.WriteText text with
+        | Ok written -> token <- Some written; Ok ()
+        | Error problem -> Error problem
+    let sheetId = st.Session.Workbook.ActiveSheet
+    match st.Session.CaptureClipboard(sheetId, isCut, "",
+                                      textOf = (fun data -> clipboardText st.Session.Workbook.Sheets.[sheetId].Model data),
+                                      transfer = transfer) with
     | Ok changed ->
-        if changed then install st st.Session.Workbook
+        st.ClipboardToken <- token
+        if changed || not (Object.ReferenceEquals(st.Workbook.Value, st.Session.Workbook)) then
+            install st st.Session.Workbook
+        st.ClipboardStatus.Value <- if isCut then "Cut" else "Copied"
         true
-    | Error _ -> false
+    | Error problem ->
+        st.ClipboardStatus.Value <- "Clipboard: " + problem
+        false
+
+let copySelection st = captureSelection st false
+let cutSelection st = captureSelection st true
 
 let pasteFromClipboard (st: EditorState) =
-    match st.Session.PasteClipboard(st.Session.Workbook.ActiveSheet) with
+    let result =
+        match st.ClipboardTransport.ReadText () with
+        | Error problem -> Error problem
+        | Ok contents when contents.Token.IsSome && contents.Token = st.ClipboardToken ->
+            st.Session.PasteClipboard(st.Session.Workbook.ActiveSheet)
+        | Ok contents when String.IsNullOrEmpty contents.Text -> Ok false
+        | Ok contents ->
+            st.Session.PasteRows(st.Session.Workbook.ActiveSheet, Session.clipboardRowsOfText contents.Text, DateTime.Now.Year)
+    match result with
     | Ok changed ->
         if changed || not (Object.ReferenceEquals(st.Workbook.Value, st.Session.Workbook)) then
             install st st.Session.Workbook
+        st.ClipboardStatus.Value <- if changed then "Pasted" else "Clipboard empty"
         changed
-    | Error _ -> false
+    | Error problem ->
+        st.ClipboardStatus.Value <- "Clipboard: " + problem
+        false
 
 let private pageRowJump (st: EditorState) fromRow direction =
     let model = activeModel st
