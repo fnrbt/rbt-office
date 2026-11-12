@@ -7,6 +7,7 @@
   <ItemGroup>
     <Compile Include="Reactive.fs" />
     <Compile Include="Dom.fs" />
+    <Compile Include="Chrome.fs" />
     <Compile Include="UI.fs" />
     <Compile Include="OfficeUiDialog.fs" />
     <Compile Include="ParagraphStyleDialogTest.fs" />

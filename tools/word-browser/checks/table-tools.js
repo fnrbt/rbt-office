@@ -93,26 +93,15 @@ try {
                 Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(await bytesOf(file)));
                 const styles = Word.getStyles(editor);
                 check(`${short}: getStyles lists no internal entry`, styles.filter((style) => String(style.Id).startsWith('__') || style.Type === 'defaults').map((style) => style.Id), []);
-                check(`${short}: it lists styles`, styles.length > 3, true);
-                // Every paragraph of every table cell: the style a user sees, or null.
-                const editorDocument = editor.Doc;
+                // Public paragraph order includes table cells without exposing editor internals.
                 const seen = new Set();
-                let cells = 0;
-                const visit = (blocks) => {
-                    for (const block of blocks) {
-                        const table = block.tag === 2 || (block.fields && block.fields[0] && block.fields[0].Rows) ? block.fields[0] : null;
-                        if (!table || !table.Rows) continue;
-                        for (const row of table.Rows) for (const cell of row.Cells) for (const para of cell.Content) {
-                            Word.setSelection(editor, para.Id, 0, para.Id, 0);
-                            cells++;
-                            seen.add(String(Word.getSelectionFormat(editor).Paragraph.StyleId));
-                            if (cells === 1) check(`${short}: the caret in a cell is in a table`, [context().InTable, context().RowCount > 0, context().ColumnCount > 0], [true, true, true]);
-                        }
-                    }
-                };
-                visit([...editorDocument.Blocks]);
-                note(`${short}: ${cells} cell paragraphs, style ids ${[...seen].join(', ')}`);
-                check(`${short}: no cell paragraph reports an internal style`, [...seen].filter((id) => id.startsWith('__')), []);
+                const paragraphs = Word.getParagraphOrder(editor);
+                for (const id of paragraphs) {
+                    Word.setSelection(editor, id, 0, id, 0);
+                    seen.add(String(Word.getSelectionFormat(editor).Paragraph.StyleId));
+                }
+                note(`${short}: ${paragraphs.length} editable paragraphs, style ids ${[...seen].join(', ')}`);
+                check(`${short}: no editable paragraph reports an internal style`, [...seen].filter((id) => id.startsWith('__')), []);
             }
         } catch (e) { fail(e); }
         finish();

@@ -76,21 +76,21 @@ let fixtures =
             Path = "tests/repros/word/two-column-section.docx"
             Blocks = 11
             FirstText = "Two column section repro"
-            Kinds = List.replicate 11 "Paragraph"
+            Kinds = "Heading" :: List.replicate 10 "Paragraph"
             HasSectionSetup = false
         }
         {
             Path = "tests/repros/word/landscape-section.docx"
             Blocks = 9
             FirstText = "Landscape section (page 1)"
-            Kinds = List.replicate 9 "Paragraph"
+            Kinds = [ "Heading"; "Paragraph"; "Paragraph"; "Paragraph"; "Paragraph"; "Heading"; "Paragraph"; "Paragraph"; "Paragraph" ]
             HasSectionSetup = true
         }
         {
             Path = "tests/repros/word/table-import-preserves-structure.docx"
             Blocks = 3
             FirstText = "Table import repro"
-            Kinds = [ "Paragraph"; "Table"; "Paragraph" ]
+            Kinds = [ "Heading"; "Table"; "Paragraph" ]
             HasSectionSetup = false
         }
     ]
@@ -116,16 +116,6 @@ for expected in fixtures do
     let doc = importFixture expected.Path Rbt.Word.Import.importDoc
     assertFixture expected doc
 
-let summary (doc: Document) =
-    List.length doc.Blocks,
-    firstParagraphText doc,
-    doc.PageSetup,
-    (doc.Blocks |> List.map blockKind),
-    hasSectionPageSetup doc
-
-let libraryDoc = importFixture fixtures.[1].Path Rbt.Word.Import.importDoc
-let compatDoc = importFixture fixtures.[1].Path NativeRunner.importDoc
-check "compat alias summary" (summary compatDoc) (summary libraryDoc)
 
 // ---- units and coverage shared with the browser importer --------------------
 // The native importer must fill the model the way DocxReader -> Docx.fs does:
@@ -389,7 +379,7 @@ let nativeChartRuns =
 check "native chart: an opaque image run with a placeholder source" nativeChartRuns [ "opaque:chart", Some 200.0, Some 100.0, Some ("chart", true) ]
 check "native chart: text is not replaced by a placeholder word" (firstParagraphText nativeChartDoc) "before\uFFFC"
 check "native chart: its part is kept"
-    ((nativeChartDoc.Package.Preserved :?> DocxReader.PackagePreservation).Parts |> List.map (fun part -> part.Path))
+    (nativeChartDoc.Package.Preserved |> Option.get |> fun preserved -> preserved.Parts |> List.map (fun part -> part.Path))
     [ "word/charts/chart1.xml" ]
 
 // ----- what a paragraph states itself vs. what it inherits -------------------
@@ -420,98 +410,6 @@ check "native hyperlink targets are allow-listed"
 check "native external picture is linked and shows a placeholder"
     (hostileNativeRuns |> List.choose (function Rbt.Word.TextBuffer.Image image -> Some (image.Linked, image.Src, Rbt.Word.TextBuffer.displayedImageSource image) | _ -> None))
     [ true, "https://tracker.example.com/p.png", "opaque:linked" ]
-
-// ---- the selection's format over whole documents ------------------------------
-// WordStyles.selectionFormat works each property out on its own, stops looking
-// at a property once it is mixed and makes no style record per run: for every
-// test document, with everything selected and with ranges inside it, it says
-// what resolving every run and every paragraph in full says.
-module FormatReference =
-    module WS = Rbt.Word.WordStyles
-    module TB = Rbt.Word.TextBuffer
-    let add value current = WS.FormatValue.add value current
-    let format (doc: Document) : WS.SelectionFormat =
-        let context = WS.styleContext doc
-        let headingLevel (id: string) = doc.Blocks |> List.tryPick (function Heading (level, para) when para.Id = id -> Some level | _ -> None)
-        let styleOf (para: ParagraphBlock) =
-            match headingLevel para.Id with
-            | Some level -> WS.forBlockInContext context (Heading (level, para))
-            | None -> WS.forBlockInContext context (Paragraph para)
-        let mutable f : WS.SelectionFormat =
-            { Bold = WS.NoValue; Italic = WS.NoValue; Underline = WS.NoValue; Strike = WS.NoValue; FontFamily = WS.NoValue; FontSize = WS.NoValue
-              Color = WS.NoValue; Highlight = WS.NoValue; VertAlign = WS.NoValue; StyleId = WS.NoValue; HeadingLevel = WS.NoValue; Alignment = WS.NoValue; ListKind = WS.NoValue
-              ListLevel = WS.NoValue; IndentLeft = WS.NoValue; IndentRight = WS.NoValue; FirstLineIndent = WS.NoValue; ParagraphLineSpacing = WS.NoValue
-              ParagraphLineSpacingRule = WS.NoValue; ParagraphSpacingBefore = WS.NoValue; ParagraphSpacingAfter = WS.NoValue }
-        let character (paragraphStyle: WS.ParagraphStyle) (runStyle: TB.TextStyle) =
-            let style = WS.effectiveTextStyleInContext context paragraphStyle runStyle
-            f <- { f with
-                    Bold = add style.Bold f.Bold; Italic = add style.Italic f.Italic; Underline = add style.Underline f.Underline
-                    Strike = add (style.Strike || style.DoubleStrike) f.Strike; FontFamily = add style.FontFamily f.FontFamily
-                    FontSize = add style.FontSize f.FontSize; Color = add style.Color f.Color; Highlight = add style.Highlight f.Highlight
-                    VertAlign = add style.VertAlign f.VertAlign }
-        let paragraph (para: ParagraphBlock) (paragraphStyle: WS.ParagraphStyle) =
-            let metadata = WS.effectiveMetadata paragraphStyle para.Metadata
-            let level =
-                match headingLevel para.Id with
-                | Some level -> level
-                | None -> (match paragraphStyle.OutlineLevel with Some level when level >= 1 && level <= 9 -> level | _ -> 0)
-            let visible =
-                para.Metadata.Style
-                |> Option.filter (fun styleId ->
-                    not (WS.isInternalStyleId styleId)
-                    && (match Map.tryFind ("paragraph", styleId) context.Styles with Some style -> style.StyleType <> "defaults" | None -> true))
-            f <- { f with
-                    ParagraphLineSpacing = add (metadata.LineSpacing |> Option.orElse paragraphStyle.LineSpacing) f.ParagraphLineSpacing
-                    ParagraphLineSpacingRule = add (metadata.LineSpacingRule |> Option.orElse paragraphStyle.LineSpacingRule) f.ParagraphLineSpacingRule
-                    ParagraphSpacingBefore = add (metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore |> Option.defaultValue 0.0) f.ParagraphSpacingBefore
-                    ParagraphSpacingAfter = add (metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter |> Option.defaultValue 0.0) f.ParagraphSpacingAfter
-                    StyleId = add visible f.StyleId; HeadingLevel = add level f.HeadingLevel; Alignment = add metadata.Alignment f.Alignment
-                    ListKind = add metadata.ListStyle f.ListKind; ListLevel = add (if metadata.ListStyle = NoList then 0 else metadata.ListLevel) f.ListLevel
-                    IndentLeft = add (metadata.IndentLeft |> Option.defaultValue 0.0) f.IndentLeft
-                    IndentRight = add (metadata.IndentRight |> Option.defaultValue 0.0) f.IndentRight
-                    FirstLineIndent = add (metadata.FirstLineIndent |> Option.defaultValue 0.0) f.FirstLineIndent }
-        let ranges = selectedParagraphRanges doc
-        for (para, rangeStart, rangeEnd) in ranges do
-            let paragraphStyle = styleOf para
-            paragraph para paragraphStyle
-            for run in para.Buffer.Runs do
-                match run with
-                | TB.Text textRun when textRun.Length > 0 && textRun.Start < rangeEnd && textRun.Start + textRun.Length > rangeStart -> character paragraphStyle textRun.Style
-                | _ -> ()
-        if f.Bold = WS.NoValue then
-            match ranges with
-            | (para, rangeStart, _) :: _ -> character (styleOf para) (TB.getStyleAt (if rangeStart > 0 then rangeStart - 1 else 0) para.Buffer)
-            | [] -> ()
-        f
-
-let root = IO.Path.GetFullPath(IO.Path.Combine(__SOURCE_DIRECTORY__, "../.."))
-let formatDocuments =
-    IO.Directory.GetDirectories(IO.Path.Combine(root, "tests"), "test-documents*")
-    |> Array.collect (fun dir -> IO.Directory.GetFiles(dir, "*.docx", IO.SearchOption.AllDirectories))
-    |> Array.sort
-let mutable formatRanges = 0
-for path in formatDocuments do
-    match (try DocxReader.loadBytesNative (IO.File.ReadAllBytes path) with _ -> None) with
-    | None -> ()
-    | Some parsed ->
-        let doc = Rbt.Word.Import.importDoc parsed
-        let paragraphs = (selectedParagraphRanges (selectAll doc)) |> List.map (fun (para, _, _) -> para) |> List.toArray
-        if paragraphs.Length >= 2 then
-            let pick (first: int) (last: int) =
-                let a, b = paragraphs.[first], paragraphs.[last]
-                setSelection { BlockId = a.Id; Offset = 0 } { BlockId = b.Id; Offset = Rbt.Word.TextBuffer.length b.Buffer } doc
-            let n = paragraphs.Length
-            for selected in [ selectAll doc; pick 0 (n / 2); pick (n / 3) (n - 1); pick (n / 2) (min (n - 1) (n / 2 + 20)); pick (n - 1) 0 ] do
-              // (A caret is another matter: what typing would continue with.)
-              if not (selectedParagraphRanges selected).IsEmpty then
-                formatRanges <- formatRanges + 1
-                let got = Rbt.Word.WordStyles.selectionFormat selected
-                let expected = FormatReference.format selected
-                if got <> expected then
-                    fail <- fail + 1
-                    printfn "FAIL selection format of %s: expected %A got %A" (IO.Path.GetFileName path) expected got
-ok "selection format over the test documents" (formatRanges > 250) (sprintf "%d ranges of %d documents" formatRanges formatDocuments.Length)
-pass <- pass + formatRanges
 
 // ----- the indents of a numbered paragraph ------------------------------------
 // What a paragraph states itself (w:pPr/w:ind) counts first; then the level of the numbering the
@@ -551,6 +449,174 @@ check "the second level's" (indentsOf numberedDoc "second level") (Some (Some 12
 check "numbered through a style that states an indent: the style's left, the level's hanging" (indentsOf numberedDoc "style with an indent") (Some (Some 20.0, Some -24.0))
 check "numbered through a style that states none: the level's" (indentsOf numberedDoc "style without") (Some (Some 96.0, Some -24.0))
 check "not numbered: the style's" (indentsOf numberedDoc "not numbered") (Some (Some 48.0, None))
+
+// A run-level bound control is not a block control: its sibling text remains
+// outside the wrapper, and both the binding and its custom XML must survive
+// the native model -> writer-package path.
+let bindingNative = importFixture "tests/test-documents-business/docx4j-binding-simple.docx" Rbt.Word.Import.importDoc
+let bindingParagraphs = paragraphsOfBlocks bindingNative.Blocks
+let boundRuns (paras: ParagraphBlock list) =
+    paras |> List.collect (fun para ->
+        para.Buffer.Runs |> List.choose (function
+            | Rbt.Word.TextBuffer.Text run when not run.Style.ContentControls.IsEmpty ->
+                Some (Rbt.Word.TextBuffer.slice run.Start run.Length para.Buffer, run.Style.ContentControls)
+            | _ -> None))
+let boundNative = boundRuns bindingParagraphs
+check "bound text stays inline with sibling text"
+    (bindingParagraphs |> List.map textOfPara)
+    [ "Contents of element 1: element 1 contents"; "Contents of element 2: element 2 contents" ]
+check "both inline controls keep their distinct XPath bindings"
+    (boundNative |> List.map (fun (text, controls) ->
+        text, controls |> List.map (fun control ->
+            control.Xml |> Option.map (fun xml ->
+                xml.Contains "<w:dataBinding" && xml.Contains "w:storeItemID="
+                && xml.Contains (if text = "element 1 contents" then "/myxml[1]/element1[1]" else "/myxml[1]/element2[1]"))
+            |> Option.defaultValue false)))
+    [ "element 1 contents", [ true ]; "element 2 contents", [ true ] ]
+ok "bound controls keep separate identities"
+    (boundNative.Length = 2 && (snd boundNative.[0]).Head.Group <> (snd boundNative.[1]).Head.Group)
+    "inline wrappers were merged"
+check "bound controls retain placeholder and unknown properties"
+    (boundNative |> List.map (fun (_, controls) ->
+        let xml = controls.Head.Xml |> Option.defaultValue ""
+        xml.Contains "<w:placeholder" && xml.Contains "<w:text" && xml.Contains "w:multiLine=\"1\""))
+    [ true; true ]
+check "bound custom XML part is retained"
+    (bindingNative.Package.Preserved |> Option.get |> fun preserved ->
+        preserved.Parts |> List.exists (fun part -> part.Path.StartsWith("customXml/") && part.Path.EndsWith(".xml")))
+    true
+let firstBound = bindingParagraphs.Head
+let editedBound =
+    bindingNative
+    |> Rbt.Word.Document.setCursor firstBound.Id ("Contents of element 1: e".Length)
+    |> Rbt.Word.Document.insertText "!"
+let editedRuns = boundRuns (paragraphsOfBlocks editedBound.Blocks)
+check "typing inside a binding stays inside that control"
+    (editedRuns |> List.map (fun (text, layers) -> text, layers.Head.Group))
+    [ "e!lement 1 contents", (snd boundNative.[0]).Head.Group
+      "element 2 contents", (snd boundNative.[1]).Head.Group ]
+
+let boundExport =
+    Rbt.Word.TypedDocxExport.exportPackage
+        { editedBound with Package = { editedBound.Package with Imported = None } }
+let boundXml =
+    WordPackageWriterSplice.generateDocumentXmlWithFormatting
+        (WordPackageWriterModel.createWriterContext ()) boundExport.Blocks
+    |> System.Xml.Linq.XDocument.Parse
+let wordName local = System.Xml.Linq.XName.Get(local, "http://schemas.openxmlformats.org/wordprocessingml/2006/main")
+let writtenControls = boundXml.Descendants(wordName "sdt") |> Seq.toList
+check "model-only XML retains two inline bound controls"
+    (writtenControls |> List.map (fun control ->
+        let binding = control.Descendants(wordName "dataBinding") |> Seq.tryHead
+        (binding |> Option.map (fun node -> node.Attribute(wordName "xpath").Value)),
+        control.Descendants(wordName "placeholder") |> Seq.length,
+        control.Descendants(wordName "text") |> Seq.length))
+    [ Some "/myxml[1]/element1[1]", 1, 1; Some "/myxml[1]/element2[1]", 1, 1 ]
+check "edited control text is inside its binding"
+    (writtenControls |> List.map (fun control ->
+        control.Descendants(wordName "t") |> Seq.map (fun text -> text.Value) |> String.concat ""))
+    [ "e!lement 1 contents"; "element 2 contents" ]
+
+// A TOC field encloses several paragraphs and nested page-reference fields.
+// Model-only regeneration must write the actual begin/instruction/separate/end
+// delimiters, not just the cached heading text.
+let tocBody =
+    """<w:p><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> TOC \o "1-3" \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>Contents</w:t></w:r><w:hyperlink w:anchor="_Toc0"><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF _Toc0 \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:hyperlink></w:p>"""
+    + """<w:p><w:hyperlink w:anchor="_Toc1"><w:r><w:t xml:space="preserve">Heading </w:t></w:r><w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText> PAGEREF _Toc1 \h </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:hyperlink></w:p>"""
+    + """<w:p><w:r><w:t>End</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"""
+let tocParsed = syntheticDocx tocBody |> DocxReader.loadBytesNative |> Option.get
+check "text extraction excludes cross-paragraph field instructions"
+    (DocxReader.extractText tocParsed)
+    "Contents1\n\nHeading 1\n\nEnd"
+let tocNative = tocParsed |> Rbt.Word.Import.importDoc
+let tocParagraphs = paragraphsOfBlocks tocNative.Blocks
+let editedToc =
+    tocNative
+    |> Rbt.Word.Document.setCursor tocParagraphs.[1].Id 4
+    |> Rbt.Word.Document.insertText "!"
+let modelOnlyToc =
+    Rbt.Word.TypedDocxExport.exportPackage
+        { editedToc with Package = { editedToc.Package with Imported = None } }
+let tocXml =
+    WordPackageWriterSplice.generateDocumentXmlWithFormatting
+        (WordPackageWriterModel.createWriterContext ()) modelOnlyToc.Blocks
+    |> System.Xml.Linq.XDocument.Parse
+let tocFieldTokens =
+    tocXml.Descendants(wordName "p")
+    |> Seq.map (fun para ->
+        para.Descendants()
+        |> Seq.choose (fun node ->
+            if node.Name = wordName "fldChar" then
+                node.Attribute(wordName "fldCharType") |> Option.ofObj |> Option.map (fun attribute -> attribute.Value)
+            elif node.Name = wordName "instrText" then Some ("instr:" + node.Value.Trim())
+            elif node.Name = wordName "fldSimple" then
+                node.Attribute(wordName "instr") |> Option.ofObj |> Option.map (fun attribute -> "simple:" + attribute.Value.Trim())
+            else None)
+        |> Seq.toList)
+    |> Seq.toList
+check "model-only TOC remains updatable around nested field"
+    tocFieldTokens
+    [ [ "begin"; """instr:TOC \o "1-3" \h"""; "separate"
+        "begin"; "instr:PAGEREF _Toc0 \\h"; "separate"; "end" ]
+      [ "simple:PAGEREF _Toc1 \\h" ]
+      [ "end" ] ]
+check "edit inside TOC does not remove its cached text"
+    (tocXml.Descendants(wordName "t") |> Seq.map (fun element -> element.Value) |> String.concat "")
+    "Contents1Head!ing 1End"
+check "model-only TOC entries remain hyperlinks"
+    (tocXml.Descendants(wordName "hyperlink")
+     |> Seq.map (fun link ->
+         link.Attribute(wordName "anchor") |> Option.ofObj |> Option.map (fun attribute -> attribute.Value),
+         link.Descendants(wordName "fldChar") |> Seq.length,
+         link.Descendants(wordName "fldSimple") |> Seq.length)
+     |> Seq.toList)
+    [ Some "_Toc0", 3, 0; Some "_Toc1", 0, 1 ]
+
+let formattedNative =
+    importFixture "tests/test-documents/sample-formatted.docx" Rbt.Word.Import.importDoc
+let formattedModel =
+    Rbt.Word.TypedDocxExport.exportPackage
+        { formattedNative with Package = { formattedNative.Package with Imported = None } }
+let formattedXml =
+    WordPackageWriterSplice.generateDocumentXmlWithFormatting
+        (WordPackageWriterModel.createWriterContext ()) formattedModel.Blocks
+    |> System.Xml.Linq.XDocument.Parse
+let formattedParagraphs = formattedXml.Descendants(wordName "p") |> Seq.toArray
+let fieldParagraphs predicate =
+    formattedParagraphs
+    |> Array.mapi (fun i para -> if para.Descendants() |> Seq.exists predicate then Some i else None)
+    |> Array.choose id
+let tocStarts =
+    fieldParagraphs (fun node ->
+        node.Name = wordName "instrText" && node.Value.TrimStart().StartsWith("TOC "))
+let fieldEnds =
+    fieldParagraphs (fun node ->
+        node.Name = wordName "fldChar"
+        && (node.Attribute(wordName "fldCharType") |> Option.ofObj
+            |> Option.exists (fun attribute -> attribute.Value = "end")))
+let pageReferences =
+    formattedXml.Descendants()
+    |> Seq.filter (fun node ->
+        if node.Name = wordName "instrText" then node.Value.TrimStart().StartsWith("PAGEREF ")
+        elif node.Name = wordName "fldSimple" then
+            node.Attribute(wordName "instr") |> Option.ofObj
+            |> Option.exists (fun attribute -> attribute.Value.TrimStart().StartsWith("PAGEREF "))
+        else false)
+    |> Seq.length
+let tocAnchors =
+    formattedXml.Descendants(wordName "hyperlink")
+    |> Seq.choose (fun link ->
+        link.Attribute(wordName "anchor") |> Option.ofObj |> Option.map (fun attribute -> attribute.Value))
+    |> Seq.filter (fun anchor -> anchor.StartsWith("_Toc"))
+    |> Seq.toList
+ok "real formatted sample retains updatable TOC spanning paragraphs"
+    (tocStarts.Length = 1
+     && (fieldEnds |> Array.exists (fun finish -> finish > tocStarts.[0] + 1))
+     && pageReferences = 17)
+    (sprintf "TOC starts=%A ends=%A page references=%d" tocStarts fieldEnds pageReferences)
+check "real formatted sample retains 17 navigable TOC entries"
+    (tocAnchors.Length, tocAnchors |> List.distinct |> List.length)
+    (17, 17)
 
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

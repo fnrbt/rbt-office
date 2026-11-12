@@ -1,12 +1,10 @@
-// The native painter (word-native: the Word editor as a widget of
-// rbt-widgets, painted by rbt-renderer) draws a document where the layout
-// puts it, and where the browser's painter does.
+// The shared native Word painter draws a document where the browser lays it out.
+// The fixture passes through import, layout, paint translation and the headless
+// software rasterizer without a UI toolkit.
 //
-// The painter was only ever built. Here a fixture page
-// (tests/word/native-painter/document.xml) goes through the whole native
-// path - the .NET reader, the import, the layout with the native text
-// measurer, Paint's commands, word-native's renderer commands, the software
-// rasteriser - into a bitmap, headless, and is held against the numbers of
+// The page, line and shape expectations are shared with the browser fixture;
+// pixels also check the text, shape and table borders.
+//
 // tests/word/native-painter/expected.json: the page, where each line of text
 // is, the rectangle of the shape. tools/word-browser's native-fixture check
 // asserts the same numbers of the browser's layout of the same document, so
@@ -24,16 +22,14 @@
 // one line each - so the native font, Noto Sans where the document says
 // Calibri, gives the positions the browser has.)
 //
-// Needs word-native built (it is not one of the projects run-all builds):
-//   dotnet build word-native/Rbt.WordWidgets.fsproj
+//   dotnet build office-wisp/word-render/Rbt.WordNative.fsproj
 //   dotnet fsi tests/word/native-painter.fsx
-// run-all runs it when word-native's build output is there.
 #r "nuget: Fable.Core, 4.3.0"
-#r "../../word-native/bin/Debug/net10.0/Rbt.Renderer.dll"
-#r "../../word-native/bin/Debug/net10.0/Rbt.Widgets.dll"
+#r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.Renderer.dll"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
-#r "../../word-native/bin/Debug/net10.0/Rbt.Word.dll"
-#r "../../word-native/bin/Debug/net10.0/Rbt.WordWidgets.dll"
+#r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.Word.dll"
+#r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.OfficeNative.dll"
+#r "../../office-wisp/word-render/bin/Debug/net10.0/Rbt.WordNative.dll"
 #r "../../src/Word.Import/bin/Debug/net10.0/Rbt.WordImport.dll"
 
 open System
@@ -43,7 +39,7 @@ open System.Text
 open System.Text.Json
 open Rbt.Renderer
 
-module Editor = Rbt.Widgets.Composit.Ui.WordEditor
+module Painter = Rbt.WordNative.Render
 
 let mutable pass = 0
 let mutable fail = 0
@@ -81,8 +77,8 @@ let shape = expected.GetProperty "shape"
 let shapeX, shapeY, shapeW, shapeH = number shape "x", number shape "y", number shape "width", number shape "height"
 
 // ---- through the native path -----------------------------------------------
-let fontPath = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../../word-native/bin/Debug/net10.0/NotoSans-Regular.ttf"))
-if File.Exists fontPath then Rbt.Widgets.Composit.Ui.Layout.initFont fontPath
+let fontPath = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../../office-wisp/word-render/bin/Debug/net10.0/NotoSans-Regular.ttf"))
+let font = Rbt.Renderer.Text.loadFontFile fontPath
 
 let doc =
     match DocxReader.loadBytesNative docxBytes with
@@ -95,37 +91,29 @@ let width = int pageWidth
 let height = int pageHeight
 
 // The draw calls.
-let commands = Editor.commands pageWidth pageHeight (fun _ -> None) None doc
-let rec flatten (cmds: Cmd list) : Cmd list =
-    cmds
-    |> List.collect (fun cmd ->
-        match cmd with
-        | Cmd.Group (_, _, inner) | Cmd.Clip (_, _, inner) | Cmd.AntiAlias (_, inner) | Cmd.SaveRestore inner | Cmd.Filtered (_, inner) | Cmd.Blend (_, inner) -> flatten inner
-        | other -> [ other ])
-let flat = flatten commands
-let glyphRuns = flat |> List.choose (function Cmd.DrawGlyphs (origin, _, _) -> Some (float origin.X, float origin.Y) | _ -> None)
-check "one run of glyphs per line of text" (glyphRuns.Length = lines.Length) (sprintf "%d runs of glyphs, %d lines: %A" glyphRuns.Length lines.Length glyphRuns)
-for line in lines do
-    let found = glyphRuns |> List.filter (fun (x, baseline) -> abs (x - line.X) <= 1.0 && baseline > line.Y && baseline < line.Y + line.Height + 1.0)
-    check (sprintf "the glyphs of \"%s\" start at the line's x, their baseline in the line's box" line.Text) (found.Length = 1)
-        (sprintf "the line is at x %g, y %g to %g; glyphs are drawn at %A" line.X line.Y (line.Y + line.Height) glyphRuns)
-let redPaths =
-    flat
-    |> List.choose (function
-        | Cmd.FillPath (path, Solid color, _) when color.R > 200uy && color.G < 60uy && color.B < 60uy ->
-            let points = path |> List.collect (function MoveTo p | LineTo p -> [ float p.X, float p.Y ] | QuadTo (_, p) -> [ float p.X, float p.Y ] | CubicTo (_, _, p) -> [ float p.X, float p.Y ] | _ -> [])
-            if points.IsEmpty then None
-            else
-                let xs, ys = points |> List.map fst, points |> List.map snd
-                Some (List.min xs, List.min ys, List.max xs - List.min xs, List.max ys - List.min ys)
-        | _ -> None)
-check "the shape is one path filled red, its bounds the shape's rectangle"
-    (match redPaths with [ (x, y, w, h) ] -> abs (x - shapeX) <= 1.0 && abs (y - shapeY) <= 1.0 && abs (w - shapeW) <= 1.0 && abs (h - shapeH) <= 1.0 | _ -> false)
-    (sprintf "the shape is at %g, %g, %g x %g; red paths: %A" shapeX shapeY shapeW shapeH redPaths)
+let settings = Painter.layoutSettings doc
+let measure = Painter.measureTextWithFont font
+let _, paints, _ = Rbt.Word.Paint.collectDocumentCommands settings "Calibri" measure (Rbt.Word.Layout.rangeMeasurerFromTextMeasurer measure) doc
+let commands = paints |> List.collect (Painter.toRendererCommandWith (fun _ -> font) (fun _ -> None))
+// Embedded media and its source crop must reach the renderer rather than a
+// placeholder; the same paint path is used by both hosts and the runner.
+let imageSource = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAABCAYAAAD5PA/NAAAAEklEQVR4nGP4z8DwH4SBqAGEATzXBvv75BwiAAAAAElFTkSuQmCC"
+let imagePaint = Rbt.Word.Paint.DrawImage(imageSource, 10.0, 20.0, 30.0, 40.0, Some "50000", None, None, None)
+let imageCommands = Painter.toRendererCommand (Painter.createImageResolver ()) imagePaint
+let imageFrame = Scene.render (Raster.create ()) 60 80 (Clear Color.white :: imageCommands)
+let imagePixel x y =
+    let memory = imageFrame.Px
+    memory.Span.[y * imageFrame.W + x]
+let insideImage = imagePixel 18 40
+let outsideImage = imagePixel 5 40
+check "cropping removes the red half and composites translucent blue over white"
+    (Pixel.r insideImage >= 126uy && Pixel.r insideImage <= 128uy
+     && Pixel.g insideImage = Pixel.r insideImage && Pixel.b insideImage = 255uy
+     && Pixel.r outsideImage = 255uy && Pixel.g outsideImage = 255uy && Pixel.b outsideImage = 255uy)
+    (sprintf "inside %08x, outside %08x" insideImage outsideImage)
 
 // The pixels.
-let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white (Raster.create ()) width height (Editor.editor pageWidth pageHeight doc)
-check "the bitmap is the page" (framebuffer.W = width && framebuffer.H = height) (sprintf "%d x %d" framebuffer.W framebuffer.H)
+let framebuffer = Scene.render (Raster.create ()) width height (Clear Color.white :: commands)
 let pixels : uint32[] = framebuffer.Px.ToArray()
 let pixelAt (x: int) (y: int) = pixels.[y * framebuffer.W + x]
 let isRed (p: uint32) = Pixel.r p > 200uy && Pixel.g p < 80uy && Pixel.b p < 80uy

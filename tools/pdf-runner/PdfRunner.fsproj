@@ -2,6 +2,9 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Match the runtime required by the text packages; shared libraries
+         retain the SDK FSharp.Core version for dotnet fsi consumers. -->
+    <FSharpCoreImplicitPackageVersion>10.1.401</FSharpCoreImplicitPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,8 +16,6 @@
     <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
     <ProjectReference Include="../../src/Word.Import/Rbt.WordImport.fsproj" />
     <ProjectReference Include="../../src/Word.Pdf/Rbt.Word.Pdf.fsproj" />
-    <ProjectReference Include="../../word-native/Rbt.WordWidgets.fsproj" />
-    <PackageReference Include="Rbt.Widgets" Version="$(RbtWidgetsPackageVersion)" />
-    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
+    <ProjectReference Include="../../office-wisp/native/Rbt.OfficeNative.fsproj" />
   </ItemGroup>
 </Project>

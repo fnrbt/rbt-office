@@ -1,0 +1,83 @@
+// Table and current-row edits are one undo and preserve unrelated imported XML.
+import { check, finish, fail, loadWord, loadFormats } from './common.js';
+let dispose;
+try {
+    const [Word, OF, Host, Shell, Dom] = await Promise.all([
+        loadWord(), loadFormats(), import('/word/WordHost.js'), import('/word/WordShell.js'), import('/word/FableUI/Dom.js')
+    ]);
+    const root = document.createElement('div'); root.id = 'shell-table-properties'; document.body.appendChild(root);
+    const host = Host.create('', 'word-shell');
+    dispose = Dom.mountApp('#shell-table-properties', Shell.view(host));
+    const editor = host.Editor;
+    const control = id => document.querySelector(`[data-testid="${id}"]`);
+    const settle = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const click = async id => { control(id).click(); await settle(); };
+    const change = async (id, value, event = 'input') => { const el = control(id); el.value = value; el.dispatchEvent(new Event(event, { bubbles: true })); await settle(); };
+    const open = async () => { Host.openTableMargins(host); await settle(); };
+    const selectText = text => {
+        const blocks = new Map();
+        for (const line of Word.getLayoutLines(editor)) blocks.set(line.BlockId, (blocks.get(line.BlockId) ?? '') + (line.Text ?? ''));
+        const id = [...blocks].find(([, value]) => value.replace(/\s/g, '') === text.replace(/\s/g, ''))?.[0];
+        if (!id) throw new Error(`Missing table paragraph: ${text}`);
+        Word.setSelection(editor, id, 0, id, 0);
+    };
+    const save = async () => OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor));
+    const xmlOf = async blob => (await JSZip.loadAsync(await blob.arrayBuffer())).file('word/document.xml').async('string');
+    const table = (text, indent) => `<w:tbl><w:tblPr><w:tblW w:w="3000" w:type="dxa"/><w:jc w:val="right"/><w:tblInd w:w="${indent}" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblCellMar><w:left w:w="113" w:type="dxa"/></w:tblCellMar><w:tblCaption w:val="kept"/></w:tblPr><w:tblGrid><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="450" w:hRule="exact"/></w:trPr><w:tc><w:tcPr><w:vAlign w:val="center"/></w:tcPr><w:p><w:r><w:t>${text}</w:t></w:r></w:p></w:tc></w:tr></w:tbl>`;
+    Word.setParagraphs(editor, ['seed']);
+    const zip = await JSZip.loadAsync(await (await save()).arrayBuffer());
+    let xml = await zip.file('word/document.xml').async('string');
+    xml = xml.replace(/(<w:body[^>]*>)[\s\S]*?(<w:sectPr\b)/, `$1${table('First table', '181')}${table('Second table', '-120')}$2`);
+    zip.file('word/document.xml', xml);
+    Host.importDocumentPackage(host, await OF.processors.forEditorPackage(await zip.generateAsync({ type: 'uint8array' })), 'tables.docx');
+    selectText('First table');
+    const revision = Word.getRevision(editor);
+    await open(); await click('word-table-margins-apply');
+    check('unchanged table properties create no history', Word.getRevision(editor), revision);
+    await open(); await change('word-table-shading-color', '#123456');
+    check('pattern color selects solid shading', control('word-table-shading-pattern').value, 'solid');
+    await change('word-table-border-color', '#abcdef');
+    check('border color selects grid replacement', control('word-table-borders').value, 'grid');
+    await click('word-table-margins-cancel');
+    check('cancelled dependent edits do not change the table', Word.getRevision(editor), revision);
+    await open(); await change('word-table-width', '-4'); await click('word-table-margins-apply');
+    check('invalid width leaves document unchanged', [!!control('word-table-margins-error').textContent, Word.getRevision(editor)], [true, revision]);
+    await click('word-table-margins-cancel');
+    await open(); await change('word-table-alignment', 'left', 'change'); await change('word-table-indent', '24'); await change('word-table-row-split', 'false', 'change'); await click('word-table-margins-apply');
+    const changed = await save();
+    const doc = new DOMParser().parseFromString(await xmlOf(changed), 'application/xml');
+    const tables = [...doc.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'tbl')];
+    const child = (node, name) => [...node.children].find(x => x.localName === name);
+    const attr = (node, name) => node.getAttributeNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', name);
+    const first = child(tables[0], 'tblPr'), second = child(tables[1], 'tblPr');
+    check('table patch preserves other properties and the other table', [attr(child(first, 'jc'), 'val'), attr(child(first, 'tblInd'), 'w'), attr(child(first, 'tblCaption'), 'val'), attr(child(child(first, 'tblCellMar'), 'left'), 'w'), attr(child(first, 'tblLayout'), 'type'), attr(child(second, 'tblInd'), 'w')], ['left', '360', 'kept', '113', 'fixed', '-120']);
+    const row = child(tables[0], 'tr'), rowProps = child(row, 'trPr');
+    check('row patch preserves exact height and cell metadata', [attr(child(rowProps, 'trHeight'), 'hRule'), !!child(rowProps, 'cantSplit'), attr(child(child(child(row, 'tc'), 'tcPr'), 'vAlign'), 'val')], ['exact', true, 'center']);
+    Word.undo(editor);
+    check('table and row changes undo together', Word.getRevision(editor), revision);
+    Host.importDocumentPackage(host, await OF.processors.forEditorPackage(new Uint8Array(await changed.arrayBuffer())), 'reopened.docx');
+    selectText('First table'); await open();
+    check('saved values prefill on reopen', [control('word-table-alignment').value, Number(control('word-table-indent').value), control('word-table-row-split').value], ['left', 24, 'false']);
+    await click('word-table-margins-cancel');
+    await open(); await change('word-table-row-split', 'true', 'change'); await change('word-table-width-kind', 'pct', 'change'); await change('word-table-width', '1'); await click('word-table-margins-apply');
+    const splitting = await save();
+    const splitDoc = new DOMParser().parseFromString(await xmlOf(splitting), 'application/xml');
+    const splitRow = splitDoc.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'tr')[0];
+    check('allowing row splitting writes an explicit override', attr(child(child(splitRow, 'trPr'), 'cantSplit'), 'val'), '0');
+    const splitWidth = splitDoc.getElementsByTagNameNS('http://schemas.openxmlformats.org/wordprocessingml/2006/main', 'tblW')[0];
+    check('percentage width uses fiftieths of a percent in DOCX', [attr(splitWidth, 'type'), attr(splitWidth, 'w')], ['pct', '50']);
+    Word.undo(editor);
+    Host.importDocumentPackage(host, await OF.processors.forEditorPackage(new Uint8Array(await splitting.arrayBuffer())), 'splitting.docx');
+    selectText('First table'); await open();
+    check('explicit row splitting survives reopen', control('word-table-row-split').value, 'true');
+    check('small percentage width survives reopen', [control('word-table-width-kind').value, Number(control('word-table-width').value)], ['pct', 1]);
+    await change('word-table-width', '125'); await click('word-table-margins-apply');
+    const wide = await save();
+    Word.undo(editor);
+    Host.importDocumentPackage(host, await OF.processors.forEditorPackage(new Uint8Array(await wide.arrayBuffer())), 'wide.docx');
+    selectText('First table'); await open();
+    check('percentage widths above 100 are not normalized twice', Number(control('word-table-width').value), 125);
+    await click('word-table-margins-cancel');
+    dispose(); dispose = null;
+} catch (e) { fail(e); }
+finally { if (dispose) dispose(); finish(); }

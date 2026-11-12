@@ -9,7 +9,6 @@ open Rbt.Word.Document
 open Rbt.Word.TextBuffer
 
 module WordCanvasLayout = Rbt.Word.Layout
-module WordModelLayout = Rbt.Word.WordLayout
 module WordStyles = Rbt.Word.WordStyles
 module WordPaint = Rbt.Word.Paint
 module PdfDoc = Rbt.Pdf.Doc
@@ -951,24 +950,7 @@ let private remapAndScalePageOps
     resizeArrayToList mappedOps
 
 let collectPaintCommandsWithLayouts defaultFontFamily (measureText: WordCanvasLayout.TextMeasurer) (measureRange: WordCanvasLayout.TextRangeMeasurer) (doc: Document) (cachedLayouts: WordCanvasLayout.BlockLayout list option) =
-    let lineHeight = 21.0
-    let footerReserve =
-        if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then doc.PageSetup.FooterDistance + lineHeight * 1.5
-        else doc.PageSetup.MarginBottom
-    let settings: WordCanvasLayout.LayoutSettings = {
-        Width = doc.PageSetup.PageWidth
-        PageHeight = doc.PageSetup.PageHeight
-        FontSize = 14.0
-        LineHeight = lineHeight
-        PaddingLeft = doc.PageSetup.MarginLeft
-        PaddingTop = WordModelLayout.Page.bodyTopWithRunningHeader doc
-        MarginRight = doc.PageSetup.MarginRight
-        MarginBottom = max doc.PageSetup.MarginBottom footerReserve
-        InTableCell = false
-        TableContinuationHeaderHeight = 0.0
-        LongTrailingSpaceFitSafety = 0.25
-        DefaultTabStop = doc.PageSetup.DefaultTabStop
-    }
+    let settings = WordCanvasLayout.documentSettings 14.0 21.0 0.25 doc
     let layoutStart = timingStart ()
     let layouts, paintCommands, pages = WordPaint.collectDocumentCommandsWithLayouts settings defaultFontFamily measureText measureRange doc cachedLayouts
     let layoutLabel = if cachedLayouts.IsSome then "collect:cachedLayouts:done" else "collect:layoutDocument:done"

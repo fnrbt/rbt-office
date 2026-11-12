@@ -793,6 +793,7 @@ module Word =
         | "w:tcPr" -> cellProperties
         | "w:trPr" -> rowProperties
         | "w:tblPr" -> tableProperties
+        | "w:sectPr" -> [ "headerReference"; "footerReference"; "footnotePr"; "endnotePr"; "type"; "pgSz"; "pgMar"; "paperSrc"; "pgBorders"; "lnNumType"; "pgNumType"; "cols"; "formProt"; "vAlign"; "noEndnote"; "titlePg"; "textDirection"; "bidi"; "rtlGutter"; "docGrid"; "printerSettings"; "sectPrChange" ]
         | "w:pBdr" | "w:tcBorders" | "w:tblBorders" -> borders
         | "w:tcMar" | "w:tblCellMar" -> margins
         | "w:tc" -> [ "tcPr"; "*" ]

@@ -128,30 +128,20 @@ ok "xml-to-string-linear-alloc"
    (sprintf "%.1f MB in %.1f ms len=%d" xmlAllocatedMb xmlSw.Elapsed.TotalMilliseconds xmlResult.Length)
 
 let calibreBytes = IO.File.ReadAllBytes(IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents", "calibre-demo.docx"))
+let editorParagraphs (document: DocxReader.WordDocument) =
+    WordEditorPackageReader.converter document document.Content document.Images
+    |> Array.choose (function WordEditorPackage.Paragraph paragraph -> Some paragraph | _ -> None)
+let runText (run: WordEditorPackage.EditorRun) =
+    match run.Content with WordEditorPackage.Text text -> text | _ -> ""
 let calibreDoc = DocxReader.loadBytesNative calibreBytes |> Option.get
-DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-    calibreDoc.Theme
-    calibreDoc.Content
-    calibreDoc.Images
-    calibreDoc.Styles
-    calibreDoc.NumberingDefinitions
-    calibreDoc.Footnotes
-    calibreDoc.Endnotes
-|> ignore
+WordEditorPackageReader.converter calibreDoc calibreDoc.Content calibreDoc.Images |> ignore
 GC.Collect()
 GC.WaitForPendingFinalizers()
 GC.Collect()
 let editorBefore = GC.GetAllocatedBytesForCurrentThread()
 let editorSw = Diagnostics.Stopwatch.StartNew()
 let editorItems =
-    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-        calibreDoc.Theme
-        calibreDoc.Content
-        calibreDoc.Images
-        calibreDoc.Styles
-        calibreDoc.NumberingDefinitions
-        calibreDoc.Footnotes
-        calibreDoc.Endnotes
+    WordEditorPackageReader.converter calibreDoc calibreDoc.Content calibreDoc.Images
 editorSw.Stop()
 let editorAllocatedMb = float (GC.GetAllocatedBytesForCurrentThread() - editorBefore) / 1024.0 / 1024.0
 ok "editor-conversion-native-alloc"
@@ -311,16 +301,9 @@ do
             [ "word/styles.xml", sprintf "<w:styles %s><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii=\"Arial\"/></w:rPr></w:rPrDefault></w:docDefaults><w:style w:type=\"paragraph\" w:default=\"1\" w:styleId=\"Normal\"><w:name w:val=\"Normal\"/></w:style></w:styles>" wNs ]
             []
         |> DocxReader.loadBytesNative |> Option.get
-    let items =
-        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-            unsized.Theme unsized.Content unsized.Images unsized.Styles unsized.NumberingDefinitions unsized.Footnotes unsized.Endnotes
-        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
     let sizes =
-        items
-        |> Array.collect (fun item ->
-            match item.TryGetValue "Runs" with
-            | true, (:? (obj array) as runs) -> runs |> Array.map (fun run -> Math.Round(unbox<float> ((run :?> System.Collections.Generic.Dictionary<string, obj>).["FontSize"]) * 72.0 / 96.0, 2))
-            | _ -> [||])
+        editorParagraphs unsized
+        |> Array.collect (fun item -> item.Runs |> Array.map (fun run -> Math.Round(run.Formatting.FontSize * 72.0 / 96.0, 2)))
         |> Array.toList
     ok "a run no style sizes is 10 pt" (sizes = [ 10.0 ]) (sprintf "%A" sizes)
 
@@ -333,31 +316,19 @@ let explicitStylesDoc =
         [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Loud\"><w:name w:val=\"Loud\"/><w:pPr><w:jc w:val=\"center\"/></w:pPr><w:rPr><w:b/><w:sz w:val=\"40\"/></w:rPr></w:style></w:styles>" wNs ]
         []
     |> DocxReader.loadBytesNative |> Option.get
-let explicitEditorItems =
-    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-        explicitStylesDoc.Theme explicitStylesDoc.Content explicitStylesDoc.Images explicitStylesDoc.Styles
-        explicitStylesDoc.NumberingDefinitions explicitStylesDoc.Footnotes explicitStylesDoc.Endnotes
-    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
-let fieldOf (name: string) (item: System.Collections.Generic.Dictionary<string, obj>) =
-    match item.TryGetValue name with
-    | true, value -> value
-    | _ -> null
-let editorRunsOf (item: System.Collections.Generic.Dictionary<string, obj>) =
-    (fieldOf "Runs" item :?> obj array) |> Array.map (fun run -> run :?> System.Collections.Generic.Dictionary<string, obj>)
+let explicitEditorItems = editorParagraphs explicitStylesDoc
 let explicitSummary =
-    editorRunsOf explicitEditorItems.[0]
+    explicitEditorItems.[0].Runs
     |> Array.map (fun run ->
-        unbox<bool> (fieldOf "Bold" run),
-        (fieldOf "ExplicitBold" run :?> bool option),
-        (fieldOf "ExplicitItalic" run :?> bool option),
-        (fieldOf "ExplicitFontSize" run :?> float option) |> Option.map (fun size -> Math.Round(size, 2)))
+        run.Formatting.Bold, run.Formatting.ExplicitBold, run.Formatting.ExplicitItalic,
+        run.Formatting.ExplicitFontSize |> Option.map (fun size -> Math.Round(size, 2)))
     |> Array.toList
 ok "editor-run-explicit-fields"
    (explicitSummary = [ (true, None, None, None); (false, Some false, Some true, Some 14.67) ])
    (sprintf "%A" explicitSummary)
 let explicitAlignments =
     explicitEditorItems
-    |> Array.map (fun item -> string (fieldOf "Alignment" item), (fieldOf "ExplicitAlignment" item :?> string option))
+    |> Array.map (fun item -> item.Formatting.Alignment, item.Formatting.ExplicitAlignment)
     |> Array.toList
 ok "editor-paragraph-explicit-alignment"
    (explicitAlignments = [ ("center", None); ("left", Some "left") ])
@@ -370,14 +341,11 @@ let keepDoc =
         [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Kept\"><w:name w:val=\"Kept\"/><w:pPr><w:keepNext/></w:pPr></w:style></w:styles>" wNs ]
         []
     |> DocxReader.loadBytesNative |> Option.get
-let keepItems =
-    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-        keepDoc.Theme keepDoc.Content keepDoc.Images keepDoc.Styles keepDoc.NumberingDefinitions keepDoc.Footnotes keepDoc.Endnotes
-    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let keepItems = editorParagraphs keepDoc
 let keepSummary =
     keepItems
     |> Array.map (fun item ->
-        (fieldOf "KeepNext" item :?> bool option), (fieldOf "KeepLines" item :?> bool option), (fieldOf "StyleKeepNext" item :?> bool option))
+        item.Formatting.KeepNext, item.Formatting.KeepLines, item.Formatting.StyleInfo |> Option.bind (fun style -> style.KeepNext))
     |> Array.toList
 ok "editor-paragraph-direct-keep"
    (keepSummary = [ (None, None, Some true); (Some true, Some false, None); (Some false, None, Some true) ])
@@ -433,13 +401,11 @@ ok "comment-body-blocks"
    ((notesDoc.Comments |> List.map (fun comment -> comment.Id, comment.Author, comment.Initials, comment.Text, blockShape comment.Blocks))
      = [ "5", Some "Ann", Some "A", "first remark second", [ "p"; "p" ] ])
    (sprintf "%A" notesDoc.Comments)
-let editorNotes =
-    DocxReader.toEditorNotes notesDoc.Theme notesDoc.Images notesDoc.Styles notesDoc.NumberingDefinitions notesDoc.Footnotes
-    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
+let editorNotes = (WordEditorPackageReader.ofDocument notesDoc).Footnotes
 ok "editor-notes-carry-blocks"
    (editorNotes.Length = 2
-    && (editorNotes.[1].["Blocks"] :?> obj array).Length = 3
-    && ((editorNotes.[1].["Blocks"] :?> obj array).[1] :?> System.Collections.Generic.Dictionary<string, obj>).["Type"] = box "Table")
+    && editorNotes.[1].Blocks.Length = 3
+    && (match editorNotes.[1].Blocks.[1] with WordEditorPackage.Table _ -> true | _ -> false))
    (sprintf "%d notes" editorNotes.Length)
 
 // ----- section properties stay on their own section --------------------------
@@ -691,14 +657,12 @@ let explicitParaDoc =
         [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Spaced\"><w:name w:val=\"Spaced\"/><w:pPr><w:spacing w:before=\"100\" w:after=\"200\"/><w:ind w:hanging=\"180\"/></w:pPr></w:style></w:styles>" wNs ]
         []
     |> DocxReader.loadBytesNative |> Option.get
-let explicitParaItems =
-    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-        explicitParaDoc.Theme explicitParaDoc.Content explicitParaDoc.Images explicitParaDoc.Styles explicitParaDoc.NumberingDefinitions explicitParaDoc.Footnotes explicitParaDoc.Endnotes
-    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
-let floatField name (item: System.Collections.Generic.Dictionary<string, obj>) = fieldOf name item :?> float option
+let explicitParaItems = editorParagraphs explicitParaDoc
 let explicitParaSummary =
     explicitParaItems
-    |> Array.map (fun item -> floatField "SpacingAfter" item, floatField "ExplicitSpacingAfter" item, floatField "SpacingBefore" item, floatField "ExplicitSpacingBefore" item, floatField "ExplicitIndentLeft" item, floatField "FirstLineIndent" item, floatField "ExplicitFirstLineIndent" item)
+    |> Array.map (fun item ->
+        let f = item.Formatting
+        f.SpacingAfter, f.ExplicitSpacingAfter, f.SpacingBefore, f.ExplicitSpacingBefore, f.ExplicitIndentLeft, f.FirstLineIndent, f.ExplicitFirstLineIndent)
     |> Array.toList
 ok "editor-paragraph-explicit-vs-inherited"
    (explicitParaSummary =
@@ -707,7 +671,7 @@ ok "editor-paragraph-explicit-vs-inherited"
           Some 0.0, Some 0.0, Some 5.0, None, Some 48.0, Some -12.0, None ])
    (sprintf "%A" explicitParaSummary)
 ok "editor-run-explicit-automatic-colour"
-   ((explicitParaItems.[2].["Runs"] :?> obj array).[0] :?> System.Collections.Generic.Dictionary<string, obj> |> fun run -> run.["ExplicitColorAuto"] = box true)
+   explicitParaItems.[2].Runs.[0].Formatting.ExplicitColorAuto
    "ExplicitColorAuto"
 
 // ----- tracked changes: nested, on the paragraph mark, moves -----------------
@@ -741,19 +705,16 @@ let hostileDoc =
                        (relType "hyperlink") (relType "hyperlink") (relType "image")) ]
         []
     |> DocxReader.loadBytesNative |> Option.get
-let hostileItems =
-    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-        hostileDoc.Theme hostileDoc.Content hostileDoc.Images hostileDoc.Styles hostileDoc.NumberingDefinitions hostileDoc.Footnotes hostileDoc.Endnotes
-    |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
-let hostileRuns index = (hostileItems.[index].["Runs"] :?> obj array) |> Array.map (fun run -> run :?> System.Collections.Generic.Dictionary<string, obj>)
+let hostileItems = editorParagraphs hostileDoc
+let hostileRuns index = hostileItems.[index].Runs
 let linkSummary =
-    hostileRuns 0 |> Array.map (fun run -> string run.["Text"], (run.["Hyperlink"] :?> string option), (run.["InactiveHyperlink"] :?> string option)) |> Array.toList
+    hostileRuns 0 |> Array.map (fun run -> runText run, run.Hyperlink, run.InactiveHyperlink) |> Array.toList
 ok "hyperlink-targets-are-allow-listed"
    (linkSummary = [ "bad", None, Some "javascript:alert(1)"; "good", Some "https://example.com/", None; "inside", Some "#bm", None ])
    (sprintf "%A" linkSummary)
 ok "external-image-is-marked-linked"
-   ((hostileRuns 1).[0].["ImageLinked"] = box true && (hostileRuns 1).[0].["ImageSrc"] = box "https://tracker.example.com/p.png")
-   (sprintf "%A %A" (hostileRuns 1).[0].["ImageLinked"] (hostileRuns 1).[0].["ImageSrc"])
+   (match (hostileRuns 1).[0].Content with WordEditorPackage.Picture image -> image.Linked && image.Source = Some "https://tracker.example.com/p.png" | _ -> false)
+   (sprintf "%A" (hostileRuns 1).[0].Content)
 ok "active-hyperlink-target-rule"
    ([ "https://a"; "http://a"; "mailto:a@b"; "tel:1"; "#x" ] |> List.forall DocxReader.isActiveHyperlinkTarget
     && not ([ "javascript:alert(1)"; " javascript:x"; "file:///c:/x"; "data:text/html,x"; "vbscript:x"; "x.html"; "#" ] |> List.exists DocxReader.isActiveHyperlinkTarget))
@@ -811,16 +772,8 @@ do
             []
             []
         |> DocxReader.loadBytesNative |> Option.get
-    let items =
-        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-            breaks.Theme breaks.Content breaks.Images breaks.Styles breaks.NumberingDefinitions breaks.Footnotes breaks.Endnotes
-        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
-    let field (name: string) (item: System.Collections.Generic.Dictionary<string, obj>) =
-        match item.TryGetValue name with
-        | true, (:? bool as value) -> value
-        | true, (:? (bool option) as value) -> value = Some true
-        | _ -> false
-    let summary = items |> Array.map (fun item -> field "PageBreakBefore" item, field "PageBreakAtStart" item, field "PageBreakAfter" item) |> Array.toList
+    let items = editorParagraphs breaks
+    let summary = items |> Array.map (fun item -> item.Formatting.PageBreakBefore, item.Formatting.PageBreakAtStart, item.Formatting.PageBreakAfter) |> Array.toList
     ok "a page break a paragraph starts with is a break before it"
         (summary = [ (false, false, false); (true, true, false); (false, false, true); (false, false, true); (false, false, false) ])
         (sprintf "%A" summary)
@@ -840,20 +793,41 @@ do
             []
             []
         |> DocxReader.loadBytesNative |> Option.get
-    let items =
-        DocxReader.toEditorParagraphsWithStylesThemeAndNumbering
-            marked.Theme marked.Content marked.Images marked.Styles marked.NumberingDefinitions marked.Footnotes marked.Endnotes
-        |> Array.map (fun item -> item :?> System.Collections.Generic.Dictionary<string, obj>)
-    let marksOf (item: System.Collections.Generic.Dictionary<string, obj>) =
-        editorRunsOf item
-        |> Array.map (fun run -> string run.["Text"], (match run.TryGetValue "RenderedPageBreakBefore" with | true, (:? bool as value) -> value | _ -> false))
-        |> Array.toList
+    let items = editorParagraphs marked
+    let marksOf (item: WordEditorPackage.EditorParagraph) =
+        item.Runs |> Array.map (fun run -> runText run, run.RenderedPageBreakBefore) |> Array.toList
     ok "a mark in a link is the link run's from it on" (marksOf items.[0] = [ ("link, ", false); ("next page", true) ]) (sprintf "%A" (marksOf items.[0]))
     // (A complex field's result is the field's one run, with the mark: a field of one run is saved from its source.)
     ok "a mark in a field's result is the field run's"
         (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "result, on the next page"))
         (sprintf "%A" (marksOf items.[1]))
     ok "and in a simple field's" (marksOf items.[2] |> List.exists (fun (text, mark) -> mark && text = "next")) (sprintf "%A" (marksOf items.[2]))
+
+// Pattern shading must survive the editor bridge, including style inheritance and
+// a direct nil that suppresses inherited shading rather than restoring the style.
+do
+    let shaded =
+        docxWithParts
+            ("<w:p><w:pPr><w:shd w:val=\"pct25\" w:color=\"112233\" w:fill=\"DDEEFF\"/></w:pPr><w:r><w:t>direct</w:t></w:r></w:p>"
+             + "<w:p><w:pPr><w:pStyle w:val=\"Pattern\"/></w:pPr><w:r><w:t>inherited</w:t></w:r></w:p>"
+             + "<w:p><w:pPr><w:pStyle w:val=\"Pattern\"/><w:shd w:val=\"nil\"/></w:pPr><w:r><w:t>cleared</w:t></w:r></w:p>")
+            [ "word/styles.xml", sprintf "<w:styles %s><w:style w:type=\"paragraph\" w:styleId=\"Pattern\"><w:name w:val=\"Pattern\"/><w:pPr><w:shd w:val=\"horzStripe\" w:color=\"445566\" w:fill=\"AABBCC\"/></w:pPr></w:style></w:styles>" wNs ]
+            []
+        |> DocxReader.loadBytesNative |> Option.get
+    let items = editorParagraphs shaded
+    let shade index =
+        let f = items.[index].Formatting
+        [ f.ShadingPattern; f.ShadingForeground; f.BackgroundColor; f.ExplicitShadingPattern; f.ExplicitShadingForeground ]
+    ok "direct paragraph pattern and both colors reach the editor"
+        (shade 0 = [ Some "pct25"; Some "#112233"; Some "#DDEEFF"; Some "pct25"; Some "#112233" ])
+        (sprintf "%A" (shade 0))
+    ok "inherited paragraph shading is not marked direct"
+        (shade 1 = [ Some "horzStripe"; Some "#445566"; Some "#AABBCC"; None; None ])
+        (sprintf "%A" (shade 1))
+    ok "direct nil suppresses inherited paragraph pattern"
+        (items.[2].Formatting.ShadingPattern = Some "nil"
+         && items.[2].Formatting.ExplicitShadingPattern = Some "nil")
+        (sprintf "%A" (shade 2))
 
 printfn ""
 printfn "OfficeFormat DocxReader tests: %d passed, %d failed" pass fail

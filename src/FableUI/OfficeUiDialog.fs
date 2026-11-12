@@ -27,6 +27,11 @@ let openDialog (state: DialogState) (spec: DialogSpec) =
         values.[field.Id] <- signal field.Initial
     state.Open.Value <- Some (OpenDialogState(spec, values))
 
+/// Reuse application-owned field signals when migrating a form without
+/// maintaining a second copy of its values in the renderer.
+let openDialogWithValues (state: DialogState) (spec: DialogSpec) (values: Dictionary<string, Signal<string>>) =
+    state.Open.Value <- Some (OpenDialogState(spec, values))
+
 let closeDialog (state: DialogState) = state.Open.Value <- None
 
 [<Emit("setTimeout($0, 0)")>]
@@ -53,8 +58,20 @@ let private snapshot (values: Dictionary<string, Signal<string>>) =
 let private renderField (prefix: string) (values: Dictionary<string, Signal<string>>) (field: DialogField) =
     let value = values.[field.Id]
     let fieldId = prefix + "-field-" + field.Id
-    let testId = "dlg-field-" + field.Id
-    let write v = value.Value <- v
+    let testId = field.TestId |> Option.defaultValue ("dlg-field-" + field.Id)
+    let kind, update =
+        match field.Kind with
+        | DialogUpdatingField (kind, update) -> kind, Some update
+        | kind -> kind, None
+    let write v =
+        match update with
+        | None -> value.Value <- v
+        | Some change ->
+            let next = change (snapshot values) v
+            for KeyValue(id, text) in next do
+                match values.TryGetValue id with
+                | true, target when target.Value <> text -> target.Value <- text
+                | _ -> ()
     let labelled control =
         div [ cls "dlg-field" ] [
             label [ cls "dlg-label"; attr "for" fieldId ] [ text field.Label ]
@@ -62,7 +79,8 @@ let private renderField (prefix: string) (values: Dictionary<string, Signal<stri
         ]
     let common = [ id fieldId; attr "data-testid" testId ]
     let valueProp = propR "value" (fun () -> box value.Value)
-    match field.Kind with
+    match kind with
+    | DialogUpdatingField _ -> failwith "Nested dialog update is not supported"
     | DialogTextField placeholder ->
         labelled (input (common @ [ cls "dlg-input"; typ "text"; attr "placeholder" placeholder; valueProp; onInput write ]))
     | DialogNumberField (low, high) ->
@@ -79,7 +97,9 @@ let private renderField (prefix: string) (values: Dictionary<string, Signal<stri
         ]
     | DialogSelectField options ->
         labelled (select (common @ [ cls "dlg-select"; onChange (fun e -> write ((e.target :?> HTMLSelectElement).value)) ])
-            (options |> List.map (fun choice -> option [ attr "value" choice.Value; propR "selected" (fun () -> box (value.Value = choice.Value)) ] [ text choice.Label ])))
+            (options |> List.map (fun choice ->
+                option ([ attr "value" choice.Value; propR "selected" (fun () -> box (value.Value = choice.Value)) ]
+                        @ (if choice.IsEnabled then [] else [ attr "disabled" "disabled" ])) [ text choice.Label ])))
     | DialogColorField ->
         labelled (input (common @ [ cls "dlg-color"; typ "color"; valueProp; onInput write ]))
     | DialogSliderField (low, high) ->
@@ -104,8 +124,11 @@ let private renderField (prefix: string) (values: Dictionary<string, Signal<stri
         div [ cls "dlg-section"; attr "data-testid" testId ] [ text field.Label ]
     | DialogStatusField ->
         div [ cls "dlg-field" ] [
-            div [ cls "dlg-label"; id (fieldId + "-label") ] [ text field.Label ]
-            div [ cls "dlg-status"; attr "data-testid" testId; attr "aria-labelledby" (fieldId + "-label") ] [ textR (fun () -> value.Value) ]
+            if field.Label <> "" then div [ cls "dlg-label"; id (fieldId + "-label") ] [ text field.Label ]
+            div ([ cls "dlg-status"; attr "data-testid" testId ]
+                 @ (if field.Label = "" then [] else [ attr "aria-labelledby" (fieldId + "-label") ])
+                 @ (if field.Id.EndsWith("-error") then [ attr "role" "alert" ] else []))
+                [ textR (fun () -> value.Value) ]
         ]
     | DialogComputedField compute ->
         div [ cls "dlg-field" ] [
@@ -124,8 +147,39 @@ let private activate (state: DialogState) (opened: OpenDialogState) (btn: Dialog
         // An action can synchronously replace this dialog.
         if shouldClose && isCurrent state opened then closeDialog state
 
+/// Default CSS, which the host can replace with its own theme.
+let defaultStylesheet = """
+.rb-dlg-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
+.rb-dlg-card { box-sizing: border-box; display: flex; flex-direction: column; background: var(--office-surface, #fff); border: 1px solid var(--office-border, #dadce0); border-radius: 10px; box-shadow: 0 12px 40px rgb(0 0 0 / 18%); padding: 24px; width: min(480px, 100%); max-height: 100%; font-family: system-ui, sans-serif; color: var(--office-text, #202124); }
+.rb-dlg-header { margin-bottom: 16px; }
+.rb-dlg-title { margin: 0; font-size: 16px; font-weight: 600; }
+.rb-dlg-subtitle { margin: 4px 0 0; font-size: 13px; color: var(--office-muted, #5f6368); }
+.rb-dlg-body { min-height: 0; overflow: auto; }
+.rb-dlg-fields { display: flex; flex-direction: column; gap: 14px; }
+.rb-dlg-panel[hidden] { display: none; }
+.rb-dlg-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 12px; }
+.rb-dlg-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 8px; cursor: pointer; white-space: nowrap; }
+.rb-dlg-tab[aria-selected=true] { border-color: var(--office-accent, #1a73e8); color: var(--office-accent, #1a73e8); }
+.rb-dlg-field { display: flex; flex-direction: column; gap: 4px; }
+.rb-dlg-label { font-size: 13px; color: var(--office-muted, #5f6368); }
+.rb-dlg-label-inline { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.rb-dlg-input, .rb-dlg-select, .rb-dlg-textarea { box-sizing: border-box; padding: 6px 8px; border: 1px solid var(--office-border, #dadce0); border-radius: var(--office-radius, 6px); font: inherit; color: var(--office-text, #202124); background: var(--office-surface, #fff); }
+.rb-dlg-slider { display: flex; align-items: center; gap: 8px; }
+.rb-dlg-slider input[type=range] { flex: 1; min-width: 0; }
+.rb-dlg-slider input[type=number] { width: 80px; }
+.rb-dlg-radios { display: flex; flex-direction: column; gap: 4px; }
+.rb-dlg-section { font-weight: 600; border-bottom: 1px solid var(--office-border, #dadce0); padding-bottom: 4px; }
+.rb-dlg-status { font-size: 13px; color: var(--office-muted, #5f6368); min-height: 18px; white-space: pre-wrap; }
+.rb-dlg-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.rb-dlg-button { min-height: 32px; padding: 0 16px; border: 1px solid var(--office-border, #dadce0); border-radius: var(--office-radius, 6px); background: var(--office-surface, #fff); color: var(--office-text, #202124); font: inherit; cursor: pointer; }
+.rb-dlg-button:hover { background: var(--office-hover, #f1f3f4); }
+.rb-office-dialog .rb-dlg-button-primary { background: var(--office-accent, #1a73e8); color: #fff; border-color: var(--office-accent, #1a73e8); }
+.rb-office-dialog .rb-dlg-button-primary:hover { filter: brightness(.9); }
+.rb-dlg-card :focus-visible, .rb-dlg-card:focus-visible { outline: 2px solid var(--office-accent, #1a73e8); outline-offset: 2px; }
+"""
 /// Mount once alongside the shell. Dialogs are created and disposed as the state changes.
 let renderDialog (state: DialogState) : View =
+    Chrome.installStyles "dialog" defaultStylesheet
     let mutable previousFocus: Element option = None
     ReactiveFragment(fun () ->
         match state.Open.Value with
@@ -190,7 +244,7 @@ let renderDialog (state: DialogState) : View =
                         | _ -> ()
                 elif not composing && e.key = "Escape" then
                     e.preventDefault ()
-                    match spec.Buttons |> List.tryFind (fun b -> b.TestId = "dlg-cancel") with
+                    match spec.Buttons |> List.tryFind (fun b -> b.TestId = "dlg-cancel" || b.Label = "Cancel" || b.Label = "Close") with
                     | Some cancel -> activate state opened cancel
                     | None -> if isCurrent state opened then closeDialog state
                 elif not composing && e.key = "Enter" && not e.repeat && not e.ctrlKey && not e.altKey && not e.metaKey && not e.shiftKey
@@ -225,7 +279,7 @@ let renderDialog (state: DialogState) : View =
                               previousFocus |> Option.iter (fun previous -> if isConnected previous then (previous :?> HTMLElement).focus ())
                               previousFocus <- None) ]
                 @ (if spec.Subtitle.IsSome then [ attr "aria-describedby" subtitleId ] else [])
-            [ div [ cls "dlg-overlay" ] [
+            [ div [ cls "office-dialog"; cls "dlg-overlay"; attr "data-testid" (spec.TestId + "-overlay") ] [
                 div dialogAttrs [
                     div [ cls "dlg-header" ] [
                         h2 [ cls "dlg-title"; id titleId ] [ text spec.Title ]
@@ -240,35 +294,5 @@ let renderDialog (state: DialogState) : View =
                 ]
             ] ])
 
-/// Default CSS, which the host can replace with its own theme.
-let defaultStylesheet = """
-.rb-dlg-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.25); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 1000; }
-.rb-dlg-card { box-sizing: border-box; display: flex; flex-direction: column; background: #fff; border: 1px solid #dadce0; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.16); padding: 24px; width: min(480px, 100%); max-height: 100%; font-family: system-ui, sans-serif; color: #202124; }
-.rb-dlg-header { margin-bottom: 16px; }
-.rb-dlg-title { margin: 0; font-size: 16px; font-weight: 600; }
-.rb-dlg-subtitle { margin: 4px 0 0; font-size: 12px; color: #5f6368; }
-.rb-dlg-body { min-height: 0; overflow: auto; }
-.rb-dlg-fields { display: flex; flex-direction: column; gap: 14px; }
-.rb-dlg-panel[hidden] { display: none; }
-.rb-dlg-tabs { display: flex; gap: 4px; overflow-x: auto; margin-bottom: 12px; }
-.rb-dlg-tab { border: 0; border-bottom: 2px solid transparent; background: transparent; padding: 8px; cursor: pointer; white-space: nowrap; }
-.rb-dlg-tab[aria-selected=true] { border-color: #1a73e8; color: #1a73e8; }
-.rb-dlg-field { display: flex; flex-direction: column; gap: 4px; }
-.rb-dlg-label { font-size: 12px; color: #5f6368; }
-.rb-dlg-label-inline { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.rb-dlg-input, .rb-dlg-select, .rb-dlg-textarea { box-sizing: border-box; padding: 6px 8px; border: 1px solid #dadce0; border-radius: 4px; font: inherit; font-size: 13px; color: #202124; background: #fff; }
-.rb-dlg-slider { display: flex; align-items: center; gap: 8px; }
-.rb-dlg-slider input[type=range] { flex: 1; min-width: 0; }
-.rb-dlg-slider input[type=number] { width: 80px; }
-.rb-dlg-radios { display: flex; flex-direction: column; gap: 4px; }
-.rb-dlg-section { font-weight: 600; border-bottom: 1px solid #dadce0; padding-bottom: 4px; }
-.rb-dlg-status { font-size: 13px; color: #5f6368; min-height: 18px; white-space: pre-wrap; }
-.rb-dlg-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-.rb-dlg-button { min-height: 32px; padding: 0 16px; border: 1px solid #dadce0; border-radius: 4px; background: #fff; color: #202124; font-size: 13px; cursor: pointer; }
-.rb-dlg-button:hover { background: #f1f3f4; }
-.rb-dlg-button-primary { background: #1a73e8; color: #fff; border-color: #1a73e8; }
-.rb-dlg-button-primary:hover { background: #1764c6; }
-.rb-dlg-card :focus-visible, .rb-dlg-card:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
-"""
 
 #endif

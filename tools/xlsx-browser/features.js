@@ -577,3 +577,118 @@ checks['sheet-pdf'] = async () => {
     close();
     return lines;
 };
+
+// File > Print PDF must use the mounted grid's real lazy-loaded PDF writer. Chromium
+// headless has no print dialog: intercept only the iframe's platform print() call,
+// leaving export and the PDF blob/iframe handoff untouched.
+const waitForPrintStatus = async (status, pending) => {
+    for (let i = 0; i < 200; i++) {
+        if (status.textContent !== pending) return status.textContent;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return status.textContent;
+};
+checks['shell-print-pdf'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const shellHost = document.createElement('div');
+    document.body.appendChild(shellHost);
+    const { createSpreadsheetShell } = await import('/spreadsheet/Toolbar.js');
+    const contentWindow = Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype, 'contentWindow');
+    let printCalls = 0, engineCalls = 0;
+    const originalPrint = grid.PrintPdf.bind(grid);
+    grid.PrintPdf = (...args) => { engineCalls++; return originalPrint(...args); };
+    const actions = [];
+    const shell = createSpreadsheetShell(grid, (action) => actions.push(action));
+    try {
+        let response;
+        for (const name of ['LiberationSans-Regular.ttf', 'calibri.ttf']) {
+            response = await fetch('/font?name=' + name);
+            if (response.ok) break;
+        }
+        if (!response.ok) throw new Error('PDF text requires a TrueType face: set RB_WORD_FONT_DIR to a directory containing LiberationSans-Regular.ttf or calibri.ttf');
+        grid.SetPdfFonts([{ family: 'Calibri', bold: false, italic: false, data: new Uint8Array(await response.arrayBuffer()) }]);
+        grid.SetCell(0, 0, 'SHELL INITIAL');
+        grid.SetPageSetup({ printArea: 'A1:A1' });
+        const before = await pdfSummary(await grid.ExportPdf());
+        grid.SetCell(0, 0, 'SHELL UPDATED');
+        const expected = await pdfSummary(await grid.ExportPdf());
+        check('edited workbook changes the PDF text', [before.shown.length > 0, expected.shown.length > 0, JSON.stringify(before.shown) !== JSON.stringify(expected.shown)], [true, true, true]);
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+            configurable: true,
+            get() {
+                const real = contentWindow.get.call(this);
+                return this.hasAttribute('data-spreadsheet-print')
+                    ? { focus: () => real.focus(), print: () => { printCalls++; } }
+                    : real;
+            }
+        });
+        shell.Mount(shellHost);
+        const status = shellHost.querySelector('[role="status"].sheet-print-status');
+        const file = shellHost.querySelector('[data-sheet-menu="file"]');
+        const print = shellHost.querySelector('[data-sheet-menu-item="print-pdf"]');
+        file.click();
+        print.click();
+        const pending = status.textContent;
+        check('print reports pending and closes File menu', [pending.length > 0, file.getAttribute('aria-expanded')], [true, 'false']);
+        print.click();
+        check('concurrent clicks invoke the real print engine once', [engineCalls, actions], [1, []]);
+        const handoff = await waitForPrintStatus(status, pending);
+        check('native print handoff updates shell status', [handoff !== pending, handoff.length > 0, printCalls], [true, true, 1]);
+        const frame = document.querySelector('iframe[data-spreadsheet-print]');
+        check('PDF blob was handed to one hidden print iframe', [printCalls, !!frame, frame?.style.visibility, /^blob:/.test(frame?.src ?? '')], [1, true, 'hidden', true]);
+        if (frame) {
+            const printed = new Uint8Array(await (await fetch(frame.src)).arrayBuffer());
+            const summary = await pdfSummary(printed);
+            check('iframe PDF is the edited workbook with real pages and text',
+                [latin1(printed.subarray(0, 5)), summary.pages, summary.shown.length > 0, summary.pages === grid.GetPrintPages(0).pageCount, JSON.stringify(summary.shown) === JSON.stringify(expected.shown)],
+                ['%PDF-', expected.pages, true, true, true]);
+            frame.remove();
+        }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', contentWindow);
+        shell.Dispose(); shellHost.remove(); close();
+    }
+    return lines;
+};
+
+// The test runner routes the lazy PDF module request to a genuine network
+// failure on a fresh page; no replacement exporter or synthetic PDF is used.
+checks['shell-print-pdf-failure'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const shellHost = document.createElement('div');
+    document.body.appendChild(shellHost);
+    const { createSpreadsheetShell } = await import('/spreadsheet/Toolbar.js');
+    const actions = [], rejections = [];
+    const onRejection = (event) => rejections.push(String(event.reason));
+    window.addEventListener('unhandledrejection', onRejection);
+    const shell = createSpreadsheetShell(grid, (action) => actions.push(action));
+    try {
+        shell.Mount(shellHost);
+        const status = shellHost.querySelector('[role="status"].sheet-print-status');
+        shellHost.querySelector('[data-sheet-menu="file"]').click();
+        const print = shellHost.querySelector('[data-sheet-menu-item="print-pdf"]');
+        print.click();
+        const pending = status.textContent;
+        check('failed module download starts with pending status', pending.length > 0, true);
+        const failure = await waitForPrintStatus(status, pending);
+        check('failed PDF module request is visible', /^Print PDF failed: .+/.test(failure), true);
+        check('failed request does not delegate or print', [actions.length, document.querySelectorAll('iframe[data-spreadsheet-print]').length], [0, 0]);
+        print.click();
+        const retryPending = status.textContent;
+        check('failed request can be retried', [retryPending.length > 0, retryPending !== failure], [true, true]);
+        check('failed request releases busy state and catches rejection', [await waitForPrintStatus(status, retryPending), rejections.length], [failure, 0]);
+        print.click();
+        const detachedPending = status.textContent;
+        shellHost.remove();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        check('detached shell gets no stale UI update', status.textContent, detachedPending);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        window.removeEventListener('unhandledrejection', onRejection);
+        shell.Dispose(); shellHost.remove(); close();
+    }
+    return lines;
+};

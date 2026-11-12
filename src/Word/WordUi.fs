@@ -138,6 +138,8 @@ module Ui =
         FontFamily: unit -> string
         FontSize: unit -> string
         IsTrackChangesActive: unit -> bool
+        IsInTable: unit -> bool
+        CanEdit: unit -> bool
         ParagraphStyles: unit -> ChoiceSpec list
         CharacterStyles: unit -> ChoiceSpec list
         /// Recently-opened file paths, newest first. The File menu displays
@@ -178,6 +180,9 @@ module Ui =
         InsertSectionBreak: string -> unit
         OpenAnnotation: string -> unit
         OpenParagraphStyle: unit -> unit
+        OpenFontDialog: (unit -> unit) option
+        OpenParagraphBorders: (unit -> unit) option
+        OpenListsDialog: (unit -> unit) option
         OpenTableCellStyle: unit -> unit
         OpenTableMargins: unit -> unit
         OpenInsertTable: unit -> unit
@@ -280,8 +285,8 @@ module Ui =
             Label = "Insert"
             Items = [
                 item "word-menu-insert-image" "Image..." None actions.OpenImagePicker
-                item "word-menu-insert-table" "Table..." None actions.OpenInsertTable
-                itemKey "word-menu-insert-link" "Hyperlink..." "Ctrl+K" None (fun () -> actions.OpenAnnotation "hyperlink")
+                item "word-menu-insert-table" "Table..." None actions.OpenInsertTable |> menuItemEnabled state.CanEdit
+                itemKey "word-menu-insert-link" "Hyperlink..." "Ctrl+K" None (fun () -> actions.OpenAnnotation "hyperlink") |> menuItemEnabled state.CanEdit
                 item "word-menu-insert-comment" "Comment..." None (fun () -> actions.OpenAnnotation "comment")
                 item "word-menu-insert-note" "Footnote / endnote..." None (fun () -> actions.OpenAnnotation "note")
                 item "word-menu-insert-date-time" "Date and time" None actions.InsertDateTime
@@ -314,21 +319,24 @@ module Ui =
                 item "word-menu-subscript" "Subscript" (Some (fun () -> state.VertAlign() = "subscript")) (fun () -> actions.ApplyVertAlign "subscript")
                 item "word-menu-clear-formatting" "Clear formatting" None actions.ClearFormatting
                 item "word-menu-paragraph-style" "Paragraph style..." None actions.OpenParagraphStyle
-            ]
+            ] @
+            (actions.OpenFontDialog |> Option.map (fun openDialog -> item "word-menu-font-dialog" "Font..." None openDialog |> menuItemEnabled state.CanEdit) |> Option.toList) @
+            (actions.OpenParagraphBorders |> Option.map (fun openDialog -> item "word-menu-paragraph-borders" "Borders and shading..." None openDialog |> menuItemEnabled state.CanEdit) |> Option.toList) @
+            (actions.OpenListsDialog |> Option.map (fun openDialog -> item "word-menu-lists-dialog" "Bullets and numbering..." None openDialog |> menuItemEnabled state.CanEdit) |> Option.toList)
         }
         {
             TestId = "word-table-menu"
             PanelTestId = "word-table-menu-panel"
             Label = "Table"
             Items = [
-                item "word-menu-insert-table" "Insert 2 x 3 table" None actions.InsertDefaultTable
-                item "word-menu-insert-custom-table" "Insert table..." None actions.OpenInsertTable
-                item "word-menu-insert-row-after" "Insert row after" None actions.InsertTableRow
-                item "word-menu-insert-column-after" "Insert column after" None actions.InsertTableColumn
-                item "word-menu-delete-row" "Delete row" None actions.DeleteTableRow
-                item "word-menu-delete-column" "Delete column" None actions.DeleteTableColumn
-                item "word-menu-table-cell-style" "Cell style..." None actions.OpenTableCellStyle
-                item "word-menu-table-margins" "Cell margins..." None actions.OpenTableMargins
+                item "word-menu-insert-default-table" "Insert 2 x 3 table" None actions.InsertDefaultTable |> menuItemEnabled state.CanEdit
+                item "word-menu-insert-custom-table" "Insert table..." None actions.OpenInsertTable |> menuItemEnabled state.CanEdit
+                item "word-menu-insert-row-after" "Insert row after" None actions.InsertTableRow |> menuItemEnabled state.IsInTable
+                item "word-menu-insert-column-after" "Insert column after" None actions.InsertTableColumn |> menuItemEnabled state.IsInTable
+                item "word-menu-delete-row" "Delete row" None actions.DeleteTableRow |> menuItemEnabled state.IsInTable
+                item "word-menu-delete-column" "Delete column" None actions.DeleteTableColumn |> menuItemEnabled state.IsInTable
+                item "word-menu-table-cell-style" "Current cell style..." None actions.OpenTableCellStyle |> menuItemEnabled state.IsInTable
+                item "word-menu-table-margins" "Table properties..." None actions.OpenTableMargins |> menuItemEnabled state.IsInTable
             ]
         }
     ]
@@ -391,7 +399,7 @@ module Ui =
         button "word-delete-row" "-Row" None actions.DeleteTableRow
         button "word-delete-column" "-Col" None actions.DeleteTableColumn
         button "word-table-cell-style" "Cell" None actions.OpenTableCellStyle
-        button "word-table-margins" "Margins" None actions.OpenTableMargins
+        button "word-table-margins" "Properties" None actions.OpenTableMargins
         button "word-paragraph-style" "Paragraph" None actions.OpenParagraphStyle
     ]
 
@@ -410,30 +418,30 @@ module Ui =
             toolbarSelect "word-font-family" state.FontFamily (fun () -> fontFamilies) actions.ApplyFontFamily
             toolbarNumberInput "word-font-size" state.FontSize (Some "8") (Some "72") actions.ApplyFontSize
             sep
-            button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold
-            button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic
-            button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline
-            button "word-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike
+            button "word-bold" "B" (Some state.IsBoldActive) actions.ToggleBold |> withTooltip "Bold (Ctrl+B)"
+            button "word-italic" "I" (Some state.IsItalicActive) actions.ToggleItalic |> withTooltip "Italic (Ctrl+I)"
+            button "word-underline" "U" (Some state.IsUnderlineActive) actions.ToggleUnderline |> withTooltip "Underline (Ctrl+U)"
+            button "word-strike" "S" (Some state.IsStrikeActive) actions.ToggleStrike |> withTooltip "Strikethrough"
             sep
             toolbarColorInput "word-text-color" state.TextColor actions.ApplyTextColor
             toolbarColorInput "word-highlight-color" state.HighlightColor actions.ApplyHighlight
             sep
-            button "word-align-left" "L" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left")
-            button "word-align-center" "C" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center")
-            button "word-align-right" "R" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right")
-            button "word-align-justify" "J" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify")
+            button "word-align-left" "L" (Some (fun () -> state.Alignment() = "left")) (fun () -> actions.ApplyAlignment "left") |> withTooltip "Align left"
+            button "word-align-center" "C" (Some (fun () -> state.Alignment() = "center")) (fun () -> actions.ApplyAlignment "center") |> withTooltip "Align center"
+            button "word-align-right" "R" (Some (fun () -> state.Alignment() = "right")) (fun () -> actions.ApplyAlignment "right") |> withTooltip "Align right"
+            button "word-align-justify" "J" (Some (fun () -> state.Alignment() = "justify")) (fun () -> actions.ApplyAlignment "justify") |> withTooltip "Justify"
             sep
-            button "word-bullet-list" "•" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet
-            button "word-numbered-list" "#" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered
-            button "word-decrease-indent" "<" None actions.DecreaseListIndent
-            button "word-increase-indent" ">" None actions.IncreaseListIndent
+            button "word-bullet-list" "•" (Some (fun () -> state.ListStyle() = "bullet")) actions.ToggleBullet |> withTooltip "Bulleted list"
+            button "word-numbered-list" "#" (Some (fun () -> state.ListStyle() = "numbered")) actions.ToggleNumbered |> withTooltip "Numbered list"
+            button "word-decrease-indent" "<" None actions.DecreaseListIndent |> withTooltip "Decrease indent"
+            button "word-increase-indent" ">" None actions.IncreaseListIndent |> withTooltip "Increase indent"
             sep
-            button "word-insert-image" "Img" None actions.OpenImagePicker
-            button "word-insert-table" "Tbl" None actions.InsertDefaultTable
-            button "word-insert-link" "Lnk" None (fun () -> actions.OpenAnnotation "hyperlink")
-            button "word-insert-comment" "Cmt" None (fun () -> actions.OpenAnnotation "comment")
+            button "word-insert-image" "Img" None actions.OpenImagePicker |> withTooltip "Insert image"
+            button "word-insert-table" "Tbl" None actions.OpenInsertTable |> withTooltip "Insert table" |> withEnabled state.CanEdit
+            button "word-insert-link" "Lnk" None (fun () -> actions.OpenAnnotation "hyperlink") |> withTooltip "Insert hyperlink" |> withEnabled state.CanEdit
+            button "word-insert-comment" "Cmt" None (fun () -> actions.OpenAnnotation "comment") |> withTooltip "Insert comment"
             sep
-            button "word-find-replace" "Q" None actions.OpenFindReplace
+            button "word-find-replace" "Q" None actions.OpenFindReplace |> withTooltip "Find and replace (Ctrl+F)"
         ] }
     ]
 

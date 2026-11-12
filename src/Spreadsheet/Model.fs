@@ -1585,6 +1585,10 @@ type SpreadsheetModel = {
     /// Pictures and other drawing objects, back to front. They move with
     /// their anchor cells when rows or columns are inserted or deleted.
     Drawings: SheetDrawing list
+    /// Chart parts authored in this workbook, keyed by the drawing's relationship
+    /// id. The anchor stays in Drawings; the part and its references share the
+    /// sheet's history, including row/column edits and sheet copies.
+    AuthoredCharts: Map<string, string>
 
     /// Threaded comments by cell (shown where a cell's comment is shown).
     Threads: Map<CellAddress, CommentThread>
@@ -1723,6 +1727,7 @@ let createEmpty rowCount colCount = {
     Macros = ""
     Pivots = []
     Drawings = []
+    AuthoredCharts = Map.empty
     Threads = Map.empty
     Hyperlinks = []
     ColumnStyles = []
@@ -2804,6 +2809,15 @@ let setColumnFilter (col: int) (criteria: FilterCriteria) (model: SpreadsheetMod
         AutoFilter = Some filter
         Filters = Map.add col { Column = col; Criteria = criteria } model.Filters }
     |> reapplyFilter
+/// Configure the explicit range and a column filter with one row-visibility
+/// calculation; used by the shell's atomic range-and-criteria edit.
+let setAutoFilterAndColumnFilter (range: CellRange) (col: int) (criteria: FilterCriteria) (model: SpreadsheetModel) : SpreadsheetModel =
+    let filters = model.Filters |> Map.filter (fun key _ -> key >= range.From.Col && key <= range.To.Col)
+    { model with
+        AutoFilter = Some { Range = range; Implicit = false }
+        Filters = Map.add col { Column = col; Criteria = criteria } filters }
+    |> reapplyFilter
+
 
 /// Take the filter off a column (None: off every column). An implicit
 /// AutoFilter goes with its last column filter.
@@ -3449,6 +3463,32 @@ let private moveEditSpan isInsert at count lo hi =
         Some (newLo, newHi)
 
 
+/// Transform the formulas in authored chart parts along with the sheet's other
+/// references. Imported chart parts remain source-owned and use XlsxBridge's
+/// source-aware rewriter instead.
+let mapAuthoredChartFormulas (rewrite: string -> string) (model: SpreadsheetModel) : SpreadsheetModel =
+    if Map.isEmpty model.AuthoredCharts then model
+    else
+        let decode (text: string) =
+            text.Replace("&lt;", "<").Replace("&gt;", ">").Replace("&quot;", "\"").Replace("&apos;", "'").Replace("&amp;", "&")
+        let encode (text: string) =
+            text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;").Replace("'", "&apos;")
+        let formula = System.Text.RegularExpressions.Regex("<c:f>([^<]*)</c:f>")
+        let cache = System.Text.RegularExpressions.Regex("<c:(numCache|strCache)>[\\s\\S]*?</c:\\1>")
+        let changed =
+            model.AuthoredCharts
+            |> Map.map (fun _ xml ->
+                let rewritten =
+                    formula.Replace(xml, System.Text.RegularExpressions.MatchEvaluator(fun found ->
+                        let value = decode found.Groups.[1].Value
+                        let next = rewrite ("=" + value)
+                        let next = if next.StartsWith("=") then next.Substring 1 else next
+                        if next = value then found.Value else "<c:f>" + encode next + "</c:f>"))
+                // Invalidated references must not resurrect deleted values from
+                // an insertion-time cache. Export rebuilds caches from live cells.
+                if rewritten = xml then xml else cache.Replace(rewritten, ""))
+        if changed = model.AuthoredCharts then model
+        else { model with AuthoredCharts = changed }
 /// Apply `rewrite` to every formula a sheet holds: its formula cells, the
 /// formulas of its conditional formats and of its validations. The model
 /// itself when nothing changed.
@@ -3491,16 +3531,18 @@ let mapModelFormulas (rewrite: string -> string) (model: SpreadsheetModel) : Spr
                     ListSource (if rewritten.StartsWith "=" then rewritten.Substring 1 else rewritten)
                 | other -> other
             if rule = entry.Validation.Rule then entry else { entry with Validation = { entry.Validation with Rule = rule } })
+    let charts = (mapAuthoredChartFormulas rewrite model).AuthoredCharts
     let sameCells = obj.ReferenceEquals(cells, model.Cells)
     let sameFormats = conditionalFormats = model.ConditionalFormats
     let sameValidations = validations = model.Validations
-    if sameCells && sameFormats && sameValidations then model
+    if sameCells && sameFormats && sameValidations && charts = model.AuthoredCharts then model
     else
         let changed =
             { model with
                 Cells = cells
                 ConditionalFormats = (if sameFormats then model.ConditionalFormats else conditionalFormats)
-                Validations = (if sameValidations then model.Validations else validations) }
+                Validations = (if sameValidations then model.Validations else validations)
+                AuthoredCharts = charts }
         if sameCells then changed else invalidateFilterProjection changed
 
 // (Functions of their own, not part of `applyStructureEditWith`: that one is too long

@@ -71,9 +71,9 @@ let private pxToPt (v: float) = v * 72.0 / 96.0
 let private safe (s: string) =
     (s |> Option.ofObj |> Option.defaultValue "").Replace("\t", " ").Replace("\n", " ").Replace("\r", " ")
 
-let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Workbook) (sheetIndex: int) =
+let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.Workbook.Workbook) (sheetIndex: int) =
     let sheet = workbook.Sheets.[sheetIndex]
-    let model = ExcelNativeRunner.toModel sheet workbook
+    let model = (Map.find (sprintf "sheet%d" (sheetIndex + 1)) context.Sheets).Model
     let sheetName = sheet.Name
 
     // Cell-text measurer: feeds `Paint.cellDisplayText` real glyph widths
@@ -88,7 +88,7 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
         match fontCache.TryGetValue key with
         | true, f -> f
         | _ ->
-            let f = Rbt.Widgets.Composit.Ui.SpreadsheetGrid.rendererFontFor familyName bold italic
+            let f = Rbt.OfficeNative.Fonts.resolve familyName bold italic
             fontCache.[key] <- f
             f
     let measureFor (format: CellFormat) =
@@ -101,25 +101,6 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
             eprintfn "measureFor failed: %s" ex.Message
             None
 
-    // Detect cells whose Bold flag was added by the table-style header
-    // overlay rather than coming from the cell's actual font. Excel COM
-    // reports `cell.Font.Bold = False` for these — the table-style bold is
-    // a render-time overlay, not a baked font attribute. We read straight
-    // off `model.Tables` (no workbook handle needed) since the runner now
-    // translates Xlsx.TableDefinition onto the model. The bold overlay
-    // fires for any TableStyleMedium-named table's header row.
-    //
-    // 1-indexed coordinates to match Model.Table.
-    let isTableStyleHeaderBoldOverlay (r0: int) (c0: int) =
-        let row1 = r0 + 1
-        let col1 = c0 + 1
-        model.Tables
-        |> List.exists (fun t ->
-            row1 >= t.StartRow && row1 < t.StartRow + t.HeaderRowCount
-            && col1 >= t.StartCol && col1 <= t.EndCol
-            && (match t.Style with
-                | Some s -> s.Name.StartsWith "TableStyleMedium"
-                | None -> false))
 
     // Determine the row/col range to dump. Excel's COM .UsedRange walks
     // every cell from A1 to the last non-empty row/col. We mirror that by
@@ -136,9 +117,9 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
 
     // Walk used range. For each (r, c) compute the position cumulatively.
     let rowHeight r =
-        Map.tryFind r model.RowHeights |> Option.defaultValue 20.0
+        Map.tryFind r model.RowHeights |> Option.defaultValue model.DefaultRowHeight
     let colWidth c =
-        Map.tryFind c model.ColumnWidths |> Option.defaultValue 64.0
+        Map.tryFind c model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth
 
     // Cumulative top y at each row index.
     let yAt r =
@@ -211,9 +192,7 @@ let private emitSheet (out: StreamWriter) (docName: string) (workbook: Xlsx.Work
                           (format.VerticalAlign |> Option.defaultValue "bottom")
                           (format.FontName |> Option.defaultValue "Calibri") |> safe
                           (fontPt.ToString("F2", CultureInfo.InvariantCulture))
-                          (if format.Bold
-                              && not (isTableStyleHeaderBoldOverlay r c)
-                              && not (model.CfBoldCells.Contains addr) then "true" else "false")
+                          (if format.Bold then "true" else "false")
                           (if format.Italic then "true" else "false")
                           (format.NumberFormat |> Option.defaultValue "General") |> safe
                           ""  // style — not surfaced
@@ -231,6 +210,7 @@ let private dump (inputPath: string) (outputPath: string) (sheetIndex: int optio
         | Some wb -> wb
         | None -> failwithf "Could not parse XLSX: %s" inputPath
     let docName = Path.GetFileName inputPath
+    let context = ExcelNativeRunner.buildWorkbookContext workbook
     use out = new StreamWriter(outputPath, false, System.Text.Encoding.UTF8)
     let header =
         [ "doc"; "sheet"; "sheetIndex"; "row"; "column"; "address"
@@ -245,12 +225,12 @@ let private dump (inputPath: string) (outputPath: string) (sheetIndex: int optio
     | Some idx ->
         if idx < 0 || idx >= workbook.Sheets.Length then
             failwithf "Sheet index %d out of range (workbook has %d sheets)" idx workbook.Sheets.Length
-        emitSheet out docName workbook idx
+        emitSheet out docName workbook context idx
     | None ->
         // Match extract-excel-layout.vbs's "For Each sheet In Worksheets"
         // loop — emit every visible sheet. Default for the 2-arg invocation.
         for idx in 0 .. workbook.Sheets.Length - 1 do
-            emitSheet out docName workbook idx
+            emitSheet out docName workbook context idx
     printfn "spreadsheet vba layout: %s -> %s" inputPath outputPath
 
 [<EntryPoint>]

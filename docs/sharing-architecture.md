@@ -4,15 +4,297 @@
 
 **Status policy:** this is a historical architectural audit, with explicitly dated follow-through below. Use the roadmap's [current capability matrix](continuation-roadmap.md#current-capability-matrix) for implementation, API/shell reachability and platform verification. Original line counts and proposed migrations are not current completion claims. Spreadsheet PDF's .NET-only claims are corrected below.
 
+**Current architecture decision — structure first (user direction):** the
+[structure-first implementation sequence](continuation-roadmap.md#structure-first-implementation-sequence)
+is now the active plan. Further feature-led UI expansion is deferred. Deliver
+one Fable-safe F# implementation of each editor's state transitions and file
+semantics, consumed by a static-page browser bundle and a .NET desktop app.
+The embedded widget and bundled browser shell use the same browser adapter.
+No backend or desktop process is required for browser editing or conversion.
+The Fable product also exposes optional host/controller hooks for backend
+integration. Those hooks do not turn local editor commands or UI into HTTP
+workflows: all basic functionality, menus, dialogs, options and validation
+execute locally. The embedding application's adapter owns any HTTP transport
+for explicitly backend-backed operations. Keep that adapter outside shared
+editing/UI policy, and verify the basic product with backend endpoints
+unavailable. Loading packaged static assets is not a backend controller call.
+
+Share models, typed format IO, editing transactions/history, recalculation,
+layout semantics and presentation validation. Keep browser DOM/canvas, native
+painting, OS/browser events and IME, clipboard transport, storage dialogs and
+scheduling platform-specific. Use small concrete capability boundaries when
+an extracted operation needs them; the broad interfaces sketched below are
+not a requirement to build a framework in advance.
+
+Start with Spreadsheet cell-edit/recalculation/history and saved-state
+ownership, migrating browser and Wisp callers together. Word's typed
+import/save boundary and editing session follow. An extraction is complete
+only when real consumers on both runtimes use it and the replaced policy
+implementation is removed. Shared compilation alone is not shared behavior.
+Retain existing public JS facades as adapters, not parallel editing engines.
+
+The older canvas-first migration steps and estimates below are historical,
+not current prerequisites: retain the DOM grid unless measurements justify
+replacement. Wisp is the desktop host; the Widgets wrappers are retired after
+their headless consumers and useful regression coverage migrated. The roadmap
+owns the ordered milestones and cross-runtime completion gates.
+
+### Spreadsheet session extraction — 2026-11-12
+
+`src/Spreadsheet/Session.fs` is the portable state owner used by the browser
+controller and Wisp `EditorHost`. It owns cell
+parsing/entry, recalculation, one bounded 200-step workbook journal, revision
+identity, replacement epochs and saved state. History uses persistent workbook
+snapshots. Browser per-sheet undo applies selective changes and reference
+rewrites without discarding later edits on other sheets; native history stays
+global. Both are policies of one session journal, not separate controllers.
+Redo does not rerun host event callbacks.
+
+Native workbook signals and browser sheet models are projections.
+`StructuralCommand` / `ExecuteStructural` now centralize row/column
+insertion/deletion and sheet add, rename, delete, move, duplicate and visibility.
+The session owns validation, stable ID reservations, reference-rewriting
+primitives, calculation and one atomic history step. Deleted or undone IDs are
+not reused within the workbook epoch; replacement resets their reservations.
+No-op and rejected commands preserve saved identity and redo.
+
+`FormattingCommand` / `ExecuteFormatting` centralize selection formatting,
+toggles, number formats/decimals, format painting, borders, clearing and
+merge/unmerge. Hosts supply their active cell and optional explicit bounds;
+the session normalizes/clamps the range and retains the existing sparse-range
+and AutoFilter-hidden-row policies. Pure formatting preserves formula caches
+without recalculation; content clearing uses the shared calculation path.
+No-op/rejected edits retain revision, saved identity and redo. Browser public
+API conversion and native controls publish the result without another journal
+entry. Wisp formatting now affects the selected range, not just its focus cell.
+
+`NameCommand` / `ExecuteName` own defined-name validation, scope, replacement,
+deletion, recalculation and one atomic history step. `RuleCommand` /
+`ExecuteRule` own validation and conditional-format edits, ordering, partial
+clearing and stable ID reservation. Rule-only edits retain formula caches;
+name edits recalculate dependents. Rejected/no-op commands preserve saved state
+and redo. Rule IDs are not reused within a workbook epoch, including after
+undo; replacement seeds reservations from the new models. Ordinary cell edits
+do not rescan unchanged rule lists.
+
+`CaptureClipboard`, `PasteClipboard` and `PasteRows` own rich clipboard state,
+source-sheet identity, cut consumption, reference movement, calculation,
+selection updates and history. Copy is transient; cut deletion and paste are
+separate transactions. Rename/undo repair captured formulas; deleting the source
+invalidates the capture and rejects its stale matching text even after undo.
+Replacement clears clipboard ownership. No-op pastes retain saved state and redo.
+The optional `textOf` callback serializes the single captured block at the edge;
+shared `clipboardRowsOfText` decodes TSV. Browser HTML parsing and OS clipboard
+permissions stay in the browser adapter; Wisp retains its internal clipboard.
+Native external HTML clipboard support is not claimed.
+
+The existing declarative dialog specifications and shared renderer remain
+unchanged. Dialogs submit typed commands through thin adapters; domain policy
+does not live in per-dialog controllers. Native hosts expose the same commands
+without adding duplicate menus or bespoke dialog implementations. New UI should
+extend shared specifications rather than repeat field construction or validation.
+
+Browser argument conversion, deferred-sheet materialization, OS clipboard access,
+HTML parsing, notifications and rendering remain adapters. Native hosts request their existing
+eager recalculation policy; the browser retains calculated caches for commands
+that only require rebasing. Neither host records a second transaction.
+Other native commands use `Transaction`; browser commands not yet extracted
+submit `AppliedTransaction` to the same journal. `DrawingCommand` /
+`ExecuteDrawing` now own picture insertion, placement, deletion and description,
+and standard chart insertion together with its authored part. Geometry-only
+changes preserve cached values; rejected/no-op commands preserve saved identity
+and redo. Imported charts and opaque objects remain preserved, not newly editable.
+Source-package relationship reservations are supplied by the package adapter.
+There is no HTTP or platform UI dependency in the session.
+
+Selection, pending input, rendering and host effects remain outside document
+history. Hosts select whether undo navigates to the historical sheet; browser
+history retains later tab switches, while native history preserves its existing
+navigation behavior. Both use the same content and revision restoration.
+New/replaced native workbooks calculate before trusting formula caches;
+browser imports explicitly adopt their stored calculated values, retaining
+deferred-sheet loading. `CaptureSave` carries epoch/revision identity; Wisp
+marks it saved only after a successful file write.
+
+The headless raster/PDF/VBA-layout consumers now import through the same typed
+`XlsxBridge` as browser and Wisp. `tools/excel-native-runner/Import.fs` retains
+only native font-derived geometry and pixel-rounding policy, not a second
+value/style/rich-text/table/formula importer. Workbook names, tables and cached
+values retain the bridge's semantics; embedded drawings reach the shared painter.
+This intentionally replaces the old runner's unconditional recalculation with the
+bridge's cached/uncached import policy; cached results of unsupported formulas
+are not discarded merely to render a file. Oracle comparisons must account for
+that policy change rather than assuming identical old CLI results.
+
+Both bridge and native adaptation keep default row sizes as defaults plus sparse
+overrides, rather than allocating one height entry per row in the used range.
+Browser layout export and the VBA-layout runner read model defaults for unlisted
+axes. The last-row regression covers this allocation boundary alongside formula,
+name/table, hidden-axis and real imported-picture raster behavior.
+
+Native import regressions, 383 bridge assertions, actual raster/layout fixtures
+and 110 focused Chromium assertions passed. PDF verification exposed a separate
+Windows-only font lookup silently omitting text; both native PDF consumers now
+use the shared font resolver. Actual PDF text and embedded images, plus isolated
+CLI regressions without Windows font configuration, passed.
+This is not complete desktop feature parity or release certification.
+
+### Typed Word package extraction — 2026-11-12
+
+`Office.Formats/WordEditorPackage.fs` defines the shared package records;
+`WordEditorPackageReader` projects the reader directly into them without an
+intermediate JavaScript object graph. `Word/TypedDocxImport` and
+`TypedDocxExport` own the editor conversion on both runtimes. JavaScript package
+objects remain public browser adapters, not the core representation.
+
+The former dynamic `DocumentWriter.fs` is replaced by `WordPackageWriterModel`,
+`WordPackageWriterSplice` and `WordPackageWriterAssembly` (the `DocumentWriter`
+module). These are one source-preserving implementation, not separate native
+and browser writers. Serialization state is now scoped to model/splice/package
+contexts per save; the native process-wide save lock is removed. Native package
+checks pass 197 assertions, including concurrent saves. Packaged Fable saved six
+deep-frozen typed captures concurrently, including repeated captures and both
+source-backed/model paths; package parts and preserved control/custom XML were
+checked independently. Serialization does not write scratch fields into its input
+records. The browser's only process-wide writer state is a completed-save diagnostic
+snapshot, published after ZIP creation succeeds; callers receive a copy of its reasons.
+The full Fable build and 158 focused Chromium preservation/frame assertions pass,
+as does an actual offline Firefox edit, download and reopen.
+Source parts, stories, run provenance and unsupported package content travel
+through the typed boundary. Existing preservation limits still apply.
+
+Block-level content controls now retain stable group identity and ordered outer
+layers on paragraphs and tables. Source-backed and regenerated saves preserve
+bindings, unknown properties, end properties, nesting and distinct adjacent
+id-less controls; copying remaps group identities, while rename/removal targets
+the requested layer. The writer streams group boundaries and fresh fragments,
+not repeated copies of accumulated XML. Inter-run whitespace is retained.
+Native package regressions and an offline packaged-Fable edit/save/reimport
+scenario verify these cases, including byte-identical custom XML parts.
+Imported inline controls retain ordered wrapper metadata and group identity on
+runs through the same typed boundary. Row/cell-level controls and textbox control
+wrappers remain unsupported; no universal DOCX losslessness claim follows.
+
+Complex fields spanning paragraphs retain ordered, zero-width begin/instruction/
+separator/end tokens, including enclosing hyperlink identities. The editor owns
+its field-boundary type; typed import/export maps it to the format model rather
+than exposing format-library types in editor state. This preserves regenerable
+TOCs without a second browser/native implementation or backend calls.
+
+Control discovery, selection, range information and editing frames share one
+physical-membership traversal in `Document.fs`. Ancestor and table-only bindings
+participate; separate wrappers sharing an ID do not merge, including wrappers
+split by replacing a middle paragraph's control. Query consumers collect only
+the ranges or membership sets they use. Native package/command checks passed
+117/103 assertions; the packaged Firefox panel and selected nested/table-only
+cell ranges were verified offline.
+
+Wisp uses local filesystem Open/Save/Save As and shared dialog specs. Save
+captures the document and replacement epoch, marks saved after a successful
+write, and leaves later edits dirty. The opened baseline is distinct from the
+last saved baseline: only returning to imported content permits original-byte
+reuse. Browser save retains its revision/download-handoff contract.
+The Word lifecycle extraction below follows this boundary; native command/layout
+parity and desktop distribution remain unfinished. Historical tables below
+describe the pre-extraction architecture.
+
+### Word session lifecycle, formatting and stories — 2026-11-12
+
+`Word/Session.fs` is portable F# used by the browser and Wisp. It owns
+the document, command history, typing runs, weak revision identity, opened and
+saved baselines, and replacement epoch. Browser document/history members and
+native document signals are projections, not independent owners.
+
+`CaptureSave` stops typing and returns the captured document/revision/epoch.
+Successful storage marks that capture saved, not whatever document is current
+when storage completes. Later edits remain dirty; replacing the document clears
+history and rejects old captures. Opened-content identity remains separate from
+saved identity for original-package reuse. Progressive extension and browser
+whole-document/story observation preserve retained revision identities.
+
+The session also owns pending character formatting and caret/word formatting
+policy. Wisp uses it for keyboard/chrome character commands and
+typing/paste, rather than retaining their own pending-style state. Movement,
+replacement and real undo/redo steps invalidate pending choices; empty history
+operations do not erase them.
+
+`StorySession`, folding/unfolding, entry/exit, lazy header/footer creation and
+story-aware history now compile on both runtimes. History and saves contain the
+whole document, while editing operates on the active story; leaving restores the
+body selection and undo/redo returns to the edited story. Browser paint state,
+page-derived entry geometry and notifications remain adapter responsibilities.
+Native story adapters exercise the same policy without claiming equivalent
+header/footer UI.
+
+`Session.WordCommand` and `Execute` now own character and paragraph/list/table
+dispatch and transactions, including Enter/Tab, tracked insertion and story restrictions.
+Browser and both native hosts publish the resulting session document rather
+than recording another undo step. No-op commands retain the original snapshot;
+selection-only navigation preserves content revision, saved identity and redo.
+Property-dialog functions remain single transactions through the same boundary.
+
+`CaptureClipboard`, `CommitCut` and `PasteClipboard` own rich capture provenance,
+deferred-cut selection/epoch checks, bookmark identity handling, pending styles,
+tracked paste, story restrictions and atomic history. `Navigate` owns logical
+character/word/paragraph/document movement and selection extension. Visual targets
+remain layout-derived host inputs. HTML decoding and OS clipboard transport stay
+at the edge; browser and Wisp rich transfers retain their provenance. Wisp's
+clipboard remains in-process; the old Widgets text-only OS adapter is retired.
+
+DOM events, rendering, scheduling, file dialogs and transport stay in adapters.
+Canonical Word geometry, native view scaling and declarative browser controls
+are consolidated; native form coverage is still narrower than the browser.
+Basic editing and local file operations require no backend calls. Wisp shell
+dialog removal releases text-field focus so hidden fields cannot consume editor
+input after Open.
+
+### Native rendering and canonical view coordinates — 2026-11-12
+
+`office-wisp/native` owns native font resolution, cached image decoding and PNG
+encoding. `office-wisp/word-render` and `office-wisp/spreadsheet-native` translate
+shared paint commands without depending on a UI toolkit. Wisp and the headless
+runners consume these adapters; the old Widgets projects and test wrappers are removed.
+The native decoder uses [StbImageNext](https://github.com/StbSharp/StbImageNext)
+(MIT/Public Domain), not a release-license-gated ImageSharp dependency. Supported
+decode formats are PNG, JPEG, BMP, GIF, TGA, PSD and HDR; WebP/TIFF support is not claimed.
+
+Both native PDF CLIs also use this font resolver and its loaded bytes, including
+the shared Spreadsheet CJK fallback chain. PDF-specific face records remain thin
+adapters. Native Word PDF substitution now matches desktop/raster policy rather
+than its former independent Noto/DejaVu lookup. The native regression profile
+builds both PDF tools and requires Poppler (`pdftotext`, `pdfimages`) to verify
+actual saved text and picture resources without a configured Windows font set.
+
+`Word.Layout.documentSettings` centralizes page, margin, header/footer and tab
+geometry for browser, PDF and native consumers. Backend font/line defaults and
+fit safety remain explicit inputs. Native fit-to-width is a view transform applied
+to paint and inverted for pointer/hit testing, with matching caret and scroll
+geometry. Wisp caches canonical layout independently of viewport width.
+
+The unused Grid project and bundle are removed. Its surviving DOM helpers are
+`src/Spreadsheet/Dom.fs`, a browser adapter rather than another grid implementation.
+
+
+
 **Native spreadsheet follow-through (2026-11-11):** the S4–S6 correctness changes retain complete `Workbook` snapshots rather than sheet-array snapshots and use the shared `Recalc` engine. `Workbook.updateSheetModelWithTables` keeps model-level table changes and the formula registry consistent. The Wisp host accepts imported context with `createWithWorkbook` / `replaceWorkbook`; `exportWorkbook` writes current names, name metadata, visibility, active sheet and iteration, remapping stable local-name scopes only at the XLSX boundary. Sheet insertion, rename and deletion use workbook reference-rewriting operations and undo as complete transactions. The audit tables and line counts below remain the original snapshot; a portable controller extraction is still outstanding, not claimed by these correctness fixes. Verification is recorded in `systematic-review-2026-11-11.md`.
 
-For Widgets, use `createStateFromWorkbook` / `replaceWorkbook` when opening imported context; `createState` is for fresh model arrays. Treat both hosts' sheet/name/index signals as UI projections and make content changes through their transaction functions, not direct signal assignments. The native gate now includes both host regression suites and the Wisp executable smoke.
+Wisp's sheet/name/index signals are UI projections; change content through its shared-session operations, not direct signal assignments. Unique legacy-host regressions now live in the Wisp suites. The native test profile builds the two Wisp apps and runs their host suites, the shared Word raster fixture and the Spreadsheet executable smoke.
 
-**Browser dialog contract (C5–C6 follow-through):** `OfficeUiDialog` renders all eleven current field kinds and tabs without changing `DialogSpec`. Mount `renderDialog state` once and retain its mount disposer. With tabs, `Fields` is ignored as the current spec states; values from every tab survive switching and reach the button callback. Colour uses the browser-native picker; sliders have range and numeric inputs. Computed fields read the same value map.
+**Dialog contract:** `OfficeUiDialog` renders all eleven field kinds and tabs from `DialogSpec`; Word forms now use this renderer instead of bespoke controls. Mount `renderDialog state` once and retain its disposer. `openDialogWithValues` binds existing host signals without a second value store. `DialogField.TestId` optionally supplies a control identity; `ChoiceSpec.IsEnabled` supports disabled mixed/inherited choices. `DialogUpdatingField` supplies a pure value-map update for dependent fields such as page presets and orientation, supported by both browser and Wisp renderers. With tabs, `Fields` is ignored; every tab's values survive switching and reach the button callback.
+
+The shared dialog renderer installs its own stylesheet idempotently. A static
+consumer does not need a separate host-side styling call to obtain a modal.
+Host theming remains optional; dialog values and validation never require HTTP.
 
 Field edits remain dialog-local. `DialogButton.Action` owns validation and the editor transaction: validate before mutating, return `false` to retain the dialog and its edits, and invoke one undoable editor command on acceptance. Returning `false` is not a rollback of mutations made by the callback. Cancel must not apply those local values. A callback that opens another dialog does not have its replacement closed by the previous callback's return value.
 
 The renderer names the dialog and controls, focuses on opening, contains focus, and restores the invoker on close/unmount. Tab headers support arrows/Home/End. Unmodified Enter activates the primary action except in multiline/select/radio/checkbox/colour controls or focused buttons, which retain their native behavior; composition is not submission. Escape activates the standard `dlg-cancel` button, or closes without invoking an arbitrary secondary action. This completes the renderer, not browser-shell command wiring or the parked foundation's expanded validation/spec API. The audit tables below remain historical.
+
+**Shared command contract:** `OfficeUi/Commands.fs` adapts the parked foundation's registry without importing its divergent toolbar/menu records. Commands have stable IDs, labels, optional shortcuts, live enabled/toggle readers and an invocation argument. A toggle returning no value is mixed, distinct from uniform off; a non-toggle has no checked reader. Disabled commands return unhandled, unknown IDs throw, and subscribers explicitly unsubscribe. The registry does not implement editor transactions or take ownership of input: each shell scopes keyboard events to its editor, excludes composition and unrelated controls, and invokes the same engine operation as its menus/buttons. Existing `DialogSpec` and renderer contracts remain unchanged. This shared dispatch contract does not migrate native controllers or establish desktop parity.
+
+**Shared browser chrome:** `FableUI/Chrome.fs` installs document-owned styles idempotently, including when Word and Spreadsheet use separate compiled bundles. Controls are scoped to `.rb-office-shell` and `.rb-office-dialog`; shell disposal does not remove another instance's styles. Editor-specific layout stays with its shell. Override the `--office-*` tokens on both scopes when theming: Word's body-mounted dialog portals do not inherit variables from the editor root. Layout wraps controls or scrolls the workspace without transforming document/grid coordinates. Named controls, toggle state, visible focus and modal focus containment cover the chrome, not document/grid screen-reader support.
+
+**Formatting/name follow-through:** `Spreadsheet/Managers.fs` owns the browser rule/name workflows behind an editor-specific callback record. It compiles before `Spreadsheet.fs`; the component lazily mounts one shared dialog renderer and exposes the same managers used by shell commands. There is no separate legacy conditional-formatting renderer. The port delegates validated, undoable operations rather than holding a second workbook model. Word's existing `WordHost`/`WordDialogs` path now uses partial character/paragraph transactions with captured selection/revision guards; it is still a browser adapter, not the portable controller proposed below. New Word dialog actions are optional in shared menu specs, so native hosts do not advertise unsupported browser dialogs.
 
 The direction (`docs/continuation-roadmap.md`, *Three ways to run it*):
 1. An embedded widget with no UI (redbat today).

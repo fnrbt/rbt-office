@@ -3,7 +3,7 @@ module Rbt.Word.Input
 let private sameListOrEqual left right =
     obj.ReferenceEquals(left, right) || left = right
 
-/// The bodies of the notes and comments are the same (a note's body is edited in place, see Input.StorySession.Note).
+/// The bodies of the notes and comments are the same (a note's body is edited in place).
 let private sameNoteBodies (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     obj.ReferenceEquals(left.Package, right.Package)
     || (sameListOrEqual left.Package.Notes right.Package.Notes && sameListOrEqual left.Package.Comments right.Package.Comments)
@@ -25,16 +25,7 @@ let private documentsEqualForChange (left: Rbt.Word.Document.Document) (right: R
 /// Whether two documents are the same content by identity: every part but
 /// the selection is the same object (what a caret move leaves, and what an
 /// undo comes back to). Constant time; false for equal content in other objects.
-let sameContentObjects (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
-    obj.ReferenceEquals(left, right)
-    || (obj.ReferenceEquals(left.Blocks, right.Blocks)
-        && obj.ReferenceEquals(left.PageSetup, right.PageSetup)
-        && obj.ReferenceEquals(left.Styles, right.Styles)
-        && obj.ReferenceEquals(left.Headers, right.Headers)
-        && obj.ReferenceEquals(left.Footers, right.Footers)
-        && obj.ReferenceEquals(left.HeaderParts, right.HeaderParts)
-        && obj.ReferenceEquals(left.FooterParts, right.FooterParts)
-        && obj.ReferenceEquals(left.Package, right.Package))
+let sameContentObjects = Rbt.Word.Session.sameContentObjects
 
 let sameContent (left: Rbt.Word.Document.Document) (right: Rbt.Word.Document.Document) =
     sameContentObjects left right
@@ -55,6 +46,7 @@ open Browser.Dom
 open Rbt.Word.Renderer
 open Rbt.Word.Commands
 open Rbt.Word.Document
+open Rbt.Word.Session
 
 module Doc = Rbt.Word.Document
 module Layout = Rbt.Word.Layout
@@ -133,89 +125,16 @@ type CompositionState = {
     mutable Text: string
 }
 
-/// A header or footer that is edited in place (see `enterStory`). While it
-/// is, the document the handler works on is the story's own: its blocks are
-/// the header's blocks and its selection is in them, so typing, selecting,
-/// formatting, tables, pictures and fields work there as they do in the body.
-/// The whole document - the body with the story's blocks in their part - is
-/// what is painted (dimmed), saved and kept in the undo history.
-type StorySession = {
-    IsHeader: bool
-    PageIndex: int
-    /// "default" | "first" | "even".
-    Kind: string
-    /// The section the header is that of (0-based).
-    Section: int
-    /// The place of the part in the document's HeaderParts / FooterParts.
-    PartIndex: int
-    /// The name on the boundary.
-    Label: string
-    /// The whole document when the story was entered: its body, and the body's selection.
-    Main: Doc.Document
-    /// The whole document the story's blocks are put into once they are
-    /// changed. Main itself for a header that exists; for one that is only
-    /// made when something is typed into it (a page that shows none, a title
-    /// or even page without a header of its own), Main with the new part and
-    /// the section's reference to it. PartIndex is the part's place in this.
-    Edited: Doc.Document
-    /// The part's blocks when the story was entered, and the story's blocks
-    /// then (the part's, with the page's number in the fields that show it).
-    PartBlocks: Doc.Block list
-    EntryBlocks: Doc.Block list
-    /// The parts with the story's blocks in their part, by those blocks: a
-    /// state of the story that comes back (undo, redo) is the same document again.
-    Folded: ResizeArray<struct (Doc.Block list * Doc.HeaderFooterPart list)>
-    /// The story is the text of this text box of the body (see
-    /// `enterTextBox`), not a header or footer: its blocks are the box's
-    /// paragraphs, and the whole document is the body with them in the box.
-    Box: Doc.BlockId option
-    /// The body's blocks with the story's blocks in the box, by those blocks (as Folded).
-    BoxFolded: ResizeArray<struct (Doc.Block list * Doc.Block list)>
-    /// The story is the body of this note or comment ("footnote" | "endnote" |
-    /// "comment", id; see `Doc.withStoryBody`), not a header or footer: its
-    /// blocks are the body's blocks in the package, and the whole document is
-    /// Main with them there (and their text on the references).
-    Note: (string * string) option
-    /// The whole documents with the story's blocks as the note's body, by those blocks (as Folded).
-    NoteFolded: ResizeArray<struct (Doc.Block list * Doc.Document)>
-}
 
-/// Character formatting chosen with nothing selected (Ctrl+B at a caret, a
-/// font size picked in the toolbar): what is typed next at that caret has it.
-/// It is not in the document - nothing has changed there until text is typed.
-type PendingFormat = {
-    /// The document it was chosen in. It holds for that text and that caret:
-    /// an edit or a caret that moves drops it.
-    PendingDocument: Doc.Document
-    /// The style the typed text gets.
-    PendingStyle: TextBuffer.TextStyle
-}
-
-/// Keys typed one after the other make one undo step, as in Word: a run of
-/// typed characters, of Backspaces, of Deletes. The run goes on while each
-/// keystroke starts from the document the one before it left (no caret move,
-/// no other edit in between) and the run's step is still the last one of the
-/// history.
-type TypingRun = {
-    /// "type", "backspace" or "delete".
-    Kind: string
-    /// The document before the run's first keystroke: what its step undoes to.
-    Start: Doc.Document
-    /// The document after its last keystroke.
-    After: Doc.Document
-    /// The run's step in the history (the top of the undo list while the run goes on).
-    Step: ICommand
-}
 
 /// Input handler state
 type InputHandler = {
     Canvas: HTMLCanvasElement
     RenderContext: RenderContext
-    mutable Document: Doc.Document
+    Session: Rbt.Word.Session.EditingSession
     OnChange: Doc.Document -> unit
     mutable IsMouseDown: bool
     mutable SelectionAnchor: Doc.Position option
-    mutable History: CommandHistory
     mutable ResizingImage: ResizeState option
     mutable DraggingImage: DragImageState option
     mutable HoveredImage: (string * int) option  // (blockId, offset) of hovered image
@@ -239,14 +158,6 @@ type InputHandler = {
     /// The column Up / Down / PageUp / PageDown keep to (layout x of the
     /// caret when the run of vertical moves started).
     mutable GoalX: float option
-    /// The header or footer that is edited in place, if any.
-    mutable Story: StorySession option
-    /// The story the undo / redo step in hand was made in (set by the step).
-    mutable HistoryStory: StorySession option
-    /// The header or footer (page, header?) the undo / redo step in hand
-    /// belongs to though it changed the whole document - "link to previous"
-    /// (set by the step): the caret goes back into that page's header.
-    mutable HistoryPlace: (int * bool) option
     /// Puts the caret into a page's header or footer after such a step (set by the editor).
     mutable OnHistoryPlace: int -> bool -> bool
     /// A double click at a point (layout coordinates): true when it was
@@ -255,8 +166,6 @@ type InputHandler = {
     /// Called before a key that goes by the whole document (Ctrl+A, Ctrl+End):
     /// the editor reads a document that is still being read to its end.
     mutable EnsureWhole: unit -> unit
-    /// See PendingFormat (formatAtCaret sets it).
-    mutable Pending: PendingFormat option
     /// Called when the pending format changed: what the selection's format
     /// is said to be has changed though the document has not (set by the editor).
     mutable OnPendingFormat: unit -> unit
@@ -279,9 +188,19 @@ type InputHandler = {
     mutable ShapeDrag: ShapeDragState option
     /// Called when another shape, or none, is selected (set by the editor).
     mutable OnShapeSelection: unit -> unit
-    /// The run of typing the last undo step is, while it can go on (see TypingRun).
-    mutable Typing: TypingRun option
-}
+} with
+    member this.Document
+        with get () = this.Session.Document
+        and set value = this.Session.Document <- value
+    member this.History
+        with get () = this.Session.History
+        and set value = this.Session.History <- value
+    member this.Story
+        with get () = this.Session.Story
+        and set value = this.Session.Story <- value
+    member this.HistoryPlace
+        with get () = this.Session.HistoryPlace
+        and set value = this.Session.HistoryPlace <- value
 
 [<Emit("$0.focus({ preventScroll: true })")>]
 let private focusWithoutScroll (_element: HTMLElement) : unit = jsNative
@@ -344,228 +263,20 @@ let htmlClip (html: string) : Doc.Clip option =
 
 // ---- a header or footer edited in place --------------------------------------
 
-/// The session's parts (the headers, or the footers) with `blocks` in the story's part.
-let private storyParts (session: StorySession) (blocks: Doc.Block list) : Doc.HeaderFooterPart list =
-    // (As entered: the document as it was - showing a header is not a change of the document.)
-    if obj.ReferenceEquals(blocks, session.EntryBlocks) then (if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts)
-    else
-        let parts = if session.IsHeader then session.Edited.HeaderParts else session.Edited.FooterParts
-        let mutable found = Unchecked.defaultof<Doc.HeaderFooterPart list>
-        let mutable known = false
-        for struct (knownBlocks, knownParts) in session.Folded do
-            if not known && obj.ReferenceEquals(knownBlocks, blocks) then
-                found <- knownParts
-                known <- true
-        if known then found
-        else
-            let next = parts |> List.mapi (fun index part -> if index = session.PartIndex then { part with Blocks = blocks } else part)
-            if session.Folded.Count >= 256 then session.Folded.RemoveAt 0
-            session.Folded.Add(struct (blocks, next))
-            next
-
-/// The indexes of the body's blocks that refer to a note or comment (see
-/// Doc.storyReferenceIndexes), for the body a story was entered from: the
-/// other blocks are not looked at again at each keystroke in the note.
-let mutable private knownReferenceIndexes : (Doc.Document * string * string * int array) option = None
-let private storyReferenceIndexesOf (main: Doc.Document) (kind: string) (id: string) : int array =
-    match knownReferenceIndexes with
-    | Some (known, knownKind, knownId, indexes) when obj.ReferenceEquals(known, main) && knownKind = kind && knownId = id -> indexes
-    | _ ->
-        let indexes = Doc.storyReferenceIndexes kind id main
-        knownReferenceIndexes <- Some (main, kind, id, indexes)
-        indexes
-
-/// The whole document a story document stands for: the body, the story's
-/// blocks in their part, the story's selection (and whatever else an edit of
-/// the story changed - the styles).
-let private foldStory (session: StorySession) (story: Doc.Document) : Doc.Document =
-    match session.Note with
-    | Some (kind, id) ->
-        // The body of a note or comment: the document as it was, the story's blocks as that body.
-        let main = session.Main
-        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then
-            { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = main.FooterParts; Package = main.Package }
-        else
-            let mutable found = Unchecked.defaultof<Doc.Document>
-            let mutable known = false
-            for struct (knownBlocks, knownWhole) in session.NoteFolded do
-                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
-                    found <- knownWhole
-                    known <- true
-            if not known then
-                found <- Doc.withStoryBodyAt kind id story.Blocks (Some (storyReferenceIndexesOf main kind id)) main
-                if session.NoteFolded.Count >= 256 then session.NoteFolded.RemoveAt 0
-                session.NoteFolded.Add(struct (story.Blocks, found))
-            { story with Blocks = found.Blocks; HeaderParts = found.HeaderParts; FooterParts = found.FooterParts; Package = found.Package }
-    | None ->
-    match session.Box with
-    | Some boxId when session.PartIndex >= 0 ->
-        // A text box of a header or footer: the document as it was, the story's paragraphs in the box of its part.
-        let main = session.Main
-        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = main.FooterParts }
-        else
-            let mutable parts = Unchecked.defaultof<Doc.HeaderFooterPart list>
-            let mutable known = false
-            for struct (knownBlocks, knownParts) in session.Folded do
-                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
-                    parts <- knownParts
-                    known <- true
-            if not known then
-                let content = Doc.paragraphsOfBlocks story.Blocks
-                parts <-
-                    (if session.IsHeader then main.HeaderParts else main.FooterParts)
-                    |> List.mapi (fun index part ->
-                        if index <> session.PartIndex then part
-                        else { part with Blocks = part.Blocks |> List.map (function Doc.TextBox box when box.Id = boxId -> Doc.TextBox { box with Content = content } | block -> block) })
-                if session.Folded.Count >= 256 then session.Folded.RemoveAt 0
-                session.Folded.Add(struct (story.Blocks, parts))
-            if session.IsHeader then { story with Blocks = main.Blocks; HeaderParts = parts; FooterParts = main.FooterParts }
-            else { story with Blocks = main.Blocks; HeaderParts = main.HeaderParts; FooterParts = parts }
-    | Some boxId ->
-        // A text box: the body as it was, the story's paragraphs in the box.
-        if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then { story with Blocks = session.Main.Blocks }
-        else
-            let mutable found = Unchecked.defaultof<Doc.Block list>
-            let mutable known = false
-            for struct (knownBlocks, knownBody) in session.BoxFolded do
-                if not known && obj.ReferenceEquals(knownBlocks, story.Blocks) then
-                    found <- knownBody
-                    known <- true
-            if known then { story with Blocks = found }
-            else
-                let content = Doc.paragraphsOfBlocks story.Blocks
-                let body =
-                    session.Main.Blocks
-                    |> List.map (function
-                        | Doc.TextBox box when box.Id = boxId -> Doc.TextBox { box with Content = content }
-                        | block -> block)
-                if session.BoxFolded.Count >= 256 then session.BoxFolded.RemoveAt 0
-                session.BoxFolded.Add(struct (story.Blocks, body))
-                { story with Blocks = body }
-    | None ->
-    let parts = storyParts session story.Blocks
-    // (The body, the plain header paragraphs and the sections' references are those of the
-    // document the blocks belong in: a header made by the first edit comes with its reference.)
-    let basis = if obj.ReferenceEquals(story.Blocks, session.EntryBlocks) then session.Main else session.Edited
-    let pageSetup =
-        if obj.ReferenceEquals(basis.PageSetup.HeaderReferences, story.PageSetup.HeaderReferences) && obj.ReferenceEquals(basis.PageSetup.FooterReferences, story.PageSetup.FooterReferences) then story.PageSetup
-        else
-            let wanted = { story.PageSetup with HeaderReferences = basis.PageSetup.HeaderReferences; FooterReferences = basis.PageSetup.FooterReferences }
-            // (The same object when nothing else differs: what is kept by reference stays kept.)
-            if wanted = basis.PageSetup then basis.PageSetup else wanted
-    if session.IsHeader then { story with Blocks = basis.Blocks; PageSetup = pageSetup; Headers = basis.Headers; HeaderParts = parts; FooterParts = basis.FooterParts }
-    else { story with Blocks = basis.Blocks; PageSetup = pageSetup; Footers = basis.Footers; HeaderParts = basis.HeaderParts; FooterParts = parts }
-
-/// The story document of a whole document: the blocks of the story's part.
-let private unfoldStory (session: StorySession) (whole: Doc.Document) : Doc.Document =
-    match session.Note with
-    | Some (kind, id) ->
-        let blocks =
-            if obj.ReferenceEquals(whole.Package, session.Main.Package) then session.EntryBlocks
-            else
-                let mutable found = Unchecked.defaultof<Doc.Block list>
-                let mutable known = false
-                for struct (knownBlocks, knownWhole) in session.NoteFolded do
-                    if not known && obj.ReferenceEquals(knownWhole.Package, whole.Package) then
-                        found <- knownBlocks
-                        known <- true
-                if known then found
-                else
-                    match Doc.storyBody kind id whole with
-                    | Some blocks when not (Doc.paragraphsOfBlocks blocks).IsEmpty -> blocks
-                    | _ -> session.EntryBlocks
-        { whole with Blocks = blocks }
-    | None ->
-    match session.Box with
-    | Some boxId when session.PartIndex >= 0 ->
-        let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
-        let entered = if session.IsHeader then session.Main.HeaderParts else session.Main.FooterParts
-        let blocks =
-            if obj.ReferenceEquals(parts, entered) then session.EntryBlocks
-            else
-                let mutable found = Unchecked.defaultof<Doc.Block list>
-                let mutable known = false
-                for struct (knownBlocks, knownParts) in session.Folded do
-                    if not known && obj.ReferenceEquals(knownParts, parts) then
-                        found <- knownBlocks
-                        known <- true
-                if known then found
-                else
-                    match List.tryItem session.PartIndex parts |> Option.bind (fun part -> part.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None)) with
-                    | Some box when not box.Content.IsEmpty -> box.Content |> List.map Doc.Paragraph
-                    | _ -> session.EntryBlocks
-        { whole with Blocks = blocks }
-    | Some boxId ->
-        let blocks =
-            if obj.ReferenceEquals(whole.Blocks, session.Main.Blocks) then session.EntryBlocks
-            else
-                let mutable found = Unchecked.defaultof<Doc.Block list>
-                let mutable known = false
-                for struct (knownBlocks, knownBody) in session.BoxFolded do
-                    if not known && obj.ReferenceEquals(knownBody, whole.Blocks) then
-                        found <- knownBlocks
-                        known <- true
-                if known then found
-                else
-                    match whole.Blocks |> List.tryPick (function Doc.TextBox box when box.Id = boxId -> Some box | _ -> None) with
-                    | Some box when not box.Content.IsEmpty -> box.Content |> List.map Doc.Paragraph
-                    | _ -> session.EntryBlocks
-        { whole with Blocks = blocks }
-    | None ->
-    let parts = if session.IsHeader then whole.HeaderParts else whole.FooterParts
-    let blocks =
-        match List.tryItem session.PartIndex parts with
-        // (A part without a block is the story as entered too: its one paragraph is made by the first edit.)
-        | Some part -> if obj.ReferenceEquals(part.Blocks, session.PartBlocks) || part.Blocks.IsEmpty then session.EntryBlocks else part.Blocks
-        // (A header that the first edit makes, before that edit: as entered.)
-        | None -> session.EntryBlocks
-    // (The story's document has the page setup it was entered with; the references of a
-    // header made by an edit are put back when it is folded.)
-    let pageSetup =
-        if obj.ReferenceEquals(whole.PageSetup, session.Edited.PageSetup) then session.Main.PageSetup else whole.PageSetup
-    { whole with Blocks = blocks; PageSetup = pageSetup }
 
 /// The whole document (body, headers and footers) of the document the
 /// handler works on: that document, or - while a header or footer is edited
 /// in place - the document with the story's blocks in their part. This is
 /// what is saved, and what a revision is a state of.
 let wholeDocument (handler: InputHandler) (doc: Doc.Document) : Doc.Document =
-    match handler.Story with
-    | Some session -> foldStory session doc
-    | None -> doc
+    handler.Session.Whole(doc)
 
-/// An undo step made in a story. The history holds whole documents (a step
-/// can be undone after the story was left, or from another one): the inner
-/// command, which works on the story's document, is given that of the whole
-/// document and its result is put back in.
-type private StoryCommand(inner: ICommand, session: StorySession, stepped: StorySession -> unit) =
-    interface ICommand with
-        member _.Execute whole =
-            stepped session
-            foldStory session (inner.Execute (unfoldStory session whole))
-        member _.Undo whole =
-            stepped session
-            foldStory session (inner.Undo (unfoldStory session whole))
-        member _.Description = inner.Description
-
-/// A step that changes the whole document from within a header or footer
-/// (the section's reference to it: "link to previous"). Undone or redone, the
-/// caret is in that page's header again.
-type private StoryPlaceCommand(inner: ICommand, pageIndex: int, isHeader: bool, stepped: int -> bool -> unit) =
-    interface ICommand with
-        member _.Execute whole =
-            stepped pageIndex isHeader
-            inner.Execute whole
-        member _.Undo whole =
-            stepped pageIndex isHeader
-            inner.Undo whole
-        member _.Description = inner.Description
 
 /// A history with the step just added to it made a story's step when a story is being edited.
 let private storyHistory (handler: InputHandler) (before: CommandHistory) (after: CommandHistory) : CommandHistory =
-    match handler.Story, after.Undos with
-    | Some session, head :: rest when not (obj.ReferenceEquals(after.Undos, before.Undos)) ->
-        { after with Undos = (StoryCommand(head, session, fun stepped -> handler.HistoryStory <- Some stepped) :> ICommand) :: rest }
+    match after.Undos with
+    | head :: rest when not (obj.ReferenceEquals(after.Undos, before.Undos)) ->
+        { after with Undos = handler.Session.WrapStory(head) :: rest }
     | _ -> after
 
 let private showStory (handler: InputHandler) (session: StorySession) =
@@ -575,7 +286,7 @@ let private showStory (handler: InputHandler) (session: StorySession) =
     let whole (story: Doc.Document) =
         if last.Count > 0 && sameContentObjects story (fst last.[0]) then snd last.[0]
         else
-            let folded = { foldStory session story with Selection = None }
+            let folded = { handler.Session.FoldStory(session, story) with Selection = None }
             last.Clear()
             last.Add((story, folded))
             folded
@@ -592,33 +303,15 @@ let private hideStory (handler: InputHandler) =
     handler.RenderContext.StoryNotePlace <- None
     handler.RenderContext.StoryNoteLayouts <- None
 
-/// Record a finished change in the undo history as one step. Selection-only
-/// changes are not recorded.
+
+/// Record a finished change; selection-only changes are not recorded.
 let private recordChange (handler: InputHandler) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) =
     if not (sameContent beforeDoc afterDoc) then
-        handler.Typing <- None
-        let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
-        let _, history = Cmd.execute cmd beforeDoc handler.History
-        handler.History <- storyHistory handler handler.History history
+        handler.Session.RecordChange(description, beforeDoc, afterDoc, id)
 
-/// The history with a keystroke of a run of typing (`kind`: see TypingRun)
-/// that made `afterDoc` of `beforeDoc`: the run's step undoes it too when the
-/// keystroke goes on from where the run's last one left the document,
-/// otherwise the keystroke starts a run of its own, a new step.
 let private typingHistory (handler: InputHandler) (kind: string) (description: string) (beforeDoc: Doc.Document) (afterDoc: Doc.Document) : CommandHistory =
-    let continued =
-        match handler.Typing, handler.History.Undos with
-        | Some run, top :: rest when run.Kind = kind && obj.ReferenceEquals(top, run.Step) && obj.ReferenceEquals(beforeDoc, run.After) -> Some (run, rest)
-        | _ -> None
-    let start, below =
-        match continued with
-        | Some (run, rest) -> run.Start, { handler.History with Undos = rest }
-        | None -> beforeDoc, handler.History
-    let cmd = DeleteTextCommand(start, afterDoc, description) :> ICommand
-    let _, history = Cmd.execute cmd start below
-    let history = storyHistory handler below history
-    handler.Typing <- Some { Kind = kind; Start = start; After = afterDoc; Step = List.head history.Undos }
-    history
+    handler.Session.RecordTyping(kind, description, beforeDoc, afterDoc, id)
+    handler.History
 
 /// A keystroke of a run of typing made `afterDoc` of the handler's document:
 /// recorded (see typingHistory) and shown.
@@ -640,20 +333,11 @@ let private showDocument (handler: InputHandler) (doc: Doc.Document) =
 /// to work on - the story's when the step was made in a header or footer
 /// (which is then the story on display), the whole document otherwise.
 let private historyStep (handler: InputHandler) (step: Doc.Document -> CommandHistory -> Doc.Document * CommandHistory) : Doc.Document * CommandHistory =
-    // (What is typed after an undo or a redo is a step of its own.)
-    handler.Typing <- None
-    handler.HistoryStory <- None
-    handler.HistoryPlace <- None
-    let whole, history = step (wholeDocument handler handler.Document) handler.History
-    // (Nothing to step to: everything stays as it is.)
-    if obj.ReferenceEquals(history, handler.History) then handler.Document, history else
-    match handler.HistoryStory with
-    | Some session ->
-        showStory handler session
-        unfoldStory session whole, history
-    | None ->
-        if handler.Story.IsSome then hideStory handler
-        whole, history
+    if handler.Session.HistoryStep(step) then
+        match handler.Story with
+        | Some session -> showStory handler session
+        | None -> hideStory handler
+    handler.Document, handler.History
 
 /// Show the document a step of the history came to. A step that belongs to a
 /// page's header or footer (see HistoryPlace) is shown there: the editor
@@ -692,159 +376,34 @@ let redo (handler: InputHandler) =
 /// its Main is the whole document as it is now), `selection` where the caret
 /// goes (None: the start of the story).
 let enterStory (handler: InputHandler) (session: StorySession) (selection: Doc.Selection option) =
-    let selection =
-        match selection with
-        | Some selection -> Some selection
-        | None ->
-            match Doc.paragraphsOfBlocks session.EntryBlocks with
-            | first :: _ ->
-                let position : Doc.Position = { BlockId = first.Id; Offset = 0 }
-                Some { Anchor = position; Focus = position }
-            | [] -> None
+    handler.Session.EnterStory(session, selection)
     showStory handler session
     handler.IsMouseDown <- false
     handler.SelectionAnchor <- None
     handler.GoalX <- None
-    showDocument handler { session.Main with Blocks = session.EntryBlocks; Selection = selection }
+    showDocument handler handler.Document
 
 /// Back to the body, with the selection it had. False when no header or footer was being edited.
 let exitStory (handler: InputHandler) : bool =
-    match handler.Story with
-    | None -> false
-    | Some session ->
-        let whole = { foldStory session handler.Document with Selection = session.Main.Selection }
+    if not (handler.Session.ExitStory()) then false
+    else
         hideStory handler
         handler.IsMouseDown <- false
         handler.SelectionAnchor <- None
         handler.GoalX <- None
-        showDocument handler whole
+        showDocument handler handler.Document
         true
 
-/// The pending format of the caret, if it has one: chosen in this text with the caret where it is.
-let pendingFormat (handler: InputHandler) : PendingFormat option =
-    match handler.Pending with
-    | Some pending when obj.ReferenceEquals(pending.PendingDocument.Blocks, handler.Document.Blocks) && pending.PendingDocument.Selection = handler.Document.Selection -> Some pending
-    | _ -> None
-
-let private styleOfCharacterAt (doc: Doc.Document) (position: Doc.Position) : TextBuffer.TextStyle option =
-    Doc.findParagraph doc position.BlockId
-    |> Option.bind (fun para ->
-        para.Buffer.Runs
-        |> List.tryPick (function
-            | TextBuffer.Text run when run.Start <= position.Offset && position.Offset < run.Start + run.Length -> Some run.Style
-            | _ -> None))
-
-/// The document with one character typed at the caret - with the pending
-/// format, if there is one - and selected: what a format command does to it
-/// is what it does to the text typed next, and its format is the caret's.
-/// None when nothing can be typed at the selection (no caret).
-let pendingProbe (handler: InputHandler) : (Doc.Document * Doc.Position) option =
-    let doc = handler.Document
-    match doc.Selection with
-    | Some selection when selection.IsCollapsed ->
-        let at = selection.Focus
-        let inserted = Doc.insertText "x" doc
-        match inserted.Selection with
-        | Some after when after.Focus.BlockId = at.BlockId && after.Focus.Offset = at.Offset + 1 ->
-            let styled =
-                match pendingFormat handler, Doc.findParagraph inserted at.BlockId with
-                | Some pending, Some para ->
-                    Doc.replaceParagraph inserted para.Id { para with Buffer = TextBuffer.applyStyle at.Offset 1 (fun _ -> pending.PendingStyle) para.Buffer }
-                | _ -> inserted
-            Some (Doc.setSelection at { at with Offset = at.Offset + 1 } styled, at)
-        | _ -> None
-    | _ -> None
-
-/// A character format command given with nothing selected: it is kept for
-/// the text typed next at the caret (see PendingFormat). `command` is the
-/// command as it is applied to a selection. False when there is no caret
-/// (text is selected, or nothing is): the command is then the selection's.
-let formatAtCaret (handler: InputHandler) (command: Doc.Document -> Doc.Document) : bool =
-    match pendingProbe handler with
-    | Some (probe, at) ->
-        match styleOfCharacterAt probe at, styleOfCharacterAt (command probe) at with
-        | Some before, Some style when before <> style ->
-            // (What is typed in the format chosen is a step of its own.)
-            handler.Typing <- None
-            handler.Pending <- Some { PendingDocument = handler.Document; PendingStyle = style }
-            handler.OnPendingFormat ()
-        | _ -> ()
-        true
-    | None -> false
-
-/// A character of a word (Ctrl+Left / Right and a double click go by them).
-let isWordChar (ch: char) = System.Char.IsLetterOrDigit ch || ch = '_' || ch = '\'' || ch = '’'
-
-/// The word a caret is inside of - a character of the word before it and
-/// one after it -, from its start to its end. None at a word's start or end,
-/// in white space, or with text selected.
-let wordAroundCaret (doc: Doc.Document) : (Doc.Position * Doc.Position) option =
-    match doc.Selection with
-    | Some selection when selection.IsCollapsed ->
-        let at = selection.Focus
-        match Doc.findParagraph doc at.BlockId with
-        | Some para ->
-            let text = TextBuffer.toString para.Buffer
-            if at.Offset > 0 && at.Offset < text.Length && isWordChar text.[at.Offset - 1] && isWordChar text.[at.Offset] then
-                let mutable first = at.Offset - 1
-                while first > 0 && isWordChar text.[first - 1] do first <- first - 1
-                let mutable last = at.Offset + 1
-                while last < text.Length && isWordChar text.[last] do last <- last + 1
-                Some ({ at with Offset = first }, { at with Offset = last })
-            else None
-        | None -> None
-    | _ -> None
-
-/// The document after a character format command, as Word gives it: on the
-/// selection; with the caret inside a word on that word (the caret stays
-/// where it was); with the caret elsewhere for the text typed next (see
-/// formatAtCaret: the document is as it was).
-let characterFormatted (handler: InputHandler) (command: Doc.Document -> Doc.Document) : Doc.Document =
-    match wordAroundCaret handler.Document with
-    | Some (first, last) ->
-        let formatted = command (Doc.setSelection first last handler.Document)
-        { formatted with Selection = handler.Document.Selection }
-    | None -> if formatAtCaret handler command then handler.Document else command handler.Document
-
-/// The style of text typed with a pending format: the format that was chosen,
-/// and of what the text is part of - a link, a comment's range, a tracked
-/// insertion - what typing there gives without one. It is not the bookmarks,
-/// the field or the note of the run the caret was in when the format was
-/// chosen (the chosen style is that of a character of that run): two
-/// characters typed one after the other are one run, and a bookmark around
-/// the run they are typed into is not theirs.
-let private pendingStyleOver (chosen: TextBuffer.TextStyle) (typed: TextBuffer.TextStyle) : TextBuffer.TextStyle =
-    { typed with
-        Style = chosen.Style; Bold = chosen.Bold; Italic = chosen.Italic; Underline = chosen.Underline
-        UnderlineStyle = chosen.UnderlineStyle; UnderlineColor = chosen.UnderlineColor; AllCaps = chosen.AllCaps
-        SmallCaps = chosen.SmallCaps; Strike = chosen.Strike; DoubleStrike = chosen.DoubleStrike; Hidden = chosen.Hidden
-        Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
-        CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
-        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
-        BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false }
-
-/// `after`: `before` with text typed at its caret. The text has the pending
-/// format of that caret, if there is one. (What says that the text is a
-/// tracked insertion stays as the insertion made it.)
-let withPendingFormat (handler: InputHandler) (before: Doc.Document) (after: Doc.Document) : Doc.Document =
-    match handler.Pending with
-    | Some pending when obj.ReferenceEquals(pending.PendingDocument.Blocks, before.Blocks) && pending.PendingDocument.Selection = before.Selection ->
-        match before.Selection, after.Selection with
-        | Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId = was.Focus.BlockId && now.Focus.Offset > was.Focus.Offset ->
-            match Doc.findParagraph after now.Focus.BlockId with
-            | Some para ->
-                let styleOf (typed: TextBuffer.TextStyle) = pendingStyleOver pending.PendingStyle typed
-                let buffer = TextBuffer.applyStyle was.Focus.Offset (now.Focus.Offset - was.Focus.Offset) styleOf para.Buffer
-                { Doc.replaceParagraph after para.Id { para with Buffer = buffer } with Selection = after.Selection }
-            | None -> after
-        | _ -> after
-    | _ -> after
-
-/// A pending format does not outlive a change of the document or of the selection.
-let private dropPendingFormat (handler: InputHandler) (doc: Doc.Document) =
-    match handler.Pending with
-    | Some pending when not (obj.ReferenceEquals(pending.PendingDocument.Blocks, doc.Blocks) && pending.PendingDocument.Selection = doc.Selection) -> handler.Pending <- None
-    | _ -> ()
+let pendingFormat (handler: InputHandler) = handler.Session.PendingFormat
+let pendingProbe (handler: InputHandler) = handler.Session.PendingProbe()
+let private executeSessionCommand (handler: InputHandler) command tracking =
+    let previous = handler.Session.PendingFormat |> Option.map (fun pending -> pending.PendingStyle)
+    let result = handler.Session.Execute(command, tracking)
+    if previous <> (handler.Session.PendingFormat |> Option.map (fun pending -> pending.PendingStyle)) then handler.OnPendingFormat ()
+    result
+let withPendingFormat (handler: InputHandler) before after = handler.Session.WithPendingFormat(before, after)
+let private dropPendingFormat (handler: InputHandler) doc = handler.Session.DropPendingFormat(doc)
+let private isWordChar = Rbt.Word.Session.isWordChar
 
 /// Edit the text of a text box of the body in place (as a header is: see
 /// `enterStory`): typing, selecting, formatting and undo work in it; Escape,
@@ -907,17 +466,6 @@ let enterTextBoxOnPage (handler: InputHandler) (boxId: Doc.BlockId) (selection: 
             | None -> false
         | _ -> false
 
-/// Whether a page (or a column) can break at the caret: in the body's own
-/// text - not in a text box, a header or a footer (the story that is edited
-/// is not the body), in a footnote or an endnote, or with nothing selected.
-let pageBreakAllowed (handler: InputHandler) : bool =
-    handler.Story.IsNone
-    && (match handler.Document.Selection with
-        | Some selection ->
-            (Doc.textBoxOfParagraph handler.Document selection.Focus.BlockId).IsNone
-            && not (selection.Focus.BlockId.StartsWith Layout.footnoteBlockIdPrefix)
-            && not (selection.Focus.BlockId.StartsWith Layout.endnoteBlockIdPrefix)
-        | None -> false)
 
 let enterTextBox (handler: InputHandler) (boxId: Doc.BlockId) (selection: Doc.Selection option) : bool =
     enterTextBoxOnPage handler boxId selection None
@@ -979,11 +527,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let handler = {
         Canvas = canvas
         RenderContext = ctx
-        Document = initialDoc
+        Session = Rbt.Word.Session.EditingSession(initialDoc)
         OnChange = onChange
         IsMouseDown = false
         SelectionAnchor = None
-        History = Cmd.empty
         ResizingImage = None
         DraggingImage = None
         HoveredImage = None
@@ -996,13 +543,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         SyncInputProxy = ignore
         Dispose = ignore
         GoalX = None
-        Story = None
-        HistoryStory = None
-        HistoryPlace = None
         OnHistoryPlace = fun _ _ -> false
         OnDoubleClick = fun _ _ -> false
         EnsureWhole = ignore
-        Pending = None
         OnPendingFormat = ignore
         PasteText = ignore
         PasteClipboard = fun _ _ -> ()
@@ -1010,7 +553,6 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         SelectedShape = None
         ShapeDrag = None
         OnShapeSelection = ignore
-        Typing = None
     }
     let mutable disposed = false
     let listeners = ResizeArray<HTMLElement * string * (Event -> unit)>()
@@ -1018,7 +560,6 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let guarded event = if not disposed then callback event
         element.addEventListener(eventName, guarded)
         listeners.Add(element, eventName, guarded)
-    let mutable richClip : (string * Doc.Clip) option = None
     let mutable skipParagraphInput = false
     let mutable suppressPhysicalParagraphBeforeInput = false
 
@@ -1152,9 +693,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     /// Put the focus at `position`: the whole selection with it, or with
     /// `extend` (Shift) only the focus, the anchor staying where it is.
     let withFocus (doc: Doc.Document) (extend: bool) (position: Doc.Position) : Doc.Document =
-        match doc.Selection with
-        | Some selection when extend -> { doc with Selection = Some { selection with Focus = position } }
-        | _ -> { doc with Selection = Some { Anchor = position; Focus = position } }
+        Rbt.Word.Session.navigate (Rbt.Word.Session.Navigation.VisualTarget(Some position, false, extend)) doc
 
     /// Up / Down by `count` visual lines, keeping the column.
     let moveVertically (doc: Doc.Document) (down: bool) (extend: bool) : Doc.Document =
@@ -1210,68 +749,6 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 | Some target -> withFocus doc extend target.Focus
                 | None -> doc
 
-    /// Ctrl+Home / Ctrl+End: the start / end of the document.
-    let moveToDocumentEdge (doc: Doc.Document) (toEnd: bool) (extend: bool) : Doc.Document =
-        match (Doc.selectAll doc).Selection with
-        | Some whole -> withFocus doc extend (if toEnd then whole.Focus else whole.Anchor)
-        | None -> doc
-
-    /// The start of the word at or after `offset` going right, or before it going left.
-    let wordBoundary (text: string) (offset: int) (forward: bool) : int =
-        let mutable i = max 0 (min text.Length offset)
-        if forward then
-            // Over the rest of this word (or run of punctuation), then the space after it.
-            if i < text.Length then
-                if isWordChar text.[i] then
-                    while i < text.Length && isWordChar text.[i] do i <- i + 1
-                elif not (System.Char.IsWhiteSpace text.[i]) then
-                    while i < text.Length && not (isWordChar text.[i]) && not (System.Char.IsWhiteSpace text.[i]) do i <- i + 1
-            while i < text.Length && System.Char.IsWhiteSpace text.[i] do i <- i + 1
-        else
-            while i > 0 && System.Char.IsWhiteSpace text.[i - 1] do i <- i - 1
-            if i > 0 then
-                if isWordChar text.[i - 1] then
-                    while i > 0 && isWordChar text.[i - 1] do i <- i - 1
-                else
-                    while i > 0 && not (isWordChar text.[i - 1]) && not (System.Char.IsWhiteSpace text.[i - 1]) do i <- i - 1
-        i
-
-    /// Ctrl+Left / Ctrl+Right: by words, across paragraph boundaries.
-    let moveByWord (doc: Doc.Document) (forward: bool) (extend: bool) : Doc.Document =
-        match doc.Selection with
-        | None -> doc
-        | Some selection ->
-            match Doc.findParagraph doc selection.Focus.BlockId with
-            | None -> doc
-            | Some para ->
-                let text = TextBuffer.toString para.Buffer
-                let atEdge = if forward then selection.Focus.Offset >= text.Length else selection.Focus.Offset <= 0
-                if atEdge then
-                    // Into the next / previous paragraph, as a plain arrow does.
-                    let collapsed = { doc with Selection = Some { Anchor = selection.Focus; Focus = selection.Focus } }
-                    let moved = if forward then Doc.moveCursorRight collapsed else Doc.moveCursorLeft collapsed
-                    match moved.Selection with
-                    | Some target -> withFocus doc extend target.Focus
-                    | None -> doc
-                else
-                    withFocus doc extend { selection.Focus with Offset = wordBoundary text selection.Focus.Offset forward }
-
-    /// Ctrl+Up / Ctrl+Down: the start of this paragraph (then the previous one) / of the next one.
-    let moveByParagraph (doc: Doc.Document) (forward: bool) (extend: bool) : Doc.Document =
-        match doc.Selection with
-        | None -> doc
-        | Some selection ->
-            if not forward && selection.Focus.Offset > 0 then withFocus doc extend { selection.Focus with Offset = 0 }
-            else
-                let collapsed =
-                    match Doc.findParagraph doc selection.Focus.BlockId with
-                    | Some para when forward -> { doc with Selection = Some { Anchor = { selection.Focus with Offset = TextBuffer.length para.Buffer }; Focus = { selection.Focus with Offset = TextBuffer.length para.Buffer } } }
-                    | _ -> { doc with Selection = Some { Anchor = selection.Focus; Focus = selection.Focus } }
-                let moved = if forward then Doc.moveCursorRight collapsed else Doc.moveCursorLeft collapsed
-                match moved.Selection with
-                | Some target when target.Focus.BlockId <> selection.Focus.BlockId -> withFocus doc extend { target.Focus with Offset = 0 }
-                | Some target when forward -> withFocus doc extend target.Focus
-                | _ -> doc
 
     /// The word at a position (a double click selects it).
     let wordAt (doc: Doc.Document) (position: Doc.Position) : Doc.Document =
@@ -1310,115 +787,36 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let deleteSelectionForMode doc =
         if handler.TrackChanges then Doc.trackDeleteSelection handler.TrackChangesAuthor handler.TrackChangesDate doc else Doc.deleteSelection doc
 
-    /// Plain text put in at the caret of `beforeDoc`, or over its selection:
-    /// the lines of the text are paragraphs. With nothing selected the text
-    /// has the format chosen at the caret for what is typed next, if one was -
-    /// all of it, the lines after the first too.
-    let pastedText (text: string) (beforeDoc: Doc.Document) : Doc.Document =
-        let mutable doc' = beforeDoc
-        // Delete selection first if any
-        let hasSelection =
-            match doc'.Selection with
-            | Some sel when sel.Anchor <> sel.Focus -> true
-            | _ -> false
-        let pending = if hasSelection then None else pendingFormat handler
-        if hasSelection then
-            doc' <- deleteSelectionForMode doc'
-
-        let mutable segmentStart = 0
-        let mutable index = 0
-        let mutable sawLineBreak = false
-        let insertSegment segmentEnd =
-            doc' <- insertTextForMode (text.Substring(segmentStart, segmentEnd - segmentStart)) doc'
-
-        while index < text.Length do
-            let ch = text.[index]
-            if ch = '\r' || ch = '\n' then
-                sawLineBreak <- true
-                insertSegment index
-                doc' <- splitBlockForMode doc'
-                if ch = '\r' && index + 1 < text.Length && text.[index + 1] = '\n' then
-                    index <- index + 1
-                segmentStart <- index + 1
-            index <- index + 1
-
-        if sawLineBreak then
-            insertSegment text.Length
-        else
-            doc' <- insertTextForMode text doc'
-        // (The first line has the pending format from insertTextForMode; the paragraphs after it are given it here.)
-        match pending, beforeDoc.Selection, doc'.Selection with
-        | Some pending, Some was, Some now when was.IsCollapsed && now.IsCollapsed && now.Focus.BlockId <> was.Focus.BlockId ->
-            let styleOf (typed: TextBuffer.TextStyle) = pendingStyleOver pending.PendingStyle typed
-            let ranged = Doc.setSelection was.Focus now.Focus doc'
-            let styled = Doc.applyFormattingToSelection (fun start len buffer -> TextBuffer.applyStyle start len styleOf buffer) ranged
-            { styled with Selection = doc'.Selection }
-        | _ -> doc'
-
-    let pasteText (text: string) =
-        if not disposed && not (isNull text) && text <> "" then
-            let beforeDoc = handler.Document
-            let doc' = pastedText text beforeDoc
-            if not (documentsEqualForChange doc' beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, doc', "Paste") :> ICommand
-                let doc'', hist' = Cmd.execute cmd beforeDoc handler.History
-                handler.Document <- doc''
-                handler.History <- storyHistory handler handler.History hist'
-                renderWithHover handler.RenderContext doc'' handler.HoveredImage
-                handler.OnChange doc''
-    handler.PasteText <- pasteText
-
-    /// An edit of the clipboard (a paste, a cut) as one undo step, shown.
-    let commitClipboardEdit (description: string) (afterDoc: Doc.Document) =
-        let beforeDoc = handler.Document
-        if not (documentsEqualForChange afterDoc beforeDoc) then
-            let cmd = DeleteTextCommand(beforeDoc, afterDoc, description) :> ICommand
-            let doc', history = Cmd.execute cmd beforeDoc handler.History
-            dropPendingFormat handler doc'
-            handler.Document <- doc'
-            handler.History <- storyHistory handler handler.History history
-            renderWithHover handler.RenderContext doc' handler.HoveredImage
-            handler.SyncInputProxy doc'
-            handler.OnChange doc'
-
-    /// Each copy has its own marker in HTML. Text equality alone never gives
-    /// an unrelated clipboard transfer access to this handler's rich clip.
+    let tracking () =
+        if handler.TrackChanges then Some (handler.TrackChangesAuthor, handler.TrackChangesDate)
+        else None
+    let publishClipboard outcome =
+        if outcome <> Rbt.Word.Session.NoChange then
+            let doc = handler.Document
+            renderWithHover handler.RenderContext doc handler.HoveredImage
+            handler.SyncInputProxy doc
+            handler.OnChange doc
     let captureCopy () =
-        match Doc.copySelection handler.Document with
-        | None -> None
-        | Some clip ->
-            let marker = sprintf "<!--rbt-word-clip:%s-->" (clipboardId ())
-            let html = Doc.clipToHtml clip + marker
-            richClip <- Some (html, clip)
-            Some (clip.Text, html)
-
-    /// The host-owned cut API returns its payload synchronously. The browser's
-    /// clipboard event and asynchronous canvas shortcut use captureCopy instead
-    /// so deletion occurs only after their respective transfers succeed.
-    let copyToClipboard (cut: bool) : (string * string) option =
-        if disposed then None
-        else
-            let copied = captureCopy ()
-            if cut && copied.IsSome then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
-            copied
-
+        handler.Session.CaptureClipboard(fun clip ->
+            Doc.clipToHtml clip + sprintf "<!--rbt-word-clip:%s-->" (clipboardId ()))
+    let commitCut capture =
+        match handler.Session.CommitCut(capture, tracking ()) with
+        | Some outcome -> publishClipboard outcome
+        | None -> clipboardError "Word cut cancelled: selection or document changed while copying" null
     let pasteClipboard (text: string) (html: string) =
         if not disposed then
-            let text = if isNull text then "" else text
-            let html = if isNull html then "" else html
-            let normalize (value: string) = value.Replace("\r\n", "\n").Replace("\r", "\n")
-            let clip =
-                if handler.TrackChanges then None
-                else
-                    match richClip with
-                    | Some (knownHtml, clip) when html = knownHtml && normalize text = normalize clip.Text -> Some clip
-                    | _ -> htmlClip html
-            match clip with
-            | Some clip ->
-                // A text box holds paragraphs only: a table's rows are pasted as paragraphs.
-                let clip = match handler.Story with Some session when session.Box.IsSome -> Doc.clipWithoutTables clip | _ -> clip
-                commitClipboardEdit "Paste" (Doc.pasteClip clip handler.Document)
-            | None -> pasteText text
+            publishClipboard (handler.Session.PasteClipboard(text, html, htmlClip, tracking ()))
+    let pasteText text =
+        if not disposed then
+            publishClipboard (handler.Session.PasteClipboard(text, "", Rbt.Word.Session.noExternalClip, tracking ()))
+    let copyToClipboard (cut: bool) =
+        if disposed then None
+        else
+            captureCopy ()
+            |> Option.map (fun capture ->
+                if cut then commitCut capture
+                capture.Text, capture.Html)
+    handler.PasteText <- pasteText
     handler.PasteClipboard <- pasteClipboard
     handler.CopyToClipboard <- copyToClipboard
 
@@ -1435,7 +833,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
     let deleteWordForMode (forward: bool) (doc: Doc.Document) =
         match doc.Selection with
         | Some selection when selection.IsCollapsed ->
-            let ranged = moveByWord doc forward true
+            let ranged = Rbt.Word.Session.navigate (Rbt.Word.Session.Navigation.Word(forward, true)) doc
             match ranged.Selection with
             | Some word when not word.IsCollapsed -> deleteSelectionForMode ranged
             | _ -> doc
@@ -1483,33 +881,21 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             |> Option.map (fun (shape, x, y, _, _, pageTop) -> shape, x, y, pageTop)
         | _ -> None
 
-    /// A character format given by a key (Ctrl+B and the like): the
-    /// selection's, or with nothing selected the caret's (see formatAtCaret).
-    /// The document and the history with it, when the document changed.
-    let characterFormatStep (description: string) (command: Doc.Document -> Doc.Document) : (Doc.Document * CommandHistory) option =
-        let beforeDoc = handler.Document
-        let afterDoc = characterFormatted handler command
-        if documentsEqualForChange afterDoc beforeDoc then None
-        else Some (Cmd.execute (FormatTextCommand(beforeDoc, afterDoc, description) :> ICommand) beforeDoc handler.History)
-    /// Physical Enter and virtual insertParagraph resolve the same edit,
-    /// including list exit, tables and tracked paragraph marks.
-    let paragraphStep () =
-        let beforeDoc = handler.Document
-        match beforeDoc.Selection with
-        | Some selection ->
-            match Doc.findParagraph beforeDoc selection.Focus.BlockId with
-            | Some para ->
-                let emptyListItem = TextBuffer.length para.Buffer = 0 && para.Metadata.ListStyle <> NoList
-                let afterDoc = if emptyListItem then Doc.decreaseIndent beforeDoc else splitBlockForMode beforeDoc
-                if documentsEqualForChange afterDoc beforeDoc then beforeDoc, None
-                else
-                    let command : ICommand =
-                        if emptyListItem then DeleteTextCommand(beforeDoc, afterDoc, "Edit") :> ICommand
-                        else SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
-                    let doc', history = Cmd.execute command beforeDoc handler.History
-                    doc', Some history
-            | None -> beforeDoc, None
-        | None -> beforeDoc, None
+    /// Character shortcuts use the same atomic session command as the toolbar.
+    let tracking () =
+        if handler.TrackChanges then Some (handler.TrackChangesAuthor, handler.TrackChangesDate) else None
+
+    let executeWord command =
+        executeSessionCommand handler command (tracking ())
+
+    let showWordCommand command =
+        match executeWord command with
+        | Ok Rbt.Word.Session.NoChange | Error _ -> ()
+        | Ok _ ->
+            let doc = handler.Document
+            renderWithHover handler.RenderContext doc handler.HoveredImage
+            handler.SyncInputProxy doc
+            handler.OnChange doc
 
 
     // Handle keyboard input. The listener serves the canvas and the input
@@ -1518,6 +904,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let ke = e :?> KeyboardEvent
         // (Everything, or the end of the document: of the whole document.)
         if (ke.ctrlKey || ke.metaKey) && (keyEquals 'a' ke.key || ke.key = "End") then handler.EnsureWhole ()
+        let beforeKey = handler.Document
         let mutable newDoc = handler.Document
         let mutable newHistory = handler.History
         let mutable useCommand = false
@@ -1534,6 +921,21 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         // confirms a candidate, arrows move within it, ...); the text arrives
         // through the composition events.
         let composing = handler.Composition.IsSome || keyBelongsToComposition ke
+        let wordCommand command =
+            match executeWord command with
+            | Ok Rbt.Word.Session.NoChange | Error _ -> ()
+            | Ok _ ->
+                newDoc <- handler.Document
+                newHistory <- handler.History
+                useCommand <- true
+                stepped <- true
+        let navigation command =
+            handler.Session.Navigate(command) |> ignore
+            newDoc <- handler.Document
+        let visualNavigation (after: Doc.Document) =
+            match after.Selection with
+            | Some selected -> navigation (Rbt.Word.Session.Navigation.VisualTarget(Some selected.Focus, false, shift))
+            | None -> ()
 
         match (if composing then "" else ke.key) with
         | key when commandKey && keyEquals 'z' key ->
@@ -1609,49 +1011,25 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             | None -> ()
             e.preventDefault()
         | key when commandKey && keyEquals 'a' key ->
-            newDoc <- Doc.selectAll handler.Document
+            navigation Rbt.Word.Session.Navigation.SelectAll
             e.preventDefault()
         | key when commandKey && keyEquals 'b' key ->
-            let beforeDoc = handler.Document
-            // (With nothing selected: the word the caret is in, or what is typed next.)
-            let afterDoc = characterFormatted handler WordStyles.toggleBold
-            if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = FormatTextCommand(beforeDoc, afterDoc, "bold") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
-                useCommand <- true
+            wordCommand (Rbt.Word.Session.WordCommand.Character Rbt.Word.Session.CharacterCommand.Bold)
             e.preventDefault()
         | key when commandKey && keyEquals 'i' key ->
-            let beforeDoc = handler.Document
-            // (With nothing selected: the word the caret is in, or what is typed next.)
-            let afterDoc = characterFormatted handler WordStyles.toggleItalic
-            if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = FormatTextCommand(beforeDoc, afterDoc, "italic") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
-                useCommand <- true
+            wordCommand (Rbt.Word.Session.WordCommand.Character Rbt.Word.Session.CharacterCommand.Italic)
             e.preventDefault()
         | key when commandKey && keyEquals 'u' key ->
-            let beforeDoc = handler.Document
-            // (With nothing selected: the word the caret is in, or what is typed next.)
-            let afterDoc = characterFormatted handler WordStyles.toggleUnderline
-            if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = FormatTextCommand(beforeDoc, afterDoc, "underline") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
-                useCommand <- true
+            wordCommand (Rbt.Word.Session.WordCommand.Character Rbt.Word.Session.CharacterCommand.Underline)
             e.preventDefault()
         | "1" when commandKey ->
-            newDoc <- Doc.setHeadingLevel 1 handler.Document
+            wordCommand (Rbt.Word.Session.HeadingLevel 1)
             e.preventDefault()
         | "2" when commandKey ->
-            newDoc <- Doc.setHeadingLevel 2 handler.Document
+            wordCommand (Rbt.Word.Session.HeadingLevel 2)
             e.preventDefault()
         | "3" when commandKey ->
-            newDoc <- Doc.setHeadingLevel 3 handler.Document
+            wordCommand (Rbt.Word.Session.HeadingLevel 3)
             e.preventDefault()
         | "F3" when shift && not commandKey && not ke.altKey ->
             // Shift+F3: Change Case of the selection or the word at the caret.
@@ -1659,45 +1037,40 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             e.preventDefault()
         | key when commandKey && shift && not ke.altKey && keyEquals 'l' key ->
             // Ctrl+Shift+L: a bulleted list (Word's List Bullet).
-            newDoc <- Doc.applyBulletList handler.Document
+            wordCommand Rbt.Word.Session.ApplyBulletList
             e.preventDefault()
         | key when commandKey && shift && not ke.altKey && keyEquals 'n' key ->
             // Ctrl+Shift+N: the Normal style.
-            newDoc <- Doc.setNormalStyle handler.Document
+            wordCommand Rbt.Word.Session.NormalStyle
             e.preventDefault()
         | key when commandKey && not ke.altKey && not shift && (keyEquals 'e' key || keyEquals 'l' key || keyEquals 'r' key || keyEquals 'j' key) ->
             // Word's alignment keys: Ctrl+E centre, Ctrl+L left, Ctrl+R right, Ctrl+J justify.
             let align =
-                if keyEquals 'e' key then Doc.alignCenter
-                elif keyEquals 'r' key then Doc.alignRight
-                elif keyEquals 'j' key then Doc.alignJustify
-                else Doc.alignLeft
-            newDoc <- align handler.Document
+                if keyEquals 'e' key then Rbt.Word.Session.AlignCenter
+                elif keyEquals 'r' key then Rbt.Word.Session.AlignRight
+                elif keyEquals 'j' key then Rbt.Word.Session.AlignJustify
+                else Rbt.Word.Session.AlignLeft
+            wordCommand align
             e.preventDefault()
         | key when commandKey && not ke.altKey && keyEquals 'm' key ->
             // Ctrl+M / Ctrl+Shift+M: Increase / Decrease Indent.
-            newDoc <- Doc.indentParagraphs (not shift) handler.Document
+            wordCommand (Rbt.Word.Session.IndentParagraphs (not shift))
             e.preventDefault()
         | key when commandKey && not ke.altKey && (key = "]" || key = "[" || key = ">" || key = "<" || key = "=" || key = "+" || key = " " || (shift && (key = "." || key = ","))) ->
             // Word's character keys: Ctrl+] / Ctrl+[ a point larger / smaller,
             // Ctrl+Shift+> / < the next size up / down, Ctrl+= subscript,
             // Ctrl+Shift+= superscript, Ctrl+Space the character formatting cleared.
-            let description, command =
+            let format =
                 match key with
-                | "]" -> "Grow font", WordStyles.growFont true false
-                | "[" -> "Shrink font", WordStyles.growFont false false
-                | ">" | "." -> "Grow font", WordStyles.growFont true true
-                | "<" | "," -> "Shrink font", WordStyles.growFont false true
-                | "+" -> "Superscript", WordStyles.toggleSuperscript
-                | "=" when shift -> "Superscript", WordStyles.toggleSuperscript
-                | "=" -> "Subscript", WordStyles.toggleSubscript
-                | _ -> "Clear formatting", Doc.clearFormatting
-            match characterFormatStep description command with
-            | Some (doc', hist') ->
-                newDoc <- doc'
-                newHistory <- hist'
-                useCommand <- true
-            | None -> ()
+                | "]" -> Rbt.Word.Session.CharacterCommand.GrowFont(true, false)
+                | "[" -> Rbt.Word.Session.CharacterCommand.GrowFont(false, false)
+                | ">" | "." -> Rbt.Word.Session.CharacterCommand.GrowFont(true, true)
+                | "<" | "," -> Rbt.Word.Session.CharacterCommand.GrowFont(false, true)
+                | "+" -> Rbt.Word.Session.CharacterCommand.Superscript
+                | "=" when shift -> Rbt.Word.Session.CharacterCommand.Superscript
+                | "=" -> Rbt.Word.Session.CharacterCommand.Subscript
+                | _ -> Rbt.Word.Session.CharacterCommand.Clear
+            wordCommand (Rbt.Word.Session.WordCommand.Character format)
             e.preventDefault()
         | key when commandKey && not ke.altKey && (keyEquals 'c' key || keyEquals 'x' key || keyEquals 'v' key) ->
             // Copy, Cut, Paste. On the input proxy the browser's own copy / cut /
@@ -1718,9 +1091,12 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 // (The key reached the canvas itself: through the asynchronous clipboard.)
                 e.preventDefault()
                 if keyEquals 'v' key then
+                    let epoch = handler.Session.Epoch
                     try
                         Clipboard.pasteText()
-                            .``then``(fun text -> if not disposed then pasteClipboard text "")
+                            .``then``(fun text ->
+                                if not disposed && obj.ReferenceEquals(epoch, handler.Session.Epoch) then
+                                    pasteClipboard text "")
                             .``catch``(fun error -> if not disposed then clipboardError "Word paste failed" (box error))
                         |> ignore
                     with error ->
@@ -1728,22 +1104,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 else
                     match captureCopy () with
                     | None -> ()
-                    | Some (text, _) ->
-                        let cut = keyEquals 'x' key
-                        let source = handler.Document
-                        let history = handler.History
-                        let story = handler.Story
+                    | Some capture ->
                         try
-                            (Clipboard.copyText text)
-                                .``then``(fun () ->
-                                    if not disposed && cut then
-                                        if sameContent source handler.Document
-                                            && source.Selection = handler.Document.Selection
-                                            && obj.ReferenceEquals(history.Undos, handler.History.Undos)
-                                            && obj.ReferenceEquals(history.Redos, handler.History.Redos)
-                                            && story = handler.Story then
-                                            commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
-                                        else clipboardError "Word cut cancelled: selection or document changed while copying" null)
+                            (Clipboard.copyText capture.Text)
+                                .``then``(fun () -> if not disposed && keyEquals 'x' key then commitCut capture)
                                 .``catch``(fun error -> if not disposed then clipboardError "Word clipboard write failed" (box error))
                             |> ignore
                         with error ->
@@ -1784,106 +1148,56 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 useCommand <- true
             e.preventDefault()
         | "ArrowLeft" ->
-            if ke.metaKey then newDoc <- moveToLineEdge handler.Document false shift
-            elif ke.ctrlKey || ke.altKey then newDoc <- moveByWord handler.Document false shift
-            elif shift then newDoc <- Doc.extendSelectionLeft handler.Document
-            else newDoc <- Doc.moveCursorLeft handler.Document
+            if ke.metaKey then visualNavigation (moveToLineEdge handler.Document false shift)
+            else navigation (if ke.ctrlKey || ke.altKey then Rbt.Word.Session.Navigation.Word(false, shift)
+                             else Rbt.Word.Session.Navigation.Character(false, shift))
             e.preventDefault()
         | "ArrowRight" ->
-            if ke.metaKey then newDoc <- moveToLineEdge handler.Document true shift
-            elif ke.ctrlKey || ke.altKey then newDoc <- moveByWord handler.Document true shift
-            elif shift then newDoc <- Doc.extendSelectionRight handler.Document
-            else newDoc <- Doc.moveCursorRight handler.Document
+            if ke.metaKey then visualNavigation (moveToLineEdge handler.Document true shift)
+            else navigation (if ke.ctrlKey || ke.altKey then Rbt.Word.Session.Navigation.Word(true, shift)
+                             else Rbt.Word.Session.Navigation.Character(true, shift))
             e.preventDefault()
         | "ArrowUp" ->
-            if ke.metaKey then newDoc <- moveToDocumentEdge handler.Document false shift
-            elif ke.ctrlKey || ke.altKey then newDoc <- moveByParagraph handler.Document false shift
+            if ke.metaKey then navigation (Rbt.Word.Session.Navigation.DocumentEdge(false, shift))
+            elif ke.ctrlKey || ke.altKey then navigation (Rbt.Word.Session.Navigation.Paragraph(false, shift))
             else
-                newDoc <- moveVertically handler.Document false shift
+                visualNavigation (moveVertically handler.Document false shift)
                 keepGoal <- true
             e.preventDefault()
         | "ArrowDown" ->
-            if ke.metaKey then newDoc <- moveToDocumentEdge handler.Document true shift
-            elif ke.ctrlKey || ke.altKey then newDoc <- moveByParagraph handler.Document true shift
+            if ke.metaKey then navigation (Rbt.Word.Session.Navigation.DocumentEdge(true, shift))
+            elif ke.ctrlKey || ke.altKey then navigation (Rbt.Word.Session.Navigation.Paragraph(true, shift))
             else
-                newDoc <- moveVertically handler.Document true shift
+                visualNavigation (moveVertically handler.Document true shift)
                 keepGoal <- true
             e.preventDefault()
         | "PageUp" ->
-            newDoc <- movePage handler.Document false shift
+            visualNavigation (movePage handler.Document false shift)
             keepGoal <- true
             e.preventDefault()
         | "PageDown" ->
-            newDoc <- movePage handler.Document true shift
+            visualNavigation (movePage handler.Document true shift)
             keepGoal <- true
             e.preventDefault()
         | "Home" ->
-            newDoc <- if commandKey then moveToDocumentEdge handler.Document false shift else moveToLineEdge handler.Document false shift
+            if commandKey then navigation (Rbt.Word.Session.Navigation.DocumentEdge(false, shift))
+            else visualNavigation (moveToLineEdge handler.Document false shift)
             e.preventDefault()
         | "End" ->
-            newDoc <- if commandKey then moveToDocumentEdge handler.Document true shift else moveToLineEdge handler.Document true shift
+            if commandKey then navigation (Rbt.Word.Session.Navigation.DocumentEdge(true, shift))
+            else visualNavigation (moveToLineEdge handler.Document true shift)
             e.preventDefault()
         | "Tab" ->
-            // In a table Tab and Shift+Tab go from cell to cell (Tab in the
-            // last cell adds a row), as in Word; in a list they move the item
-            // a level down or up; elsewhere Tab is a tab character (in a
-            // table: Ctrl+Tab).
-            let typeTab () =
-                let beforeDoc = handler.Document
-                let afterDoc = insertTextForMode "\t" handler.Document
-                if not (documentsEqualForChange afterDoc beforeDoc) then
-                    let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Insert tab") :> ICommand
-                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                    newDoc <- doc'
-                    newHistory <- hist'
-                    useCommand <- true
-            let context = Doc.caretContext handler.Document
-            if ke.ctrlKey && not ke.shiftKey && context.InTable then typeTab ()
-            else
-            match Doc.moveToAdjacentTableCell (not ke.shiftKey) handler.Document with
-            | Some moved -> newDoc <- moved
-            | None ->
-                if ke.shiftKey then
-                    // Shift+Tab: Decrease indent (in the first cell of a table: nothing)
-                    if not context.InTable then newDoc <- Doc.decreaseIndent handler.Document
-                elif context.InList then
-                    // Tab: Increase indent
-                    newDoc <- Doc.increaseIndent handler.Document
-                elif not context.InTable then typeTab ()
+            wordCommand (Rbt.Word.Session.Tab (shift, ke.ctrlKey))
             e.preventDefault()
         | "Enter" when commandKey ->
-            // Ctrl+Enter: a page break at the caret; Ctrl+Shift+Enter: a column
-            // break. (Where a page cannot break - a text box, a header, a
-            // note - nothing, as insertPageBreak.)
-            if pageBreakAllowed handler then
-                let beforeDoc = handler.Document
-                let afterDoc = if shift then Doc.insertColumnBreak beforeDoc else Doc.insertPageBreak beforeDoc
-                if not (documentsEqualForChange afterDoc beforeDoc) then
-                    let cmd = SplitBlockCommand(beforeDoc, afterDoc) :> ICommand
-                    let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                    newDoc <- doc'
-                    newHistory <- hist'
-                    useCommand <- true
+            wordCommand (if shift then Rbt.Word.Session.ColumnBreak else Rbt.Word.Session.PageBreak)
             e.preventDefault()
         | "Enter" when shift ->
-            // Shift+Enter: a line break in the paragraph (<w:br/>).
-            let beforeDoc = handler.Document
-            let afterDoc = insertTextForMode "\n" handler.Document
-            if not (documentsEqualForChange afterDoc beforeDoc) then
-                let cmd = DeleteTextCommand(beforeDoc, afterDoc, "Insert line break") :> ICommand
-                let (doc', hist') = Cmd.execute cmd beforeDoc handler.History
-                newDoc <- doc'
-                newHistory <- hist'
-                useCommand <- true
+            wordCommand Rbt.Word.Session.LineBreak
             e.preventDefault()
         | "Enter" ->
-            let doc', history = paragraphStep ()
-            newDoc <- doc'
-            match history with
-            | Some hist' ->
-                newHistory <- hist'
-                useCommand <- true
-            | None -> ()
+            wordCommand Rbt.Word.Session.Enter
             skipParagraphInput <- true
             suppressPhysicalParagraphBeforeInput <- true
             soon (fun () ->
@@ -1913,7 +1227,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             handler.History <- (if stepped then newHistory else storyHistory handler handler.History newHistory)
         // (A caret moved into the mark of a comment goes on to its other end: see Doc.snapSelectionToMarks.)
         if not useCommand then newDoc <- Doc.snapSelectionToMarks handler.Document.Selection newDoc
-        if not (documentsEqualForChange newDoc handler.Document) then
+        if not (documentsEqualForChange newDoc beforeKey) then
             if not useCommand then
                 // Shortcuts that changed the document without building a
                 // command (heading level, Tab indent, leaving a list) are
@@ -2009,17 +1323,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             syncInputProxy beforeDoc
 
     let commitInput description afterDoc = commitInputAs None description afterDoc
-    let commitParagraphInput () =
-        let afterDoc, history = paragraphStep ()
-        match history with
-        | Some history ->
-            handler.History <- storyHistory handler handler.History history
-            dropPendingFormat handler afterDoc
-            handler.Document <- afterDoc
-            renderWithHover handler.RenderContext afterDoc handler.HoveredImage
-            syncInputProxy afterDoc
-            handler.OnChange afterDoc
-        | None -> ()
+    let commitParagraphInput () = showWordCommand Rbt.Word.Session.Enter
 
     listen proxy "keydown" onKeyDown
 
@@ -2078,7 +1382,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     commitParagraphInput ()
             | "insertLineBreak" ->
                 e.preventDefault()
-                commitInput "Typing" (insertTextForMode "\n" handler.Document)
+                showWordCommand Rbt.Word.Session.LineBreak
             | _ -> ())
 
     // The browser's copy / cut / paste on the proxy (Ctrl+C / X / V, the
@@ -2087,12 +1391,12 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let data = e?clipboardData
         if not (isNull data) && handler.Composition.IsNone then
             match captureCopy () with
-            | Some (text, html) ->
+            | Some capture ->
                 try
-                    data?setData("text/plain", text) |> ignore
-                    data?setData("text/html", html) |> ignore
+                    data?setData("text/plain", capture.Text) |> ignore
+                    data?setData("text/html", capture.Html) |> ignore
                     e.preventDefault()
-                    if cut then commitClipboardEdit "Cut" (deleteSelectionForMode handler.Document)
+                    if cut then commitCut capture
                 with error ->
                     clipboardError "Word clipboard transfer failed" (box error)
             | None -> ()
@@ -2127,7 +1431,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
             focusWithoutScroll proxy)
 
     // Handle mouse down - start selection or image resize
-    listen canvas "mousedown" (fun (e: Event) ->
+    let onMouseDown (e: Event) =
         let me = e :?> MouseEvent
         let x, y = pointerPosition me
 
@@ -2263,7 +1567,10 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                     let newDoc = Doc.setCursor blockId offset handler.Document
                     applyPointerDocumentChange newDoc
                 canvas.focus()
-    )
+    listen canvas "mousedown" (fun e ->
+        // Secondary and auxiliary clicks are not selection or drag gestures.
+        // In particular, leave the browser's context menu alone in a bare editor.
+        if (e :?> MouseEvent).button = 0 then onMouseDown e)
 
     // Handle mouse move - extend selection, resize image, or update hover
     listen canvas "mousemove" (fun (e: Event) ->
@@ -2411,7 +1718,6 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         canvas.tabIndex <- originalTabIndex
         canvas?style?cursor <- originalCursor
         proxyAttached <- false
-        richClip <- None
         handler.Composition <- None
         handler.SyncInputProxy <- ignore
         handler.InputProxy <- None
@@ -2434,6 +1740,16 @@ let updateDocument (handler: InputHandler) (doc: Doc.Document) =
     handler.SyncInputProxy doc
     handler.OnChange doc
 
+/// Run a shared command and notify the browser only when it changed something.
+let executeWordCommand (handler: InputHandler) command =
+    let tracking = if handler.TrackChanges then Some (handler.TrackChangesAuthor, handler.TrackChangesDate) else None
+    let result = executeSessionCommand handler command tracking
+    match result with
+    | Ok Rbt.Word.Session.SelectionChanged | Ok Rbt.Word.Session.ContentChanged ->
+        updateDocument handler handler.Document
+    | _ -> ()
+    result
+
 /// Paint the current document again (after the viewport or the canvas
 /// changed) and put the input proxy back at the caret.
 let repaint (handler: InputHandler) =
@@ -2454,8 +1770,7 @@ let applyEditAtStoryPlace (handler: InputHandler) (description: string) (pageInd
     recordChange handler description handler.Document doc
     match handler.History.Undos with
     | head :: rest when not (obj.ReferenceEquals(handler.History.Undos, before.Undos)) ->
-        let stepped page header = handler.HistoryPlace <- Some (page, header)
-        handler.History <- { handler.History with Undos = (StoryPlaceCommand(head, pageIndex, isHeader, stepped) :> ICommand) :: rest }
+        handler.History <- { handler.History with Undos = handler.Session.WrapStoryPlace(head, pageIndex, isHeader) :: rest }
     | _ -> ()
     handler.Document <- doc
     handler.OnChange doc
@@ -2464,7 +1779,7 @@ let applyEditAtStoryPlace (handler: InputHandler) (description: string) (pageInd
 /// previous document and is discarded.
 let loadDocument (handler: InputHandler) (doc: Doc.Document) =
     hideStory handler
-    handler.History <- Cmd.empty
+    handler.Session.Replace doc
     handler.PointerStartDocument <- None
     handler.IsMouseDown <- false
     handler.ResizingImage <- None
@@ -2511,8 +1826,6 @@ let repaint _ = ()
 let applyEdit _ _ _ = ()
 let pendingFormat _ = None
 let pendingProbe _ = None
-let formatAtCaret _ _ = false
-let characterFormatted _ command doc = command doc
 let withPendingFormat _ _ after = after
 let applyEditAtStoryPlace _ _ _ _ _ = ()
 let enterTextBox _ _ _ = false
@@ -2520,7 +1833,6 @@ let enterTextBoxOnPage _ _ _ _ = false
 let selectShape _ _ = ()
 let shapePlacedDocument _ _ _ _ _ _ _ _ = None
 let shapeResizedDocument _ _ _ _ _ _ _ _ _ _ = None
-let pageBreakAllowed _ = false
 let loadDocument _ _ = ()
 let extendDocuments _ _ = ()
 let undo _ = false

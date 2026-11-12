@@ -86,13 +86,6 @@ type SplitBlockCommand(beforeDoc: Document, afterDoc: Document) =
         member _.Undo doc = beforeDoc
         member _.Description = "Split paragraph"
 
-/// Format text command (bold/italic/underline)
-type FormatTextCommand(beforeDoc: Document, afterDoc: Document, formatType: string) =
-    interface ICommand with
-        member _.Execute doc = afterDoc
-        member _.Undo doc = beforeDoc
-        member _.Description = sprintf "Format: %s" formatType
-
 /// Composite command for grouping multiple commands
 type CompositeCommand(commands: ICommand list, description: string) =
     interface ICommand with

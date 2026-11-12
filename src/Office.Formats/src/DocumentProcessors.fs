@@ -515,6 +515,7 @@ module EditorProcessor =
             match field.Part |> Option.orElse field.Result with
             | Some result -> result
             | None -> field.Code
+        | FieldBoundary _ -> ""
         | EquationXml _ -> "[Equation]"
         | RenderedPageBreak -> ""
         | PageBreak -> ""

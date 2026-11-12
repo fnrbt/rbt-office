@@ -6,7 +6,7 @@
 // string inserted and of a scroll frame.
 //
 // The document is tests/test-documents-wild/docx4j-getting-started.docx with
-// its body repeated (--repeat N, default 8: some 500 pages).
+// its body repeated (--repeat N, default 8); actual page count depends on layout/fonts.
 //
 // Usage:
 //   node tools/word-browser/perf.mjs --dist $DIST [--progressive] [--repeat N] [--keys N] [--profile keys] [--callers FUNCTION] [--painter] [--measure-cost MICROSECONDS]
@@ -17,9 +17,9 @@
 // --painter installs a (trivial) text path painter and measurers first.
 // --measure-cost N (implies --painter) makes the measurers cost what a host's shaped text stack costs: a key is
 // made of the style and the text for every call, widths are kept in a map of 5000 entries that is emptied when
-// full (as the host's caches are), and a run that is not in it takes N microseconds to shape. With N = 300 the
-// 600-page document is laid out in the time the host's real text stack takes (some 2.3 s).
-// Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16125).
+// full (as the host's caches are), and a run that is not in it takes N microseconds to shape.
+// Calibrate N against the host's measured shaping cost; this is not a font-fidelity benchmark.
+// Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16125), JS_FLAGS (Chromium V8 flags).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -285,7 +285,8 @@ const server = http.createServer((req, res) => {
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
     await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
     const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
-    const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+    const browser = await (playwright.chromium ?? playwright.default.chromium).launch(process.env.JS_FLAGS ? { args: ['--js-flags=' + process.env.JS_FLAGS] } : {});
+    console.log(`Chromium ${browser.version()}; V8 flags: ${process.env.JS_FLAGS || '(default)'}`);
     const ms = (t) => t.toFixed(1) + ' ms';
     const line = (s) => `mean ${ms(s.mean)}, median ${ms(s.median)}, max ${ms(s.max)}`;
     try {

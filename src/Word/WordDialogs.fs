@@ -3,10 +3,23 @@ namespace Rbt.Word
 #if FABLE_COMPILER
 
 module Dialogs =
-    open Browser.Types
+    open System.Collections.Generic
+    open Rbt.Office.Ui
     open Rbt.FableUI.Reactive
-    open Rbt.FableUI.Dom
-    open Rbt.FableUI.UI
+
+    /// String-valued controls let mixed values remain distinct from explicit
+    /// "none" values until the user chooses a replacement.
+    type FormatDialogState = {
+        IsOpen: Signal<bool>
+        Error: Signal<string>
+        Fields: Signal<string> array
+    }
+
+    let formatDialogState count = {
+        IsOpen = signal false
+        Error = signal ""
+        Fields = Array.init count (fun _ -> signal "")
+    }
 
     type ParagraphStyleState = {
         IsOpen: Signal<bool>
@@ -26,12 +39,13 @@ module Dialogs =
         IsOpen: Signal<bool>
         Query: Signal<string>
         Replacement: Signal<string>
-        MatchCase: Signal<bool>
+        MatchCase: Signal<string>
         Result: Signal<string>
     }
 
     type TableCellStyleState = {
         IsOpen: Signal<bool>
+        Error: Signal<string>
         BackgroundColor: Signal<string>
         ShadingPattern: Signal<string>
         ShadingForegroundColor: Signal<string>
@@ -47,15 +61,18 @@ module Dialogs =
 
     type TableMarginsState = {
         IsOpen: Signal<bool>
+        Error: Signal<string>
         PaddingTop: Signal<string>
         PaddingRight: Signal<string>
         PaddingBottom: Signal<string>
         PaddingLeft: Signal<string>
         CellSpacing: Signal<string>
+        Fields: Signal<string> array
     }
 
     type InsertTableState = {
         IsOpen: Signal<bool>
+        Error: Signal<string>
         Rows: Signal<string>
         Columns: Signal<string>
     }
@@ -121,6 +138,9 @@ module Dialogs =
 
     type PageSetupState = {
         IsOpen: Signal<bool>
+        Preset: Signal<string>
+        Orientation: Signal<string>
+        Error: Signal<string>
         PageWidth: Signal<string>
         PageHeight: Signal<string>
         MarginLeft: Signal<string>
@@ -129,8 +149,8 @@ module Dialogs =
         MarginBottom: Signal<string>
         HeaderDistance: Signal<string>
         FooterDistance: Signal<string>
-        DifferentFirstPage: Signal<bool>
-        EvenAndOddHeaders: Signal<bool>
+        DifferentFirstPage: Signal<string>
+        EvenAndOddHeaders: Signal<string>
     }
 
     type HeaderFooterState = {
@@ -153,8 +173,8 @@ module Dialogs =
         FirstFooter: Signal<string>
         EvenHeader: Signal<string>
         EvenFooter: Signal<string>
-        OverrideSection: Signal<bool>
-        LinkSectionToPrevious: Signal<bool>
+        OverrideSection: Signal<string>
+        LinkSectionToPrevious: Signal<string>
         SectionHeader: Signal<string>
         SectionFooter: Signal<string>
     }
@@ -163,6 +183,9 @@ module Dialogs =
         IsOpen: Signal<bool>
         Kind: Signal<string>
         Target: Signal<string>
+        LinkText: Signal<string>
+        HasLink: Signal<string>
+        Error: Signal<string>
         AnnotationId: Signal<string>
         NoteType: Signal<string>
         Text: Signal<string>
@@ -188,12 +211,13 @@ module Dialogs =
         IsOpen = signal false
         Query = signal ""
         Replacement = signal ""
-        MatchCase = signal false
+        MatchCase = signal "false"
         Result = signal "No search yet"
     }
 
     let tableCellStyleState () = {
         IsOpen = signal false
+        Error = signal ""
         BackgroundColor = signal "#D9EAF7"
         ShadingPattern = signal "clear"
         ShadingForegroundColor = signal "#6FB31A"
@@ -209,15 +233,18 @@ module Dialogs =
 
     let tableMarginsState () = {
         IsOpen = signal false
+        Error = signal ""
         PaddingTop = signal "0"
         PaddingRight = signal "7.2"
         PaddingBottom = signal "0"
         PaddingLeft = signal "7.2"
         CellSpacing = signal "0"
+        Fields = Array.init 14 (fun _ -> signal "")
     }
 
     let insertTableState () = {
         IsOpen = signal false
+        Error = signal ""
         Rows = signal "2"
         Columns = signal "3"
     }
@@ -283,6 +310,9 @@ module Dialogs =
 
     let pageSetupState () = {
         IsOpen = signal false
+        Preset = signal "custom"
+        Orientation = signal "portrait"
+        Error = signal ""
         PageWidth = signal "8.5"
         PageHeight = signal "11"
         MarginLeft = signal "1"
@@ -291,8 +321,8 @@ module Dialogs =
         MarginBottom = signal "1"
         HeaderDistance = signal "0.5"
         FooterDistance = signal "0.5"
-        DifferentFirstPage = signal false
-        EvenAndOddHeaders = signal false
+        DifferentFirstPage = signal "false"
+        EvenAndOddHeaders = signal "false"
     }
 
     let headerFooterState () = {
@@ -315,8 +345,8 @@ module Dialogs =
         FirstFooter = signal ""
         EvenHeader = signal ""
         EvenFooter = signal ""
-        OverrideSection = signal false
-        LinkSectionToPrevious = signal false
+        OverrideSection = signal "false"
+        LinkSectionToPrevious = signal "false"
         SectionHeader = signal ""
         SectionFooter = signal ""
     }
@@ -325,6 +355,9 @@ module Dialogs =
         IsOpen = signal false
         Kind = signal "hyperlink"
         Target = signal "https://example.com"
+        LinkText = signal ""
+        HasLink = signal "false"
+        Error = signal ""
         AnnotationId = signal "note-1"
         NoteType = signal "footnote"
         Text = signal "Annotation text"
@@ -332,619 +365,347 @@ module Dialogs =
         Date = signal "2026-05-01T00:00:00Z"
     }
 
-    let private selectValue (event: Event) =
-        (event.target :?> HTMLSelectElement).value
+    // The host owns the editing transaction and the field signals. This module
+    // describes fields and buttons; OfficeUiDialog owns the actual controls.
+    type Form = DialogSpec * Dictionary<string, Signal<string>>
 
-    let private checkedValue (event: Event) =
-        (event.target :?> HTMLInputElement).``checked``
+    let private textField id label (value: Signal<string>) =
+        (dialogText id label "" value.Value |> dialogTestId id), value
 
-    let paragraphStyleDialog overlayTestId dialogTestId (state: ParagraphStyleState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Paragraph style" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Alignment" ]
-                    select [ attr "data-testid" "word-paragraph-align"; propS "value" state.Alignment; onChange (fun event -> state.Alignment.Value <- selectValue event) ] [
-                        option [ attr "value" "left" ] [ text "Left" ]
-                        option [ attr "value" "center" ] [ text "Center" ]
-                        option [ attr "value" "right" ] [ text "Right" ]
-                        option [ attr "value" "justify" ] [ text "Justify" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "Spacing after" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-spacing-after"; valueS state.SpacingAfter; onInput (fun value -> state.SpacingAfter.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Spacing before" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-spacing-before"; valueS state.SpacingBefore; onInput (fun value -> state.SpacingBefore.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Line spacing" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-line-spacing"; attr "step" "0.1"; valueS state.LineSpacing; onInput (fun value -> state.LineSpacing.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Background" ]
-                    Input [ typ "color"; attr "data-testid" "word-paragraph-background"; valueS state.BackgroundColor; onInput (fun value -> state.BackgroundColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Left indent" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-indent-left"; valueS state.IndentLeft; onInput (fun value -> state.IndentLeft.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Right indent" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-indent-right"; valueS state.IndentRight; onInput (fun value -> state.IndentRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Font size" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-font-size"; valueS state.FontSize; onInput (fun value -> state.FontSize.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Special indent" ]
-                    select [ attr "data-testid" "word-paragraph-special-indent"; propS "value" state.SpecialIndent; onChange (fun event -> state.SpecialIndent.Value <- selectValue event) ] [
-                        option [ attr "value" "none" ] [ text "None" ]
-                        option [ attr "value" "firstLine" ] [ text "First line" ]
-                        option [ attr "value" "hanging" ] [ text "Hanging" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "By" ]
-                    Input [ typ "number"; attr "data-testid" "word-paragraph-special-indent-by"; valueS state.SpecialIndentBy; onInput (fun value -> state.SpecialIndentBy.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-paragraph-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-paragraph-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private mixedTextField id label (value: Signal<string>) =
+        (dialogText id label "Mixed" value.Value |> dialogTestId id), value
 
-    let findReplaceDialog overlayTestId dialogTestId (state: FindReplaceState) onFindNext onReplaceAll =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Find and replace" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Find" ]
-                    Input [ attr "data-testid" "word-find-query"; valueS state.Query; onInput (fun value -> state.Query.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Replace with" ]
-                    Input [ attr "data-testid" "word-find-replacement"; valueS state.Replacement; onInput (fun value -> state.Replacement.Value <- value) ]
-                ]
-                label [ cls "dialog-inline-field" ] [
-                    input [ typ "checkbox"; attr "data-testid" "word-find-match-case"; propS "checked" state.MatchCase; onChange (fun event -> state.MatchCase.Value <- checkedValue event) ]
-                    span [] [ text "Match case" ]
-                ]
-                p [ attr "data-testid" "word-find-result" ] [ textR (fun () -> state.Result.Value) ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-find-close"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Close" ]
-                Button [ attr "data-testid" "word-find-next"; onClick (fun _ -> onFindNext()) ] [ text "Find next" ]
-                Button [ attr "data-testid" "word-replace-all"; onClick (fun _ -> onReplaceAll()) ] [ text "Replace all" ]
-            ]
-        ]
+    let private numberField id label (value: Signal<string>) =
+        (dialogNumber id label None None value.Value |> dialogTestId id), value
 
-    let tableCellStyleDialog overlayTestId dialogTestId (state: TableCellStyleState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Table cell style" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Background color" ]
-                    Input [ typ "color"; attr "data-testid" "word-table-cell-background"; valueS state.BackgroundColor; onInput (fun value -> state.BackgroundColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Shading pattern" ]
-                    select [ attr "data-testid" "word-table-cell-shading-pattern"; propS "value" state.ShadingPattern; onChange (fun event -> state.ShadingPattern.Value <- selectValue event) ] [
-                        option [ attr "value" "clear" ] [ text "Clear fill" ]
-                        option [ attr "value" "none" ] [ text "No fill" ]
-                        option [ attr "value" "solid" ] [ text "Solid pattern" ]
-                        option [ attr "value" "pct5" ] [ text "5% pattern" ]
-                        option [ attr "value" "pct10" ] [ text "10% pattern" ]
-                        option [ attr "value" "pct20" ] [ text "20% pattern" ]
-                        option [ attr "value" "horzStripe" ] [ text "Horizontal stripe" ]
-                        option [ attr "value" "vertStripe" ] [ text "Vertical stripe" ]
-                        option [ attr "value" "diagStripe" ] [ text "Diagonal stripe" ]
-                        option [ attr "value" "reverseDiagStripe" ] [ text "Reverse diagonal stripe" ]
-                        option [ attr "value" "diagCross" ] [ text "Diagonal cross" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "Pattern color" ]
-                    Input [ typ "color"; attr "data-testid" "word-table-cell-shading-color"; valueS state.ShadingForegroundColor; onInput (fun value -> state.ShadingForegroundColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Width" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-width"; valueS state.Width; onInput (fun value -> state.Width.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Border color" ]
-                    Input [ attr "data-testid" "word-table-cell-border-color"; valueS state.BorderColor; onInput (fun value -> state.BorderColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Border width" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-border-width"; valueS state.BorderWidth; onInput (fun value -> state.BorderWidth.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Vertical alignment" ]
-                    select [ attr "data-testid" "word-table-cell-valign"; propS "value" state.VerticalAlignment; onChange (fun event -> state.VerticalAlignment.Value <- selectValue event) ] [
-                        option [ attr "value" "top" ] [ text "Top" ]
-                        option [ attr "value" "center" ] [ text "Center" ]
-                        option [ attr "value" "bottom" ] [ text "Bottom" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "Cell padding top" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-padding-top"; valueS state.PaddingTop; onInput (fun value -> state.PaddingTop.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Cell padding right" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-padding-right"; valueS state.PaddingRight; onInput (fun value -> state.PaddingRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Cell padding bottom" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-padding-bottom"; valueS state.PaddingBottom; onInput (fun value -> state.PaddingBottom.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Cell padding left" ]
-                    Input [ typ "number"; attr "data-testid" "word-table-cell-padding-left"; valueS state.PaddingLeft; onInput (fun value -> state.PaddingLeft.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-table-cell-style-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-table-cell-style-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private colorField id label (value: Signal<string>) =
+        (dialogColor id label value.Value |> dialogTestId id), value
 
-    let tableMarginsDialog overlayTestId dialogTestId (state: TableMarginsState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Table cell margins" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Default cell margin top" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-top"; valueS state.PaddingTop; onInput (fun value -> state.PaddingTop.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default cell margin right" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-right"; valueS state.PaddingRight; onInput (fun value -> state.PaddingRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default cell margin bottom" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-bottom"; valueS state.PaddingBottom; onInput (fun value -> state.PaddingBottom.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default cell margin left" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-margin-left"; valueS state.PaddingLeft; onInput (fun value -> state.PaddingLeft.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Cell spacing" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-table-cell-spacing"; valueS state.CellSpacing; onInput (fun value -> state.CellSpacing.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-table-margins-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-table-margins-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private checkboxField id label (value: Signal<string>) =
+        (dialogCheckbox id label (value.Value = "true") |> dialogTestId id), value
 
-    let insertTableDialog overlayTestId dialogTestId (state: InsertTableState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Insert table" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Rows" ]
-                    Input [ typ "number"; attr "data-testid" "word-insert-table-rows"; valueS state.Rows; onInput (fun value -> state.Rows.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Columns" ]
-                    Input [ typ "number"; attr "data-testid" "word-insert-table-columns"; valueS state.Columns; onInput (fun value -> state.Columns.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-insert-table-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-insert-table-apply"; onClick (fun _ -> onApply()) ] [ text "Insert" ]
-            ]
-        ]
+    let private choices values = values |> List.map (fun (value, label) -> if value = "" then disabledChoice value label else choice value label)
 
-    let imageSizeDialog overlayTestId dialogTestId (state: ImageSizeState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Image size" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Width" ]
-                    Input [ typ "number"; attr "data-testid" "word-image-width"; valueS state.Width; onInput (fun value -> state.Width.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Height" ]
-                    Input [ typ "number"; attr "data-testid" "word-image-height"; valueS state.Height; onInput (fun value -> state.Height.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-image-size-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-image-size-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private selectField id label options (value: Signal<string>) =
+        let options =
+            if options |> List.exists (fun (candidate, _) -> candidate = value.Value) then options
+            else (value.Value, value.Value + " (current)") :: options
+        (dialogSelect id label (choices options) value.Value |> dialogTestId id), value
 
-    let textBoxStyleDialog overlayTestId dialogTestId (state: TextBoxStyleState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Text box style" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "X" ]
-                    Input [ typ "number"; attr "data-testid" "word-textbox-x"; valueS state.X; onInput (fun value -> state.X.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Y" ]
-                    Input [ typ "number"; attr "data-testid" "word-textbox-y"; valueS state.Y; onInput (fun value -> state.Y.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Width" ]
-                    Input [ typ "number"; attr "data-testid" "word-textbox-width"; valueS state.Width; onInput (fun value -> state.Width.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Height" ]
-                    Input [ typ "number"; attr "data-testid" "word-textbox-height"; valueS state.Height; onInput (fun value -> state.Height.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Fill" ]
-                    Input [ typ "color"; attr "data-testid" "word-textbox-fill"; valueS state.FillColor; onInput (fun value -> state.FillColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Border" ]
-                    Input [ typ "color"; attr "data-testid" "word-textbox-border-color"; valueS state.BorderColor; onInput (fun value -> state.BorderColor.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Border width" ]
-                    Input [ typ "number"; attr "data-testid" "word-textbox-border-width"; valueS state.BorderWidth; onInput (fun value -> state.BorderWidth.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-textbox-style-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-textbox-style-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private statusField id (value: Signal<string>) =
+        (dialogStatus id "" value.Value |> dialogTestId id), value
 
-    let captionDialog overlayTestId dialogTestId (state: CaptionState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Caption" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Label" ]
-                    select [ attr "data-testid" "word-caption-label"; propS "value" state.Label; onChange (fun event -> state.Label.Value <- selectValue event) ] [
-                        option [ attr "value" "Figure" ] [ text "Figure" ]
-                        option [ attr "value" "Table" ] [ text "Table" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "Text" ]
-                    Input [ attr "data-testid" "word-caption-text"; valueS state.Text; onInput (fun value -> state.Text.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-caption-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-caption-apply"; onClick (fun _ -> onApply()) ] [ text "Insert" ]
-            ]
-        ]
+    let private note id content =
+        let value = signal content
+        (dialogStatus id "" content |> dialogTestId id), value
 
-    let crossReferenceDialog overlayTestId dialogTestId (state: CrossReferenceState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Cross-reference" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Reference type" ]
-                    select [ attr "data-testid" "word-cross-reference-label"; propS "value" state.Label; onChange (fun event -> state.Label.Value <- selectValue event) ] [
-                        option [ attr "value" "Figure" ] [ text "Figure" ]
-                        option [ attr "value" "Table" ] [ text "Table" ]
-                    ]
-                ]
-                p [ attr "data-testid" "word-cross-reference-help" ] [ text "Inserts a reference to the latest caption of this type." ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-cross-reference-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-cross-reference-apply"; onClick (fun _ -> onApply()) ] [ text "Insert" ]
-            ]
-        ]
+    let private form id title (fields: (DialogField * Signal<string>) list) (buttons: DialogButton list) : Form =
+        let values = Dictionary<string, Signal<string>>()
+        for field, value in fields do values.[field.Id] <- value
+        { TestId = id; Title = title; Subtitle = None
+          Fields = fields |> List.map fst; Tabs = []; Buttons = buttons }, values
 
-    let bookmarkDialog overlayTestId dialogTestId (state: BookmarkState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Bookmark" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Name" ]
-                    Input [ attr "data-testid" "word-bookmark-name"; valueS state.Name; onInput (fun value -> state.Name.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-bookmark-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-bookmark-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private cancel id (isOpen: Signal<bool>) =
+        dialogButton id "Cancel" false (fun _ -> isOpen.Value <- false; true)
 
-    let contentControlDialog overlayTestId dialogTestId (state: ContentControlState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Content control" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "ID" ]
-                    Input [ attr "data-testid" "word-content-control-id"; valueS state.Id; onInput (fun value -> state.Id.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Tag" ]
-                    Input [ attr "data-testid" "word-content-control-tag"; valueS state.Tag; onInput (fun value -> state.Tag.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Alias" ]
-                    Input [ attr "data-testid" "word-content-control-alias"; valueS state.Alias; onInput (fun value -> state.Alias.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-content-control-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-content-control-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private apply id label (isOpen: Signal<bool>) action =
+        dialogButton id label true (fun _ -> action (); not isOpen.Value)
 
-    let fieldDialog overlayTestId dialogTestId (state: FieldState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Field" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Code" ]
-                    Input [ attr "data-testid" "word-field-code"; valueS state.Code; onInput (fun value -> state.Code.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Result" ]
-                    Input [ attr "data-testid" "word-field-result"; valueS state.Result; onInput (fun value -> state.Result.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-field-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-field-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let private mixed options = ("", "Mixed") :: options
 
-    let equationDialog overlayTestId dialogTestId (state: EquationState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Equation" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Equation text" ]
-                    Input [ attr "data-testid" "word-equation-text"; valueS state.Text; onInput (fun value -> state.Text.Value <- value) ]
-                ]
-                p [ attr "data-testid" "word-equation-help" ] [ text "Stores this as opaque Word OMML for DOCX export." ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-equation-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-equation-apply"; onClick (fun _ -> onApply()) ] [ text "Insert" ]
-            ]
-        ]
+    let fontDialog (state: FormatDialogState) onApply =
+        let field = state.Fields
+        let t i label = mixedTextField ("word-font-" + string i) label field.[i]
+        let n i label = mixedTextField ("word-font-" + string i) label field.[i]
+        let s i label options = selectField ("word-font-" + string i) label (mixed options) field.[i]
+        let yesNo = [ "true", "On"; "false", "Off" ]
+        form "word-font-dialog" "Font" [
+            statusField "word-font-error" state.Error
+            t 0 "Font family"; n 1 "Size (pt)"
+            s 2 "Bold" yesNo; s 3 "Italic" yesNo
+            s 4 "Underline" [ "none", "None"; "single", "Single"; "double", "Double"; "thick", "Thick"; "dotted", "Dotted"; "dash", "Dash"; "dotDash", "Dot dash"; "dotDotDash", "Dot dot dash"; "wave", "Wave"; "wavyDouble", "Double wave" ]
+            s 5 "Strikethrough" yesNo; s 6 "All caps" yesNo; s 7 "Small caps" yesNo
+            s 8 "Position" [ "baseline", "Baseline"; "superscript", "Superscript"; "subscript", "Subscript" ]
+            t 9 "Text color (#RRGGBB or auto)"; s 11 "Hidden" yesNo; t 10 "Highlight (#RRGGBB or none)"
+        ] [ cancel "word-font-cancel" state.IsOpen; apply "word-font-apply" "Apply" state.IsOpen onApply ]
 
-    let revisionDialog overlayTestId dialogTestId (state: RevisionState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Revision" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Type" ]
-                    select [ attr "data-testid" "word-revision-type"; propS "value" state.RevisionType; onChange (fun event -> state.RevisionType.Value <- selectValue event) ] [
-                        option [ attr "value" "insert" ] [ text "Inserted" ]
-                        option [ attr "value" "delete" ] [ text "Deleted" ]
-                    ]
-                ]
-                label [] [
-                    span [] [ text "ID" ]
-                    Input [ attr "data-testid" "word-revision-id"; valueS state.RevisionId; onInput (fun value -> state.RevisionId.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Author" ]
-                    Input [ attr "data-testid" "word-revision-author"; valueS state.Author; onInput (fun value -> state.Author.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Date" ]
-                    Input [ attr "data-testid" "word-revision-date"; valueS state.Date; onInput (fun value -> state.Date.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-revision-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-revision-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let listsDialog (state: FormatDialogState) onApply =
+        let field = state.Fields
+        let s i label options = selectField ("word-lists-" + string i) label (mixed options) field.[i]
+        form "word-lists-dialog" "Bullets and numbering" [
+            statusField "word-lists-error" state.Error
+            s 0 "List kind" [ "none", "Ordinary paragraphs"; "bullet", "Bullets"; "numbered", "Numbering" ]
+            s 1 "Bullet marker" [ "•", "•"; "◦", "◦"; "▪", "▪"; "■", "■"; "–", "–" ]
+            s 2 "Number format" [ "decimal", "1, 2, 3"; "lowerLetter", "a, b, c"; "upperLetter", "A, B, C"; "lowerRoman", "i, ii, iii"; "upperRoman", "I, II, III" ]
+            s 3 "List level" [ for level in 1 .. 9 -> string level, string level ]
+            s 4 "Numbering sequence" [ "keep", "Keep existing"; "restart", "Restart at"; "continue", "Continue preceding list" ]
+            mixedTextField "word-lists-5" "Restart at (1–2147483647)" field.[5]
+            note "word-lists-help" "Restart and continue affect the contiguous list from the first selected item. Continue can cross ordinary paragraphs."
+        ] [ cancel "word-lists-cancel" state.IsOpen; apply "word-lists-apply" "Apply" state.IsOpen onApply ]
 
-    let pageSetupDialog overlayTestId dialogTestId (state: PageSetupState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Page setup" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Page width (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-page-width"; valueS state.PageWidth; onInput (fun value -> state.PageWidth.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Page height (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-page-height"; valueS state.PageHeight; onInput (fun value -> state.PageHeight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Top margin (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-margin-top"; valueS state.MarginTop; onInput (fun value -> state.MarginTop.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Bottom margin (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-margin-bottom"; valueS state.MarginBottom; onInput (fun value -> state.MarginBottom.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Left margin (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-margin-left"; valueS state.MarginLeft; onInput (fun value -> state.MarginLeft.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Right margin (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-margin-right"; valueS state.MarginRight; onInput (fun value -> state.MarginRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Header from top (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-header-distance"; valueS state.HeaderDistance; onInput (fun value -> state.HeaderDistance.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Footer from bottom (in)" ]
-                    Input [ typ "number"; attr "step" "0.1"; attr "data-testid" "word-footer-distance"; valueS state.FooterDistance; onInput (fun value -> state.FooterDistance.Value <- value) ]
-                ]
-                label [ cls "dialog-inline-field" ] [
-                    input [ typ "checkbox"; attr "data-testid" "word-different-first-page"; propS "checked" state.DifferentFirstPage; onChange (fun event -> state.DifferentFirstPage.Value <- checkedValue event) ]
-                    span [] [ text "Different first page" ]
-                ]
-                label [ cls "dialog-inline-field" ] [
-                    input [ typ "checkbox"; attr "data-testid" "word-even-and-odd-headers"; propS "checked" state.EvenAndOddHeaders; onChange (fun event -> state.EvenAndOddHeaders.Value <- checkedValue event) ]
-                    span [] [ text "Different odd and even pages" ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-page-setup-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-page-setup-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let paragraphBordersDialog (state: FormatDialogState) onApply =
+        let field = state.Fields
+        let t i label = mixedTextField ("word-paragraph-borders-" + string i) label field.[i]
+        let n i label = mixedTextField ("word-paragraph-borders-" + string i) label field.[i]
+        let s i label options = selectField ("word-paragraph-borders-" + string i) label (mixed options) field.[i]
+        let styles = [ "none", "None"; "single", "Single"; "dotted", "Dotted"; "dashed", "Dashed"; "dotDash", "Dot dash" ]
+        form "word-paragraph-borders-dialog" "Paragraph borders and shading" [
+            statusField "word-paragraph-borders-error" state.Error
+            for side, offset in [ "Top", 0; "Right", 4; "Bottom", 8; "Left", 12 ] do
+                s offset (side + " border") styles
+                t (offset + 1) (side + " color (#RRGGBB or auto)")
+                n (offset + 2) (side + " width (px or unset)")
+                n (offset + 3) (side + " spacing (px or unset)")
+            t 16 "Background (#RRGGBB or none)"
+            s 17 "Shading pattern" [ "none", "No shading"; "clear", "Clear fill"; "solid", "Solid"; "pct5", "5%"; "pct10", "10%"; "pct20", "20%"; "horzStripe", "Horizontal stripe"; "vertStripe", "Vertical stripe"; "diagStripe", "Diagonal stripe"; "reverseDiagStripe", "Reverse diagonal stripe"; "diagCross", "Diagonal cross" ]
+            t 18 "Pattern color (#RRGGBB or auto)"
+        ] [ cancel "word-paragraph-borders-cancel" state.IsOpen; apply "word-paragraph-borders-apply" "Apply" state.IsOpen onApply ]
 
-    let headerFooterDialog overlayTestId dialogTestId (state: HeaderFooterState) onApply =
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ text "Headers and footers" ] ]
-            DialogBody [] [
-                label [] [
-                    span [] [ text "Default header" ]
-                    Input [ attr "data-testid" "word-default-header"; valueS state.DefaultHeader; onInput (fun value -> state.DefaultHeader.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer" ]
-                    Input [ attr "data-testid" "word-default-footer"; valueS state.DefaultFooter; onInput (fun value -> state.DefaultFooter.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header table left" ]
-                    Input [ attr "data-testid" "word-default-header-table-left"; valueS state.DefaultHeaderTableLeft; onInput (fun value -> state.DefaultHeaderTableLeft.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header table right" ]
-                    Input [ attr "data-testid" "word-default-header-table-right"; valueS state.DefaultHeaderTableRight; onInput (fun value -> state.DefaultHeaderTableRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer table left" ]
-                    Input [ attr "data-testid" "word-default-footer-table-left"; valueS state.DefaultFooterTableLeft; onInput (fun value -> state.DefaultFooterTableLeft.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer table right" ]
-                    Input [ attr "data-testid" "word-default-footer-table-right"; valueS state.DefaultFooterTableRight; onInput (fun value -> state.DefaultFooterTableRight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header image URL" ]
-                    Input [ attr "data-testid" "word-default-header-image-src"; valueS state.DefaultHeaderImageSrc; onInput (fun value -> state.DefaultHeaderImageSrc.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header image alt" ]
-                    Input [ attr "data-testid" "word-default-header-image-alt"; valueS state.DefaultHeaderImageAlt; onInput (fun value -> state.DefaultHeaderImageAlt.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header image width" ]
-                    Input [ typ "number"; attr "data-testid" "word-default-header-image-width"; valueS state.DefaultHeaderImageWidth; onInput (fun value -> state.DefaultHeaderImageWidth.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default header image height" ]
-                    Input [ typ "number"; attr "data-testid" "word-default-header-image-height"; valueS state.DefaultHeaderImageHeight; onInput (fun value -> state.DefaultHeaderImageHeight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer image URL" ]
-                    Input [ attr "data-testid" "word-default-footer-image-src"; valueS state.DefaultFooterImageSrc; onInput (fun value -> state.DefaultFooterImageSrc.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer image alt" ]
-                    Input [ attr "data-testid" "word-default-footer-image-alt"; valueS state.DefaultFooterImageAlt; onInput (fun value -> state.DefaultFooterImageAlt.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer image width" ]
-                    Input [ typ "number"; attr "data-testid" "word-default-footer-image-width"; valueS state.DefaultFooterImageWidth; onInput (fun value -> state.DefaultFooterImageWidth.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Default footer image height" ]
-                    Input [ typ "number"; attr "data-testid" "word-default-footer-image-height"; valueS state.DefaultFooterImageHeight; onInput (fun value -> state.DefaultFooterImageHeight.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "First-page header" ]
-                    Input [ attr "data-testid" "word-first-header"; valueS state.FirstHeader; onInput (fun value -> state.FirstHeader.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "First-page footer" ]
-                    Input [ attr "data-testid" "word-first-footer"; valueS state.FirstFooter; onInput (fun value -> state.FirstFooter.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Even-page header" ]
-                    Input [ attr "data-testid" "word-even-header"; valueS state.EvenHeader; onInput (fun value -> state.EvenHeader.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Even-page footer" ]
-                    Input [ attr "data-testid" "word-even-footer"; valueS state.EvenFooter; onInput (fun value -> state.EvenFooter.Value <- value) ]
-                ]
-                label [ cls "dialog-inline-field" ] [
-                    input [ typ "checkbox"; attr "data-testid" "word-override-section-header-footer"; propS "checked" state.OverrideSection; onChange (fun event -> state.OverrideSection.Value <- checkedValue event) ]
-                    span [] [ text "Override current section" ]
-                ]
-                label [ cls "dialog-inline-field" ] [
-                    input [ typ "checkbox"; attr "data-testid" "word-link-section-header-footer"; propS "checked" state.LinkSectionToPrevious; onChange (fun event -> state.LinkSectionToPrevious.Value <- checkedValue event) ]
-                    span [] [ text "Link current section to previous" ]
-                ]
-                label [] [
-                    span [] [ text "Current section header" ]
-                    Input [ attr "data-testid" "word-section-header"; valueS state.SectionHeader; onInput (fun value -> state.SectionHeader.Value <- value) ]
-                ]
-                label [] [
-                    span [] [ text "Current section footer" ]
-                    Input [ attr "data-testid" "word-section-footer"; valueS state.SectionFooter; onInput (fun value -> state.SectionFooter.Value <- value) ]
-                ]
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-header-footer-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-header-footer-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
-        ]
+    let paragraphStyleDialog dialogTestId (state: ParagraphStyleState) onApply =
+        form dialogTestId "Paragraph style" [
+            selectField "word-paragraph-align" "Alignment" [ "", "Mixed / inherited"; "left", "Left"; "center", "Center"; "right", "Right"; "justify", "Justify" ] state.Alignment
+            numberField "word-paragraph-spacing-after" "Spacing after" state.SpacingAfter
+            numberField "word-paragraph-spacing-before" "Spacing before" state.SpacingBefore
+            numberField "word-paragraph-line-spacing" "Line spacing" state.LineSpacing
+            (dialogText "word-paragraph-background" "Background" "Mixed / inherited" state.BackgroundColor.Value |> Rbt.Office.Ui.dialogTestId "word-paragraph-background"), state.BackgroundColor
+            numberField "word-paragraph-indent-left" "Left indent" state.IndentLeft
+            numberField "word-paragraph-indent-right" "Right indent" state.IndentRight
+            numberField "word-paragraph-font-size" "Font size" state.FontSize
+            selectField "word-paragraph-special-indent" "Special indent" [ "", "Mixed / inherited"; "none", "None"; "firstLine", "First line"; "hanging", "Hanging" ] state.SpecialIndent
+            numberField "word-paragraph-special-indent-by" "By" state.SpecialIndentBy
+        ] [ cancel "word-paragraph-cancel" state.IsOpen; apply "word-paragraph-apply" "Apply" state.IsOpen onApply ]
 
-    let annotationDialog overlayTestId dialogTestId (state: AnnotationState) onApply =
-        let title () =
+    let findReplaceDialog dialogTestId (state: FindReplaceState) onFindNext onReplaceAll =
+        form dialogTestId "Find and replace" [
+            textField "word-find-query" "Find" state.Query
+            textField "word-find-replacement" "Replace with" state.Replacement
+            checkboxField "word-find-match-case" "Match case" state.MatchCase
+            statusField "word-find-result" state.Result
+        ] [ dialogButton "word-find-close" "Close" false (fun _ -> state.IsOpen.Value <- false; true)
+            dialogButton "word-find-next" "Find next" true (fun _ -> onFindNext(); false)
+            dialogButton "word-replace-all" "Replace all" false (fun _ -> onReplaceAll(); false) ]
+
+    let tableCellStyleDialog dialogTestId (state: TableCellStyleState) onApply =
+        form dialogTestId "Table cell style" [
+            statusField "word-table-cell-style-error" state.Error
+            colorField "word-table-cell-background" "Background color" state.BackgroundColor
+            selectField "word-table-cell-shading-pattern" "Shading pattern" [ "clear", "Clear fill"; "none", "No fill"; "solid", "Solid pattern"; "pct5", "5% pattern"; "pct10", "10% pattern"; "pct20", "20% pattern"; "horzStripe", "Horizontal stripe"; "vertStripe", "Vertical stripe"; "diagStripe", "Diagonal stripe"; "reverseDiagStripe", "Reverse diagonal stripe"; "diagCross", "Diagonal cross" ] state.ShadingPattern
+            colorField "word-table-cell-shading-color" "Pattern color" state.ShadingForegroundColor
+            numberField "word-table-cell-width" "Width override (twips)" state.Width
+            textField "word-table-cell-border-color" "Border color" state.BorderColor
+            numberField "word-table-cell-border-width" "Border width" state.BorderWidth
+            selectField "word-table-cell-valign" "Vertical alignment" [ "top", "Top"; "center", "Center"; "bottom", "Bottom" ] state.VerticalAlignment
+            numberField "word-table-cell-padding-top" "Cell padding top" state.PaddingTop
+            numberField "word-table-cell-padding-right" "Cell padding right" state.PaddingRight
+            numberField "word-table-cell-padding-bottom" "Cell padding bottom" state.PaddingBottom
+            numberField "word-table-cell-padding-left" "Cell padding left" state.PaddingLeft
+        ] [ cancel "word-table-cell-style-cancel" state.IsOpen; apply "word-table-cell-style-apply" "Apply" state.IsOpen onApply ]
+
+    let private tablePatternChoices =
+        [ "none", "No shading"; "clear", "Clear fill"; "solid", "Solid"; "pct5", "5%"; "pct10", "10%"; "pct20", "20%"; "horzStripe", "Horizontal stripe"; "vertStripe", "Vertical stripe"; "diagStripe", "Diagonal stripe"; "reverseDiagStripe", "Reverse diagonal stripe"; "diagCross", "Diagonal cross" ]
+
+    let tableMarginsDialog dialogTestId (state: TableMarginsState) onApply =
+        let fields = state.Fields
+        let s id index label options = selectField id label options fields.[index]
+        let n id index label = numberField id label fields.[index]
+        let t id index label = textField id label fields.[index]
+        let update field change = let spec, value = field in dialogUpdating change spec, value
+        let set key newValue values = values |> Map.add key newValue
+        form dialogTestId "Table properties" [
+            statusField "word-table-margins-error" state.Error
+            note "word-table-description" "Table (width in twips or percent; indent and margins in pixels)"
+            s "word-table-width-kind" 0 "Preferred width unit" [ "", "Inherited"; "auto", "Auto"; "dxa", "Twips"; "pct", "Percent"; "pt", "Pixels" ]
+            n "word-table-width" 1 "Preferred width"
+            s "word-table-alignment" 2 "Alignment" [ "", "Inherited"; "left", "Left"; "center", "Center"; "right", "Right"; "start", "Start"; "end", "End" ]
+            n "word-table-indent" 3 "Indent (left/start alignment)"
+            note "word-table-row-description" "Current row (only leading header rows repeat)"
+            n "word-table-row-height" 5 "Minimum row height (twips; changing replaces any exact height)"
+            s "word-table-row-split" 6 "Allow row to split across pages" [ "", "Inherited"; "true", "Yes"; "false", "No" ]
+            s "word-table-row-header" 7 "Repeat as header" [ "true", "Yes"; "false", "No" ]
+            t "word-table-background" 8 "Table background color (blank for none)"
+            s "word-table-shading-pattern" 12 "Table shading pattern" tablePatternChoices
+            t "word-table-shading-color" 13 "Table pattern color (#RRGGBB)"
+            |> fun field -> update field (fun values value ->
+                values |> set "word-table-shading-color" value
+                       |> (fun values -> if values.["word-table-shading-pattern"] = "none" || values.["word-table-shading-pattern"] = "clear" then set "word-table-shading-pattern" "solid" values else values))
+            note "word-table-border-description" "Table borders (cell and row overrides remain)"
+            s "word-table-borders" 9 "Table borders" [ "keep", "Keep existing"; "grid", "Replace with grid"; "none", "Remove" ]
+            t "word-table-border-color" 10 "Grid border color (#RRGGBB)"
+            |> fun field -> update field (fun values value -> values |> set "word-table-border-color" value |> set "word-table-borders" "grid")
+            n "word-table-border-width" 11 "Grid border width (pixels)"
+            |> fun field -> update field (fun values value -> values |> set "word-table-border-width" value |> set "word-table-borders" "grid")
+            note "word-table-cell-description" "Default cell margins and spacing"
+            numberField "word-table-margin-top" "Default cell margin top" state.PaddingTop
+            numberField "word-table-margin-right" "Default cell margin right" state.PaddingRight
+            numberField "word-table-margin-bottom" "Default cell margin bottom" state.PaddingBottom
+            numberField "word-table-margin-left" "Default cell margin left" state.PaddingLeft
+            numberField "word-table-cell-spacing" "Cell spacing" state.CellSpacing
+        ] [ cancel "word-table-margins-cancel" state.IsOpen; apply "word-table-margins-apply" "Apply" state.IsOpen onApply ]
+
+    let insertTableDialog dialogTestId (state: InsertTableState) onApply =
+        form dialogTestId "Insert table" [
+            statusField "word-insert-table-error" state.Error
+            numberField "word-insert-table-rows" "Rows" state.Rows
+            numberField "word-insert-table-columns" "Columns" state.Columns
+        ] [ cancel "word-insert-table-cancel" state.IsOpen; apply "word-insert-table-apply" "Insert" state.IsOpen onApply ]
+
+    let imageSizeDialog dialogTestId (state: ImageSizeState) onApply =
+        form dialogTestId "Image size" [
+            numberField "word-image-width" "Width" state.Width
+            numberField "word-image-height" "Height" state.Height
+        ] [ cancel "word-image-size-cancel" state.IsOpen; apply "word-image-size-apply" "Apply" state.IsOpen onApply ]
+
+    let textBoxStyleDialog dialogTestId (state: TextBoxStyleState) onApply =
+        form dialogTestId "Text box style" [
+            numberField "word-textbox-x" "X" state.X; numberField "word-textbox-y" "Y" state.Y
+            numberField "word-textbox-width" "Width" state.Width; numberField "word-textbox-height" "Height" state.Height
+            colorField "word-textbox-fill" "Fill" state.FillColor
+            colorField "word-textbox-border-color" "Border" state.BorderColor
+            numberField "word-textbox-border-width" "Border width" state.BorderWidth
+        ] [ cancel "word-textbox-style-cancel" state.IsOpen; apply "word-textbox-style-apply" "Apply" state.IsOpen onApply ]
+
+    let private captionChoices = [ "Figure", "Figure"; "Table", "Table" ]
+
+    let captionDialog dialogTestId (state: CaptionState) onApply =
+        form dialogTestId "Caption" [
+            selectField "word-caption-label" "Label" captionChoices state.Label
+            textField "word-caption-text" "Text" state.Text
+        ] [ cancel "word-caption-cancel" state.IsOpen; apply "word-caption-apply" "Insert" state.IsOpen onApply ]
+
+    let crossReferenceDialog dialogTestId (state: CrossReferenceState) onApply =
+        form dialogTestId "Cross-reference" [
+            selectField "word-cross-reference-label" "Reference type" captionChoices state.Label
+            note "word-cross-reference-help" "Inserts a reference to the latest caption of this type."
+        ] [ cancel "word-cross-reference-cancel" state.IsOpen; apply "word-cross-reference-apply" "Insert" state.IsOpen onApply ]
+
+    let bookmarkDialog dialogTestId (state: BookmarkState) onApply =
+        form dialogTestId "Bookmark" [
+            textField "word-bookmark-name" "Name" state.Name
+        ] [ cancel "word-bookmark-cancel" state.IsOpen; apply "word-bookmark-apply" "Apply" state.IsOpen onApply ]
+
+    let contentControlDialog dialogTestId (state: ContentControlState) onApply =
+        form dialogTestId "Content control" [
+            textField "word-content-control-id" "ID" state.Id
+            textField "word-content-control-tag" "Tag" state.Tag
+            textField "word-content-control-alias" "Alias" state.Alias
+        ] [ cancel "word-content-control-cancel" state.IsOpen; apply "word-content-control-apply" "Apply" state.IsOpen onApply ]
+
+    let fieldDialog dialogTestId (state: FieldState) onApply =
+        form dialogTestId "Field" [
+            textField "word-field-code" "Code" state.Code; textField "word-field-result" "Result" state.Result
+        ] [ cancel "word-field-cancel" state.IsOpen; apply "word-field-apply" "Apply" state.IsOpen onApply ]
+
+    let equationDialog dialogTestId (state: EquationState) onApply =
+        form dialogTestId "Equation" [
+            textField "word-equation-text" "Equation text" state.Text
+            note "word-equation-help" "Stores this as opaque Word OMML for DOCX export."
+        ] [ cancel "word-equation-cancel" state.IsOpen; apply "word-equation-apply" "Insert" state.IsOpen onApply ]
+
+    let revisionDialog dialogTestId (state: RevisionState) onApply =
+        form dialogTestId "Revision" [
+            selectField "word-revision-type" "Type" [ "insert", "Inserted"; "delete", "Deleted" ] state.RevisionType
+            textField "word-revision-id" "ID" state.RevisionId
+            textField "word-revision-author" "Author" state.Author
+            textField "word-revision-date" "Date" state.Date
+        ] [ cancel "word-revision-cancel" state.IsOpen; apply "word-revision-apply" "Apply" state.IsOpen onApply ]
+
+    let private pageSizes =
+        [ "letter", (8.5, 11.0); "legal", (8.5, 14.0)
+          "a4", (210.0 / 25.4, 297.0 / 25.4)
+          "a5", (148.0 / 25.4, 210.0 / 25.4) ]
+
+    let pageSetupDialog dialogTestId (state: PageSetupState) onApply =
+        let update field changed = let spec, value = field in dialogUpdating changed spec, value
+        let width, height, preset, orientation = "word-page-width", "word-page-height", "word-page-preset", "word-page-orientation"
+        let dimensionsChanged id values value =
+            let values = values |> Map.add id value |> Map.add preset "custom"
+            match System.Double.TryParse values.[width], System.Double.TryParse values.[height] with
+            | (true, w), (true, h) when w > 0.0 && h > 0.0 ->
+                values |> Map.add orientation (if w > h then "landscape" else "portrait")
+            | _ -> values
+        form dialogTestId "Page setup" [
+            statusField "word-page-setup-error" state.Error
+            note "word-page-setup-description" "Applies to the section containing the selection's focus."
+            selectField preset "Paper size" [ "custom", "Custom"; "letter", "Letter (8.5 × 11 in)"; "legal", "Legal (8.5 × 14 in)"; "a4", "A4 (210 × 297 mm)"; "a5", "A5 (148 × 210 mm)" ] state.Preset
+            |> fun field -> update field (fun values value ->
+                let values = values |> Map.add preset value
+                match pageSizes |> List.tryFind (fun (name, _) -> name = value) with
+                | None -> values
+                | Some (_, (w, h)) ->
+                    let w, h = if values.[orientation] = "landscape" then h, w else w, h
+                    values |> Map.add width (string w) |> Map.add height (string h))
+            selectField orientation "Orientation" [ "portrait", "Portrait"; "landscape", "Landscape" ] state.Orientation
+            |> fun field -> update field (fun values value ->
+                if values.[orientation] = value then values
+                else values |> Map.add orientation value |> Map.add width values.[height] |> Map.add height values.[width])
+            numberField width "Page width (in)" state.PageWidth |> fun field -> update field (dimensionsChanged width)
+            numberField height "Page height (in)" state.PageHeight |> fun field -> update field (dimensionsChanged height)
+            numberField "word-margin-top" "Top margin (in)" state.MarginTop
+            numberField "word-margin-bottom" "Bottom margin (in)" state.MarginBottom
+            numberField "word-margin-left" "Left margin (in)" state.MarginLeft
+            numberField "word-margin-right" "Right margin (in)" state.MarginRight
+            numberField "word-header-distance" "Header from top (in)" state.HeaderDistance
+            numberField "word-footer-distance" "Footer from bottom (in)" state.FooterDistance
+            checkboxField "word-different-first-page" "Different first page" state.DifferentFirstPage
+        ] [ cancel "word-page-setup-cancel" state.IsOpen; apply "word-page-setup-apply" "Apply" state.IsOpen onApply ]
+
+    let headerFooterDialog dialogTestId (state: HeaderFooterState) onApply =
+        form dialogTestId "Headers and footers" [
+            textField "word-default-header" "Default header" state.DefaultHeader
+            textField "word-default-footer" "Default footer" state.DefaultFooter
+            textField "word-default-header-table-left" "Default header table left" state.DefaultHeaderTableLeft
+            textField "word-default-header-table-right" "Default header table right" state.DefaultHeaderTableRight
+            textField "word-default-footer-table-left" "Default footer table left" state.DefaultFooterTableLeft
+            textField "word-default-footer-table-right" "Default footer table right" state.DefaultFooterTableRight
+            textField "word-default-header-image-src" "Default header image URL" state.DefaultHeaderImageSrc
+            textField "word-default-header-image-alt" "Default header image alt" state.DefaultHeaderImageAlt
+            numberField "word-default-header-image-width" "Default header image width" state.DefaultHeaderImageWidth
+            numberField "word-default-header-image-height" "Default header image height" state.DefaultHeaderImageHeight
+            textField "word-default-footer-image-src" "Default footer image URL" state.DefaultFooterImageSrc
+            textField "word-default-footer-image-alt" "Default footer image alt" state.DefaultFooterImageAlt
+            numberField "word-default-footer-image-width" "Default footer image width" state.DefaultFooterImageWidth
+            numberField "word-default-footer-image-height" "Default footer image height" state.DefaultFooterImageHeight
+            textField "word-first-header" "First-page header" state.FirstHeader
+            textField "word-first-footer" "First-page footer" state.FirstFooter
+            textField "word-even-header" "Even-page header" state.EvenHeader
+            textField "word-even-footer" "Even-page footer" state.EvenFooter
+            checkboxField "word-override-section-header-footer" "Override current section" state.OverrideSection
+            checkboxField "word-link-section-header-footer" "Link current section to previous" state.LinkSectionToPrevious
+            textField "word-section-header" "Current section header" state.SectionHeader
+            textField "word-section-footer" "Current section footer" state.SectionFooter
+        ] [ cancel "word-header-footer-cancel" state.IsOpen; apply "word-header-footer-apply" "Apply" state.IsOpen onApply ]
+
+    let annotationDialog dialogTestId (state: AnnotationState) onApply =
+        let title =
             match state.Kind.Value with
             | "comment" -> "Comment"
             | "note" -> "Footnote / endnote"
             | _ -> "Hyperlink"
-
-        DialogWithTestIds overlayTestId dialogTestId state.IsOpen [
-            DialogHeader [] [ DialogTitle [] [ textR title ] ]
-            DialogBody [] [
-                p [ attr "data-testid" "word-annotation-kind" ] [ textR title ]
-                showIf (fun () -> state.Kind.Value = "hyperlink")
-                    (label [] [
-                        span [] [ text "Target" ]
-                        Input [ attr "data-testid" "word-annotation-target"; valueS state.Target; onInput (fun value -> state.Target.Value <- value) ]
-                    ])
-                showIf (fun () -> state.Kind.Value <> "hyperlink")
-                    (label [] [
-                        span [] [ text "ID" ]
-                        Input [ attr "data-testid" "word-annotation-id"; valueS state.AnnotationId; onInput (fun value -> state.AnnotationId.Value <- value) ]
-                    ])
-                showIf (fun () -> state.Kind.Value = "note")
-                    (label [] [
-                        span [] [ text "Note type" ]
-                        select [ attr "data-testid" "word-annotation-note-type"; propS "value" state.NoteType; onChange (fun event -> state.NoteType.Value <- selectValue event) ] [
-                            option [ attr "value" "footnote" ] [ text "Footnote" ]
-                            option [ attr "value" "endnote" ] [ text "Endnote" ]
-                        ]
-                    ])
-                showIf (fun () -> state.Kind.Value <> "hyperlink")
-                    (label [] [
-                        span [] [ text "Text" ]
-                        Input [ attr "data-testid" "word-annotation-text"; valueS state.Text; onInput (fun value -> state.Text.Value <- value) ]
-                    ])
-                showIf (fun () -> state.Kind.Value = "comment")
-                    (label [] [
-                        span [] [ text "Author" ]
-                        Input [ attr "data-testid" "word-annotation-author"; valueS state.Author; onInput (fun value -> state.Author.Value <- value) ]
-                    ])
-                showIf (fun () -> state.Kind.Value = "comment")
-                    (label [] [
-                        span [] [ text "Date" ]
-                        Input [ attr "data-testid" "word-annotation-date"; valueS state.Date; onInput (fun value -> state.Date.Value <- value) ]
-                    ])
-            ]
-            DialogFooter [] [
-                Button [ attr "data-testid" "word-annotation-cancel"; onClick (fun _ -> state.IsOpen.Value <- false) ] [ text "Cancel" ]
-                Button [ attr "data-testid" "word-annotation-apply"; onClick (fun _ -> onApply()) ] [ text "Apply" ]
-            ]
+        form dialogTestId title [
+            note "word-annotation-kind" title
+            statusField "word-annotation-error" state.Error
+            match state.Kind.Value with
+            | "hyperlink" ->
+                textField "word-annotation-target" "Target" state.Target
+                if state.HasLink.Value <> "true" then
+                    textField "word-link-text" "Text (used when no text is selected)" state.LinkText
+            | "note" ->
+                textField "word-annotation-id" "ID" state.AnnotationId
+                selectField "word-annotation-note-type" "Note type" [ "footnote", "Footnote"; "endnote", "Endnote" ] state.NoteType
+                textField "word-annotation-text" "Text" state.Text
+            | _ ->
+                textField "word-annotation-id" "ID" state.AnnotationId
+                textField "word-annotation-text" "Text" state.Text
+                textField "word-annotation-author" "Author" state.Author
+                textField "word-annotation-date" "Date" state.Date
+        ] [
+            if state.Kind.Value = "hyperlink" && state.HasLink.Value = "true" then
+                dialogButton "word-link-remove" "Remove link" false (fun _ ->
+                    state.Target.Value <- ""
+                    onApply ()
+                    not state.IsOpen.Value)
+            cancel "word-annotation-cancel" state.IsOpen
+            apply "word-annotation-apply" "Apply" state.IsOpen onApply
         ]
 
 #endif

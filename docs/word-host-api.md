@@ -39,6 +39,196 @@ Word.markSaved(editor, revisionToSave);
 Typing during the asynchronous save belongs to a new undo step and must not
 be marked saved. A failed write or upload must not call `markSaved`.
 
+The shell's Ctrl+S shortcut saves only when the key event belongs to the shell
+or its editor input; a shortcut from another control on the page does not
+start a shell save.
+
+### Shared typed .NET boundary
+
+The JavaScript API above is an adapter over the same typed package conversion
+and source-preserving writer used by .NET. Native callers use:
+
+```fsharp
+let savedBytes =
+    Rbt.Word.Docx.loadBytesNative bytes
+    |> Option.map (Rbt.Word.Docx.exportTypedDocumentPackage >> DocumentWriter.writeTypedPackageBytes)
+```
+
+`loadBytesNative` returns `Document option`. Export the complete captured
+document, including its package preservation state. `EditorPackage.Unchanged`
+means equal to imported content, not equal to the last saved revision.
+The native writer serializes its existing mutable package state internally.
+Filesystem storage and UI belong to the host; mark the captured document saved
+only after successful storage, and reject stale completion after replacement.
+Wisp provides local Open/Save/Save As with these rules. Browser and Wisp share
+the lifecycle session below, not full UI parity. The former Widgets host is retired.
+
+### Shared editing-session lifecycle
+
+`Rbt.Word.Session.EditingSession` owns document/history state, typing coalescing,
+revision identity, pending character formatting and story transitions on both
+runtimes. Native document signals are UI projections: make changes through the
+host/session operations, not direct signal assignments. Native pending style
+is read through `Session.PendingFormat`, not a separate host signal.
+
+`CaptureSave()` ends the typing run and returns `Document`, `Revision`, `Epoch`
+and `Unchanged`. Serialize that document; `Unchanged` refers to opened content,
+not the last successful save. Call `MarkSaved(snapshot)` only after successful
+storage. Later edits remain dirty, and captures from before `Replace` are
+rejected. Replacement clears history and establishes fresh opened/saved identity.
+The browser's numeric `getRevision` / `markSaved` contract remains supported;
+old-document revisions cannot mark a replacement saved.
+
+`Execute(Character command, tracking)` owns ordinary character formatting of
+a selected range, the word surrounding an interior caret, or pending typing at
+a word boundary. `CharacterCommand.NamedStyle` and `FontDialog` explicitly
+choose future-typing formatting at a caret. Pending choices create no content
+edit or history step; range edits commit once through the session. Insertion uses `WithPendingFormat`;
+native adapters retain its typing continuation through `CommitPendingInsertion`. Moving the caret, changing
+stories, replacement or a real undo/redo step drops the choice. Empty undo/redo
+does not. Browser notifications and public JavaScript signatures are unchanged.
+
+`EnterStory` / `ExitStory` operate on a shared `StorySession`. The active
+`Document` is the editable story; `WholeDocument` and captured saves include the
+body and all stories. Exit restores the body's selection; undo/redo restores
+the story and selection associated with the edit. `headerFooterStory` prepares
+an existing or lazy new part without modifying content merely by entering it.
+Wisp exposes `enterStory` / `exitStory` adapters; native story UI
+parity is not implied. Rendering and page-derived entry geometry remain host
+responsibilities.
+
+`Execute(command, tracking)` applies a shared `Session.WordCommand` and returns
+`Result<CommandOutcome, string>`: `NoChange`, `SelectionChanged` or
+`ContentChanged`. Character formatting, paragraph/list/table operations,
+Enter/Tab and breaks use this boundary in browser and native hosts. Optional tracking supplies author/date
+at the host boundary; tracked insertion and story restrictions remain shared.
+Paragraph/table property transformations are atomic transactions, retaining the
+existing document primitives' validation and preservation behavior.
+
+No-op commands preserve the original document snapshot. Selection-only commands
+change selection without changing content revision, saved identity or redo.
+Content changes record one edit in the existing session history. Hosts publish
+the resulting document and notify/render as appropriate; they must not record
+the same command again. Existing browser JavaScript signatures are unchanged;
+native command availability does not imply equivalent menus or dialogs.
+
+`CaptureClipboard(htmlOf)` returns a rich `ClipboardCapture option` without editing.
+Transfer its `Text`/`Html` first; `CommitCut(capture, tracking)` deletes only while
+the captured document, selection, story and replacement epoch remain current.
+Moving away and restoring the same selection does not revive a pending cut.
+`PasteClipboard(text, html, decodeHtml, tracking)` owns rich/plain insertion,
+bookmark identity handling, pending styles, tracked paste and story restrictions,
+recording one transaction. HTML parsing and clipboard permissions remain host concerns.
+
+`Navigate(Session.Navigation...)` owns character, word, paragraph and document-edge
+movement, range extension and select-all. `VisualTarget` accepts a layout-derived
+position from the host. Navigation ends typing and pending formatting without
+creating a content revision or undo entry.
+
+The browser package adapter exports header/footer parts with `Kind` (default,
+first or even), matching the typed package records and existing host contract.
+
+
+### Mounted Word shell
+
+The Word shell installs its shared office and Word-specific styles once per
+document; hosts do not need a separate stylesheet. Its `.rb-office-shell` /
+`.rb-word-shell` root keeps the chrome scoped to the mounted editor. The
+formatting controls wrap within the host, while the document workspace scrolls
+horizontally on narrow hosts instead of scaling the canvas or changing its
+hit-test coordinates. Allow the host element to shrink (`min-width: 0` in a
+flex or grid layout).
+
+The status bar reports body words and, for a non-collapsed selection, selected
+words independently of action and error messages. `getWordCounts(editor)`
+returns `{ BodyWords, SelectedWords, HasSelection }`; it does not edit the
+document or force a progressive load to finish. During an incomplete or failed
+load the shell labels the total “Body (loaded)”; it reflects the blocks read so
+far and updates as more arrive.
+
+The body total includes paragraphs in nested tables and body text boxes once,
+not repeated rendered headers or footers, notes or comments. Selection counts
+refer to the active editable story (including a header, footer, note, comment
+or text box); a body selection does not include boxes it crosses. Each selected
+paragraph fragment is counted separately. Like `computeRangeStatistics`, a
+word is a nonempty run of UTF-16 text separated by Unicode whitespace; a
+partial word counts as a word. This counts the model's text, including hidden
+and tracked insertion/deletion text and object/reference placeholder
+characters; it is not Microsoft Word's linguistic or revision-view count.
+
+The document action buttons expose expanded state and open groups of ordinary
+buttons. Tab navigates the controls; Escape closes an open group and restores
+focus to its button, and moving focus or clicking outside closes it. A dialog
+opened from a menu returns focus to that menu's visible trigger on dismissal. Toolbar
+controls have descriptive names and formatting toggles expose their current
+state, including mixed selections. Shell shortcuts remain confined to the
+shell/editor and do not intercept text entry in dialog fields.
+
+Right-clicking the shell's canvas opens a text/table context menu. A click
+inside the selected range retains it; a click elsewhere targets the hit-tested
+caret. Shift+F10 or the Context Menu key opens at the caret. Arrow keys,
+Home/End and Enter navigate/invoke actions; Escape or Tab dismisses and returns
+focus to the editor. Outside focus/pointer input, scrolling outside the menu,
+resizing, document replacement and disposal dismiss it. Menus fit a narrow
+viewport and scroll when necessary. External inputs and bare canvas widgets
+retain their browser context menus; composition does not open the shell menu.
+
+Context actions share the shell command registry: undo/redo, cut/copy/paste,
+bold/italic/underline, font/paragraph dialogs, insert/edit/remove hyperlink,
+and current-table row/column insertion/deletion and cell formatting/margins.
+Read-only mode allows copying but disables editing. Dialogs opened here return
+focus to the editor, not the removed context-menu button.
+
+Clipboard commands use the browser Clipboard API and report permission errors;
+unavailable capabilities disable their actions. Rich HTML and plain text are
+written when `ClipboardItem` is available, otherwise copying is plain text.
+Cut deletes only after a successful write. An asynchronous cut or paste is
+cancelled if the document/selection changes, the editor becomes read-only,
+or the shell is disposed. Native keyboard clipboard handling remains in the
+editor; it is not replaced with shell shortcut interception.
+
+The toolbar's Styles button opens a searchable catalogue of paragraph and
+character styles. Hidden styles can be shown explicitly; a hidden current
+style remains visible. The pane reports mixed selection state, uses resolved
+style information where available, and applies styles to the retained editor
+selection. It selects existing styles only; it does not author or remove
+definitions. Escape or Close dismisses the pane and returns focus to Styles.
+Style choices are disabled in read-only mode, and opening another document
+refreshes the catalogue.
+
+The shell's Insert > Hyperlink, Link toolbar button and Ctrl+K use the same
+dialog. Ctrl+K is handled only from the editable editor input, not other
+inputs or dialogs. The dialog edits or removes the whole link at the caret;
+otherwise it links the selection, or inserts the entered text (the target if
+text is empty) at a caret. Targets must be http, https, mailto, tel or a
+`#bookmark`. Existing inactive targets can be removed or changed.
+
+Insert > Table and the toolbar open the custom rows/columns dialog. The Table
+menu also offers a default table and operations on the current table; those
+operations are disabled outside a table. Table properties edits the caret's
+innermost table and current row: preferred width (auto, twips, percent or
+pixels), alignment, left/start indent (pixels), default cell margins and
+spacing (pixels), table background and shading pattern, a replacement grid or no table borders (border widths in pixels),
+row minimum height (twips), splitting and repeating header. Only consecutive
+header rows at the start repeat. Row or cell overrides can mask table borders,
+background and margins. Current cell style separately edits the caret's cell,
+not a multi-cell selection; its width override is in twips.
+
+The dialog keeps untouched imported properties, including layout mode,
+per-side borders, shading patterns and exact row-height rules. The layout does
+not implement autofit versus fixed layout, or exact row height; an imported
+exact height is currently laid out as a minimum. Editing the height replaces
+its rule with minimum height (or clears it when blank). Indent applies only to
+left/start-aligned tables. Blank indent, margin, spacing and row-height fields
+reset the corresponding unset/inherited value. Explicitly allowing row splitting
+is saved as `w:cantSplit w:val="0"`, so it can override inherited restrictions.
+Editor-package `PreferredWidth` values with `PreferredWidthType = "pct"` are
+actual percentages for both tables and cells (1 means 1%, not 1/50%); the
+DOCX reader/writer alone converts to/from fiftieths of a percent.
+Cancel and unchanged Apply do not edit the document;
+accepted table and row changes form one undo step. A changed document or
+selection, a replaced editor, or a read-only input rejects the form.
+
 The paragraph-only `exportToDocx` / `word.writeFromEditor` APIs and the
 paragraph-only host/shell export wrappers have been removed. Use
 `exportDocumentPackage` (or the mounted host's `exportMountedDocumentPackage`)
@@ -169,6 +359,30 @@ in decimal numbers; `w:lvlRestart`, `w:startOverride`, `w:suff` and
 has the number or bullet as shown in `ListMarker` (on a paragraph's first
 line). A number wider than its hanging indent is drawn over the start of
 the text (the text is not moved to the next tab stop).
+
+The browser shell's **Format > Bullets and numbering** dialog (command
+`format.listsDialog`) changes the selected paragraphs, or the caret's
+paragraph. It offers ordinary paragraphs, five bullet markers, decimal,
+letter and Roman numbering, and levels 1–9. Unchanged or mixed fields are
+left alone; changing a marker or kind splits the affected list instances so
+unselected items and independently identified imported lists keep their
+formatting. To retain the displayed counters and nested parent numbers, the
+affected suffix is materialized as standard numbering instances with start
+overrides; those instances remain distinct after reopening. A level change
+uses the existing list's level definition. This is not an editor for
+arbitrary multilevel templates.
+
+For a numbered list, **Restart at** starts a new numbering instance at the
+first selected item and includes the contiguous following items of the same
+list, including nested items. **Continue preceding list** joins that run to
+the nearest preceding numbered list at the same level in the same story,
+even across ordinary paragraphs. It does not merge unrelated selected list
+identities. Restart
+requires a positive 32-bit integer. Apply without a change and continuing the
+same instance are no-ops; each accepted edit is one undo step. The dialog
+refuses a stale or read-only selection. Imported numbering definitions and
+overrides not being changed are retained in the saved package. The native Wisp
+host does not show this browser-only dialog.
 
 ## Text boxes
 
@@ -485,6 +699,44 @@ their own selection-validated edit.
 | `setImageCache(editor, cache: object)` | Give the editor the decoded images of the document: a Map of image source (as in the editor package) -> HTMLImageElement. |
 | `exportDocumentPackage(editor)` | Export the whole document for `OF.word.writeFromEditorPackage`. Completes pending reading and throws if loading failed. Ends the current typing run, making save an undo boundary. `Unchanged: true` means the document is back at its imported revision, so the writer can return the original bytes. |
 
+### Browser shell files and PDF
+
+`WordShell` File → Open and Ctrl/Cmd+O use a DOCX picker and the existing
+Office.Formats package reader. The title shows the opened filename and a dirty
+marker. Replacement asks before discarding unsaved edits; cancellation, read/
+parse errors, newer opens, edits during reading and disposal cannot silently
+replace the current document. Dirty sessions register a browser unload warning.
+Browsers control whether that warning is shown.
+
+File → Save and Ctrl/Cmd+S download the opened filename (initially
+`Document1.docx`) through `exportDocumentPackage` → `OF.word.writeFromEditorPackage`.
+The captured revision becomes the saved baseline only after browser download
+handoff; later edits remain dirty. “Download requested” is **not confirmed disk
+persistence** or acceptance of a save dialog. Keyboard handling belongs to this
+shell and its editor input, not unrelated page inputs.
+
+**Shell import signature change:** `WordShell.importDocumentPackage(package,
+fileName)` now requires the filename and applies replacement protection. The
+engine's `Word.importFromDocxPackage(editor, package)` remains unchanged.
+
+After mounting, call `WordShell.setPdfFonts(fonts)` before File → Print PDF.
+Fonts use the same shape as Spreadsheet: `{ family, faceName?, bold?, italic?,
+data }`, where `data` is TrueType bytes (`Uint8Array` or `ArrayBuffer`); typed
+Word.Pdf `FontFace` records are also accepted. Hosts supply licensed font files
+and enough faces/glyph coverage for their documents. Missing fonts are an error,
+not a textless PDF.
+
+The shell lazily loads packaged `word-pdf/Browser.js` and renders a captured
+whole-document snapshot through the existing Word PDF engine. The build stages
+`word-pdf/ucd.dat` from the resolved Unicode package; custom Fable builds must run
+`dotnet fsi scripts/stage-word-pdf-data.fsx <word-pdf-output>`. Keep that asset next
+to `Browser.js`. The old `window.RedBatWordPdfExport` bridge is no longer used.
+The user gesture reserves a PDF tab; blocked popups and rendering errors are
+reported, and failed/stale exports close the reserved tab. PDF export does not
+mark DOCX edits saved. Embedded images are decoded by the browser; JPEG bytes
+are retained and other image formats become JPEG on white. Linked images remain
+subject to the editor's allow-linked-images policy and browser CORS.
+
 ### A document that is still being read
 
 | Function | What it does |
@@ -563,6 +815,61 @@ their own selection-validated edit.
 | `clearSelection(editor)` | Take the selection (and the caret) away. |
 | `selectAll(editor)` | Select all text. |
 
+Without Shift, Left/Right collapses a non-empty selection to its start/end
+without stepping past that boundary, including at document edges and across
+table cells. The browser and native host use the same navigation policy.
+
+In the Word shell, the toolbar reflects the effective format of the current
+selection. A formatting command changes that selection only; at a caret it
+uses the editor's pending-format behavior (including formatting the word when
+the caret is inside one). These edits participate in the editor's undo/redo
+history and update the shell's modified indicator immediately. Selection or
+caret formatting state is not a separate host-side copy.
+
+`getSelectionFormat` reports effective values, `"mixed"` where selected
+content differs, and `null` where no value is stated. Character values include
+`AllCaps` and `SmallCaps`. `Paragraph.BackgroundColor` and
+`Paragraph.ListNumberFormat` follow the same convention; a paragraph outside
+a numbered list has no number format.
+
+The shell uses `OfficeUi.Commands` for menu, toolbar and owned keyboard routes.
+Ctrl/Cmd+B/I/U, undo/redo, Ctrl/Cmd+F/H and file shortcuts run once; dialog fields,
+foreign inputs and composition retain their own input handling. Mixed toggles
+use `aria-pressed="mixed"`; font and paragraph controls follow selection and
+undo/import changes instead of storing independent formatting flags.
+
+Format → Paragraph style reads the selection on every open. Mixed fields stay
+unspecified; Apply patches only changed fields in one undo step. Opening,
+cancelling or applying an unchanged dialog does not normalize mixed formatting.
+Background accepts a color string; an empty edited background restores inheritance.
+
+Format → Font edits only changed character properties of the selection in one
+undo step; at a caret it sets the format for subsequently typed text. Mixed
+values remain mixed until changed. Format → Borders and shading edits each
+side independently and the background and pattern of selected paragraphs;
+width and spacing are layout pixels. Available authored border styles are
+single, dotted, dashed and dot-dash. Pattern choices are those painted by the
+editor; other imported patterns remain available as their current value and
+are preserved when unchanged. Both dialogs validate input and reject a stale
+document or selection, retain errors, and leave Cancel and unchanged Apply
+out of history.
+
+Font fields cover family, point size, bold/italic, underline mode, strike,
+caps/small caps, super/subscript, text/highlight colors and hidden text.
+Unedited fields retain each run's formatting rather than flattening a mixed
+selection. Border sides are independent; imported unsupported choices are
+shown as current values instead of being replaced merely by opening the dialog.
+
+`getSelectionFormat` also reports `Hidden` and `UnderlineMode` (`"none"`,
+`"single"`, an underline style name, or `"mixed"`). `CharacterStyleId` is
+the selected runs' named character style id, `null` when none is set, or
+`"mixed"` when they differ; at a caret it includes a pending typing style.
+Applying a character style preserves unrelated direct formatting. A selected
+range is one undoable edit; a caret choice is pending until text is typed.
+The dialog transactions are shell
+implementation details, not additional JavaScript factory methods.
+
+
 ### Typing, pasting, find and replace
 
 | Function | What it does |
@@ -570,6 +877,17 @@ their own selection-validated edit.
 | `findText(editor, query: string, matchCase: boolean)` | Find literal text matches across editable paragraphs. |
 | `selectFindMatch(editor, matchObj: object)` | Select a previously returned find match. |
 | `replaceAllText(editor, query: string, replacement: string, matchCase: boolean)` | Replace every occurrence of `query` with `replacement` (literal text; `matchCase`), as one undo step; returns how many were replaced. |
+
+The shell's **Find and replace** dialog searches literal text. Find next
+selects the next match, cycles back to the first, and honors the Match case
+checkbox; its result reports the selected match number and total. Navigation
+starts after the normalized selection end, including backwards selections.
+Every invocation searches the current document rather than cached offsets.
+Replace all replaces literal matches under the same case rule as one undoable
+edit and reports the replacement count. An empty query asks for search text.
+Both operations use the editor APIs above, so changes are reflected in the
+document and modified indicator as they occur.
+
 | `insertText(editor, text: string)` | Insert text at cursor. |
 | `pasteText(editor, text: string): void` | Put plain text in at the caret, or over the selection, as Ctrl+V does with the clipboard's text (a host that reads the clipboard itself, or pastes from a menu, calls this): the lines of the text are paragraphs, the whole is one undo step, and with nothing selected the text has the format chosen at the caret for what is typed ... |
 | `pasteClipboard(editor, text: string, html: string): void` | Paste supplied clipboard content: an explicitly identified, unchanged internal rich payload; otherwise HTML formatting (tables as tables between paragraphs; in a table cell or text box their rows as paragraphs, cells parted by tabs); otherwise plain text. Matching text alone never reuses an earlier copy's formatting. One undo step. |
@@ -590,7 +908,7 @@ their own selection-validated edit.
 | `setVertAlign(editor, align: string)` | Set vertical alignment on selection. |
 | `setColor(editor, color: string)` | Set text color on selection. |
 | `setHighlight(editor, color: string)` | Set highlight color on selection. |
-| `setCharacterStyle(editor, styleId: string)` | Give the selected text the named character style. |
+| `setCharacterStyle(editor, styleId: string)` | Give selected text the named character style, or choose the style for text typed next at a caret (even inside a word). An empty id clears the named style. |
 | `setFontSize(editor, size: number)` | Set font size on selection. |
 | `setFontSizePt(editor, points: number)` | Set the font size of the selection in points (11, 12, 14 ...: the unit documents state sizes in and a size box shows). |
 | `setFontFamily(editor, family: string)` | Set font family on selection. |
@@ -606,6 +924,7 @@ their own selection-validated edit.
 | `setLineSpacing(editor, multiple: number)` | Line spacing of the selected paragraphs as a multiple of single spacing (1, 1.15, 1.5, 2 ...); 0 or less goes back to the style's. |
 | `setSpacingBefore(editor, points: number)` | Space before / after the selected paragraphs, in points; a negative value goes back to the style's. |
 | `setSpacingAfter(editor, points: number)` | The space after the selected paragraphs, in points (a negative number: the style's again). |
+| `applyParagraphStyleChanges(editor, changes: object)` | Patch only supplied fields in one undo step: `Alignment`, `IndentLeft`, `IndentRight`, `SpacingBefore`, `SpacingAfter`, `LineSpacing`, `FirstLineIndent`, `BackgroundColor`, `FontSizePt`. Indents are layout pixels, spacing and font size are points, line spacing is a multiple. Missing/null fields are unchanged; an empty background string restores inheritance. Font size affects selected text, not the whole document. Used by the browser paragraph dialog. |
 | `applyParagraphStyle(editor, alignment: string, indentLeft: number, indentRight: number, spacingBefore: number, spacingAfter: number, lineSpacing: number, fontSize: number, firstLineIndent: number \| undefined, backgroundColor: string)` | Alignment, indents (px), spacing before / after (px), line spacing (multiple), font size, first-line indent and background of the selected paragraphs in one step. |
 | `setHeadingLevel(editor, level: number)` | Apply Heading 1-3 to the current block. |
 | `clearHeading(editor)` | Convert the current heading block back to a normal paragraph. |
@@ -647,6 +966,8 @@ their own selection-validated edit.
 | `setHeaderFooterTableText(editor, defaultHeaderLeft, defaultHeaderRight, defaultFooterLeft, defaultFooterRight)` | A default header and footer made of a one-row table with a left and a right cell. |
 | `setHeaderFooterImageText(editor, defaultHeaderSrc, defaultHeaderAlt, defaultHeaderWidth, defaultHeaderHeight, defaultFooterSrc, defaultFooterAlt, defaultFooterWidth, defaultFooterHeight)` | A default header and footer made of a picture (source, alternative text, width, height). |
 | `setCurrentSectionHeaderFooterText(editor, headerText, footerText)` | Plain-text header and footer of the section the caret is in. |
+
+The browser shell's **File > Page setup** instead edits only the section containing the selection's focus. It offers Letter, Legal, A4, A5 and custom paper sizes, orientation, margins and header/footer distances in inches. It prefills from that section, preserves fields not edited, and applies the change as one undo step. It does not change every section; the API functions in the table above continue to address the final section. A changed document or selection, a replaced editor, or a read-only input requires reopening the dialog.
 
 ### Tables
 
@@ -707,10 +1028,19 @@ their own selection-validated edit.
 | `selectBookmark(editor, bookmarkId: string)` | Select the text of the bookmark with the given name; false when there is none. |
 | `removeBookmark(editor, bookmarkId: string)` | Remove the bookmark with the given name (its text stays). |
 | `renameBookmark(editor, bookmarkId: string, bookmarkName: string)` | Give a bookmark another name. |
-| `getContentControlInfos(editor)` | The content controls of the document: Id, Tag, Alias, BlockId. |
-| `selectContentControl(editor, controlId: string)` | Select the paragraphs of the content control with the given id. |
+| `getContentControlInfos(editor)` | One entry per physical block-level control with an ID: Id, Tag, Alias, BlockId. Nested outer controls are not duplicated; table-only controls use their first cell paragraph as BlockId. |
+| `selectContentControl(editor, controlId: string)` | Select the first physical control matching the ID or tag, including its nested paragraphs and table-cell text. Duplicate IDs cannot identify a later group through this API. |
 | `removeContentControl(editor, controlId: string)` | Remove the content control with the given id (its paragraphs stay). |
 | `updateContentControl(editor, controlId: string, newControlId: string, tag: string, alias: string)` | Change the id, tag and alias of a content control. |
+
+Block-level bindings, unknown control properties, end properties and nested/adjacent
+group boundaries survive supported edits and saves. ID-less bindings are preserved
+but not exposed as editable IDs. Replacing the middle of a control creates separate
+physical wrappers; discovery and selection keep those wrappers separate.
+Imported inline (run-level) controls also retain their grouping and binding metadata
+through supported edits and regenerated-model saves. The discovery/authoring APIs
+above remain block-level; this is not a live custom-XML binding engine.
+Row/cell-level controls and textbox control wrappers remain outside this model.
 
 ### Comments and tracked changes
 
@@ -744,6 +1074,7 @@ their own selection-validated edit.
 | `getRangeInformation(editor, blockId: string, startOffset: number, endOffset: number)` | What Word's Range.Information reports for a range of a paragraph (page, line and column numbers, positions relative to the page and the text boundary, table position). |
 | `getSelectionInformation(editor)` | getRangeInformation for the selection's focus. |
 | `getRangeBounds(editor, blockId: string, startOffset: number, endOffset: number)` | Where a range of a paragraph's text is: BlockId, StartOffset, EndOffset, X, Y, PageX and the page it is on. |
+| `getWordCounts(editor)` | Body and active-selection word counts; see the status bar semantics above. |
 | `computeRangeStatistics(editor, blockId: string, startOffset: number, endOffset: number)` | Statistics of a range of a paragraph's text (what Word's Range.ComputeStatistics counts). |
 
 ## The viewer

@@ -7,7 +7,6 @@ open Rbt.Word
 module Doc = Rbt.Word.Document
 module WordImport = Rbt.Word.Import
 module WordLayout = Rbt.Word.Layout
-module WordModelLayout = Rbt.Word.WordLayout
 module WordPdf = Rbt.Word.Pdf
 
 let private usage () =
@@ -17,93 +16,26 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private existingDir path =
-    if Directory.Exists path then Some path else None
-
-let private fontDirs () =
-    [
-        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
-    ]
-    |> List.choose (fun path -> if String.IsNullOrWhiteSpace path then None else existingDir path)
-
-let private findFallbackFont () =
-    [
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../renderer/NotoSans-Regular.ttf"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../renderer/NotoSans-Regular.ttf"))
-        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf"
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-    ]
-    |> List.tryFind File.Exists
-
-let private tryFontFile fileName =
-    fontDirs ()
-    |> List.tryPick (fun dir ->
-        let path = Path.Combine(dir, fileName)
-        if File.Exists path then Some path else None)
-
-let private tryFace faceName family bold italic fileName =
-    tryFontFile fileName
-    |> Option.map (fun path ->
-        {
-            FaceName = faceName
-            Family = family
-            Bold = bold
-            Italic = italic
-            Data = File.ReadAllBytes path
-        }: Rbt.Word.Pdf.FontFace)
-
 let private pdfOptions () : Rbt.Word.Pdf.RenderOptions =
-    let windowsFaces =
-        [
-            tryFace "Calibri" "Calibri" false false "calibri.ttf"
-            tryFace "Calibri-Bold" "Calibri" true false "calibrib.ttf"
-            tryFace "Calibri-Italic" "Calibri" false true "calibrii.ttf"
-            tryFace "Calibri-BoldItalic" "Calibri" true true "calibriz.ttf"
-            tryFace "Calibri Light" "Calibri Light" false false "calibril.ttf"
-            tryFace "Calibri Light-Italic" "Calibri Light" false true "calibrili.ttf"
-            // Regular Cambria ships only inside cambria.ttc (font index 0);
-            // parseTrueType in both the shaper and PdfFont auto-detects
-            // ttcf and extracts font 0, so we can register the collection
-            // directly under the bare "Cambria" face name.
-            tryFace "Cambria" "Cambria" false false "cambria.ttc"
-            tryFace "Cambria-Bold" "Cambria" true false "cambriab.ttf"
-            tryFace "Cambria-Italic" "Cambria" false true "cambriai.ttf"
-            tryFace "Cambria-BoldItalic" "Cambria" true true "cambriaz.ttf"
-            tryFace "Arial" "Arial" false false "arial.ttf"
-            tryFace "Arial-Bold" "Arial" true false "arialbd.ttf"
-            tryFace "Arial-Italic" "Arial" false true "ariali.ttf"
-            tryFace "Arial-BoldItalic" "Arial" true true "arialbi.ttf"
-            tryFace "Times New Roman" "Times New Roman" false false "times.ttf"
-            tryFace "Times New Roman-Bold" "Times New Roman" true false "timesbd.ttf"
-            tryFace "Times New Roman-Italic" "Times New Roman" false true "timesi.ttf"
-            tryFace "Times New Roman-BoldItalic" "Times New Roman" true true "timesbi.ttf"
-        ]
-        |> List.choose id
-
-    let fallbackPath =
-        findFallbackFont ()
-        |> Option.defaultWith (fun () -> failwith "Could not find a TTF font for PDF rendering")
-    let fallbackBytes = File.ReadAllBytes fallbackPath
-    let face faceName family =
-        {
-            FaceName = faceName
-            Family = family
-            Bold = false
-            Italic = false
-            Data = fallbackBytes
-        }: Rbt.Word.Pdf.FontFace
-
-    let defaultFamily =
-        if windowsFaces |> List.exists (fun face -> face.Family = "Calibri" && not face.Bold && not face.Italic) then "Calibri"
-        else "Noto Sans"
-
+    let faces : Rbt.Word.Pdf.FontFace list =
+        [ for family in [ "Calibri"; "Calibri Light"; "Cambria"; "Arial"; "Times New Roman" ] do
+            for bold, italic in [ false, false; true, false; false, true; true, true ] do
+                let font = Rbt.OfficeNative.Fonts.resolve (Some family) bold italic
+                let suffix =
+                    if bold && italic then "-BoldItalic"
+                    elif bold then "-Bold"
+                    elif italic then "-Italic"
+                    else ""
+                yield {
+                    FaceName = family.Replace(" ", "") + suffix
+                    Family = family
+                    Bold = bold
+                    Italic = italic
+                    Data = font.OtFont.Data
+                } ]
     {
-        DefaultFontFamily = defaultFamily
-        Fonts = windowsFaces @ [
-            face "NotoSans" "Noto Sans"
-        ]
+        DefaultFontFamily = "Calibri"
+        Fonts = faces
         MeasureText = None
         ShapeText = None
         Images = []
@@ -140,25 +72,6 @@ let private displayPageNumberForPhysicalPage (restartPoints: (int * int) list) p
     |> Option.map (fun (restartPhysicalPage, restartDisplayPage) -> restartDisplayPage + physicalPage - restartPhysicalPage)
     |> Option.defaultValue physicalPage
 
-let private pdfLayoutSettings (doc: Doc.Document) : WordLayout.LayoutSettings =
-    let lineHeight = 21.0
-    let footerReserve =
-        if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then doc.PageSetup.FooterDistance + lineHeight * 1.5
-        else doc.PageSetup.MarginBottom
-    {
-        Width = doc.PageSetup.PageWidth
-        PageHeight = doc.PageSetup.PageHeight
-        FontSize = 14.0
-        LineHeight = lineHeight
-        PaddingLeft = doc.PageSetup.MarginLeft
-        PaddingTop = WordModelLayout.Page.bodyTopWithRunningHeader doc
-        MarginRight = doc.PageSetup.MarginRight
-        MarginBottom = max doc.PageSetup.MarginBottom footerReserve
-        InTableCell = false
-        TableContinuationHeaderHeight = 0.0
-        LongTrailingSpaceFitSafety = 0.25
-        DefaultTabStop = doc.PageSetup.DefaultTabStop
-    }
 
 let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo list) (layouts: WordLayout.BlockLayout list) : Doc.PageMap =
     let restartPoints =
@@ -234,7 +147,7 @@ let private pageMapFromLayouts (doc: Doc.Document) (pages: WordLayout.PageInfo l
 let private refreshFieldsForPdf (options: WordPdf.RenderOptions) (doc: Doc.Document) =
     let measureText = WordPdf.createMeasurer options
     let measureRange = WordLayout.rangeMeasurerFromTextMeasurer measureText
-    let layouts, pages = WordLayout.layoutDocumentPages (pdfLayoutSettings doc) measureText measureRange doc
+    let layouts, pages = WordLayout.layoutDocumentPages (WordLayout.documentSettings 14.0 21.0 0.25 doc) measureText measureRange doc
     Doc.refreshFieldsWithPageMap (pageMapFromLayouts doc pages layouts) doc
 
 let private writeProjectPdf (inputPath: string) (outputPath: string) =

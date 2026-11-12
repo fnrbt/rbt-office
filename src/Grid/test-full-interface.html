@@ -102,13 +102,15 @@
         </div>
     </div>
 
+    <script src="../../node_modules/jszip/dist/jszip.min.js"></script>
+    <script type="importmap">{"imports":{"jszip":"data:text/javascript,export%20default%20window.JSZip%3B"}}</script>
     <script type="module">
         // Import the compiled Fable modules
-        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
+        import createSpreadsheet from '../../dist/spreadsheet/Spreadsheet.js';
         import {
             createSpreadsheetShell,
             createFormulaBar
-        } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+        } from '../../dist/spreadsheet/Toolbar.js';
 
         // Create spreadsheet
         const spreadsheetContainer = document.getElementById('spreadsheet-root');
@@ -141,9 +143,8 @@
         setInterval(updateFormulaBar, 100);
 
         // ===== UNIFIED SHELL =====
-        // One menubar + one toolbar row. All actions flow through a single
-        // dispatch function; find/replace is owned by the shell and toggled
-        // via Edit > Find or Ctrl+F.
+        // Formatting, history, search and data workflows are shell-owned;
+        // only clipboard and structure actions reach this dispatcher.
 
         const promptIndex = (verb, kind) => {
             const value = prompt(`${verb} ${kind} at index (0-based):`);
@@ -153,20 +154,9 @@
         const dispatchAction = (action) => {
             console.log('Action:', action);
             switch (action) {
-                case 'textColor':      spreadsheet.ApplyTextColor('#ff0000'); updateStatus('Applied text color'); break;
-                case 'bgColor':        spreadsheet.ApplyBgColor('#ffff00'); updateStatus('Applied background color'); break;
-                case 'formatNumber':   spreadsheet.ApplyNumberFormat('number'); updateStatus('Applied number format'); break;
-                case 'formatCurrency': spreadsheet.ApplyNumberFormat('currency'); updateStatus('Applied currency format'); break;
-                case 'formatPercent':  spreadsheet.ApplyNumberFormat('percentage'); updateStatus('Applied percentage format'); break;
                 case 'cut':            spreadsheet.Cut(); updateStatus('Cut to clipboard'); break;
                 case 'copy':           spreadsheet.Copy(); updateStatus('Copied to clipboard'); break;
                 case 'paste':          spreadsheet.Paste(); updateStatus('Pasted from clipboard'); break;
-                case 'undo':           spreadsheet.Undo(); updateStatus('Undo'); break;
-                case 'redo':           spreadsheet.Redo(); updateStatus('Redo'); break;
-                case 'sortAsc':        spreadsheet.SortCurrentColumnAsc(); updateStatus('Sorted ascending'); break;
-                case 'sortDesc':       spreadsheet.SortCurrentColumnDesc(); updateStatus('Sorted descending'); break;
-                case 'filter':         updateStatus('Filter not yet implemented'); break;
-                case 'clearFilter':    updateStatus('Clear filter not yet implemented'); break;
                 case 'insertRow': {
                     const idx = promptIndex('Insert', 'row');
                     if (idx !== null) { spreadsheet.InsertRow(idx); updateStatus(`Inserted row at ${idx}`); }
@@ -187,39 +177,12 @@
                     if (idx !== null) { spreadsheet.DeleteColumn(idx); updateStatus(`Deleted column ${idx}`); }
                     break;
                 }
-                case 'open':
-                case 'save':
-                case 'printPdf':
-                    updateStatus(`${action} not yet implemented`);
-                    break;
-                default:
-                    spreadsheet.ApplyFormat(action);
-                    updateStatus(`Applied format: ${action}`);
+                default: updateStatus(`Host action: ${action}`);
             }
         };
 
-        const shell = createSpreadsheetShell(
-            dispatchAction,
-            (query) => {
-                spreadsheet.StartSearch(query, false);
-                const count = spreadsheet.GetSearchResultsCount();
-                updateStatus(`Found ${count} result(s)`);
-                if (count > 0) spreadsheet.FindNext();
-            },
-            ([find, replace]) => {
-                spreadsheet.ReplaceAll(find, replace, false);
-                updateStatus(`Replaced all "${find}" with "${replace}"`);
-            }
-        );
+        const shell = createSpreadsheetShell(spreadsheet, dispatchAction);
         shell.Mount(document.getElementById('shell-container'));
-
-        // Ctrl+F opens the find/replace bar.
-        document.addEventListener('keydown', (e) => {
-            if (e.ctrlKey && e.key === 'f') {
-                e.preventDefault();
-                shell.ShowFindReplace();
-            }
-        });
 
         // ===== STATUS BAR =====
 

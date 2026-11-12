@@ -59,7 +59,7 @@ let controlDoc =
     |> Doc.setContentControl "cc" "tag" "alias"
 let controlLayouts (doc: Doc.Document) = layoutDocument settings measureText doc
 let frames (doc: Doc.Document) =
-    markupMarkerCommands settings doc (controlLayouts doc) |> List.choose (function StrokeRect (_, _, _, y, _, h) -> Some (y, h) | _ -> None)
+    markupMarkerCommands (Doc.contentControlMemberships doc) settings doc (controlLayouts doc) |> List.choose (function StrokeRect (_, _, _, y, _, h) -> Some (y, h) | _ -> None)
 let bodyHasControlBlue (doc: Doc.Document) =
     let _, commands, _ = collectDocumentCommands settings "Calibri" measureText measureRange doc
     commands |> List.exists (function StrokeRect ("#2563EB", _, _, _, _, _) | FillRect ("#2563EB", _, _, _, _) -> true | _ -> false)
@@ -71,6 +71,41 @@ check "control frame: a selection ending in the control shows it" (frames (Doc.s
 let twoControls =
     controlDoc |> caret "after" 0 |> Doc.setContentControl "other" "tag2" "alias2"
 check "control frame: only the caret's control" (frames (caret "after" 2 twoControls) |> List.length, frames (caret "in1" 2 twoControls) |> List.length) (1, 2)
+let outerLayer : Doc.ContentControlLayer =
+    { Group = "outer-group"; Id = Some "outer"; Tag = Some "outer-tag"; Alias = Some "Outer"; Xml = None }
+let controlled id text group controlId ancestors =
+    let para = paragraph id text
+    { para with Metadata = { para.Metadata with
+                                ContentControlId = Some controlId
+                                ContentControlGroup = Some group
+                                ContentControlAncestors = ancestors } }
+let nestedControls =
+    docOf [ controlled "outer-start" "Start" "outer-group" "outer" []
+            controlled "inner" "Middle" "inner-group" "inner" [ outerLayer ]
+            controlled "outer-end" "End" "outer-group" "outer" []
+            paragraph "outside" "Outside" ]
+check "control frame: outer caret includes inner paragraph" (frames (caret "outer-start" 1 nestedControls) |> List.length) 3
+check "control frame: nested caret includes both layers" (frames (caret "inner" 1 nestedControls) |> List.length) 3
+check "control frame: no frame outside nested controls" (frames (caret "outside" 0 nestedControls)) []
+let repeatedIds =
+    docOf [ controlled "first-control" "First" "first-group" "same-id" []
+            controlled "second-control" "Second" "second-group" "same-id" [] ]
+check "control frame: distinct physical groups sharing an ID stay separate" (frames (caret "first-control" 1 repeatedIds) |> List.length) 1
+check "control query: distinct physical groups stay distinct" (Doc.contentControlInfos repeatedIds |> List.map (fun info -> info.BlockId)) [ "first-control"; "second-control" ]
+let splitControl =
+    docOf [ paragraph "start" "Start"; paragraph "middle" "Middle"; paragraph "end" "End" ]
+    |> Doc.setSelection { BlockId = "start"; Offset = 0 } { BlockId = "end"; Offset = 3 }
+    |> Doc.setContentControl "outer" "outer-tag" "Outer"
+    |> caret "middle" 0
+    |> Doc.setContentControl "replacement" "replacement-tag" "Replacement"
+check "control query: replacing the middle splits the outer wrapper"
+    (Doc.contentControlInfos splitControl |> List.map (fun info -> info.Id, info.BlockId))
+    [ "outer", "start"; "replacement", "middle"; "outer", "end" ]
+check "control frame: split wrappers do not highlight together"
+    (frames (caret "start" 1 splitControl) |> List.length) 1
+check "control selection: duplicate ID selects the first physical wrapper"
+    ((Doc.selectContentControl "outer" splitControl).Selection |> Option.map (fun selection -> selection.Focus.BlockId))
+    (Some "start")
 
 // ---- paragraph spacing -----------------------------------------------------------
 let spaced =

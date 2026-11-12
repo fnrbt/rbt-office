@@ -2,22 +2,21 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
-    <DefineConstants>EXCEL_NATIVE_RUNNER_MAIN</DefineConstants>
+    <FSharpCoreImplicitPackageVersion>10.1.401</FSharpCoreImplicitPackageVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="../native-runner/PngEncode.fs" />
     <Compile Include="ChartRender.fs" />
+    <Compile Include="Import.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="../../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
-    <ProjectReference Include="../../spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
+    <ProjectReference Include="../../office-wisp/spreadsheet-native/Rbt.SpreadsheetNative.fsproj" />
     <ProjectReference Include="../../office-wisp/Rbt.OfficeWisp.fsproj" />
     <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
-    <PackageReference Include="Rbt.Widgets" Version="$(RbtWidgetsPackageVersion)" />
     <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
   </ItemGroup>
 </Project>

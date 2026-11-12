@@ -2,8 +2,8 @@
   <!-- The libraries of the other Rbt repositories come from the Forge package
        registry, in every build; nothing refers to a neighbouring checkout.
        The rbt-vb, rbt-text and rbt-pdf packages carry their F# sources under
-       fable/, which is what Fable compiles. The renderer, the widgets and
-       Wisp are what the native hosts and their runners are built on. -->
+       fable/, which is what Fable compiles. The renderer and Wisp are what
+       the native hosts and their runners are built on. -->
   <PropertyGroup>
     <!-- A library's output folder holds the package assemblies too, as it held
          the neighbouring checkouts' when they were project references: the
@@ -13,7 +13,6 @@
     <RbtTextPackageVersion Condition="'$(RbtTextPackageVersion)' == ''">0.1.3</RbtTextPackageVersion>
     <RbtPdfPackageVersion Condition="'$(RbtPdfPackageVersion)' == ''">0.1.4</RbtPdfPackageVersion>
     <RbtRendererPackageVersion Condition="'$(RbtRendererPackageVersion)' == ''">0.1.4</RbtRendererPackageVersion>
-    <RbtWidgetsPackageVersion Condition="'$(RbtWidgetsPackageVersion)' == ''">0.1.2</RbtWidgetsPackageVersion>
     <RbtWispPackageVersion Condition="'$(RbtWispPackageVersion)' == ''">0.1.0</RbtWispPackageVersion>
   </PropertyGroup>
 </Project>

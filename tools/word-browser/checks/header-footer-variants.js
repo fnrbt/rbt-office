@@ -238,22 +238,28 @@ try {
         const frame = Word.getPageFrames(progressive)[0];
         // (The footer area of page 1 in a viewport scrolled to the page's last 800 px.)
         const footerTop = Math.round(frame.Height - frame.MarginBottom) - (Math.round(frame.Height) - 800) + 2;
-        const footerPixels = () => { Word.repaint(progressive); return Array.from(context.getImageData(0, footerTop, Math.round(frame.Width), 800 - footerTop).data).join(','); };
-        const early = { complete: Word.isLayoutComplete(progressive), pages: Word.getPageFrames(progressive).length, pixels: null };
+        // Observe actual canvas text drawing, without comparing incidental glyph antialiasing.
+        const paintedFooter = () => {
+            const drawn = [];
+            const fillText = context.fillText;
+            context.fillText = function (text, x, y, ...rest) {
+                const transform = this.getTransform();
+                if (transform.b * x + transform.d * y + transform.f >= footerTop) drawn.push(text);
+                return fillText.call(this, text, x, y, ...rest);
+            };
+            try { Word.repaint(progressive); } finally { context.fillText = fillText; }
+            return drawn.join('');
+        };
         // (The footer of page 1 is below an 800 px viewport: scroll to it.)
         Word.setViewport(progressive, viewport(Math.round(frame.Height) - 800));
-        early.pixels = footerPixels();
-        early.complete = Word.isLayoutComplete(progressive);
-        early.pages = Word.getPageFrames(progressive).length;
+        Word.repaint(progressive);
+        const early = { complete: Word.isLayoutComplete(progressive), pages: Word.getPageFrames(progressive).length };
         await Word.whenLayoutComplete(progressive);
         await new Promise((resolve) => requestAnimationFrame(() => resolve()));
-        const late = { pages: Word.getPageFrames(progressive).length, pixels: footerPixels() };
-        const whole = await open(bytes, true, canvas);
-        Word.completeLayout(whole);
-        Word.setViewport(whole, viewport(Math.round(frame.Height) - 800));
-        const reference = (() => { Word.repaint(whole); return Array.from(context.getImageData(0, footerTop, Math.round(frame.Width), 800 - footerTop).data).join(','); })();
-        check(`laid out in slices (${early.pages} pages at first, complete: ${early.complete}), then whole: ${late.pages} pages`, [early.complete, early.pages < total, late.pages], [false, true, total]);
-        check('the footer of page 1 is painted with the final page count once the layout is complete (the pixels of a layout made at once)', [late.pixels === reference, early.pixels !== late.pixels], [true, true]);
+        const latePages = Word.getPageFrames(progressive).length;
+        check(`laid out in slices (${early.pages} pages at first, complete: ${early.complete}), then whole: ${latePages} pages`, [early.complete, early.pages < total, latePages], [false, true, total]);
+        check('the footer paints the final page count after progressive layout',
+            paintedFooter().startsWith(`Page 1 of ${total}`), true);
         check('and entered, it says so', [Word.enterHeaderFooter(progressive, 0, 'footer'), Word.getText(progressive).startsWith(`Page 1 of ${total}`)], [true, true]);
     }
 } catch (e) { fail(e); }

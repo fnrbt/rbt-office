@@ -57,9 +57,10 @@ let tableRow cells : Doc.TableRow =
       PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None
       BordersOverride = None; Origin = None }
 let table id rows : Doc.TableBlock =
-    { Id = id; Rows = rows; PreferredWidth = None; Alignment = None; LayoutMode = None; GridColumns = []; Borders = None; BackgroundColor = None
+    { Id = id; Rows = rows; PreferredWidth = None; Alignment = None; Indent = None; LayoutMode = None; GridColumns = []; Borders = None; BackgroundColor = None
       Shading = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Floating = false
-      FloatingXml = None; StyleId = None; Look = None }
+      FloatingXml = None; StyleId = None; ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+      ContentControlGroup = None; ContentControlAncestors = []; Look = None }
 
 /// A note's body as the reader gives it: its blocks, its plain text (that of its paragraphs, joined).
 let noteBody noteType id (blocks: Doc.Block list) : Doc.NoteBody =

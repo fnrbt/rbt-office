@@ -9,6 +9,8 @@ module Ui =
     type ChoiceSpec = {
         Value: string
         Label: string
+        /// Non-selectable initial sentinel (for example, a mixed value).
+        IsEnabled: bool
     }
 
     type ButtonSpec = {
@@ -108,7 +110,9 @@ module Ui =
         Text: string
     }
 
-    let choice value label = { Value = value; Label = label }
+    let choice value label = { Value = value; Label = label; IsEnabled = true }
+
+    let disabledChoice value label = { Value = value; Label = label; IsEnabled = false }
 
     let menuItem testId label isChecked action = {
         TestId = testId
@@ -200,6 +204,9 @@ module Ui =
         /// changes, and shows the returned (possibly multi-line) text. Use for
         /// a live result preview — e.g. the pivot a dialog will insert.
         | DialogComputedField of compute: (Map<string, string> -> string)
+        /// Update this field and any dependent fields as one user edit.
+        /// The map contains current values, and the string is the new value.
+        | DialogUpdatingField of DialogFieldKind * (Map<string, string> -> string -> Map<string, string>)
 
     type DialogField = {
         /// Stable id used as the key in the submit callback's value map.
@@ -209,6 +216,8 @@ module Ui =
         Kind: DialogFieldKind
         /// Initial value. Booleans serialize as "true"/"false".
         Initial: string
+        /// Optional host-specific selector; the default is `dlg-field-` + Id.
+        TestId: string option
     }
 
     type DialogButton = {
@@ -239,39 +248,42 @@ module Ui =
     }
 
     let dialogText id label placeholder initial =
-        { Id = id; Label = label; Kind = DialogTextField placeholder; Initial = initial }
+        { Id = id; Label = label; Kind = DialogTextField placeholder; Initial = initial; TestId = None }
 
     let dialogNumber id label minValue maxValue initial =
-        { Id = id; Label = label; Kind = DialogNumberField(minValue, maxValue); Initial = initial }
+        { Id = id; Label = label; Kind = DialogNumberField(minValue, maxValue); Initial = initial; TestId = None }
 
     let dialogCheckbox id label initial =
-        { Id = id; Label = label; Kind = DialogCheckboxField; Initial = (if initial then "true" else "false") }
+        { Id = id; Label = label; Kind = DialogCheckboxField; Initial = (if initial then "true" else "false"); TestId = None }
 
     let dialogSelect id label options initial =
-        { Id = id; Label = label; Kind = DialogSelectField options; Initial = initial }
+        { Id = id; Label = label; Kind = DialogSelectField options; Initial = initial; TestId = None }
 
     let dialogStatus id label initial =
-        { Id = id; Label = label; Kind = DialogStatusField; Initial = initial }
+        { Id = id; Label = label; Kind = DialogStatusField; Initial = initial; TestId = None }
 
     let dialogSection (title: string) =
-        // Id has to be unique per spec; mash the title in. Section headers
-        // aren't read back by the submit callback, so this id is internal.
-        { Id = "section-" + title; Label = title; Kind = DialogSectionHeader; Initial = title }
+        { Id = "section-" + title; Label = title; Kind = DialogSectionHeader; Initial = title; TestId = None }
 
     let dialogColor id label (initialHex: string) =
-        { Id = id; Label = label; Kind = DialogColorField; Initial = initialHex }
+        { Id = id; Label = label; Kind = DialogColorField; Initial = initialHex; TestId = None }
 
     let dialogSlider id label minValue maxValue (initial: float) =
-        { Id = id; Label = label; Kind = DialogSliderField(minValue, maxValue); Initial = sprintf "%g" initial }
+        { Id = id; Label = label; Kind = DialogSliderField(minValue, maxValue); Initial = sprintf "%g" initial; TestId = None }
 
     let dialogTextArea id label placeholder lines (initial: string) =
-        { Id = id; Label = label; Kind = DialogTextAreaField(placeholder, lines); Initial = initial }
+        { Id = id; Label = label; Kind = DialogTextAreaField(placeholder, lines); Initial = initial; TestId = None }
 
     let dialogRadio id label options (initial: string) =
-        { Id = id; Label = label; Kind = DialogRadioField options; Initial = initial }
+        { Id = id; Label = label; Kind = DialogRadioField options; Initial = initial; TestId = None }
 
     let dialogComputed id label (compute: Map<string, string> -> string) =
-        { Id = id; Label = label; Kind = DialogComputedField compute; Initial = "" }
+        { Id = id; Label = label; Kind = DialogComputedField compute; Initial = ""; TestId = None }
+
+    let dialogTestId testId (field: DialogField) = { field with TestId = Some testId }
+
+    let dialogUpdating update (field: DialogField) =
+        { field with Kind = DialogUpdatingField(field.Kind, update) }
 
     let dialogButton testId label isPrimary action =
         { TestId = testId; Label = label; IsPrimary = isPrimary; Action = action }

@@ -7,15 +7,15 @@ open Browser.Types
 open Rbt.FableUI.Reactive
 open Rbt.FableUI.Dom
 
-[<Emit("$0.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex=\"-1\"])')")>]
-let private queryFocusable (element: Element) : NodeList = jsNative
+[<Emit("Array.from($0.querySelectorAll('button:not([disabled]), [href], input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex=\"-1\"])')).filter(e => e.getClientRects().length && e.tabIndex >= 0)")>]
+let private queryFocusable (element: Element) : HTMLElement array = jsNative
 
 [<Emit("$0.focus()")>]
 let private focusElement (element: Element) : unit = jsNative
 
 let private focusFirst (container: Element) =
     let nodes = queryFocusable container
-    if nodes.length > 0 then focusElement (nodes.[0] :?> Element)
+    if nodes.Length > 0 then focusElement nodes.[0]
 
 let private focusTrap (container: Element) : unit -> unit =
     let previouslyFocused = document.activeElement
@@ -23,9 +23,9 @@ let private focusTrap (container: Element) : unit -> unit =
         let keyboardEvent = event :?> KeyboardEvent
         if keyboardEvent.key = "Tab" then
             let nodes = queryFocusable container
-            if nodes.length > 0 then
-                let first = nodes.[0] :?> Element
-                let last = nodes.[int nodes.length - 1] :?> Element
+            if nodes.Length > 0 then
+                let first = nodes.[0] :> Element
+                let last = nodes.[nodes.Length - 1] :> Element
                 if keyboardEvent.shiftKey && document.activeElement = first then
                     keyboardEvent.preventDefault()
                     focusElement last
@@ -33,12 +33,13 @@ let private focusTrap (container: Element) : unit -> unit =
                     keyboardEvent.preventDefault()
                     focusElement first
 
-    JS.setTimeout (fun () -> focusFirst container) 0 |> ignore
+    let timer = JS.setTimeout (fun () -> if container?isConnected then focusFirst container) 0
     container.addEventListener("keydown", handleKeyDown)
 
     fun () ->
+        window.clearTimeout(timer)
         container.removeEventListener("keydown", handleKeyDown)
-        if not (isNull previouslyFocused) then focusElement previouslyFocused
+        if not (isNull previouslyFocused) && previouslyFocused?isConnected then focusElement previouslyFocused
 
 let private dismissible (container: Element) (onDismiss: unit -> unit) : unit -> unit =
     let handleMouseDown (event: Event) =
@@ -60,14 +61,23 @@ let private dismissible (container: Element) (onDismiss: unit -> unit) : unit ->
 let Button attrs content = button (cls "btn" :: attrs) content
 let Input attrs = input (cls "input" :: attrs)
 
+let mutable private nextPortalId = 0
+
+let rec private freshPortalId () =
+    nextPortalId <- nextPortalId + 1
+    let candidate = sprintf "rbt-office-dialog-%d" nextPortalId
+    if isNull (document.getElementById candidate) then candidate else freshPortalId ()
+
 let DialogWithTestIds overlayTestId dialogTestId (isOpen: Signal<bool>) (content: View list) =
     showIf (fun () -> isOpen.Value)
         (viewComponent (fun () ->
+            Chrome.ensureStyles ()
             let portal = document.createElement("div")
+            portal.id <- freshPortalId ()
+            portal.className <- "rb-office-dialog"
             portal.setAttribute("data-fui-dialog-portal", "")
             document.body.appendChild(portal) |> ignore
             let close () = isOpen.Value <- false
-            let mutable contentCleanup: (unit -> unit) option = None
 
             let dialog =
                 div [ cls "dialog-overlay"; attr "data-testid" overlayTestId; onClick (fun _ -> close()) ] [
@@ -80,7 +90,6 @@ let DialogWithTestIds overlayTestId dialogTestId (isOpen: Signal<bool>) (content
                           refEffect (fun element ->
                               let cleanupFocus = focusTrap element
                               let cleanupDismiss = dismissible element close
-                              contentCleanup <- Some (fun () -> cleanupDismiss(); cleanupFocus())
                               fun () ->
                                   cleanupDismiss()
                                   cleanupFocus()) ]
@@ -88,10 +97,14 @@ let DialogWithTestIds overlayTestId dialogTestId (isOpen: Signal<bool>) (content
                 ]
 
             let portalCleanup = mount portal dialog
+            let title = portal.querySelector(".rb-dialog-title")
+            let card = portal.querySelector("[role=dialog]")
+            if not (isNull title) && not (isNull card) then
+                title.id <- portal.id + "-title"
+                card.setAttribute("aria-labelledby", title.id)
 
             div [ style "display" "none"
                   onUnmount (fun () ->
-                      contentCleanup |> Option.iter (fun cleanup -> cleanup())
                       portalCleanup ()
                       if not (isNull portal.parentNode) then portal.parentNode.removeChild(portal) |> ignore) ] []))
 

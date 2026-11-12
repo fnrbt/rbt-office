@@ -82,6 +82,18 @@ eq "rename: plain names need no quotes" (formulaAt "sheet2" 0 0 (Wb.renameSheetE
 eq "rename: a name like a cell reference is quoted" (formulaAt "sheet2" 0 0 (Wb.renameSheetEverywhere "sheet1" "A1" wb0)) "=SUM('A1'!A1:A3)"
 eq "rename: to the same name is nothing" (obj.ReferenceEquals(Wb.renameSheetEverywhere "sheet1" "Data" wb0, wb0)) true
 
+// The serialized qualifier doubles apostrophes. Renaming it back (as Undo
+// does) must rewrite the formula and name, not just the sheet's display name.
+let quotedRename = Wb.renameSheetEverywhere "sheet1" "Sales O'Brien" wb0
+eq "apostrophe: renamed formula and name" (formulaAt "sheet2" 0 0 quotedRename, Wb.getName None "DataTotal" quotedRename)
+    ("=SUM('Sales O''Brien'!A1:A3)", Some "'Sales O''Brien'!$A$1:$A$3")
+let quotedRestored = Wb.renameSheetEverywhere "sheet1" "Data" quotedRename
+eq "apostrophe: rename undone rewrites references" (names quotedRestored, formulaAt "sheet2" 0 0 quotedRestored, Wb.getName None "DataTotal" quotedRestored)
+    (names wb0, "=SUM(Data!A1:A3)", Some "Data!$A$1:$A$3")
+let quotedDeleted, _ = (Wb.removeSheet "sheet1" quotedRename).Value
+eq "apostrophe: delete rewrites quoted references" (formulaAt "sheet2" 0 0 quotedDeleted, Wb.getName None "DataTotal" quotedDeleted)
+    ("=SUM(#REF!)", Some "#REF!")
+
 // ---- delete ---------------------------------------------------------------------------------
 eq "the only visible sheet stays" (Wb.lastVisibleSheetProblem "sheet1" (wb0 |> Wb.setSheetVisibility "sheet2" false false |> Wb.setSheetVisibility "sheet3" false true)) (Some "a workbook must keep at least one visible sheet")
 eq "others may go" (Wb.lastVisibleSheetProblem "sheet1" wb0, Wb.lastVisibleSheetProblem "sheet9" wb0) (None, Some "no such sheet")

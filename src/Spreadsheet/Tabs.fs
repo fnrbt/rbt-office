@@ -2,7 +2,7 @@ module Rbt.Spreadsheet.Tabs
 
 open Fable.Core
 open Fable.Core.JsInterop
-open Rbt.Grid.Dom
+open Rbt.Spreadsheet.Dom
 open Rbt.Spreadsheet.Workbook
 
 /// JavaScript helper for prompts

@@ -1128,3 +1128,77 @@ checks['undo-steps'] = async () => {
     }
     return lines;
 };
+
+// Selective per-sheet undo shares workbook revision/save identity without
+// rolling back later edits or leaving their foreign references stale.
+checks['session-sheet-history'] = async () => {
+    const { lines, check } = makeLog();
+    for (const order of [[0, 1], [1, 0]]) {
+        const { grid, close } = mountGrid();
+        try {
+            grid.RenameSheet(0, 'Source');
+            grid.SetCell(0, 0, '2');
+            grid.AddSheet('Other');
+            grid.SetCell(0, 0, '=Source!A1*2');
+            grid.MarkSaved();
+            const saved = grid.GetRevision();
+            grid.SwitchSheet(0); grid.SetCell(0, 0, '3');
+            grid.SwitchSheet(1); grid.SetCell(0, 1, 'later');
+            grid.SwitchSheet(order[0]); grid.Undo();
+            check(`undo ${order[0]} retains the other sheet's edit`,
+                [grid.GetRange('Source!A1')[0][0].value, grid.GetRange('Other!B1')[0][0].value, grid.IsModified()],
+                order[0] === 0 ? [2, 'later', true] : [3, null, true]);
+            grid.SwitchSheet(order[1]); grid.Undo();
+            check(`undo order ${order} returns to the saved document`,
+                [grid.GetRange('Source!A1')[0][0].value, grid.GetRange('Other!A1:B1')[0].map(c => c.value), grid.IsModified(), grid.GetRevision()],
+                [2, [4, null], false, saved]);
+            grid.SwitchSheet(order[1]); grid.Redo();
+            grid.SwitchSheet(order[0]); grid.Redo();
+            check(`redo order ${order} restores both edits`,
+                [grid.GetRange('Source!A1')[0][0].value, grid.GetRange('Other!A1:B1')[0].map(c => c.value), grid.IsModified()],
+                [3, [6, 'later'], true]);
+        } catch (e) { lines.push('FAIL selective saved history: ' + String(e.stack || e)); }
+        finally { close(); }
+    }
+    const { grid, close } = mountGrid();
+    try {
+        grid.RenameSheet(0, 'Source'); grid.SetCell(0, 0, '2');
+        grid.AddSheet('Other'); grid.SetCell(0, 0, '=Source!A1*2');
+        grid.SwitchSheet(0); grid.RenameSheet(0, 'Inputs');
+        grid.SwitchSheet(1); grid.SetCell(0, 0, '=Inputs!A1*3+1');
+        grid.SwitchSheet(0); grid.Undo();
+        check('selective rename undo rebases a later foreign formula without losing its edit',
+            [grid.GetSheetNames(), grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            [['Source', 'Other'], '=Source!A1*3+1', 7]);
+        grid.SwitchSheet(1); grid.Undo();
+        check('undoing the later formula after rename undo uses the current sheet name',
+            [grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            ['=Source!A1*2', 4]);
+        grid.Redo();
+        check('redoing that formula uses the current sheet name',
+            [grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            ['=Source!A1*3+1', 7]);
+        grid.SwitchSheet(0);
+        grid.Redo();
+        check('selective rename redo preserves the later foreign formula',
+            [grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            ['=Inputs!A1*3+1', 7]);
+        grid.InsertRow(0, 1);
+        grid.SwitchSheet(1); grid.SetCell(0, 0, '=Inputs!A2*5+1');
+        grid.SwitchSheet(0); grid.Undo();
+        check('selective row undo rebases a later foreign formula without losing its edit',
+            [grid.GetRange('Inputs!A1')[0][0].value, grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            [2, '=Inputs!A1*5+1', 11]);
+        grid.Redo();
+        check('selective row redo preserves the later foreign formula',
+            [grid.GetRange('Inputs!A2')[0][0].value, grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            [2, '=Inputs!A2*5+1', 11]);
+        grid.Undo();
+        grid.SwitchSheet(1); grid.Undo();
+        check('undoing the later formula after row undo uses current coordinates',
+            [grid.GetRange('Other!A1')[0][0].formula, grid.GetRange('Other!A1')[0][0].value],
+            ['=Inputs!A1*3+1', 7]);
+    } catch (e) { lines.push('FAIL selective reference history: ' + String(e.stack || e)); }
+    finally { close(); }
+    return lines;
+};

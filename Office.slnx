@@ -3,9 +3,6 @@
   <Folder Name="/src/FableUI/">
     <Project Path="src/FableUI/Rbt.FableUI.fsproj" />
   </Folder>
-  <Folder Name="/src/Grid/">
-    <Project Path="src/Grid/Rbt.Grid.fsproj" />
-  </Folder>
   <Folder Name="/src/OfficeUi/">
     <Project Path="src/OfficeUi/Rbt.OfficeUi.fsproj" />
   </Folder>
@@ -26,12 +23,9 @@
   </Folder>
   <Folder Name="/office-wisp/">
     <Project Path="office-wisp/Rbt.OfficeWisp.fsproj" />
-  </Folder>
-  <Folder Name="/spreadsheet-native/">
-    <Project Path="spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj" />
-  </Folder>
-  <Folder Name="/word-native/">
-    <Project Path="word-native/Rbt.WordWidgets.fsproj" />
+    <Project Path="office-wisp/native/Rbt.OfficeNative.fsproj" />
+    <Project Path="office-wisp/spreadsheet-native/Rbt.SpreadsheetNative.fsproj" />
+    <Project Path="office-wisp/word-render/Rbt.WordNative.fsproj" />
   </Folder>
   <Folder Name="/spreadsheet-wisp/">
     <Project Path="spreadsheet-wisp/Rbt.SpreadsheetWisp.fsproj" />

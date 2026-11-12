@@ -19,6 +19,10 @@ RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
         '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>'
         '</Relationships>')
+DOCUMENT_RELS = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                 '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                 '<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>'
+                 '</Relationships>')
 STYLES = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
           f'<w:styles xmlns:w="{W}"><w:docDefaults><w:rPrDefault><w:rPr>'
           '<w:rFonts w:ascii="Calibri" w:hAnsi="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault>'
@@ -63,6 +67,7 @@ path = os.path.join(OUT, "fields-styleref-date-time.docx")
 with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
     z.writestr("[Content_Types].xml", CT)
     z.writestr("_rels/.rels", RELS)
+    z.writestr("word/_rels/document.xml.rels", DOCUMENT_RELS)
     z.writestr("word/styles.xml", STYLES)
     z.writestr("word/document.xml", doc)
 print("wrote", path)

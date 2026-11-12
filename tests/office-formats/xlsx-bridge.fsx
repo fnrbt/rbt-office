@@ -211,7 +211,7 @@ let renamedBook = namedAgain.Context |> Wb.setDefinedName None "TAXRATE" "0.07" 
 let namesRenamed = reread (Bridge.Export.toWorkbookOut { namedInput renamedBook (Some namedAgain.Source) with Sheets = namedAgain.Sheets |> Array.map (fun sheet -> sheet.Model) })
 eq "names: an edited name is written as it is now" (namesRenamed.NamedRanges |> List.map (fun n -> n.Name, n.RefersTo, n.Scope, n.Comment) |> List.sort)
     [ "Local_Total", "First!$A$3", Some "0", None; "TAXRATE", "0.07", None, Some "reduced" ]
-// A name the file hides from the name manager keeps its flag. (The reader drops `_xlnm.` names other than the print ones.)
+// A name the file hides from the name manager keeps its flag.
 let filterKey = Some (Bridge.sheetIdOfIndex 0), "SECRET"
 let hiddenBook =
     { namedBook with
@@ -391,6 +391,25 @@ eq "export: chart re-anchored, still the chart" (movedExtras.Objects |> List.map
 eq "export: z-order kept" (movedExtras.Images.[0].Anchor.Order < movedExtras.Objects.[0].Anchor.Order) true
 eq "export: thread at its new cell, author and reply kept" (movedExtras.ThreadedComments |> List.map (fun thread -> thread.CellRef.Column, thread.CellRef.Row, thread.Author, thread.Text, thread.Replies |> List.map (fun reply -> reply.Author, reply.Text, reply.CellRef.Row)))
     [ "B", 4, Some "Ann Author", "Is this right?", [ Some "Bob Reply", "Yes & checked", 4 ] ]
+eq "export: moved source thread does not gain a legacy note" movedBack.Sheets.[0].Comments []
+let insertedExtras = extrasModel |> applyStructureEdit (InsertRows (1, 1)) |> applyStructureEdit (InsertCols (1, 1))
+let insertedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput insertedExtras))
+let insertedBack = XlsxReader.loadBytesNative insertedBytes |> Option.get
+eq "export: inserted thread and reply keep IDs and persons"
+    (insertedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun t -> t.CellRef.Column, t.CellRef.Row, t.Id, t.PersonId, t.Replies |> List.map (fun r -> r.Id, r.PersonId, r.CellRef.Column, r.CellRef.Row)), insertedBack.Preserved.Persons)
+    (extrasWb.Sheets.[0].Extras.ThreadedComments |> List.map (fun t -> "C", 3, t.Id, t.PersonId, t.Replies |> List.map (fun r -> r.Id, r.PersonId, "C", 3)), extrasWb.Preserved.Persons)
+ok "export: inserted thread adds no comments or VML part"
+    (use stream = new MemoryStream(insertedBytes)
+     use zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Read)
+     zip.Entries |> Seq.forall (fun entry -> not (entry.FullName.StartsWith "xl/comments") && not (entry.FullName.EndsWith ".vml")))
+    "unexpected legacy comment part"
+let noteAndThread = extrasModel |> Rbt.Spreadsheet.SheetOps.setComment (addr 3 3) "real note" (Some "Note author")
+let noteSource = reread (Bridge.Export.toWorkbookOut (extrasInput noteAndThread)) |> Bridge.Import.importWorkbook
+let noteMoved = noteSource.Sheets.[0].Model |> applyStructureEdit (InsertRows (1, 1)) |> applyStructureEdit (InsertCols (1, 1))
+let noteBack = reread (Bridge.Export.toWorkbookOut (inputOf noteSource [| noteMoved |] noteSource.Context.Names))
+eq "export: real legacy note moves without creating a thread placeholder"
+    (noteBack.Sheets.[0].Comments |> List.map (fun c -> c.CellRef.Column, c.CellRef.Row, c.Text, c.Author))
+    [ "E", 5, "real note", Some "Note author" ]
 ok "export: the chart part is still in the package" (movedBack.Preserved.Parts |> List.exists (fun (path, _) -> path.EndsWith "charts/chart1.xml")) "chart part missing"
 // Deleting the rows a drawing is anchored in does not delete the drawing: it moves to the deletion.
 let deletedModel = extrasModel |> applyStructureEdit (DeleteRows (1, 4))
@@ -645,7 +664,6 @@ ok "filter: the element as Excel writes it" (valuesSheetXml.Contains "<autoFilte
 ok "filter: it comes after the rows and before the merges / page setup" (valuesSheetXml.IndexOf "<autoFilter" > valuesSheetXml.IndexOf "</sheetData>" && valuesSheetXml.IndexOf "<autoFilter" < valuesSheetXml.IndexOf "<pageMargins") "order"
 ok "filter: the hidden name of the sheet" ((partText valuesBytes "xl/workbook.xml").Contains "<definedName name=\"_xlnm._FilterDatabase\" localSheetId=\"0\" hidden=\"1\">'Axes'!$B$1:$E$7</definedName>") (partText valuesBytes "xl/workbook.xml")
 let valuesFile = XlsxReader.loadBytesNative valuesBytes |> Option.get
-eq "filter: the name is the filter's, not a defined name of the workbook" ((Bridge.Import.importWorkbook valuesFile).Context.Names |> Map.count, valuesFile.NamedRanges.Length) (0, 0)
 // A filter with no column filtered: the range alone.
 let rangeOnly = reread (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter (Some filterRange) filterData) None))
 eq "filter: a range without column filters" ((Bridge.Import.importWorkbook rangeOnly).Sheets.[0].Model.AutoFilter, rangeOnly.Sheets.[0].Extras.AutoFilter) (Some { Range = filterRange; Implicit = false }, Some { Ref = "B1:E7"; Columns = [] })

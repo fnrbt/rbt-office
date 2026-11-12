@@ -44,7 +44,7 @@ const PARA_KEYS = ['Type', 'Style', 'Alignment', 'ListStyle', 'ListLevel', 'List
     'ExplicitSpacingBefore', 'ExplicitSpacingAfter', 'ExplicitLineSpacing', 'ExplicitIndentLeft', 'ExplicitIndentRight', 'ExplicitFirstLineIndent',
     'ExplicitContextualSpacing', 'ExplicitBackgroundColor', 'ExplicitTabs', 'HasMarkProperties', 'ExplicitMarkFontSize',
     'MarkRevisionType', 'MarkRevisionId', 'MarkRevisionAuthor', 'MarkRevisionDate'];
-const TABLE_KEYS = ['Floating', 'FloatingXml', 'TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
+const TABLE_KEYS = ['Floating', 'FloatingXml', 'TableStyleId', 'TableLook', 'PreferredWidth', 'PreferredWidthType', 'TableAlignment', 'TableIndent', 'LayoutMode', 'GridColumns', 'Borders', 'BackgroundColor',
     'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const ROW_KEYS = ['IsHeader', 'Height', 'HeightRule', 'CanSplit', 'CellSpacing', 'PaddingTop', 'PaddingRight', 'PaddingBottom', 'PaddingLeft'];
 const CELL_KEYS = ['ColSpan', 'BackgroundColor', 'Width', 'PreferredWidth', 'PreferredWidthType', 'Borders', 'VerticalAlignment', 'VerticalMerge',

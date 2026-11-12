@@ -4,7 +4,7 @@
 # check VbaProject.readMacroSource recovers the module — and that the recovered
 # source runs on our engine.
 #
-# Requires the parity VM (ssh wordvm). Run from anywhere.
+# Requires the parity VM (ssh winvm). Run from anywhere.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"

@@ -13,83 +13,33 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private existingDir path =
-    if Directory.Exists path then Some path else None
-
-let private fontDirs () =
-    [
-        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../office/artifacts/fonts/windows"))
-    ]
-    |> List.choose (fun p -> if String.IsNullOrWhiteSpace p then None else existingDir p)
-
-let private tryFontFile fileName =
-    fontDirs ()
-    |> List.tryPick (fun dir ->
-        let path = Path.Combine(dir, fileName)
-        if File.Exists path then Some path else None)
-
-let private tryFace faceName family bold italic fileName : Rbt.Spreadsheet.Pdf.Render.FontFace option =
-    tryFontFile fileName
-    |> Option.map (fun path ->
-        {
-            FaceName = faceName
-            Family = family
-            Bold = bold
-            Italic = italic
-            Data = File.ReadAllBytes path
-        })
-
 let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.Pdf.Render.RenderOptions =
-    let faces =
-        [
-            tryFace "Calibri" "Calibri" false false "calibri.ttf"
-            tryFace "Calibri-Bold" "Calibri" true false "calibrib.ttf"
-            tryFace "Calibri-Italic" "Calibri" false true "calibrii.ttf"
-            tryFace "Calibri-BoldItalic" "Calibri" true true "calibriz.ttf"
-            tryFace "Arial" "Arial" false false "arial.ttf"
-            tryFace "Arial-Bold" "Arial" true false "arialbd.ttf"
-            tryFace "Arial-Italic" "Arial" false true "ariali.ttf"
-            tryFace "Arial-BoldItalic" "Arial" true true "arialbi.ttf"
-            // Cambria ships as a TrueType collection (.ttc); FsPdf now
-            // pulls font 0 out of any .ttc so we can load the regular too.
-            tryFace "Cambria" "Cambria" false false "cambria.ttc"
-            tryFace "Cambria-Bold" "Cambria" true false "cambriab.ttf"
-            tryFace "Cambria-Italic" "Cambria" false true "cambriai.ttf"
-            // PDF /Name tokens can't contain literal spaces — use a flat
-            // face name internally and keep the spaceful Family for matching
-            // the cell's `<name val="Times New Roman"/>`.
-            tryFace "TimesNewRoman" "Times New Roman" false false "times.ttf"
-            tryFace "TimesNewRoman-Bold" "Times New Roman" true false "timesbd.ttf"
-            tryFace "TimesNewRoman-Italic" "Times New Roman" false true "timesi.ttf"
-            tryFace "TimesNewRoman-BoldItalic" "Times New Roman" true true "timesbi.ttf"
-            tryFace "Verdana" "Verdana" false false "verdana.ttf"
-            tryFace "Verdana-Bold" "Verdana" true false "verdanab.ttf"
-            tryFace "Verdana-Italic" "Verdana" false true "verdanai.ttf"
-            tryFace "Verdana-BoldItalic" "Verdana" true true "verdanaz.ttf"
-        ]
-        |> List.choose id
-
-    // CJK fallback chain — matches the GDI font-link order Windows uses when
-    // Calibri/Arial don't cover a codepoint. PDF /Name tokens can't contain
-    // spaces, so use single-word internal names; Family doesn't matter here
-    // since these faces are picked by codepoint coverage, not family lookup.
-    let cjkFallback =
-        [
-            tryFace "YuGothic-Regular" "_cjk" false false "YuGothR.ttc"
-            tryFace "YuGothic-Bold" "_cjk" true false "YuGothB.ttc"
-            tryFace "MSGothic" "_cjk" false false "msgothic.ttc"
-            tryFace "MSYaHei" "_cjk" false false "msyh.ttc"
-            tryFace "MSYaHei-Bold" "_cjk" true false "msyhbd.ttc"
-            tryFace "MSJhengHei" "_cjk" false false "msjh.ttc"
-            tryFace "MSJhengHei-Bold" "_cjk" true false "msjhbd.ttc"
-            tryFace "MalgunGothic" "_cjk" false false "malgun.ttf"
-            tryFace "MalgunGothic-Bold" "_cjk" true false "malgunbd.ttf"
-        ]
-        |> List.choose id
-
+    let faces : Rbt.Spreadsheet.Pdf.Render.FontFace list =
+        [ for family in [ "Calibri"; "Arial"; "Cambria"; "Times New Roman"; "Verdana" ] do
+            for bold, italic in [ false, false; true, false; false, true; true, true ] do
+                let font = Rbt.OfficeNative.Fonts.resolve (Some family) bold italic
+                let suffix =
+                    if bold && italic then "-BoldItalic"
+                    elif bold then "-Bold"
+                    elif italic then "-Italic"
+                    else ""
+                yield {
+                    FaceName = family.Replace(" ", "") + suffix
+                    Family = family
+                    Bold = bold
+                    Italic = italic
+                    Data = font.OtFont.Data
+                } ]
+    let cjkFallback : Rbt.Spreadsheet.Pdf.Render.FontFace list =
+        [ for bold in [ false; true ] do
+            for name, font in Rbt.OfficeNative.Fonts.fallbackFaces bold do
+                yield {
+                    FaceName = Path.GetFileNameWithoutExtension(name) + (if bold then "-Bold" else "")
+                    Family = "_cjk"
+                    Bold = bold
+                    Italic = false
+                    Data = font.OtFont.Data
+                } ]
     {
         DefaultFontFamily = "Calibri"
         Fonts = faces
@@ -99,7 +49,7 @@ let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.
     }
 
 /// The charts and shapes of a sheet of a workbook as overlays of its PDF, by the layout of the grid.
-let private drawingOverlays (workbook: Xlsx.Workbook) (sheetIndex: int) =
+let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.Workbook.Workbook) (sheetIndex: int) =
     let text (data: byte[]) = System.Text.Encoding.UTF8.GetString data
     let parts = workbook.Preserved.Parts |> Map.ofList
     let theme =
@@ -107,9 +57,10 @@ let private drawingOverlays (workbook: Xlsx.Workbook) (sheetIndex: int) =
         |> Option.bind (fun path -> Map.tryFind path parts)
         |> Option.map (text >> Charts.parseTheme)
         |> Option.defaultValue Charts.defaultTheme
-    // (The workbook as the grid opens it: `toModel` keeps no drawings.)
-    let book = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook workbook
-    let models = book.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, lazy (Rbt.Spreadsheet.Model.resolveSheet sheet.Model))
+    let models =
+        workbook.Sheets
+        |> List.mapi (fun index sheet ->
+            sheet.Name, lazy ((Map.find (sprintf "sheet%d" (index + 1)) context.Sheets).Model))
     let data : Charts.ChartData =
         { Cells = (fun name r0 c0 r1 c1 ->
             models
@@ -141,7 +92,8 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     if sheetIndex < 0 || sheetIndex >= workbook.Sheets.Length then
         failwithf "Sheet index %d out of range (workbook has %d sheets)" sheetIndex workbook.Sheets.Length
     let sheet = workbook.Sheets.[sheetIndex]
-    let model = ExcelNativeRunner.toModel sheet workbook
+    let context = ExcelNativeRunner.buildWorkbookContext workbook
+    let model = (Map.find (sprintf "sheet%d" (sheetIndex + 1)) context.Sheets).Model
     // Page size + margins now live on model.PageSetup (defaulted to US
     // Letter portrait when the source file didn't specify a pageSetup).
     // Excel's `&F` substitutes the workbook's display name (no extension)
@@ -149,8 +101,7 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     // than "synthetic-print.xlsx".
     let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath)
     // Charts and shapes as the grid draws them, anchored to their cells.
-    let drawings, overlays = drawingOverlays workbook sheetIndex
-    let model = { model with Drawings = drawings }
+    let _, overlays = drawingOverlays workbook context sheetIndex
     let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)

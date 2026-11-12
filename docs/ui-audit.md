@@ -8,6 +8,28 @@
 
 **Implementation follow-through (2026-11-11):** the C5–C6 fixes now render all eleven existing field kinds and tabs in `OfficeUiDialog`, preserve tab edits, and provide accessible names plus keyboard/focus behavior. The renderer's seven Chromium dialog scenarios and real Word Cancel/undo workflow passed; see `systematic-review-2026-11-11.md` and the contract in `sharing-architecture.md`. This does not wire the unused advanced dialog specs into the browser shells or merge the parked command registry. The tables below remain the original audit snapshot.
 
+**Formatting/name follow-through:** the browser shells now include Word font and paragraph borders/pattern-shading dialogs and Spreadsheet conditional-rule/scoped-name managers. The old five-kind conditional dialog was replaced, including its bare-widget entry point. The tables below remain the original audit, not current feature availability; see the roadmap and host API contracts for supported authoring and preservation limits.
+
+**Sheet/list follow-through:** Spreadsheet now exposes sheet-tab operations, row/column sizing, autofit and hide/unhide; Word exposes list kind/marker/level, restart and continue. Actual desktop/390px workflows and targeted save/reopen regressions passed. Formatting-only Word edits retain displayed ordinals using standard numbering segments; reopening keeps those segments distinct. Native dialog parity and full Office/browser certification remain unverified.
+
+**Function/style follow-through:** Spreadsheet provides a searchable 21-function insertion/help catalogue and guarded Tab completion; broader evaluator coverage remains open. Word provides a searchable existing paragraph/character styles pane, not style-definition authoring. Imported direct-versus-inherited typography, caret styles, undo, save/reopen and desktop/390px surfaces were exercised; detailed evidence is in the systematic review.
+
+**Selection/page-setup follow-through:** Spreadsheet now shows cached live selection statistics with AutoFilter exclusions. Word's Page setup applies to the section containing the selection's focus, with preserved untouched geometry and imported section metadata. Desktop/390px controls, selective DOCX save/reopen, header positioning, undo and keyboard focus were exercised; the public legacy page-setup API still addresses the final section.
+
+**Find/table-properties follow-through:** Spreadsheet's bare component and shell now share one per-grid search bar/session, including values/formulas, scope/range, case/whole-cell/regex, navigation and replacement. Word's table dialog now covers preferred width, alignment/indent, shading/borders, defaults and current-row minimum height/splitting/header behavior. Desktop/390px forms, keyboard search/replace/undo, selection guards and imported metadata preservation were exercised. Native Spreadsheet retains its separate dialog; Word exact-height and fixed/autofit layout behavior remain incomplete. See the systematic review for final build and round-trip evidence.
+
+**Count/function-coverage follow-through:** Word now shows live body and active-selection word counts alongside action/error status, with explicit model/whitespace semantics and loaded-prefix labels. Spreadsheet's single function-help catalogue now covers 66 functions; repeated argument groups cycle through their range/criterion or test/result slots. Actual keyboard entry, undo, nested/foreign-story counts, dynamic-array and criteria formulas, XLSX reopen and desktop/390px controls were exercised. This is not complete evaluator help or Microsoft Word word-count parity; details and limits are in the host contracts and systematic review.
+
+**Context/chart follow-through:** Word now has a shell-owned text/table context
+menu with selection-safe right-click, caret-anchored keyboard entry and guarded
+real clipboard actions. Spreadsheet's Insert Chart dialog authors column,
+horizontal bar, line and single-series pie charts from bounded ranges, with
+explicit header/category interpretation. Desktop/390px surfaces, undo,
+clipboard permissions/stale state, actual chart download/reopen and imported
+part preservation were exercised. Chart move/resize/delete and configuration
+editing remain unimplemented; details and certification limits are in the
+current roadmap, host contracts and systematic review.
+
 
 
 ## 0. The headline: where the UI lives

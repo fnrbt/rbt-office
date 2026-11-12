@@ -10,13 +10,13 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../office-wisp/KeyMap.fs" />
-    <Compile Include="GridRender.fs" />
     <Compile Include="EditorHost.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
     <ProjectReference Include="../office-wisp/Rbt.OfficeWisp.fsproj" />
+    <ProjectReference Include="../office-wisp/spreadsheet-native/Rbt.SpreadsheetNative.fsproj" />
     <ProjectReference Include="../src/Spreadsheet/Rbt.Spreadsheet.fsproj" />
     <ProjectReference Include="../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />

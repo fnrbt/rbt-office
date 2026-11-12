@@ -48,6 +48,16 @@ try {
     // Loading a document starts over, unmodified.
     Word.setParagraphs(editor, ['Another document.']);
     check('a newly loaded document is not modified and has a new revision', [Word.isModified(editor), Word.getRevision(editor) > branch, Word.canUndo(editor)], [false, true, false]);
+    const replacementRevision = Word.getRevision(editor);
+    const replacementBlock = Word.getLayoutLines(editor)[0].BlockId;
+    Word.setSelection(editor, replacementBlock, 0, replacementBlock, 0);
+    Word.insertText(editor, 'new edit');
+    Word.markSaved(editor, afterTyping);
+    check('save completion from a replaced document leaves its edits dirty', Word.isModified(editor), true);
+    Word.undo(editor);
+    check('stale save cannot replace the new document saved baseline',
+        [Word.getRevision(editor), Word.isModified(editor), Word.getText(editor)],
+        [replacementRevision, false, 'Another document.']);
     // ---- a document that is what was opened is saved as the file that was opened ----
     {
         const OF = await loadFormats();

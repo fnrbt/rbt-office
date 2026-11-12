@@ -17,7 +17,10 @@
     <Compile Include="LayoutFingerprint.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="Commands.fs" />
+    <Compile Include="Session.fs" />
     <Compile Include="Clipboard.fs" />
+    <Compile Include="TypedDocxImport.fs" />
+    <Compile Include="TypedDocxExport.fs" />
     <Compile Include="Docx.fs" />
     <Compile Include="Renderer.fs" />
     <Compile Include="WordViewer.fs" />
@@ -27,10 +30,12 @@
     <Compile Include="WordUi.fs" />
     <Compile Include="WordDialogs.fs" />
     <Compile Include="WordHost.fs" />
+    <Compile Include="WordContextMenu.fs" />
     <Compile Include="WordShell.fs" />
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../FableUI/Rbt.FableUI.fsproj" />
     <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
     <PackageReference Include="Rbt.Vb" Version="$(RbtVbPackageVersion)" />

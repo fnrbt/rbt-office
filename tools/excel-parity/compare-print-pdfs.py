@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--reuse-excel",
         action="store_true",
-        help="reuse an existing excel.pdf instead of calling Excel through wordvm",
+        help="reuse an existing excel.pdf instead of calling Excel through winvm",
     )
     parser.add_argument(
         "--max-body-mae",

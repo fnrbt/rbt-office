@@ -205,6 +205,8 @@ type RenderContext = {
     /// JavaScript is a different object every time it is looked at.
     mutable TextPathPainterVersion: int
     mutable TextMeasurerVersion: int
+    /// Only the current block snapshot is retained, not an index per undo entry.
+    mutable ControlMemberships: (Block list * System.Collections.Generic.Dictionary<BlockId, System.Collections.Generic.HashSet<string>>) option
     /// How many paint frames were built (the commands of the whole document
     /// collected) - for hosts and checks that want to see frames reused.
     mutable FrameBuilds: int
@@ -314,6 +316,7 @@ let createContext (canvas: HTMLCanvasElement) = {
     TextPathPainterFactory = None
     TextPathPainterVersion = 0
     TextMeasurerVersion = 0
+    ControlMemberships = None
     FrameBuilds = 0
     LastLaidOutBlocks = 0
     LastCollectedBlocks = 0
@@ -426,29 +429,8 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
             width
     (width * font.Scale) + TextBuffer.characterSpacingAdvance text style
 
-/// The layout settings of a document for a base font size and line height.
-let layoutSettingsFor (fontSize: float) (lineHeight: float) (doc: Document) =
-    let hasFooter = not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty
-    let footerReserve =
-        if hasFooter then doc.PageSetup.FooterDistance + lineHeight * 1.5
-        else doc.PageSetup.MarginBottom
-    {
-    Width = doc.PageSetup.PageWidth
-    PageHeight = doc.PageSetup.PageHeight
-    FontSize = fontSize
-    LineHeight = lineHeight
-    PaddingLeft = doc.PageSetup.MarginLeft
-    PaddingTop = Rbt.Word.WordLayout.Page.bodyTopWithRunningHeader doc
-    MarginRight = doc.PageSetup.MarginRight
-    MarginBottom = max doc.PageSetup.MarginBottom footerReserve
-    InTableCell = false
-    TableContinuationHeaderHeight = 0.0
-    LongTrailingSpaceFitSafety = 3.5
-    DefaultTabStop = doc.PageSetup.DefaultTabStop
-    }
-
 let layoutSettings (ctx: RenderContext) (doc: Document) =
-    layoutSettingsFor ctx.FontSize ctx.LineHeight doc
+    documentSettings ctx.FontSize ctx.LineHeight 3.5 doc
 
 let measureWithContext ctx text style =
     match ctx.TextMeasurer with
@@ -658,9 +640,9 @@ let private pageFurnitureShapeRects (ctx: RenderContext) (whole: Document) (body
     | None -> []
     | Some page ->
         let sectionEnds = bodyLayouts |> List.filter (fun layout -> endsSection layout.Metadata)
-        match headerFooterTargetForPage settings whole sectionEnds pages pageIndex isHeader |> Option.bind (fun target -> target.TargetPart) with
-        | Some part when part.Blocks |> List.exists (function TextBox _ -> true | _ -> false) ->
-            storyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole page (headerFooterStartY settings whole.PageSetup page isHeader) part.Blocks
+        match headerFooterTargetForPage settings whole sectionEnds pages pageIndex isHeader with
+        | Some target when target.TargetPart |> Option.exists (fun part -> part.Blocks |> List.exists (function TextBox _ -> true | _ -> false)) ->
+            storyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole page target.TargetY target.TargetPart.Value.Blocks
         | _ -> []
 
 /// Where the body of a note or comment is shown while it is edited in place
@@ -749,7 +731,11 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
     match List.tryItem story.PageIndex pages with
     | None -> []
     | Some page ->
-        let startY = headerFooterStartY settings whole.PageSetup page story.IsHeader
+        let sectionEnds = bodyLayouts |> List.filter (fun layout -> endsSection layout.Metadata)
+        let startY =
+            headerFooterTargetForPage settings whole sectionEnds pages story.PageIndex story.IsHeader
+            |> Option.map (fun target -> target.TargetY)
+            |> Option.defaultWith (fun () -> headerFooterStartY settings whole.PageSetup page story.IsHeader)
         match ctx.StoryLayouts with
         | Some (blocks, y, version, layouts) when obj.ReferenceEquals(blocks, doc.Blocks) && y = startY && version = ctx.TextMeasurerVersion -> layouts
         | _ ->
@@ -1456,79 +1442,16 @@ let commentAnchors (ctx: RenderContext) (doc: Document) =
     let doc = bodyDocument ctx doc
     commentAnchorsForLayouts ctx doc (layoutWholeDocument ctx doc)
 
-let private pageIndexForY settings y =
-    let stride = pageHeight settings + pageGap
-    int (floor (max 0.0 y / stride))
-
-let private endnoteAnchorsForLayouts (layouts: BlockLayout list) =
-    layouts
-    |> List.collect (fun layout ->
-        layout.Lines
-        |> List.collect (fun line ->
-            line.Segments
-            |> List.choose (function
-                | TextSegment (_, style, _, _, _) ->
-                    match style.NoteId, style.NoteType, style.NoteText with
-                    | Some id, Some "endnote", Some text when text <> "" -> Some { Id = id; Text = text }
-                    | _ -> None
-                | ImageSegment _ -> None
-                | MathSegment _ -> None)))
-    |> List.distinctBy _.Id
-
-let private footnoteAnchorsForLayouts (settings: LayoutSettings) (layouts: BlockLayout list) =
-    layouts
-    |> List.collect (fun layout ->
-        layout.Lines
-        |> List.collect (fun line ->
-            line.Segments
-            |> List.choose (function
-                | TextSegment (_, style, _, _, _) ->
-                    match style.NoteId, style.NoteType, style.NoteText with
-                    | Some id, noteType, Some text when noteType |> Option.defaultValue "footnote" = "footnote" && text <> "" ->
-                        Some { Id = id; Text = text; PageIndex = pageIndexForY settings line.Y }
-                    | _ -> None
-                | ImageSegment _ -> None
-                | MathSegment _ -> None)))
-    |> List.distinctBy (fun anchor -> anchor.PageIndex, anchor.Id)
-
-let private bodyBottom (settings: LayoutSettings) (layouts: BlockLayout list) =
+let private layoutBottom (settings: LayoutSettings) (layouts: BlockLayout list) =
     let mutable bottom = settings.PaddingTop
     for layout in layouts do
         bottom <- max bottom (layout.Y + layout.Height)
     bottom
 
-let private endnoteStartY (settings: LayoutSettings) (layouts: BlockLayout list) =
-    let bottom = bodyBottom settings layouts
-    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) bottom
-    let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-    if bottom + 48.0 > contentBottom then WordLayout.Page.advanceToNextPage (pageHeight settings) settings.PaddingTop bottom else bottom + 24.0
-
-let private documentHeightWithNotes (settings: LayoutSettings) (layouts: BlockLayout list) =
-    let bottom = bodyBottom settings layouts
-    let endnotes = endnoteAnchorsForLayouts layouts
-    let endnoteBottom =
-        if endnotes.IsEmpty then bottom
-        else
-            let lineCount = endnotes |> List.sumBy (fun anchor -> noteLineCount settings (sprintf "%s. %s" anchor.Id anchor.Text))
-            endnoteStartY settings layouts + 18.0 + float lineCount * 13.0
-    let footnoteBottom =
-        footnoteAnchorsForLayouts settings layouts
-        |> List.groupBy _.PageIndex
-        |> List.map (fun (pageIndex, anchors) ->
-            let pageTop = float pageIndex * (pageHeight settings + pageGap)
-            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-            let lineCount = anchors |> List.sumBy (fun anchor -> noteLineCount settings (sprintf "%s. %s" anchor.Id anchor.Text))
-            contentBottom + 20.0 + float lineCount * 13.0)
-        |> List.fold max bottom
-    max endnoteBottom footnoteBottom
-
-/// The page frames to show: the pages of the layout pass, each with its own
-/// section's size, plus pages for note areas that reach below the last one.
-let private pageFramesOfLayouts (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) (pages: PageInfo list) =
-    let bottom =
-        if documentHasSections doc then bodyBottom settings layouts
-        else documentHeightWithNotes settings layouts
-    pageInfosCoveringBottom bottom pages
+/// Shared layout already places footnotes and endnotes. Cover their actual bounds;
+/// estimating them again would append phantom pages and inflate NUMPAGES.
+let private pageFramesOfLayouts (settings: LayoutSettings) (layouts: BlockLayout list) (pages: PageInfo list) =
+    pageInfosCoveringBottom (layoutBottom settings layouts) pages
 
 /// `pageFramesOfLayouts` for the layouts and pages the layout state made
 /// last: kept for that pass (a host asks for the document's size with every change).
@@ -1540,7 +1463,7 @@ let private pageFramesForLayouts (ctx: RenderContext) (settings: LayoutSettings)
     match ctx.KnownPageFrames with
     | Some (serial, frames) when current && serial = ctx.LayoutState.LayoutSerial -> frames
     | _ ->
-        let frames = pageFramesOfLayouts settings doc layouts pages
+        let frames = pageFramesOfLayouts settings layouts pages
         if current then ctx.KnownPageFrames <- Some (ctx.LayoutState.LayoutSerial, frames)
         frames
 
@@ -2147,7 +2070,20 @@ let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (do
         match tryFind with
         | Some tryFind -> hoverCommandsLookup settings tryFind hoveredImage
         | None -> hoverCommands settings layouts hoveredImage
-    List.concat [ selection; markupMarkerCommands settings doc layouts; hover; selectedShapeCommands ctx settings doc layouts pages ], band
+    let controls =
+        if doc.Selection.IsNone then
+            ctx.ControlMemberships <- None
+            []
+        else
+            let members =
+                match ctx.ControlMemberships with
+                | Some (blocks, members) when obj.ReferenceEquals(blocks, doc.Blocks) -> members
+                | _ ->
+                    let members = contentControlMemberships doc
+                    ctx.ControlMemberships <- Some (doc.Blocks, members)
+                    members
+            markupMarkerCommands members settings doc layouts
+    List.concat [ selection; controls; hover; selectedShapeCommands ctx settings doc layouts pages ], band
 
 let private buildFrame (ctx: RenderContext) (doc: Document) hoveredImage =
     ctx.FrameBuilds <- ctx.FrameBuilds + 1
@@ -2683,7 +2619,7 @@ let requiredFonts (ctx: RenderContext) (doc: Document) : obj array =
 /// measurements.)
 let requiredFontsOfDocument (doc: Document) : obj array =
     let measureText (text: string) (style: TextBuffer.TextStyle) = float text.Length * style.FontSize * 0.5
-    requiredFontFaces (layoutSettingsFor 16.0 24.0 doc) "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) doc None
+    requiredFontFaces (documentSettings 16.0 24.0 3.5 doc) "Calibri" measureText (rangeMeasurerFromTextMeasurer measureText) doc None
     |> fontFacesToJs
 
 /// Counters of a renderer, for hosts and checks (see API.getRenderStats).

@@ -122,10 +122,11 @@ type TextRun = {
 **Current Grid Shell:**
 ```fsharp
 // Spreadsheet/Toolbar.fs
-type SpreadsheetShell(onAction, onFind, onReplace)
+type SpreadsheetShell(grid: Spreadsheet, onAction)
     // Menubar (File / Edit / Insert / Format / Data) +
     // one focused toolbar row (B I U | A+ A- | A Fill | L C R | $ % .0+ .0- | Cut Copy Paste | Undo Redo)
-    // + inline find/replace bar
+    // + selection-aware Format Cells and live find/replace; file and print
+    // operations, formatting and history dispatch directly to the grid.
 ```
 
 (Earlier revisions of this doc described a `FormatToolbar` per concern; those classes were consolidated into the single shell above. See `TOOLBAR-USAGE.md`.)

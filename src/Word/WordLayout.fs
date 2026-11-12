@@ -1085,21 +1085,7 @@ module Numbering =
         | NoList -> None, counters
         | Bullet -> Some ((metadata.ListLevelText |> Option.defaultValue "•") + " "), counters
         | Numbered ->
-            let level = max 1 metadata.ListLevel
-            let key = counterKey metadata
-            let next =
-                match counters |> Map.tryFind key with
-                | Some value -> value + 1
-                | None -> metadata.ListStart |> Option.defaultValue 1
-            let mutable updated = counters |> Map.add key next
-            for childLevel in level + 1 .. 9 do
-                // (A level starts again after any level above it, unless it says after which - w:lvlRestart; 0: never.)
-                let restarts =
-                    match levelDefinition metadata childLevel |> Option.bind (fun definition -> definition.Restart) with
-                    | Some 0 -> false
-                    | Some after -> level <= after
-                    | None -> true
-                if restarts then updated <- updated |> Map.remove (metadata.ListId |> Option.defaultValue "", childLevel)
+            let updated = Rbt.Word.Document.advanceListCounters metadata counters
             Some (formatMarker metadata updated), updated
 
     /// How the number stands at its position ("left", "center", "right").
@@ -1234,6 +1220,12 @@ module Table =
 
     let normalizeLength scale value =
         if value > 100.0 then value / scale.DxaPerUnit else value
+
+    /// An indent applies to left-aligned tables only, in canvas pixels.
+    let tableIndent (table: TableBlock) =
+        match table.Alignment with
+        | Some alignment when alignment.ToLowerInvariant() = "center" || alignment.ToLowerInvariant() = "right" || alignment.ToLowerInvariant() = "end" -> 0.0
+        | _ -> table.Indent |> Option.defaultValue 0.0
 
     let preferredWidthFromLegacyValue value =
         if value > 100.0 then DxaWidth value else PointWidth value
@@ -1397,10 +1389,9 @@ module Table =
         empty
 
     /// The paragraphs of a vertically merged cell handed out to the cells it
-    /// continues in, one each. (How merged cells were imported before the
-    /// layout laid a merged cell's content over the rows it spans; the
-    /// importers no longer do this - Docx.gatherVerticalMergeContent still
-    /// undoes it for documents that hold content in continuation cells.)
+    /// continues in, one each. (With the old import the layout placed merged
+    /// cell content over every row it spanned; the exporter undoes this for
+    /// documents that still hold content in continuation cells.)
     let distributeVerticalMergeContent (rows: TableRow list) =
         let rowArray = rows |> List.toArray
         let cellRows = Array.zeroCreate<TableCell[]> rowArray.Length
@@ -1658,7 +1649,7 @@ module Table =
 
     let rowMinHeight scale lineHeight (row: TableRow) =
         row.Height
-        |> Option.map (normalizeLength scale)
+        |> Option.map (fun twips -> max 0.0 (twips / scale.DxaPerUnit))
         |> Option.defaultValue (defaultRowHeight lineHeight)
 
     let emptyTableAdvance (lineHeight: float) =

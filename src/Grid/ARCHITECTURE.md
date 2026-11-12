@@ -317,11 +317,10 @@ const tabs = createTabs(workbook, {
 tabs.Mount(tabsContainer);
 
 // 4. Optional shell (menubar + toolbar). See TOOLBAR-USAGE.md.
-const shell = createSpreadsheetShell(
-    (action) => grid.ApplyFormat(action),
-    (query) => grid.StartSearch?.(query, false),
-    ([find, repl]) => grid.ReplaceAll?.(find, repl, false)
-);
+const shell = createSpreadsheetShell(grid, (action) => {
+    // Only structure/data/clipboard actions still use a host dispatcher.
+    if (action === "copy") grid.Copy();
+});
 shell.Mount(shellContainer);
 ```
 

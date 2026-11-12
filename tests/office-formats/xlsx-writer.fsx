@@ -274,10 +274,31 @@ let partText (bytes: byte[]) (name: string) =
         use reader = new System.IO.StreamReader(entry.Open())
         reader.ReadToEnd()
 
+let builtins =
+    { synthetic with
+        Sheets =
+            [ { syntheticSheet with
+                    Tables = []
+                    Extras = { syntheticSheet.Extras with AutoFilter = Some { Ref = "A1:B2"; Columns = [] } } } ]
+        DefinedNames =
+            [ { Name = "_xlnm.Criteria"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = Some 0; Comment = Some "Imported criterion"; Hidden = true }
+              { Name = "_xlnm._FilterDatabase"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = Some 0; Comment = Some "Imported filter"; Hidden = true } ] }
+let builtinBytes = XlsxWriter.writeWorkbookPackageBytes builtins
+match XlsxReader.loadBytesNative builtinBytes with
+| None -> ok "built-in-names-import" false "reader returned None"
+| Some wb ->
+    ok "built-in-names-import"
+        (wb.NamedRanges |> List.exists (fun name ->
+            name.Name = "_xlnm.Criteria" && name.Scope = Some "0" && name.Comment = Some "Imported criterion" && name.Hidden))
+        (sprintf "%A" wb.NamedRanges)
+    ok "filter-database-single"
+        (wb.NamedRanges |> List.filter (fun name -> name.Name = "_xlnm._FilterDatabase") |> List.length = 1)
+        (sprintf "%A" wb.NamedRanges)
+
 let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
     { Type = kind; Operator = None; Formulas = []; DxfId = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []
       Text = None; IconSet = None; IconSetCfvo = []; IconSetReverse = false; TimePeriod = None; Rank = None; Percent = false; Bottom = false
-      AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false; Ext = None }
+      AboveAverage = true; EqualAverage = false; StdDev = None; Priority = None; StopIfTrue = false; Ext = None; SourceXml = None }
 
 let nastySheet : XlsxWriter.XlsxSheetOut =
     { syntheticSheet with
@@ -299,13 +320,15 @@ let nastySheet : XlsxWriter.XlsxSheetOut =
           [ { Range = "A2:A3"
               Rules =
                 [ { cfRule "cellIs" with Operator = Some "greaterThan"; Formulas = [ "0.15" ]; DxfId = Some 0; Priority = Some 1 }
-                  { cfRule "containsText" with Operator = Some "containsText"; Text = Some "x<y"; Formulas = [ "NOT(ISERROR(SEARCH(\"x<y\",A2)))" ]; DxfId = Some 7 } ] }
+                  { cfRule "containsText" with Operator = Some "containsText"; Text = Some "x<y"; Formulas = [ "NOT(ISERROR(SEARCH(\"x<y\",A2)))" ]; DxfId = Some 7 } ]
+              GroupAttributes = [] }
             { Range = "B2:B3"
               Rules =
                 [ { cfRule "colorScale" with ColorScale = [ { CfvoType = "min"; CfvoValue = None; Color = "FF0000" }; { CfvoType = "max"; CfvoValue = None; Color = "00FF00" } ] }
                   { cfRule "dataBar" with DataBarColor = Some "638EC6"; DataBarCfvo = [ "min", None; "max", None ] }
                   { cfRule "iconSet" with IconSet = Some "3Arrows"; IconSetCfvo = [ "percent", Some "0"; "percent", Some "33"; "percent", Some "67" ] }
-                  { cfRule "top10" with Rank = Some 3; Bottom = true; Percent = true } ] } ]
+                  { cfRule "top10" with Rank = Some 3; Bottom = true; Percent = true } ]
+              GroupAttributes = [] } ]
         PrintArea = Some "$A$1:$B$2" }
 
 let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
@@ -313,13 +336,65 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
-      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None } ]
+      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None } ]
       Preserved = XlsxReader.emptyWorkbookPreservation }
 let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
 
 let nastySheetXml = partText nastyBytes "xl/worksheets/sheet1.xml"
 let nastyStylesXml = partText nastyBytes "xl/styles.xml"
 
+
+let rawX14Id = "{11111111-2222-3333-4444-555555555555}"
+let opaqueX14 =
+    { cfRule "futureRule" with
+        Priority = Some 5
+        Ext = Some { XlsxReader.emptyCfRuleExt with InExtList = true }
+        SourceXml =
+            Some (sprintf "<x14:cfRule type=\"futureRule\" id=\"%s\" priority=\"100\" future=\"kept\"><xm:f>1=1</xm:f><x14:future value=\"extra\"/></x14:cfRule>" rawX14Id) }
+let advancedBar: XlsxReader.CfDataBarExt =
+    { MinLength = 5; MaxLength = 95; ShowValue = false; Border = true; Gradient = false
+      Direction = "rightToLeft"; NegativeBarColorSameAsPositive = false
+      NegativeBarBorderColorSameAsPositive = false; AxisPosition = "middle"
+      Cfvo = [ "autoMin", None; "autoMax", None ]; BorderColor = Some "123456"
+      NegativeFillColor = Some "CC0000"; NegativeBorderColor = Some "EE0000"; AxisColor = Some "ABCDEF" }
+let withOpaque =
+    { nastyWorkbook with
+        Sheets =
+            [ { nastySheet with
+                    ConditionalFormats =
+                        [ { Range = "E2"; GroupAttributes = [ "pivot", "1" ]
+                            Rules = [ { cfRule "cellIs" with Operator = Some "greaterThan"; Formulas = [ "3" ]; Priority = Some 4 } ] }
+                          { Range = "B2:B5"; GroupAttributes = []
+                            Rules =
+                                [ { cfRule "dataBar" with
+                                        Priority = Some 2
+                                        DataBarColor = Some "4472C4"
+                                        DataBarCfvo = [ "min", None; "max", None ]
+                                        Ext = Some { XlsxReader.emptyCfRuleExt with DataBar = Some advancedBar } } ] }
+                          { Range = "E3"; GroupAttributes = []; Rules = [ opaqueX14 ] } ] } ] }
+let opaqueBytes = XlsxWriter.writeWorkbookPackageBytes withOpaque
+let opaqueXml = partText opaqueBytes "xl/worksheets/sheet1.xml"
+ok "writer-pivot-rule-group"
+    (opaqueXml.Contains("<conditionalFormatting sqref=\"E2\" pivot=\"1\">"))
+    opaqueXml
+ok "writer-opaque-x14-payload"
+    (opaqueXml.Contains(rawX14Id) && opaqueXml.Contains("priority=\"5\" future=\"kept\"")
+     && opaqueXml.Contains("<x14:future value=\"extra\"/>") && opaqueXml.Contains("<xm:sqref>E3</xm:sqref>"))
+    opaqueXml
+match XlsxReader.loadBytesNative opaqueBytes with
+| None -> ok "mixed-x14-reader" false "reader returned None"
+| Some wb ->
+    let imported = wb.Sheets.[0].ConditionalFormats |> List.collect (fun block -> block.Rules)
+    let bar = imported |> List.tryFind (fun rule -> rule.Type = "dataBar")
+    let unknown = imported |> List.tryFind (fun rule -> rule.Type = "futureRule")
+    ok "mixed-x14-bar-options"
+        (bar |> Option.bind (fun rule -> rule.Ext) |> Option.bind (fun ext -> ext.DataBar)
+         |> Option.exists (fun ext -> ext.MinLength = 5 && ext.MaxLength = 95 && ext.Direction = "rightToLeft"
+                                      && ext.BorderColor = Some "123456" && ext.Cfvo = advancedBar.Cfvo))
+        (sprintf "%A" bar)
+    ok "mixed-x14-unknown-opaque"
+        (unknown |> Option.exists (fun rule -> rule.SourceXml |> Option.exists (fun xml -> xml.Contains("future=\"kept\""))))
+        (sprintf "%A" unknown)
 // Every part must be well-formed XML: control characters and unescaped
 // quotes / angle brackets in names used to produce unreadable parts.
 let malformedParts =
@@ -408,6 +483,59 @@ match XlsxReader.loadBytesNative nastyBytes with
     ok "writer-dxf-roundtrip"
        (wb.Dxfs.Length = 1 && wb.Dxfs.[0].FontColor = Some "9C0006" && wb.Dxfs.[0].FillColor = Some "FFC7CE" && wb.Dxfs.[0].Bold = Some true)
        (sprintf "%A" wb.Dxfs)
+
+// Editing a supported differential property must not erase unsupported source
+// properties or alter another rule that shares the original differential style.
+do
+    let ns = System.Xml.Linq.XNamespace.Get "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    use stream = new MemoryStream()
+    stream.Write(nastyBytes, 0, nastyBytes.Length)
+    do
+        use zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Update, true)
+        let entry = zip.GetEntry "xl/styles.xml"
+        let styles =
+            use input = entry.Open()
+            System.Xml.Linq.XDocument.Load input
+        let dxf = styles.Root.Element(ns + "dxfs").Elements(ns + "dxf") |> Seq.head
+        let font = dxf.Element(ns + "font")
+        font.Add(System.Xml.Linq.XElement(ns + "sz", System.Xml.Linq.XAttribute("val", "16")))
+        font.Add(System.Xml.Linq.XElement(ns + "name", System.Xml.Linq.XAttribute("val", "Arial")))
+        font.AddAfterSelf(System.Xml.Linq.XElement(ns + "numFmt", System.Xml.Linq.XAttribute("numFmtId", "165"), System.Xml.Linq.XAttribute("formatCode", "0.000")))
+        dxf.Add(System.Xml.Linq.XElement(ns + "border", System.Xml.Linq.XElement(ns + "left", System.Xml.Linq.XAttribute("style", "medium"))))
+        entry.Delete()
+        use output = zip.CreateEntry("xl/styles.xml").Open()
+        styles.Save output
+    let original = XlsxReader.loadBytesNative (stream.ToArray()) |> Option.get |> XlsxWriter.packageFromReaderWorkbook
+    // Source-derived DXFs require the same original-part contract as the grid exporter.
+    let preserved = original.Preserved
+    let sourcePaths = preserved.SourceParts |> List.map fst |> Set.ofList
+    let cloneIndex = original.Dxfs.Length
+    let group = original.Sheets.Head.ConditionalFormats.Head
+    let changedGroup =
+        { group with Range = "D2:D3"
+                     Rules = [ { group.Rules.Head with DxfId = Some cloneIndex; Formulas = [ "99" ]; SourceXml = None } ] }
+    let changed =
+        { original with
+            Preserved =
+                { preserved with InPlace = true
+                                 Parts = (preserved.Parts |> List.filter (fun (path, _) -> not (Set.contains path sourcePaths))) @ preserved.SourceParts }
+            Dxfs = original.Dxfs @ [ { original.Dxfs.Head with FillColor = Some "AADD99"; SourceDxfIndex = Some 0 } ]
+            Sheets = original.Sheets |> List.mapi (fun index sheet ->
+                if index = 0 then { sheet with ConditionalFormats = sheet.ConditionalFormats @ [ changedGroup ] } else sheet) }
+    let saved = XlsxWriter.writeWorkbookPackageBytes changed
+    let dxfs = (System.Xml.Linq.XDocument.Parse(partText saved "xl/styles.xml")).Root.Element(ns + "dxfs").Elements(ns + "dxf") |> Seq.toArray
+    let attribute name (element: System.Xml.Linq.XElement) = element.Attribute(System.Xml.Linq.XName.Get name).Value
+    let fill index = dxfs.[index].Descendants(ns + "bgColor") |> Seq.head |> attribute "rgb"
+    ok "editing a shared DXF clones only its requested fill"
+        (fill 0 = "FFFFC7CE" && fill cloneIndex = "FFAADD99")
+        (sprintf "%s / %s" (fill 0) (fill cloneIndex))
+    let clone = dxfs.[cloneIndex]
+    ok "a differential-style clone preserves source font metrics, number format and border"
+        (attribute "val" (clone.Descendants(ns + "sz") |> Seq.head) = "16"
+         && attribute "val" (clone.Descendants(ns + "name") |> Seq.head) = "Arial"
+         && attribute "formatCode" (clone.Element(ns + "numFmt")) = "0.000"
+         && attribute "style" (clone.Descendants(ns + "left") |> Seq.head) = "medium")
+        (string clone)
 
 // Reader -> writer -> reader keeps formulas (with their cached values),
 // conditional formatting and sheet visibility.

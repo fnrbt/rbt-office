@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Fonts.fs" />
+    <Compile Include="Images.fs" />
+    <Compile Include="Png.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
+    <PackageReference Include="StbImageNext" Version="1.1.0" />
+  </ItemGroup>
+</Project>

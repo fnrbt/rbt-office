@@ -45,6 +45,75 @@ try {
     check('shared definition: the copy has the new format at its first level and the second level as it was', [/<w:lvl w:ilvl="0">(?:(?!<\/w:lvl>).)*<w:numFmt w:val="upperLetter"\/>/.test(copy), /<w:lvl w:ilvl="1">(?:(?!<\/w:lvl>).)*<w:numFmt w:val="lowerLetter"\/>/.test(copy)], [true, true]);
     check('shared definition: the definition and the other list are the text they were', [abstractOf(shared.numbering, 10) === abstractOf(original, 10), numOf(shared.numbering, 6) === numOf(original, 6), abstractOf(shared.numbering, 11) === abstractOf(original, 11), abstractOf(shared.numbering, 12) === abstractOf(original, 12)], [true, true, true, true]);
     check('shared definition: read again, laid out as the editor had it', shared.same, true);
+    // A split instance must clone the source, not regenerate its level. Model
+    // restart/continue scope is exercised by tests/word/list-levels.fsx; this
+    // exercises the DOCX bridge with its actual preserved package.
+    const fixture = await window.JSZip.loadAsync(bytes);
+    const sourceDefinition = abstractOf(original, 10);
+    if (!sourceDefinition) throw new Error('list fixture lacks abstract numbering 10');
+    const augmentedDefinition = sourceDefinition
+        .replace('<w:lvl w:ilvl="0">', '<w:lvl w:ilvl="0"><w:lvlRestart w:val="0"/>')
+        .replace(/(<w:lvl\b[^>]*w:ilvl="1"[^>]*>[\s\S]*?<w:lvlText\b[^>]*w:val=")[^"]*"/,
+            (_match, prefix) => prefix + '%1.%2)"');
+    if (augmentedDefinition === sourceDefinition || !augmentedDefinition.includes('w:val="%1.%2)"')) throw new Error('cannot construct nested numbering template');
+    const augmented = original.replace(sourceDefinition, augmentedDefinition)
+        .replace('</w:numbering>', '<w:num w:numId="99"><w:abstractNumId w:val="10"/></w:num></w:numbering>');
+    fixture.file('word/numbering.xml', augmented);
+    const augmentedBytes = await fixture.generateAsync({ type: 'uint8array' });
+    const splitEditor = Word.initializeCanvas(document.createElement('canvas'));
+    Word.importFromDocxPackage(splitEditor, await OF.processors.forEditorPackage(augmentedBytes));
+    const splitPackage = Word.exportDocumentPackage(splitEditor);
+    splitPackage.Unchanged = false;
+    const split = splitPackage.Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === 'two');
+    if (!split) throw new Error('list fixture has no two paragraph');
+    Object.assign(split, { ListId: '100', ListSourceId: '3', ListRestart: true, ListStart: 7,
+        ListNumberFormat: 'upperLetter', ListLevelText: '%1.', ListFormatEdited: true, SourceUnchanged: false, SourcePara: null, SourceTextChanges: null });
+    const splitBytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(splitPackage)).arrayBuffer());
+    const splitZip = await window.JSZip.loadAsync(splitBytes);
+    const splitNumbering = await splitZip.file('word/numbering.xml').async('string');
+    const splitNum = numOf(splitNumbering, 100) ?? '';
+    const splitAbstractId = /<w:abstractNumId w:val="(\d+)"\/>/.exec(splitNum)?.[1];
+    const splitAbstract = abstractOf(splitNumbering, splitAbstractId) ?? '';
+    check('split clone retains other lists and unused IDs',
+        [numOf(splitNumbering, 3) === numOf(augmented, 3), numOf(splitNumbering, 6) === numOf(augmented, 6), numOf(splitNumbering, 99) === numOf(augmented, 99)], [true, true, true]);
+    check('split clone keeps level metadata and authors marker and restart',
+        [/w:lvlRestart w:val="0"/.test(splitAbstract), /w:numFmt w:val="upperLetter"/.test(splitAbstract), /w:startOverride w:val="7"/.test(splitNum)], [true, true, true]);
+    const splitAgain = Word.initializeCanvas(document.createElement('canvas'));
+    Word.importFromDocxPackage(splitAgain, await OF.processors.forEditorPackage(splitBytes));
+    const reopened = Word.exportDocumentPackage(splitAgain).Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === 'two');
+    check('split restart survives save and reopen', [String(reopened?.ListId), reopened?.ListNumberFormat, reopened?.ListStart], ['100', 'upperLetter', 7]);
+    const continuePackage = Word.exportDocumentPackage(splitAgain);
+    continuePackage.Unchanged = false;
+    const first = continuePackage.Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === 'one');
+    const continued = continuePackage.Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === 'two');
+    Object.assign(continued, { ListId: first.ListId, ListNumberFormat: first.ListNumberFormat, ListLevelText: first.ListLevelText,
+        ListStart: first.ListStart, ListSourceId: null, ListRestart: false, ListFormatEdited: false, SourceUnchanged: false, SourcePara: null, SourceTextChanges: null });
+    const continuedBytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(continuePackage)).arrayBuffer());
+    const continuedPackage = await OF.processors.forEditorPackage(continuedBytes);
+    const continuedAgain = continuedPackage.Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === 'two');
+    check('continued list identity survives another save and reopen',
+        [String(continuedAgain?.ListId), continuedAgain?.ListNumberFormat], [String(first.ListId), first.ListNumberFormat]);
+    const ordinalPackage = Word.exportDocumentPackage(splitEditor);
+    ordinalPackage.Unchanged = false;
+    const findText = (pkg, text) => pkg.Paragraphs.find((p) => (p.Runs ?? []).map((r) => r.Text ?? '').join('') === text);
+    const ordinalTwo = findText(ordinalPackage, 'two');
+    const ordinalNested = findText(ordinalPackage, 'nested a');
+    if (!ordinalTwo || !ordinalNested) throw new Error('list fixture lacks ordinal paragraphs');
+    Object.assign(ordinalTwo, { ListId: '101', ListSourceId: '3', ListRestart: true, ListStart: 2,
+        ListNumberFormat: 'lowerLetter', ListLevelText: '%1.', ListFormatEdited: true,
+        ListStartOverrides: [{ Level: 1, Start: 2 }], SourceUnchanged: false, SourcePara: null, SourceTextChanges: null });
+    Object.assign(ordinalNested, { ListId: '102', ListSourceId: '3', ListRestart: true, ListStart: 1,
+        ListStartOverrides: [{ Level: 1, Start: 2 }, { Level: 2, Start: 1 }],
+        SourceUnchanged: false, SourcePara: null, SourceTextChanges: null });
+    const ordinalBytes = new Uint8Array(await (await OF.word.writeFromEditorPackage(ordinalPackage)).arrayBuffer());
+    const ordinalAgain = Word.initializeCanvas(document.createElement('canvas'));
+    Word.importFromDocxPackage(ordinalAgain, await OF.processors.forEditorPackage(ordinalBytes));
+    const markers = Word.getLayoutLines(ordinalAgain);
+    check('physical counter snapshots survive save and reopen including nested parent',
+        ['one', 'two', 'nested a'].map((text) => markers.find((line) => line.Text === text)?.ListMarker?.trim()),
+        ['1.', 'b.', '2.a)']);
+    Word.dispose(ordinalAgain);
+    Word.dispose(splitAgain); Word.dispose(splitEditor);
     note(`numbering.xml: ${original.length} -> ${own.numbering.length} / ${shared.numbering.length} characters`);
 } catch (e) { fail(e); }
 finish();

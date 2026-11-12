@@ -7,7 +7,7 @@
 #   REPRO_DIR=tests/repros/word tools/word-parity/measure-parity.sh
 #
 # For each repro <name>:
-# - Word reference PDF rendered through wordvm (cached under artifacts/word/)
+# - Word reference PDF rendered through winvm (cached under artifacts/word/)
 # - Our PDF rendered through tools/pdf-runner
 # - pdftoppm both at 144 DPI
 # - Pixel-diff PDF↔PDF over the whole page, threshold 32, both raw and ink-XOR

@@ -1038,12 +1038,12 @@ let private rowFragments settings y height =
     resizeArrayToList fragments
 
 let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (commands: ResizeArray<PaintCommand>) (layout: BlockLayout) =
-    match layout.Metadata.BackgroundColor with
-    | Some color when color <> "" ->
-        let blockX = settings.PaddingLeft + layout.Indent
-        let blockWidth = max 1.0 layout.AvailableWidth
-        commands.Add(FillRect (color, blockX, layout.Y, blockWidth, layout.Height))
-    | _ -> ()
+    let blockX = settings.PaddingLeft + layout.Indent
+    let blockWidth = max 1.0 layout.AvailableWidth
+    let shading =
+        layout.Metadata.ParagraphShadingPattern
+        |> Option.map (fun pattern -> { Pattern = Some pattern; ForegroundColor = layout.Metadata.ParagraphShadingForeground; BackgroundColor = layout.Metadata.BackgroundColor })
+    commands.AddRange(tableFillCommands layout.Metadata.BackgroundColor shading blockX layout.Y blockWidth layout.Height)
 
     match layout.Metadata.ParagraphBorders with
     | Some _ -> commands.AddRange(paragraphBorderCommands settings layout)
@@ -1327,38 +1327,34 @@ let private tableLeftOffsetForStyleContext = function
 
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
-    elif optionEqualsIgnoreCase "right" alignment then max 0.0 (availableWidth - tableWidth)
+    elif optionEqualsIgnoreCase "right" alignment || optionEqualsIgnoreCase "end" alignment then max 0.0 (availableWidth - tableWidth)
     else 0.0
-
-/// The content controls the selection is in: the controls of the paragraphs
-/// its two ends are in.
-let private selectedContentControls (doc: Document) : string list =
-    match doc.Selection with
-    | None -> []
-    | Some selection ->
-        [ selection.Anchor.BlockId; selection.Focus.BlockId ]
-        |> List.distinct
-        |> List.choose (fun blockId -> findParagraph doc blockId |> Option.bind (fun para -> para.Metadata.ContentControlId))
-        |> List.distinct
 
 /// The frame of a content control, as an editing aid: drawn around the
 /// paragraphs of the control the caret or the selection is in, as Word does,
 /// and nowhere else. It is an overlay: a document without a selection (a
 /// viewer, a page rendered for print or preview) has none.
-let markupMarkerCommands (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) =
-    match selectedContentControls doc with
-    | [] -> []
-    | controls ->
-        let commands = ResizeArray<PaintCommand>()
-        for layout in layouts do
-            match layout.Metadata.ContentControlId with
-            | Some controlId when List.contains controlId controls ->
-                let blockX = settings.PaddingLeft + layout.Indent
-                let blockWidth = max 1.0 layout.AvailableWidth
-                commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
-                commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
+let markupMarkerCommands (members: Dictionary<BlockId, HashSet<string>>) (settings: LayoutSettings) (doc: Document) (layouts: BlockLayout list) =
+    match doc.Selection with
+    | None -> []
+    | Some selection ->
+        let selected = HashSet<string>()
+        for blockId in [ selection.Anchor.BlockId; selection.Focus.BlockId ] do
+            match members.TryGetValue blockId with
+            | true, groups -> for group in groups do selected.Add group |> ignore
             | _ -> ()
-        resizeArrayToList commands
+        if selected.Count = 0 then []
+        else
+            let commands = ResizeArray<PaintCommand>()
+            for layout in layouts do
+                match members.TryGetValue layout.BlockId with
+                | true, groups when groups |> Seq.exists selected.Contains ->
+                    let blockX = settings.PaddingLeft + layout.Indent
+                    let blockWidth = max 1.0 layout.AvailableWidth
+                    commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
+                    commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
+                | _ -> ()
+            resizeArrayToList commands
 
 let private maxNestedTablePaintDepth = 512
 
@@ -1379,7 +1375,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         ([], currentY + WordLayout.Table.emptyTableAdvance settings.LineHeight)
     else
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
-        let tableAvailableWidth = max 0.0 availableWidth
+        let tableAvailableWidth = max 0.0 (availableWidth - WordLayout.Table.tableIndent tableBlock)
         let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
         let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
         let columnWidths = resolvedTable.ColumnWidths
@@ -1387,7 +1383,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let fallbackColumnWidth = tableMaxWidth / float numColumns
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
-        let tableHorizontalOffset = baseHorizontalOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
+        let tableHorizontalOffset = baseHorizontalOffset + WordLayout.Table.tableIndent tableBlock + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
         let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft - WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
 
         let columnX spacing startColumn =
@@ -1996,6 +1992,8 @@ type private SectionPageIndex = {
     SectionStartPages: int array
     SectionTitlePage: bool array
     SectionEvenOdd: bool array
+    SectionHeaderDistance: float array
+    SectionFooterDistance: float array
     /// The number a section's first page has when it states one (w:pgNumType w:start), and its number format.
     SectionNumberStart: int option array
     SectionNumberFormat: string array
@@ -2006,6 +2004,8 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     let ends = ResizeArray<int>()
     let titles = ResizeArray<bool>()
     let evenOdd = ResizeArray<bool>()
+    let headerDistances = ResizeArray<float>()
+    let footerDistances = ResizeArray<float>()
     // (How a section starts is said by its own properties: a continuous one starts on the page the one before it ends on.)
     let continuous = ResizeArray<bool>()
     let kinds = ResizeArray<string option>()
@@ -2021,6 +2021,8 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
             ends.Add (pageIndexForY pages (layout.Y + layout.Height))
             titles.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.DifferentFirstPage | None -> false)
             evenOdd.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.EvenAndOddHeaders | None -> false)
+            headerDistances.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.HeaderDistance | None -> pageSetup.HeaderDistance)
+            footerDistances.Add (match layout.Metadata.SectionPageSetup with Some setup -> setup.FooterDistance | None -> pageSetup.FooterDistance)
             continuous.Add (layout.Metadata.SectionBreak = Some "continuous")
             kinds.Add layout.Metadata.SectionBreak
             numberStarts.Add layout.Metadata.SectionPageNumberStart
@@ -2030,6 +2032,8 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     numberFormats.Add (pageSetup.PageNumberFormat |> Option.defaultValue "decimal")
     titles.Add pageSetup.DifferentFirstPage
     evenOdd.Add pageSetup.EvenAndOddHeaders
+    headerDistances.Add pageSetup.HeaderDistance
+    footerDistances.Add pageSetup.FooterDistance
     continuous.Add (pageSetup.SectionStart = Some "continuous")
     kinds.Add pageSetup.SectionStart
     let starts = Array.zeroCreate<int> ends.Count
@@ -2054,6 +2058,7 @@ let private buildSectionPageIndex (pages: PageInfo array) (sectionEnds: BlockLay
     // (The last section reaches to the last page - the pages of the notes after it too.)
     if ends.Count > 1 && ends.[ends.Count - 1] < ends.[ends.Count - 2] then ends.[ends.Count - 1] <- ends.[ends.Count - 2]
     { SectionEndPages = ends.ToArray(); SectionStartPages = starts; SectionTitlePage = titles.ToArray(); SectionEvenOdd = evenOdd.ToArray()
+      SectionHeaderDistance = headerDistances.ToArray(); SectionFooterDistance = footerDistances.ToArray()
       SectionNumberStart = numberStarts.ToArray(); SectionNumberFormat = numberFormats.ToArray() }
 
 /// The section a page's header and footer are those of: the first that ends on or after the page.
@@ -2554,9 +2559,10 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
             let kind = headerFooterKindOfPage sectionPages doc.PageSetup pageIndex
             let headers = blocksForPage kind pageIndex fallbackHeaderBlocks headerParts headerRefs
             let footers = blocksForPage kind pageIndex fallbackFooterBlocks footerParts footerRefs
+            let section = sectionOfPage sectionPages pageIndex
             { SourceHeaders = headers; SourceFooters = footers
-              SourceHeaderY = info.Top + max 8.0 doc.PageSetup.HeaderDistance
-              SourceFooterY = info.Top + info.Height - max 16.0 doc.PageSetup.FooterDistance - settings.LineHeight * 0.78
+              SourceHeaderY = info.Top + sectionPages.SectionHeaderDistance.[section]
+              SourceFooterY = info.Top + info.Height - sectionPages.SectionFooterDistance.[section] - settings.LineHeight * 0.78
               SourceRunning = hasRunningFields headers || hasRunningFields footers }
         let commandsOf (pageIndex: int) (source: HeaderFooterPageSource) : PaintCommand array =
             let values = valuesOf pageIndex
@@ -2625,8 +2631,8 @@ let private headerFooterCommands (settings: LayoutSettings) fontFamily measureTe
 
 /// Where a page's header and footer blocks start.
 let headerFooterStartY (settings: LayoutSettings) (pageSetup: PageSetup) (page: PageInfo) (isHeader: bool) =
-    if isHeader then page.Top + max 8.0 pageSetup.HeaderDistance
-    else page.Top + page.Height - max 16.0 pageSetup.FooterDistance - settings.LineHeight * 0.78
+    if isHeader then page.Top + pageSetup.HeaderDistance
+    else page.Top + page.Height - pageSetup.FooterDistance - settings.LineHeight * 0.78
 
 /// The header (or footer) a page shows, for editing it in place.
 type HeaderFooterTarget = {
@@ -2687,7 +2693,9 @@ let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectio
             TargetPart = if parts.Parts.IsEmpty then None else partForPage kind pageIndex parts refs
             TargetOwn = own |> List.exists (fun (referenceKind, _) -> referenceKind = kind)
             TargetReferences = own
-            TargetY = headerFooterStartY settings doc.PageSetup pagesArray.[pageIndex] isHeader
+            TargetY =
+                if isHeader then pagesArray.[pageIndex].Top + sectionPages.SectionHeaderDistance.[section]
+                else pagesArray.[pageIndex].Top + pagesArray.[pageIndex].Height - sectionPages.SectionFooterDistance.[section] - settings.LineHeight * 0.78
             TargetFields = (pageFieldValues sectionPages pagesArray.Length).[pageIndex]
         }
 
@@ -2878,7 +2886,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         None
     else
         let styleContext = WordStyles.styleContext doc
-        let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext)
+        let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext) + WordLayout.Table.tableIndent tableBlock
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight

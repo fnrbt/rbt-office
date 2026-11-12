@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup>
+  <ItemGroup><Compile Include="WordRender.fs" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../native/Rbt.OfficeNative.fsproj" />
+    <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageDownload Include="Rbt.Renderer.Core" Version="[$(RbtRendererPackageVersion)]" />
+    <None Include="$(NuGetPackageRoot)rbt.renderer.core/$(RbtRendererPackageVersion)/assets/NotoSans-Regular.ttf" Link="NotoSans-Regular.ttf" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

@@ -956,14 +956,12 @@ module Import =
         // Row heights: points in the file, pixels in the model.
         let defaultRowHeight = sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
         let mutable rowHeights = Map.empty<int, float>
-        if rowCount > 0 then
-            let heights = Array.create rowCount defaultRowHeight
-            for row in sheet.Rows do
-                let index = row.Index - 1
-                if index >= 0 && index < rowCount then
-                    heights.[index] <- row.Height |> Option.defaultValue defaultRowHeight
-            for row in 0 .. rowCount - 1 do
-                if heights.[row] > 0.0 then rowHeights <- Map.add row (heights.[row] * 1.333) rowHeights
+        for row in sheet.Rows do
+            let index = row.Index - 1
+            match row.Height with
+            | Some height when index >= 0 && index < rowCount && height > 0.0 ->
+                rowHeights <- Map.add index (height * 1.333) rowHeights
+            | _ -> ()
         // A size of 0 is how the model marks a hidden row / column; the size
         // it is shown at again, and the outline, are kept beside the sizes.
         let mutable hiddenRowSizes = Map.empty<int, float>
@@ -1504,7 +1502,8 @@ module Export =
                                Bold = (if style.Bold then Some true else None)
                                Italic = (if style.Italic then Some true else None)
                                Underline = (if style.Underline then Some true else None)
-                               Strike = (if style.Strikethrough then Some true else None) } : XlsxReader.Dxf))
+                               Strike = (if style.Strikethrough then Some true else None)
+                               SourceDxfIndex = None } : XlsxReader.Dxf))
                     // A rule of the x14 list has its format in place, not in the styles part.
                     let inExtList = rule.Ext |> Option.exists (fun ext -> ext.InExtList)
                     ({ Type = rule.Type
@@ -1541,7 +1540,9 @@ module Export =
                        EqualAverage = rule.EqualAverage
                        StdDev = rule.StdDev
                        Priority = rule.Priority
-                       StopIfTrue = rule.StopIfTrue } : XlsxReader.ConditionalFormatRule)) } : XlsxReader.ConditionalFormat))
+                       StopIfTrue = rule.StopIfTrue
+                       SourceXml = None } : XlsxReader.ConditionalFormatRule))
+               GroupAttributes = [] } : XlsxReader.ConditionalFormat))
 
     let private textAt row col (model: SpreadsheetModel) =
         let addr : CellAddress = { Row = row; Col = col }
@@ -1724,7 +1725,7 @@ module Export =
                     let hex = if color = "" then None else Some (color.TrimStart '#')
                     let dxf : XlsxReader.Dxf =
                         { FontColor = (if font then hex else None); FillColor = (if font then None else hex)
-                          Bold = None; Italic = None; Underline = None; Strike = None }
+                          Bold = None; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None }
                     { empty with Kind = "colorFilter"; DxfId = Some (dxfIndex dxf); CellColor = not font }
                 | FilterDynamic kind -> { empty with Kind = "dynamicFilter"; DynamicType = kind }
                 | FilterKept xml -> { empty with Kind = "other"; Xml = xml }
@@ -1763,12 +1764,19 @@ module Export =
           PrintArea = (match printAreasOf model.PageSetup with [] -> None | areas -> Some (areas |> List.map rangeRef |> String.concat ","))
           PrintTitleRows = model.PageSetup.RepeatRows |> Option.map (fun (a, b) -> sprintf "$%d:$%d" (a + 1) (b + 1))
           PrintTitleCols = model.PageSetup.RepeatCols |> Option.map (fun (a, b) -> sprintf "$%s:$%s" (columnToLetter a) (columnToLetter b))
-          // Pictures and threads of the model. Kept objects need the parts of
-          // the file they came from, so a sheet without a source has none.
+          // Drawing anchors share the sheet's pictures and authored charts.
+          // A new sheet has no imported objects; authored charts are already
+          // anchored in Drawings and have their own parts in AuthoredCharts.
           Extras =
-            { extrasOfModel XlsxReader.emptySheetExtras None
-                { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with Picture _ -> true | KeptObject _ -> false) }
-                with DataTables = dataTables model; AutoFilter = autoFilterOut dxfIndex model } }
+            let drawings =
+                model.Drawings |> List.filter (fun drawing ->
+                    match drawing.Content with
+                    | Picture _ -> true
+                    | KeptObject ("chart", xml) ->
+                        model.AuthoredCharts |> Map.exists (fun relId _ -> xml.Contains("r:id=\"" + relId + "\""))
+                    | KeptObject _ -> false)
+            let extras = extrasOfModel XlsxReader.emptySheetExtras None { model with Drawings = drawings }
+            { extras with DataTables = dataTables model; AutoFilter = autoFilterOut dxfIndex model } }
 
     let private modelSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         let cells = model.Cells |> Map.toList |> List.map (fun (addr, data) -> cellOut cache model addr data)
@@ -1811,7 +1819,8 @@ module Export =
 
     /// A sheet that came from a file: the model's current state, with
     /// everything the user left alone written as the file had it.
-    let private sourcedSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (name: string) (state: XlsxReader.SheetState)
+    let private sourcedSheet (cache: FormatCache) (dxfIndex: XlsxReader.Dxf -> int) (sourceDxfs: XlsxReader.Dxf array)
+                             (readSourceXml: unit -> string option) (name: string) (state: XlsxReader.SheetState)
                              (original: XlsxWriter.XlsxSheetOut) (readerSheet: XlsxReader.Worksheet)
                              (before: SpreadsheetModel) (model: SpreadsheetModel) : XlsxWriter.XlsxSheetOut =
         let cells =
@@ -1824,6 +1833,9 @@ module Export =
                 let previousCells = Collections.Generic.Dictionary<float, CellData>()
                 if not sameCells then
                     for KeyValue(addr, data) in before.Cells do previousCells.[key addr.Row addr.Col] <- data
+                let sourceNotes = Collections.Generic.Dictionary<int * int, XlsxReader.CellComment>()
+                for note in readerSheet.Comments do
+                    sourceNotes.[(note.CellRef.Row - 1, columnIndexOfLetters note.CellRef.Column)] <- note
                 let sameRuns = sameRef before.RichRuns model.RichRuns
                 let basedOnFormats = Collections.Generic.Dictionary<int, Collections.Generic.Dictionary<XlsxWriter.XlsxCellFormat, XlsxWriter.XlsxCellFormat>>()
                 // Where a cell of the sheet was in the file, when rows or columns were
@@ -1873,6 +1885,21 @@ module Export =
                             (sameRef previous data || previous = data || onlyBecameError previous data)
                             && (sameRuns || Map.tryFind addr before.RichRuns = Map.tryFind addr model.RichRuns)
                         | None -> false
+                    let writtenCell () =
+                        let written = cellOut cache model addr data
+                        // An imported thread need not have a legacy compatibility note.
+                        // Preserve that choice when its cell moves or is otherwise rewritten.
+                        match originOf addr.Row addr.Col, Map.tryFind addr model.Threads with
+                        | Some (row, col), Some thread ->
+                            match Map.tryFind { Row = row; Col = col } before.Threads with
+                            | Some originalThread when originalThread.Id = thread.Id ->
+                                match sourceNotes.TryGetValue((row, col)) with
+                                | false, _ -> { written with Comment = None }
+                                | true, note when not ((defaultArg note.Author "").StartsWith "tc={") ->
+                                    { written with Comment = data.Comment |> Option.map (fun c -> c.Text, c.Author) }
+                                | _ -> written
+                            | _ -> written
+                        | _ -> written
                     match untouched, originals.TryGetValue position with
                     | true, (true, kept) -> kept
                     | false, (true, kept) when (match previous with
@@ -1880,11 +1907,12 @@ module Export =
                                                 | None -> false) ->
                         // Only the value (or the comment) changed: the cell keeps
                         // the format the file gave it, its named cell style included.
-                        { cellOut cache model addr data with Format = kept.Format }
+                        let written = writtenCell ()
+                        { written with Format = kept.Format }
                     | _, (true, kept) when kept.Format.SourceXf.IsSome ->
                         // The format was changed: the new one is made from the
                         // file's (what the change did not touch of it stays).
-                        let written = cellOut cache model addr data
+                        let written = writtenCell ()
                         let basedOn = kept.Format.SourceXf.Value
                         let known =
                             match basedOnFormats.TryGetValue basedOn with
@@ -1901,8 +1929,160 @@ module Export =
                                 known.[written.Format] <- format
                                 format
                         { written with Format = format }
-                    | _ -> cellOut cache model addr data)
+                    | _ -> writtenCell ())
         let fromModel = modelSheetWith cells dxfIndex name state model
+        // Original rule records retain imported extension/unknown fields; only
+        // deliberately edited properties are overlaid. Differential formats
+        // are cloned from their original XML when a style actually changes.
+        // Rules the model cannot parse are carried through as opaque source XML.
+        let conditionalFormatsWithUnmodelled () =
+            let sourceRules =
+                original.ConditionalFormats
+                |> List.collect (fun block -> block.Rules |> List.map (fun rule -> block.Range, rule, block.GroupAttributes))
+                |> List.mapi (fun sequence (range, rule, attrs) ->
+                    range, rule, attrs, Rbt.Spreadsheet.SheetOps.tryParseRanges range, defaultArg rule.Priority (100000 + sequence + 1))
+            let unmodelled =
+                sourceRules
+                |> List.choose (fun (range, rule, attrs, areas, priority) ->
+                    if before.ConditionalFormats |> List.exists (fun entry ->
+                        entry.Priority = priority && Some entry.Ranges = areas) then None
+                    else Some (range, rule, attrs))
+                |> List.sortBy (fun (_, rule, _) -> defaultArg rule.Priority Int32.MaxValue)
+            let sourceXml =
+                lazy (
+                    original.Extras.SourceXml
+                    |> Option.orElseWith readSourceXml
+                    |> Option.bind (XmlPatch.readPartExcept (fun name -> name = "sheetData"))
+                    |> Option.map (fun part ->
+                        let groups =
+                            XmlPatch.descendants "conditionalFormatting" part.Node
+                            |> List.choose (fun group ->
+                                let range =
+                                    match XmlPatch.attribute group "sqref" with
+                                    | Some text -> Some text
+                                    | None ->
+                                        XmlPatch.descendants "sqref" group
+                                        |> List.tryHead
+                                        |> Option.map XmlPatch.textOf
+                                range |> Option.map (fun range -> range, group))
+                        part, groups))
+            let opaqueSource (range: string) (rule: XlsxReader.ConditionalFormatRule) =
+                match sourceXml.Value with
+                | None -> rule
+                | Some (part, groups) ->
+                    let raw =
+                        groups
+                        |> List.filter (fun (sqref, _) -> sqref.Trim() = range.Trim())
+                        |> List.collect (fun (_, group) -> XmlPatch.elements group |> List.filter (fun child -> XmlPatch.localName child = "cfRule"))
+                        |> List.tryFind (fun node ->
+                            XmlPatch.attribute node "priority" = (rule.Priority |> Option.map string)
+                            && XmlPatch.attribute node "type" = Some rule.Type)
+                        |> Option.map (XmlPatch.bytesOf part.Text)
+                    match raw with
+                    | Some xml -> { rule with SourceXml = Some xml }
+                    | None when rule.SourceXml.IsSome -> rule
+                    | None -> failwithf "Cannot preserve imported conditional-format rule %s at %s." rule.Type range
+            let generated =
+                fromModel.ConditionalFormats
+                |> List.collect (fun block -> block.Rules |> List.map (fun rule -> block.Range, rule, block.GroupAttributes))
+                |> List.sortBy (fun (_, rule, _) -> defaultArg rule.Priority Int32.MaxValue)
+                |> List.toArray
+            let updatedDxf (oldStyle: CellFormat) (newStyle: CellFormat) (source: XlsxReader.Dxf) =
+                let color (value: string option) = value |> Option.map (fun c -> c.TrimStart '#')
+                { source with
+                    FontColor = if oldStyle.TextColor <> newStyle.TextColor then color newStyle.TextColor else source.FontColor
+                    FillColor = if oldStyle.BgColor <> newStyle.BgColor then color newStyle.BgColor else source.FillColor
+                    Bold = if oldStyle.Bold <> newStyle.Bold then Some newStyle.Bold else source.Bold
+                    Italic = if oldStyle.Italic <> newStyle.Italic then Some newStyle.Italic else source.Italic
+                    Underline = if oldStyle.Underline <> newStyle.Underline then Some newStyle.Underline else source.Underline
+                    Strike = if oldStyle.Strikethrough <> newStyle.Strikethrough then Some newStyle.Strikethrough else source.Strike }
+            let mergeRule (previous: ConditionalFormatRange) (entry: ConditionalFormatRange)
+                          (source: XlsxReader.ConditionalFormatRule) (fresh: XlsxReader.ConditionalFormatRule) =
+                let changes =
+                    if previous.Format.Rule = entry.Format.Rule then source
+                    else
+                        let baseline = CF.toOoxml [ previous ] |> List.head |> fun block -> List.head block.Rules
+                        let keep oldValue newValue sourceValue = if oldValue <> newValue then newValue else sourceValue
+                        let mergedExt =
+                            match source.Ext, fresh.Ext with
+                            | Some originalExt, Some newExt when originalExt.InExtList = newExt.InExtList ->
+                                let dataBar =
+                                    match originalExt.DataBar, newExt.DataBar with
+                                    | Some originalBar, Some newBar ->
+                                        Some { originalBar with
+                                                 Cfvo = keep baseline.DataBarCfvo fresh.DataBarCfvo originalBar.Cfvo }
+                                    | _ -> originalExt.DataBar
+                                Some { originalExt with DataBar = dataBar }
+                            | Some originalExt, _ -> Some originalExt
+                            | None, other -> other
+                        { source with
+                            Type = keep baseline.Type fresh.Type source.Type
+                            Operator = keep baseline.Operator fresh.Operator source.Operator
+                            Formulas = keep baseline.Formulas fresh.Formulas source.Formulas
+                            Text = keep baseline.Text fresh.Text source.Text
+                            Rank = keep baseline.Rank fresh.Rank source.Rank
+                            Percent = keep baseline.Percent fresh.Percent source.Percent
+                            Bottom = keep baseline.Bottom fresh.Bottom source.Bottom
+                            AboveAverage = keep baseline.AboveAverage fresh.AboveAverage source.AboveAverage
+                            EqualAverage = keep baseline.EqualAverage fresh.EqualAverage source.EqualAverage
+                            StdDev = keep baseline.StdDev fresh.StdDev source.StdDev
+                            ColorScale = if baseline.ColorScale <> (fresh.ColorScale |> List.map (fun stop -> stop.CfvoType, stop.CfvoValue, stop.Color)) then fresh.ColorScale else source.ColorScale
+                            DataBarColor = keep baseline.DataBarColor fresh.DataBarColor source.DataBarColor
+                            DataBarCfvo = keep baseline.DataBarCfvo fresh.DataBarCfvo source.DataBarCfvo
+                            IconSet = keep baseline.IconSet fresh.IconSet source.IconSet
+                            IconSetCfvo = keep baseline.IconSetCfvo fresh.IconSetCfvo source.IconSetCfvo
+                            IconSetReverse = keep baseline.IconSetReverse fresh.IconSetReverse source.IconSetReverse
+                            TimePeriod = keep baseline.TimePeriod fresh.TimePeriod source.TimePeriod
+                            Ext = mergedExt }
+                if previous.Format.Style = entry.Format.Style then changes
+                else
+                    match source.DxfId with
+                    | Some id when id >= 0 && id < sourceDxfs.Length ->
+                        let derived =
+                            { updatedDxf previous.Format.Style entry.Format.Style sourceDxfs.[id] with SourceDxfIndex = Some id }
+                        { changes with DxfId = Some (dxfIndex derived) }
+                    | Some _ -> failwith "The original conditional-format differential style is unavailable."
+                    | None ->
+                        let ext =
+                            changes.Ext
+                            |> Option.map (fun existing ->
+                                match existing.Dxf with
+                                | Some original ->
+                                    { existing with Dxf = Some (updatedDxf previous.Format.Style entry.Format.Style original) }
+                                | None -> { existing with Dxf = fresh.Ext |> Option.bind (fun extension -> extension.Dxf) })
+                        { changes with DxfId = fresh.DxfId; Ext = ext }
+            let orderedModel =
+                model.ConditionalFormats
+                |> List.sortBy (fun entry -> entry.Priority)
+                |> List.mapi (fun index entry ->
+                    let originalRule =
+                        before.ConditionalFormats
+                        |> List.tryFind (fun previous -> previous.Id = entry.Id)
+                        |> Option.bind (fun previous ->
+                            sourceRules
+                            |> List.tryFind (fun (_, _, _, areas, priority) ->
+                                priority = previous.Priority && areas = Some previous.Ranges)
+                            |> Option.map (fun (_, source, attrs, _, _) -> previous, source, attrs))
+                    match originalRule with
+                    | Some (previous, source, attrs) ->
+                        let _, fresh, _ = generated.[index]
+                        let rule = mergeRule previous entry source fresh
+                        Rbt.Spreadsheet.SheetOps.rangesText entry.Ranges, { rule with StopIfTrue = entry.StopIfTrue; Priority = Some (index + 1) }, attrs
+                    | None -> generated.[index])
+            // A newly added rule takes precedence even over an opaque source
+            // rule, which is not included in the editor's priority numbering.
+            let addedFirst =
+                model.ConditionalFormats
+                |> List.sortBy (fun entry -> entry.Priority)
+                |> List.takeWhile (fun entry -> not (before.ConditionalFormats |> List.exists (fun old -> old.Id = entry.Id)))
+                |> List.length
+            let mutable ordered = orderedModel
+            for (range, rule, attrs) in unmodelled do
+                let position = max 0 (min ordered.Length ((defaultArg rule.Priority (ordered.Length + 1)) - 1 + addedFirst))
+                ordered <- List.take position ordered @ [ range, opaqueSource range rule, attrs ] @ List.skip position ordered
+            ordered
+            |> List.mapi (fun index (range, rule, attrs) ->
+                ({ Range = range; Rules = [ { rule with Priority = Some (index + 1) } ]; GroupAttributes = attrs } : XlsxReader.ConditionalFormat))
         let unchanged (pick: SpreadsheetModel -> 'T) = sameRef (pick before) (pick model) || pick before = pick model
         let movedSizes (onRows: bool) (fileSizes: (int * float) list) (sizesBefore: Map<int, float>) (sizesNow: Map<int, float>) (pixelsPerUnit: float) (defaultPixels: float) (modelSizes: (int * float) list) =
             if before.StructureVersion = model.StructureVersion then patchSizes fileSizes sizesBefore sizesNow pixelsPerUnit defaultPixels
@@ -1952,7 +2132,9 @@ module Export =
             // A list validation whose values come from a range is expanded on
             // import; unchanged validations go back as the file states them.
             DataValidations = if sameRef before.Validations model.Validations then original.DataValidations else fromModel.DataValidations
-            ConditionalFormats = if sameRef before.ConditionalFormats model.ConditionalFormats then original.ConditionalFormats else fromModel.ConditionalFormats
+            ConditionalFormats =
+                if sameRef before.ConditionalFormats model.ConditionalFormats then original.ConditionalFormats
+                else conditionalFormatsWithUnmodelled ()
             // Hyperlinks are written where their cells are now.
             Hyperlinks = if unchanged (fun m -> m.Hyperlinks) then original.Hyperlinks else fromModel.Hyperlinks
             PageMargins = if before.PageSetup.Margins = model.PageSetup.Margins then original.PageMargins else fromModel.PageMargins
@@ -2448,6 +2630,7 @@ module Export =
             && before.StructureVersion = model.StructureVersion
             && same (fun m -> m.MergedCells) && same (fun m -> m.ConditionalFormats) && same (fun m -> m.Validations)
             && same (fun m -> m.Tables) && same (fun m -> m.Drawings) && same (fun m -> m.Threads) && same (fun m -> m.Hyperlinks)
+            && same (fun m -> m.AuthoredCharts)
             && same (fun m -> m.ColumnStyles) && same (fun m -> m.DataTables) && same (fun m -> m.KeptRanges) && same (fun m -> m.ArrayMarks)
             && same (fun m -> m.AutoFilter) && same (fun m -> m.Filters) && same (fun m -> m.SortState)
             && same (fun m -> m.FilterVisibleRows) && same (fun m -> m.FilterHiddenRows)
@@ -2663,6 +2846,61 @@ module Export =
         match input.Source with
         | Some source -> for path, _ in source.Workbook.Preserved.Parts do takenPaths.Add path |> ignore
         | None -> ()
+        let chartValues (formula: string) : (string * float option) array option =
+            let bang = formula.LastIndexOf('!')
+            if bang < 0 then None
+            else
+                let quoted = formula.Substring(0, bang)
+                let sheetName =
+                    if quoted.Length >= 2 && quoted.[0] = '\'' && quoted.[quoted.Length - 1] = '\'' then
+                        quoted.Substring(1, quoted.Length - 2).Replace("''", "'")
+                    else quoted
+                input.Names
+                |> Array.tryFindIndex (fun name -> name.Equals(sheetName, StringComparison.OrdinalIgnoreCase))
+                |> Option.bind (fun index ->
+                    Rbt.Spreadsheet.SheetOps.tryParseRange (formula.Substring(bang + 1))
+                    |> Option.bind (fun range ->
+                        let sheet = input.Sheets.[index]
+                        let rows = range.To.Row - range.From.Row + 1
+                        let cols = range.To.Col - range.From.Col + 1
+                        if range.To.Row >= sheet.RowCount || range.To.Col >= sheet.ColCount
+                           || rows <= 0 || cols <= 0 || float rows * float cols > 20000.0 then None
+                        else
+                            Some [| for row in range.From.Row .. range.To.Row do
+                                        for col in range.From.Col .. range.To.Col do
+                                            let addr = { Row = row; Col = col }
+                                            let cell = getCell addr sheet
+                                            let value = unwrapFormulaValue (getCellValue addr sheet)
+                                            let text =
+                                                match cell with
+                                                | Some data -> Rbt.Spreadsheet.CellText.cellDisplayTextIn sheet.Date1904 None 1.0e6 data.Format value
+                                                | None -> ""
+                                            let number = match value with Number n -> Some n | _ -> None
+                                            yield text, number |]))
+        // Relationship ids live on their drawing sheet; chart part names live
+        // in the package. Reserve names against every imported and copied part.
+        let authoredParts = ResizeArray<string * byte[]>()
+        let authoredOverrides = ResizeArray<string * string>()
+        let authoredRelationships =
+            input.Sheets
+            |> Array.map (fun model ->
+                model.AuthoredCharts
+                |> Map.toList
+                |> List.choose (fun (relId, xml) ->
+                    let anchored =
+                        model.Drawings |> List.exists (fun drawing ->
+                            match drawing.Content with
+                            | KeptObject ("chart", anchor) -> anchor.Contains("r:id=\"" + relId + "\"")
+                            | _ -> false)
+                    if not anchored then None
+                    else
+                        let mutable number = 1
+                        while takenPaths.Contains(sprintf "xl/charts/chart%d.xml" number) do number <- number + 1
+                        let path = sprintf "xl/charts/chart%d.xml" number
+                        takenPaths.Add path |> ignore
+                        authoredParts.Add(path, Text.Encoding.UTF8.GetBytes (Rbt.Spreadsheet.ChartAuthoring.refreshCaches chartValues xml))
+                        authoredOverrides.Add("/" + path, "application/vnd.openxmlformats-officedocument.drawingml.chart+xml")
+                        Some (relId, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart", "/" + path, false)))
         let copyExtras (index: int) (model: SpreadsheetModel) : XlsxReader.SheetExtras option =
             match input.Source, model.KeptFrom with
             | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length
@@ -2870,7 +3108,12 @@ module Export =
                     // change without converting it).
                     if isDeferredSheet model then withKeptFormulas { outSheet with Name = name; State = stateOf index model; View = { outSheet.View with TabColor = model.TabColor } }
                     else
-                        let written = withKeptFormulas (sourcedSheet cache dxfIndex name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
+                        let sourceDxfs = input.Source |> Option.map (fun imported -> imported.Workbook.Dxfs) |> Option.defaultValue [||]
+                        let originalXml () =
+                            match outSheet.Extras.SourcePart with
+                            | Some (path, _) when suppliedParts.ContainsKey path -> Some (Text.Encoding.UTF8.GetString suppliedParts.[path])
+                            | _ -> None
+                        let written = withKeptFormulas (sourcedSheet cache dxfIndex sourceDxfs originalXml name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
                         let written =
                             match patchOf outSheet before model with
                             | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
@@ -2897,8 +3140,20 @@ module Export =
                     match copyPivots model with
                     | [] -> written
                     | pivots -> { written with Extras = { written.Extras with KeptRelationships = written.Extras.KeptRelationships @ pivots } })
+            |> Array.mapi (fun index sheet ->
+                match authoredRelationships.[index] with
+                | [] -> sheet
+                | relationships ->
+                    let extras =
+                        { sheet.Extras with
+                            DrawingPart = None
+                            DrawingAnchors = None
+                            Verbatim = false
+                            Patch = None
+                            DrawingRelationships = sheet.Extras.DrawingRelationships @ relationships }
+                    { sheet with Extras = extras })
             |> Array.toList
-        { Sheets = sheets
+        ({Sheets = sheets
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
           DefinedNames = definedNamesOut input
           VbaProjectSource = input.Macros |> Option.bind (fun source -> if String.IsNullOrWhiteSpace source then None else Some source)
@@ -3166,7 +3421,15 @@ module Export =
             | None ->
                 // (A workbook that is not a file's is in the date system its sheets say.)
                 if input.Sheets |> Array.exists (fun sheet -> sheet.Date1904) then { XlsxReader.emptyWorkbookPreservation with Date1904 = true }
-                else XlsxReader.emptyWorkbookPreservation }
+                else XlsxReader.emptyWorkbookPreservation } : XlsxWriter.XlsxWorkbookOut)
+        |> fun output ->
+            if authoredParts.Count = 0 then output
+            else
+                let preserved =
+                    { output.Preserved with
+                        Parts = output.Preserved.Parts @ List.ofSeq authoredParts
+                        Overrides = output.Preserved.Overrides @ List.ofSeq authoredOverrides }
+                { output with Preserved = preserved }
 
     /// The workbook to write without the caches nothing written uses any more: a slicer cache
     /// (a timeline cache) whose slicers were all on sheets that are gone, a pivot cache whose

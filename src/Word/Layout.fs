@@ -462,6 +462,26 @@ type LayoutSettings = {
     DefaultTabStop: float
 }
 
+/// Document geometry is independent of the host viewport. Font defaults and
+/// trailing-space slack are supplied by the measuring backend.
+let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) : LayoutSettings =
+    let footerReserve =
+        if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then
+            doc.PageSetup.FooterDistance + lineHeight * 1.5
+        else doc.PageSetup.MarginBottom
+    { Width = doc.PageSetup.PageWidth
+      PageHeight = doc.PageSetup.PageHeight
+      FontSize = fontSize
+      LineHeight = lineHeight
+      PaddingLeft = doc.PageSetup.MarginLeft
+      PaddingTop = WordLayout.Page.bodyTopWithRunningHeader doc
+      MarginRight = doc.PageSetup.MarginRight
+      MarginBottom = max doc.PageSetup.MarginBottom footerReserve
+      InTableCell = false
+      TableContinuationHeaderHeight = 0.0
+      LongTrailingSpaceFitSafety = trailingSpaceFitSafety
+      DefaultTabStop = doc.PageSetup.DefaultTabStop }
+
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
 
@@ -2233,7 +2253,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             | _ -> ()
         found
 
-    let noteTextMetric style =
+    let noteTextMetric (style: TextBuffer.TextStyle) =
         if not currentHasTextMetric then
             currentHasTextMetric <- true
             currentFirstFontFamily <- style.FontFamily
@@ -3467,15 +3487,15 @@ let private defaultParagraphFirstLineOffsetInContext context =
     let paragraphStyle = forBlockInContext context (Paragraph para)
     paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
 
-let private tableLeftOffsetForDocument memo doc (_tableBlock: TableBlock) =
-    defaultParagraphFirstLineOffsetInDocument memo doc
+let private tableLeftOffsetForDocument memo doc (tableBlock: TableBlock) =
+    defaultParagraphFirstLineOffsetInDocument memo doc + WordLayout.Table.tableIndent tableBlock
 
-let private tableLeftOffsetForContext context (_tableBlock: TableBlock) =
-    defaultParagraphFirstLineOffsetInContext context
+let private tableLeftOffsetForContext context (tableBlock: TableBlock) =
+    defaultParagraphFirstLineOffsetInContext context + WordLayout.Table.tableIndent tableBlock
 
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
-    elif optionEqualsIgnoreCase "right" alignment then max 0.0 (availableWidth - tableWidth)
+    elif optionEqualsIgnoreCase "right" alignment || optionEqualsIgnoreCase "end" alignment then max 0.0 (availableWidth - tableWidth)
     else 0.0
 
 let private paragraphIsVisuallyEmpty (para: ParagraphBlock) =
@@ -3902,14 +3922,15 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                 [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
             else
                 let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale nestedTable
-                let nestedTableMaxWidth = cellMaxWidth + nestedOuterLeft + nestedOuterRight
+                let nestedAvailableWidth = max 0.0 (cellMaxWidth - WordLayout.Table.tableIndent nestedTable)
+                let nestedTableMaxWidth = nestedAvailableWidth + nestedOuterLeft + nestedOuterRight
                 let nestedColumnWidths = tableColumnWidths nestedTableMaxWidth nestedTable
                 if List.isEmpty nestedColumnWidths then
                     [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
                 else
                     let nestedColumnMetrics = tableColumnMetrics nestedTableMaxWidth nestedColumnWidths
                     let nestedTableWidth = WordLayout.Table.tableWidthWithSpacing nestedColumnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale nestedTable)
-                    let nestedHorizontalOffset = cellX + tableAlignmentOffset nestedTable.Alignment cellMaxWidth nestedTableWidth
+                    let nestedHorizontalOffset = cellX + WordLayout.Table.tableIndent nestedTable + tableAlignmentOffset nestedTable.Alignment nestedAvailableWidth nestedTableWidth
                     let mutable nestedY = nestedTableY
                     let nestedLayouts = ResizeArray<BlockLayout>()
                     // Vertical merges of the nested table: measure its rows once

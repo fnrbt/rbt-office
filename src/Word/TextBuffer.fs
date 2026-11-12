@@ -27,6 +27,22 @@ type BookmarkEnd =
     | Ends of id: string
     | Opens of BookmarkStart
 
+type ContentControlLayer = {
+    Group: string
+    Id: string option
+    Tag: string option
+    Alias: string option
+    Xml: string option
+}
+
+/// Zero-width structure of a complex field, independent of its file encoding.
+[<RequireQualifiedAccess>]
+type FieldBoundary =
+    | Begin
+    | Instruction of string
+    | Separate
+    | End
+
 /// Text style for a run
 type TextStyle = {
     Style: string option
@@ -67,11 +83,13 @@ type TextStyle = {
     /// after it: a run has every bookmark that starts before it and ends after
     /// it, in the order of the file. A run split in parts has them on every part
     /// (the save writes a start before the first part that has it, an end after
-    /// the last: Docx.paragraphToEditor).
+    /// the last).
     BookmarkStarts: BookmarkStart list
     BookmarkEnds: BookmarkEnd list
     FieldCode: string option
     FieldResult: string option
+    /// A zero-length structural token of a complex field (which may span paragraphs).
+    FieldBoundary: FieldBoundary option
     RenderedPageBreakBefore: bool
     EquationXml: string option
     RevisionId: string option
@@ -96,6 +114,8 @@ type TextStyle = {
     /// beside it, or formatted as it is, is never part of it and is not of its
     /// source run (a save writes the run inside the control).
     Checkbox: bool option
+    /// Inline controls enclosing this text, outermost first.
+    ContentControls: ContentControlLayer list
     VertAlign: string option
     /// Bit set of ExplicitFormat flags: the on/off properties and the font size
     /// that were set directly on this run. A flagged property overrides the
@@ -129,6 +149,9 @@ module ExplicitFormat =
     /// and a colour from a style does not apply.
     [<Literal>]
     let ColorAuto = 512
+    /// The family was stated directly, even if it equals the inherited family.
+    [<Literal>]
+    let FontFamily = 1024
 
     let has (flag: int) (style: TextStyle) = style.Explicit &&& flag <> 0
 
@@ -169,6 +192,7 @@ let defaultStyle = {
     BookmarkEnds = []
     FieldCode = None
     FieldResult = None
+    FieldBoundary = None
     RenderedPageBreakBefore = false
     EquationXml = None
     RevisionId = None
@@ -179,6 +203,7 @@ let defaultStyle = {
     MoveName = None
     SourceRun = None
     Checkbox = None
+    ContentControls = []
     VertAlign = None
     Explicit = 0
 }
@@ -410,6 +435,7 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && sameList left.BookmarkEnds right.BookmarkEnds
         && left.FieldCode = right.FieldCode
         && left.FieldResult = right.FieldResult
+        && left.FieldBoundary = right.FieldBoundary
         && left.EquationXml = right.EquationXml
         && left.RevisionId = right.RevisionId
         && left.RevisionType = right.RevisionType
@@ -418,13 +444,15 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.DeletedInsertion = right.DeletedInsertion
         && left.MoveName = right.MoveName
         && left.SourceRun = right.SourceRun
+        && sameList left.ContentControls right.ContentControls
         && left.Checkbox = right.Checkbox
         && left.VertAlign = right.VertAlign)
 
-/// Whether two adjacent runs of these styles may be one run: of the same
-/// style, and neither a content control's checkbox (one character each).
+/// Whether adjacent runs can be merged without losing a structural marker.
 let canJoinStyles (left: TextStyle) (right: TextStyle) =
-    left.Checkbox.IsNone && right.Checkbox.IsNone && sameTextStyle left right
+    left.Checkbox.IsNone && right.Checkbox.IsNone
+    && left.FieldBoundary.IsNone && right.FieldBoundary.IsNone
+    && sameTextStyle left right
 
 let private mergedRunList (runs: ResizeArray<Run>) =
     let mutable result = []
@@ -668,6 +696,7 @@ let hasAnnotationIdentity (style: TextStyle) =
     || not style.BookmarkEnds.IsEmpty
     || style.FieldCode.IsSome
     || style.FieldResult.IsSome
+    || style.FieldBoundary.IsSome
     || style.EquationXml.IsSome
     || style.RevisionType.IsSome
     || style.RevisionId.IsSome
@@ -677,6 +706,7 @@ let hasAnnotationIdentity (style: TextStyle) =
     || style.MoveName.IsSome
     || style.RenderedPageBreakBefore
     || style.Checkbox.IsSome
+    || not style.ContentControls.IsEmpty
 
 /// The bookmarks a run of this style starts: those that start before it, and
 /// (true) those opened after it.
@@ -737,6 +767,10 @@ let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle opt
                 match otherSide with
                 | Some other -> style.FieldCode.IsSome && style.FieldResult.IsSome && other.FieldCode = style.FieldCode && other.FieldResult = style.FieldResult
                 | None -> false
+            let keepControls =
+                match otherSide with
+                | Some other -> style.ContentControls = other.ContentControls
+                | None -> false
             { style with
                 Hyperlink = if keepHyperlink then style.Hyperlink else None
                 InactiveHyperlink = if keepHyperlink then style.InactiveHyperlink else None
@@ -753,6 +787,7 @@ let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle opt
                 BookmarkEnds = []
                 FieldCode = (if keepField then style.FieldCode else None)
                 FieldResult = (if keepField then style.FieldResult else None)
+                FieldBoundary = None
                 RenderedPageBreakBefore = false
                 EquationXml = None
                 RevisionId = None
@@ -760,6 +795,7 @@ let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle opt
                 RevisionAuthor = None
                 RevisionDate = None
                 DeletedInsertion = None
+                ContentControls = if keepControls then style.ContentControls else []
                 MoveName = None }
 
 /// A run's character formatting alone: what text typed next to it has when
@@ -782,7 +818,11 @@ let insert pos (text: string) buffer =
                 remainingRuns <- remainingRuns.Tail
                 let runStart = Run.start run
                 let runEnd = Run.endPos run
-                if not inserted && pos >= runStart && pos <= runEnd then
+                if not inserted && (match run with Text tr -> tr.Length = 0 && tr.Style.FieldBoundary.IsSome | _ -> false)
+                   && pos = runStart then
+                    // Tokens at the caret precede newly typed result text.
+                    newRuns.Add(run)
+                elif not inserted && pos >= runStart && pos <= runEnd then
                     // Insert within this run
                     match run with
                     | Image _ ->
@@ -844,7 +884,7 @@ let insert pos (text: string) buffer =
                 Rope = Rope.insert pos text buffer.Rope
                 Runs = mergedRunList newRuns }
 
-        if bufferLen = 0 && pos = 0 then
+        if bufferLen = 0 && pos = 0 && buffer.Runs.IsEmpty then
             ofString text
         elif pos = bufferLen then
             match buffer.Runs with
@@ -890,7 +930,11 @@ let delete start len buffer =
                 for run in buffer.Runs do
                     let runStart = Run.start run
                     let runEnd = Run.endPos run
-                    if runEnd <= start then
+                    if (match run with Text tr -> tr.Length = 0 && tr.Style.FieldBoundary.IsSome | _ -> false) then
+                        // Deleting cached result text does not delete its field delimiters.
+                        let at = if runStart < start then runStart elif runStart < deleteEnd then start else runStart - len
+                        newRuns.Add(Run.shiftStart (at - runStart) run)
+                    elif runEnd <= start then
                         // Run is entirely before deletion
                         newRuns.Add(run)
                     elif runStart >= deleteEnd then
@@ -1023,6 +1067,17 @@ let private styleAt pos buffer =
 let replaceRangesWithText (originalText: string) (ranges: ResizeArray<struct (int * int)>) (replacement: string) buffer =
     if ranges.Count = 0 then
         buffer
+    elif buffer.Runs |> List.exists (function Text run -> run.Style.FieldBoundary.IsSome | _ -> false) then
+        // Keep zero-width delimiters anchored while replacing visible result text.
+        // Descending offsets refer to the original rope after earlier replacements.
+        let mutable result = buffer
+        for i = ranges.Count - 1 downto 0 do
+            let struct (rawStart, rawFinish) = ranges.[i]
+            let start = max 0 (min originalText.Length rawStart)
+            let finish = max start (min originalText.Length rawFinish)
+            result <- delete start (finish - start) result
+            if replacement <> "" then result <- insert start replacement result
+        result
     else
         let originalLength = originalText.Length
         let replacementLength = replacement.Length
@@ -1626,7 +1681,7 @@ let private textRunsInRangeHaveFontFamily start len family buffer =
                 let runEnd = tr.Start + tr.Length
                 if runEnd > start && runStart < rangeEnd then
                     match tr.Style.FontFamily with
-                    | Some existingFamily -> allMatch <- existingFamily = family
+                    | Some existingFamily -> allMatch <- existingFamily = family && ExplicitFormat.has ExplicitFormat.FontFamily tr.Style
                     | None -> allMatch <- false
                 remaining <- tail
             | _ :: tail ->
@@ -1994,7 +2049,7 @@ let setFontFamily start len family buffer =
     if textRunsInRangeHaveFontFamily start len family buffer then
         buffer
     else
-        applyStyle start len (fun style -> { style with FontFamily = Some family }) buffer
+        applyStyle start len (fun style -> { style with FontFamily = Some family; Explicit = style.Explicit ||| ExplicitFormat.FontFamily }) buffer
 
 /// Clear direct character formatting for range while preserving annotation targets.
 let clearFormatting start len buffer =
@@ -2014,6 +2069,7 @@ let clearFormatting start len buffer =
                 BookmarkEnds = style.BookmarkEnds
                 FieldCode = style.FieldCode
                 FieldResult = style.FieldResult
+                FieldBoundary = style.FieldBoundary
                 RenderedPageBreakBefore = style.RenderedPageBreakBefore
                 EquationXml = style.EquationXml
                 RevisionId = style.RevisionId

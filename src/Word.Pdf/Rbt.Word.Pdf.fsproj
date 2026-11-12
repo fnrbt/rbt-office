@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <Compile Include="Pdf.fs" />
+    <Compile Include="Browser.fs" />
   </ItemGroup>
 
   <ItemGroup>

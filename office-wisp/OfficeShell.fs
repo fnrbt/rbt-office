@@ -30,7 +30,10 @@ let openDialog (st: ShellState) (spec: DialogSpec) =
     for f in spec.Fields @ (spec.Tabs |> List.collect snd) do st.Fields.[f.Id] <- signal f.Initial
     st.Dialog.Value <- Some spec
 
-let closeDialog (st: ShellState) = st.Dialog.Value <- None
+let closeDialog (st: ShellState) =
+    // Removed text fields must not keep consuming the editor's keyboard input.
+    Focus.blur()
+    st.Dialog.Value <- None
 
 let private fieldSig (st: ShellState) (f: DialogField) =
     match st.Fields.TryGetValue f.Id with
@@ -75,7 +78,7 @@ let private chevronDown : Element =
 
 let private tbSelect (s: SelectSpec) : Element =
     let cycle () =
-        let opts = s.Options ()
+        let opts = s.Options () |> List.filter (fun item -> item.IsEnabled)
         if not opts.IsEmpty then
             let i = opts |> List.tryFindIndex (fun o -> o.Value = s.Value ()) |> Option.defaultValue -1
             s.Action opts.[(i + 1) % opts.Length].Value
@@ -107,20 +110,21 @@ let toolbar (rows: ToolbarRowSpec list) : Element =
         [ for r in rows -> heightBox 38.0 (padXY Ui.pad 0.0 (rowA MStart CCenter 6.0 (r.Controls |> List.map tbControl))) ]
 
 // ── dialog fields ──
-let private radioRow (sg: Signal<string>) (o: ChoiceSpec) : Element =
+let private radioRow (sg: Signal<string>) (changed: string -> unit) (o: ChoiceSpec) : Element =
     let ring = { Width = 1.0<px>; Cap = Round; Join = RoundJoin; Paint = Solid Ui.P.border; DashArray = []; DashOffset = 0.0<px>; MiterLimit = 4.0 }
-    clickable (fun () -> sg.Value <- o.Value)
+    clickable (fun () -> if o.IsEnabled then changed o.Value)
         (rowA MStart CCenter 7.0
             [ canvas 14.0 14.0 (fun x y _ _ ->
                 [ StrokeRoundedRect(rect (x + 2.0) (y + 2.0) 10.0 10.0, 5.0<px>, ring) ]
                 @ (if sg.Peek() = o.Value then [ FillRoundedRect(rect (x + 4.5) (y + 4.5) 5.0 5.0, 2.5<px>, Ui.P.accent) ] else []))
               text 12.5 Ui.P.text o.Label ])
 
-let private selectChip (sg: Signal<string>) (opts: ChoiceSpec list) : Element =
+let private selectChip (sg: Signal<string>) (changed: string -> unit) (opts: ChoiceSpec list) : Element =
     let cycle () =
+        let opts = opts |> List.filter (fun choice -> choice.IsEnabled)
         if not opts.IsEmpty then
             let i = opts |> List.tryFindIndex (fun o -> o.Value = sg.Peek()) |> Option.defaultValue -1
-            sg.Value <- opts.[(i + 1) % opts.Length].Value
+            changed opts.[(i + 1) % opts.Length].Value
     clickable cycle
         (Ui.surfaceBox (fun x y w h -> Ui.face Ui.theme Ui.Control x y w h Ui.radius)
             (padXY 8.0 5.0 (rowA MStart CCenter 8.0
@@ -129,25 +133,38 @@ let private selectChip (sg: Signal<string>) (opts: ChoiceSpec list) : Element =
 
 let private renderField (st: ShellState) (f: DialogField) : Element =
     let sg = fieldSig st f
+    let kind, update =
+        match f.Kind with
+        | DialogUpdatingField (kind, update) -> kind, Some update
+        | kind -> kind, None
+    let changed value =
+        match update with
+        | None -> sg.Value <- value
+        | Some update ->
+            for KeyValue(id, text) in update (currentMap st) value do
+                match st.Fields.TryGetValue id with
+                | true, target when target.Peek() <> text -> target.Value <- text
+                | _ -> ()
     let labeled (control: Element) = rowA MStart CCenter Ui.gap [ sizedBox 124.0 18.0 (Ui.labelDim f.Label); expanded 1 control ]
-    match f.Kind with
+    match kind with
+    | DialogUpdatingField _ -> failwith "Nested dialog update is not supported"
     | DialogSectionHeader -> columnA MStart CStretch 4.0 [ textBold 12.5 Ui.P.text f.Label; Ui.divider () ]
     | DialogStatusField -> labeled (textf 12.0 Ui.P.dim false (fun () -> sg.Value))
-    | DialogTextField ph -> labeled (Ui.textField sg ph ignore)
-    | DialogNumberField _ -> labeled (sizedBox 90.0 27.0 (Ui.textField sg "" ignore))
-    | DialogTextAreaField (ph, lines) -> labeled (heightBox (float (max 2 lines) * 18.0 + 12.0) (Ui.textField sg ph ignore))
+    | DialogTextField ph -> labeled (Ui.textField sg ph (fun _ -> changed (sg.Peek())))
+    | DialogNumberField _ -> labeled (sizedBox 90.0 27.0 (Ui.textField sg "" (fun _ -> changed (sg.Peek()))))
+    | DialogTextAreaField (ph, lines) -> labeled (heightBox (float (max 2 lines) * 18.0 + 12.0) (Ui.textField sg ph (fun _ -> changed (sg.Peek()))))
     | DialogCheckboxField ->
         rowA MStart CCenter Ui.gap
-            [ Ui.checkbox (fun () -> sg.Peek() = "true") (fun () -> sg.Value <- (if sg.Peek() = "true" then "false" else "true"))
+            [ Ui.checkbox (fun () -> sg.Peek() = "true") (fun () -> changed (if sg.Peek() = "true" then "false" else "true"))
               text 12.5 Ui.P.text f.Label ]
-    | DialogSelectField opts -> labeled (selectChip sg opts)
-    | DialogRadioField opts -> labeled (columnA MStart CStretch 4.0 [ for o in opts -> radioRow sg o ])
+    | DialogSelectField opts -> labeled (selectChip sg changed opts)
+    | DialogRadioField opts -> labeled (columnA MStart CStretch 4.0 [ for o in opts -> radioRow sg changed o ])
     | DialogColorField ->
         labeled (Ui.surfaceBox (fun x y w h -> Ui.face Ui.theme Ui.Well x y w h Ui.radius)
             (padXY 5.0 4.0 (canvas 40.0 14.0 (fun x y _ _ -> [ FillRoundedRect(rect x y 40.0 14.0, 2.0<px>, parseHex (sg.Peek())) ]))))
     | DialogSliderField (mn, mx) ->
         labeled (rowA MStart CCenter 8.0
-            [ Ui.slider 150.0 mn mx (fun () -> (try float (sg.Peek()) with _ -> mn)) (fun v -> sg.Value <- sprintf "%g" v)
+            [ Ui.slider 150.0 mn mx (fun () -> (try float (sg.Peek()) with _ -> mn)) (fun v -> changed (sprintf "%g" v))
               sizedBox 40.0 16.0 (textf 12.0 Ui.P.text false (fun () -> sg.Value)) ])
     | DialogComputedField compute -> labeled (dyn (fun () -> compute (currentMap st)) (fun () -> Ui.wrapText 12.0 Ui.P.dim (compute (currentMap st))))
 

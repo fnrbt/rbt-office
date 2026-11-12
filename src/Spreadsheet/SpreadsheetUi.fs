@@ -456,7 +456,7 @@ module Ui =
     // pass callbacks that perform the underlying workbook mutation; the
     // spec describes the form and binds the buttons to those callbacks.
 
-    /// Find / Replace.
+    /// Native-host Find / Replace. Browser hosts use the grid-owned search bar.
     ///   `onFindNext q matchCase`        → status string ("Match 1 of 5").
     ///   `onReplaceAll q r matchCase`    → status string ("Replaced 3").
     let findReplaceDialog
@@ -705,6 +705,92 @@ module Ui =
                 true)
         ]
     }
+
+    /// The browser shell's selection-aware format editor. Text fields use
+    /// "<mixed>" for a value differing across cells; leaving one unchanged
+    /// means no patch for that property. Clearing it explicitly resets it.
+    let selectionFormatDialog (initial: Map<string, string>) (apply: Map<string, string> -> bool) : DialogSpec =
+        let value key = Map.find key initial
+        let text key label = dialogText key label "Leave <mixed> unchanged; empty resets to default" (value key)
+        let flag key label =
+            dialogSelect key label
+                [ choice "<mixed>" "(Mixed — leave unchanged)"
+                  choice "true" "On"
+                  choice "false" "Off" ] (value key)
+        let border side =
+            [ dialogSelect (side + "-style") (side + " border")
+                  [ choice "<mixed>" "(Mixed — leave unchanged)"
+                    choice "none" "None"
+                    choice "thin" "Thin"
+                    choice "medium" "Medium"
+                    choice "thick" "Thick"
+                    choice "dashed" "Dashed"
+                    choice "dotted" "Dotted"
+                    choice "double" "Double"
+                    choice "hair" "Hair"
+                    choice "mediumDashed" "Medium dashed"
+                    choice "dashDot" "Dash dot"
+                    choice "mediumDashDot" "Medium dash dot"
+                    choice "dashDotDot" "Dash dot dot"
+                    choice "mediumDashDotDot" "Medium dash dot dot"
+                    choice "slantDashDot" "Slant dash dot" ] (value (side + "-style"))
+              text (side + "-color") (side + " border color") ]
+        let validation tab = dialogStatus ("error-" + tab) "Validation" ""
+        {
+            TestId = "xl-dlg-format-cells"
+            Title = "Format cells"
+            Subtitle = Some "Only fields you change are applied to the selected cells."
+            Fields = []
+            Tabs = [
+                "Number", [
+                    text "numberFormat" "Number format code (empty: General)"
+                    validation "number"
+                ]
+                "Alignment", [
+                    dialogSelect "horizontalAlign" "Horizontal alignment"
+                        [ choice "<mixed>" "(Mixed — leave unchanged)"
+                          choice "" "General"; choice "left" "Left"; choice "center" "Center"
+                          choice "right" "Right"; choice "justify" "Justify"; choice "fill" "Fill"
+                          choice "centerContinuous" "Center across selection"; choice "distributed" "Distributed" ]
+                        (value "horizontalAlign")
+                    dialogSelect "verticalAlign" "Vertical alignment"
+                        [ choice "<mixed>" "(Mixed — leave unchanged)"
+                          choice "" "Default"; choice "top" "Top"; choice "middle" "Middle"
+                          choice "bottom" "Bottom"; choice "justify" "Justify"; choice "distributed" "Distributed" ]
+                        (value "verticalAlign")
+                    text "indent" "Indent (0–250)"
+                    text "textRotation" "Rotation (-90–90, or 255 stacked)"
+                    flag "wrap" "Wrap text"
+                    flag "shrinkToFit" "Shrink to fit"
+                    validation "alignment"
+                ]
+                "Font", [
+                    text "fontFamily" "Font family (empty: default)"
+                    text "fontSize" "Font size in points (empty: default)"
+                    flag "bold" "Bold"
+                    flag "italic" "Italic"
+                    flag "strikethrough" "Strikethrough"
+                    dialogSelect "underline" "Underline"
+                        [ choice "<mixed>" "(Mixed — leave unchanged)"
+                          choice "none" "None"; choice "single" "Single"; choice "double" "Double" ]
+                        (value "underline")
+                    text "textColor" "Text color (#hex; empty: automatic)"
+                    validation "font"
+                ]
+                "Border", (border "top" @ border "bottom" @ border "left" @ border "right" @ border "diagonal" @
+                           [ flag "diagonalUp" "Diagonal ↗"
+                             flag "diagonalDown" "Diagonal ↘"
+                             validation "border" ])
+                "Fill", [
+                    text "fill" "Fill color (#hex; empty: none)"
+                    validation "fill"
+                ]
+            ]
+            Buttons = [
+                dialogCancel
+                dialogButton "dlg-format-cells-ok" "Apply" true apply
+            ]
+        }
 
     /// Page setup for printing / PDF export. Orientation + margins.
     let pageSetupDialog

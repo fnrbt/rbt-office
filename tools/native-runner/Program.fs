@@ -3,8 +3,7 @@ module NativeRunner
 open System
 open System.IO
 open Rbt.Renderer
-
-let importDoc = Rbt.Word.Import.importDoc
+module PngEncode = Rbt.OfficeNative.Png
 
 let private usage () =
     eprintfn "Usage: dotnet run --project tools/native-runner -- <input.docx> <output.png> [width] [height]"
@@ -14,26 +13,7 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private existingFile path =
-    if File.Exists path then Some path else None
-
-let private findWordFont () =
-    [
-        Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "artifacts/fonts/windows"))
-        Path.GetFullPath(Path.Combine(Directory.GetCurrentDirectory(), "../../artifacts/fonts/windows"))
-    ]
-    |> List.choose (fun dir ->
-        if String.IsNullOrWhiteSpace dir then None
-        else Path.Combine(dir, "calibri.ttf") |> existingFile)
-    |> List.tryHead
-
-let private initWordFont () =
-    findWordFont ()
-    |> Option.iter Rbt.Widgets.Composit.Ui.Layout.initFont
-
 let private renderDocx (inputPath: string) (outputPath: string) (width: int) (height: int) =
-    initWordFont ()
     let bytes = File.ReadAllBytes inputPath
     let doc =
         match DocxReader.loadBytesNative bytes with
@@ -41,9 +21,16 @@ let private renderDocx (inputPath: string) (outputPath: string) (width: int) (he
         | None -> failwithf "Could not parse DOCX: %s" inputPath
 
     let wordDoc = { Rbt.Word.Import.importDoc doc with Selection = None }
-    let widget = Rbt.Widgets.Composit.Ui.WordEditor.scrollEditor (float width) (float height) wordDoc
-    let backend = Raster.create()
-    let framebuffer = Rbt.Widgets.Composit.Ui.Render.renderWithBg Color.white backend width height widget
+    let settings = Rbt.WordNative.Render.layoutSettings wordDoc
+    let measure = Rbt.WordNative.Render.measureText
+    let _, paint, _ =
+        Rbt.Word.Paint.collectDocumentCommands settings "Calibri" measure (Rbt.Word.Layout.rangeMeasurerFromTextMeasurer measure) wordDoc
+    let resolve = Rbt.WordNative.Render.createImageResolver ()
+    let commands =
+        paint
+        |> List.collect (Rbt.WordNative.Render.toRendererCommand resolve)
+        |> Rbt.WordNative.Render.viewTransform (float width) wordDoc
+    let framebuffer = Scene.render (Raster.create()) width height (Clear Color.white :: commands)
     let png = PngEncode.encode framebuffer
 
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore

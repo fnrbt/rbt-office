@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-vm="${WORD_VM_HOST:-wordvm}"
+vm="${WORD_VM_HOST:-winvm}"
 out_dir="${RB_WORD_FONT_DIR:-artifacts/fonts/windows}"
 
 fonts=(

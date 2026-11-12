@@ -2,7 +2,7 @@
 // Operations on a large sheet (dashboard-sales-analysis.xlsx "Data", 846 000 cells), each timed:
 // the median of 5 runs of the call, and of the call with the frame after it.
 // usage: node tools/xlsx-browser/bigsheet.mjs [--dist DIR] [--profile NAME] [--only a,b] [--runs N]
-// Environment: PLAYWRIGHT, PORT (default 16177).
+// Environment: PLAYWRIGHT, PORT (default 16177), JS_FLAGS (Chromium V8 flags).
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -103,7 +103,8 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(pathToFileURL(process.env.PLAYWRIGHT ?? path.join(repo, 'node_modules/playwright/index.mjs')).href);
-const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+const browser = await (playwright.chromium ?? playwright.default.chromium).launch(process.env.JS_FLAGS ? { args: ['--js-flags=' + process.env.JS_FLAGS] } : {});
+console.log(`Chromium ${browser.version()}; V8 flags: ${process.env.JS_FLAGS || '(default)'}`);
 try {
     const tab = await browser.newPage({ viewport: { width: 1200, height: 800 } });
     tab.on('pageerror', (e) => console.error('page error:', e.message));

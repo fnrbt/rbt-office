@@ -1,8 +1,31 @@
 # One save path
 
-Status: design, 2026-11-02. Replaces the two-path Word save (and, after it, the Excel one).
+Original design: 2026-11-02. Current cross-runtime boundary: 2026-11-12.
 
-## What is wrong now
+## Current implementation boundary
+
+Browser and .NET now use `WordEditorPackage.EditorPackage`, the direct typed
+`WordEditorPackageReader`, and Word's `TypedDocxImport` / `TypedDocxExport`.
+The single writer is split into `WordPackageWriterModel.fs`,
+`WordPackageWriterSplice.fs` and `WordPackageWriterAssembly.fs`; the last retains
+the `DocumentWriter` module. JavaScript package objects, promises/Blobs and
+filesystem/dialog operations are edge adapters. There is no reduced native
+writer or independent native importer.
+
+Native callers use `Docx.loadBytesNative`, `Docx.exportTypedDocumentPackage`
+and `DocumentWriter.writeTypedPackageBytes`. Writer execution is serialized on
+.NET because the existing writer holds mutable package state. A host must
+capture its document/replacement identity and mark saved only after storage
+succeeds. `Unchanged` means identical to the imported content, not merely clean
+relative to the last save. Wisp implements this distinction for local
+Open/Save/Save As. Browser revisions and asynchronous save boundaries remain.
+
+This shares the existing preservation algorithm; it does not prove universal
+losslessness or complete the design below. The roadmap records targeted
+cross-runtime checks, actual offline/native workflows and remaining limits.
+
+
+## Original problem
 
 A Word save has two paths:
 
@@ -188,7 +211,7 @@ by `ValueText` (with `ModelText`, `PartPath`, `OpcXml`).
   `TextBuffer.BookmarkStarts` / `BookmarkEnds` in the editor's run style (the same two types), kept by every edit as
   the rest of the style is (a run split has them on every part; text typed or pasted next to them has none); in the
   editor's package a run's `BookmarkStarts: [{ Id, Name, EndsHere }]` and `BookmarkEnds: [{ Id }]` - an opening
-  `{ Id, Name, EndsHere, Opens: true }` (`DocxReader.bookmarkFields`, `Docx.packageBookmarkStarts` / `Ends`); the
+  `{ Id, Name, EndsHere, Opens: true }` (typed `WordEditorPackageReader`, `TypedDocxImport` / `TypedDocxExport`);
   writer writes them from those (`bookmarkStartXml` / `bookmarkEndXml`). Nothing parses a bookmark string; the
   U+001F separator and ModelText's token functions are gone. A bookmark opened after the last run of a paragraph is
   one the editor lists (`getBookmarkInfos`, at the paragraph's end), removes and renames - with its end in the

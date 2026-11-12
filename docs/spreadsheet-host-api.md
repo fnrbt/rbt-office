@@ -77,6 +77,19 @@ A cell a dynamic array spilled into holds nothing of its own. As in Excel, an en
 formula bar shows `GetCurrentCellFormula()`, or `GetGhostFormula()` in grey and not editable when that is not `null`. Committing an entry
 in a spilled cell blocks the array (`#SPILL!` on the anchor), as before.
 
+### Insert Function and inline formula help
+
+The spreadsheet shell's Insert → Function… command (also the `fx` toolbar button and `shell.Commands.Run("insert.function")`) opens a searchable chooser. Search matches function names, descriptions and argument labels; Enter chooses the first visible result, Escape or Cancel leaves the entry unchanged. It inserts `NAME()` at the captured caret or replaces selected edit text, placing the caret between parentheses. On a blank cell it starts `=NAME()`; if the cell has non-formula text, it prefixes `=` without deleting that text. It **does not commit**: Enter in the cell editor applies the usual validation, calculation and one undo step; Escape cancels the entire entry. Changing the active cell, pending edit, sheet or workbook before choosing makes the insertion return false without changing the entry. Read-only sheets and disposed instances cannot insert.
+
+The curated chooser/help catalogue covers aggregates (`SUM`, `AVERAGE`, `COUNT`, `COUNTA`, `MIN`, `MAX`, `PRODUCT`, `SUMPRODUCT`, `SUBTOTAL`), conditions (`IF`, `IFERROR`, `IFNA`, `IFS`, `SWITCH`, `AND`, `OR`, `NOT`, `SUMIF`, `SUMIFS`, `COUNTIF`, `COUNTIFS`, `AVERAGEIF`, `AVERAGEIFS`), lookups (`INDEX`, `MATCH`, `VLOOKUP`, `HLOOKUP`, `XLOOKUP`), dynamic arrays (`FILTER`, `SORT`, `UNIQUE`, `SEQUENCE`), dates (`DATE`, `TIME`, `TODAY`, `NOW`, `YEAR`, `MONTH`, `DAY`, `DAYS`, `EDATE`, `EOMONTH`, `NETWORKDAYS`, `WORKDAY`), text (`CONCAT`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TEXT`, `TEXTJOIN`, `TRIM`, `LOWER`, `UPPER`, `SUBSTITUTE`, `REPLACE`, `FIND`, `SEARCH`) and math (`ROUND`, `ROUNDUP`, `ROUNDDOWN`, `INT`, `MOD`, `ABS`, `SQRT`, `POWER`). This is **not** the complete evaluator function set. Each entry supplies displayed syntax, argument labels and a description; optional/repeated arguments are marked in the chooser, and the hint advances through repeated range/criteria or test/value pairs. The inline `.spreadsheet-formula-help` shows the active argument of the innermost *catalogued* call at the edit caret, ignoring commas/parentheses inside quoted text, escaped quotes, quoted sheet names and structured-reference brackets. No-argument calls show “No arguments”. Uncatalogued calls have no help. In the grid edit box, Tab completes an exact catalogued function name or an unambiguous prefix of at least two characters, inserting `(` without committing; ambiguous prefixes keep normal Tab commit/navigation behavior. The formula bar remains host-owned and retains its existing callbacks.
+The standalone `FormulaBar` input also displays the same caret-sensitive help beneath the bar (`.sheet-formula-argument-help`), while its change/submit callbacks stay host-owned.
+
+Function-name search is case-insensitive. Array-constant commas do not advance the enclosing function's argument, and Tab completion does not rewrite a name inside a structured reference or array constant.
+
+Function-help limits reflect the evaluator: `INDEX` returns one cell (index 0 does not spill a whole row/column); `MATCH` defaults to approximate ascending match and needs `0` for exact match; `HLOOKUP` defaults to approximate match. `UNIQUE` deduplicates rows (or columns with `by_col`), without an exactly-once option. `SORT` supports an optional index, order and `by_col`; `FILTER` takes an optional `if_empty` fallback. `NETWORKDAYS` and `WORKDAY` use Saturday/Sunday weekends and optional holidays, not custom weekend patterns. Repeated criteria arguments must be complete range/criteria pairs; `IFS` requires complete test/value pairs.
+
+`GetEditSnapshot(): object | null` captures `{ Text, Start, End, Row, Col, Sheet, Epoch, Serial }` for the active cell/editor; `null` when read-only or disposed. `InsertFunctionAt(name: string, snapshot: object): boolean` inserts a **catalogued** function only when that captured state still matches; false means no edit. These methods do not create an undo step until the edit is committed. The snapshot is intended for immediate shell-driven insertion rather than persistence across workbook changes.
+
 ### `GetRange(a1: string): Cell[][]`
 
 Rows of `Cell` for a range of the active sheet, or of another sheet when qualified (`"Data!A1:B2"`, `"'My sheet'!A:A"`; a lazily loaded sheet is converted, which is not a document change). Whole columns / rows are clipped to the sheet's used range; a block is clipped to the sheet's last row / column (a block entirely outside gives `[]`). Throws when `a1` is not a string or not a range, when the sheet does not exist, or when the range holds more than 1 000 000 cells.
@@ -119,6 +132,63 @@ takes back the call alone and gives the revision the entry left, a second one gi
 false when that was the saved one), and `Redo()` twice gives the revision the call left. (Checked for 116 calls by the `undo-steps` check
 of `tools/xlsx-browser`.) What is view state is said so at the member (zoom, a viewer's filter, `SetShowOutline`, the validation circles).
 
+Cell entry, calculation, revision/saved state and history are owned by the
+portable F# `Rbt.Spreadsheet.Session`, also consumed by the native hosts.
+`StructuralCommand` / `ExecuteStructural` also own row/column insertion and
+deletion, plus sheet add, rename, delete, move, duplicate and visibility.
+The browser's documented per-sheet undo selection remains unchanged; it is
+not replaced by a second native-only journal. Other browser commands join the
+same session through typed transactions while their command policy is migrated.
+Basic editing, menus, dialogs, validation and local XLSX open/save run locally;
+optional backend-controller hooks belong to the embedding host's adapter.
+
+The F# structural boundary returns `Result<bool, string>`: `Ok true` records
+one content transaction; `Ok false` is a no-op; `Error` rejects the command.
+No-op/rejected commands preserve revision, saved identity and redo. Sheet IDs
+are issued by the session and never reused within an epoch, even after undo or
+deletion. Hosts publish `Session.Workbook` without recording another edit.
+Optional description, deferred-materialization and post-calculation hooks run
+inside that transaction; undo/redo restore history rather than replaying hooks.
+The calculation override retains native eager recalculation while the browser
+can rebase calculation for rename/copy. Public JavaScript signatures are unchanged.
+DOM argument conversion, deferred loading, clipboard repair and rendering stay
+outside the portable session. Existing shell row/column menu actions still use
+the supplied `onAction` callback to invoke the grid's structural APIs locally.
+
+`FormattingCommand` / `ExecuteFormatting` is the shared F# formatting boundary
+used by browser and Wisp. It accepts a sheet ID, command, optional
+bounds/active cell, description and deferred-materialization callback, returning
+the same `Result<bool, string>` transaction outcome. It covers format transforms
+and toggles, number formats/decimals, format painting, borders, clearing and
+merge/unmerge. Range bounds are normalized/clamped; the host supplies its
+active cell for toggle decisions. Existing sparse-range and filter-hidden-row
+semantics remain intact. Pure formatting preserves formula values without
+recalculation; clearing contents recalculates through the session. Unchanged
+formats and rejected commands preserve saved identity and redo. Browser
+signatures and platform-specific input, dialogs and rendering remain unchanged.
+This does not add native UI controls for every shared command.
+
+`NameCommand` / `ExecuteName(command, ?description, ?beforeFull)` centralizes
+defined-name scope/name/formula validation, table-name collision checks,
+replacement/deletion and full dependent recalculation. It returns
+`Result<bool, string>` with unchanged/rejected commands preserving revision,
+saved state and redo.
+
+`RuleCommand` / `ExecuteRule(sheetId, command, ?description)` centralizes adding,
+updating, removing, reordering and partially clearing conditional formats, and
+setting/clearing data validations. Its result is
+`Result<RuleCommandResult, string>` where `Changed` reports a committed edit,
+`Id` identifies an added rule (or the existing identical validation), and
+`Affected` counts rules removed/cut by clearing. Rule edits do not recalculate
+cell values. IDs are reserved across undo/deletion for the workbook epoch;
+replacement seeds reservations from imported models. Identical validation
+range/rule assignments return the existing ID without creating an undo step.
+
+Browser input decoding, invalid-circle display and deferred import remain
+adapters. Existing declarative manager/validation dialogs use these commands
+without new controllers, HTTP calls or native UI duplication. Native
+`executeName`/`executeRule` adapters publish only committed changes.
+
 ## Clipboard
 
 ### `Copy(): Promise<boolean>`, `Cut(): Promise<boolean>`
@@ -134,6 +204,25 @@ Paste at the selection. Matching text from this session uses the internal rich c
 Undo the paste on its destination sheet to restore overwritten cells and moved references/names. The source remains cleared until its separate Cut step is undone on the source sheet. Redo reapplies those steps. Clipboard state is session-only and is not saved to XLSX.
 
 Replacing the workbook or deleting the source sheet clears the internal clipboard. An asynchronous clipboard read that completes after workbook replacement or disposal is ignored.
+
+### Shared F# session boundary
+
+`Session.CaptureClipboard(sheetId, isCut, text, ?textOf, ...)` captures the rich
+selection once; optional `textOf` derives host text from that capture before a
+cut clears cells. `PasteClipboard(sheetId, ...)` and
+`PasteRows(sheetId, rows, year, ...)` own calculation, selection and transactions.
+Their `Result<bool, string>` boolean means **content changed**, unlike the
+browser clipboard permission/acceptance results above. Copy does not change the
+content revision or discard redo; selection-only/no-op pastes add no history.
+
+`ClipboardSource(text)` distinguishes internal, external and ignored payloads.
+`clipboardRowsOfText` handles quoted multiline TSV and escaped quotes. Browser
+HTML decoding and system clipboard access remain platform adapters; Wisp retains
+internal rich copy/paste. The former Widgets text-only OS adapter is retired.
+Renaming a source rewrites captured formulas, including undo/redo. Deleting it
+also rejects its stale matching system text; undoing deletion does not revive
+the capture. Undoing a pending cut invalidates it. No clipboard data enters XLSX,
+and none of these operations needs HTTP or a new dialog/controller.
 
 ## Formatting
 
@@ -261,10 +350,9 @@ iconSet   = "3Arrows" | "3ArrowsGray" | "3Flags" | "3TrafficLights1" | "3Traffic
   - A rule whose formula reads another sheet (`{ type: "expression", formula: "Lists!$B$1>$A1" }`, `cellIs` operands, a threshold formula) is an
     ordinary rule here; it is evaluated against the other sheet and follows edits of it. In the file it is written in the x14 list (`<x14:cfRule>`
     with `<xm:f>` and its format in place as `<x14:dxf>`), as Excel does, and read from there.
-  - Still not understood: an x14 rule of an unknown type and pivot-table conditional formats (`pivot="1"`). When a sheet's x14 list has one, the whole
-    list is carried through as it is (also when the sheet's other rules are edited; new cross-sheet rules are added to that list) and its rules are
-    not listed; its 2007 twins (plain data bars) are. As for sparklines, a carried list is dropped when rows / columns of the sheet are inserted or
-    deleted. Not kept either: the `gte="0"` ("greater than" instead of "greater than or equal") of a threshold.
+  - An x14 rule of a type the importer does not understand is not listed. Its source XML (including the rule id and extension payload) is retained
+    when another rule on the sheet is changed. Classic pivot-table rules of a supported type *are* listed; their group's `pivot="1"` attribute
+    survives editing or reordering. Imported threshold details outside the authoring fields are not editable.
 
 ### `AddConditionalFormat(range: string, rule: Rule, options?: { stopIfTrue?: boolean }): number`
 Adds a rule to the cells of `range` and returns its id. The new rule takes precedence over the sheet's other rules (as in Excel); use `ReorderConditionalFormats` / `UpdateConditionalFormat(id, { priority })` to change that.
@@ -290,8 +378,9 @@ Without an argument: removes every rule of the active sheet. With a range (sever
 ### `RemoveConditionalFormats(row: number, col: number): void` (existing)
 The same for one cell. Now an undo step.
 
-### `ShowConditionalFormattingDialog(): void` (existing, unchanged)
-The built-in dialog offers five kinds (greater than, less than, between, equal to, text contains) on the active cell only. It was left as it is: hosts should build their own rule manager on the members above. Rules made in the dialog are undo steps now and show up in `GetConditionalFormats`.
+### `ShowConditionalFormattingDialog(): void`
+Opens the same rule manager as Data → Conditional formatting (also works on a spreadsheet mounted without a shell). Its sheet list shows rule range and priority; New chooses a rule type before showing only its relevant fields. Edit changes range, priority, stop-if-true, operands and applicable differential formatting (fill, text color and font effects). Move up/down and Delete each create one undo step; editing several properties together is one step. Supported types include comparisons, formulas, text, ranking, averages, duplicates, blanks/errors, dates, color scales, data bars and icon sets. Existing data-bar advanced options and custom icon settings survive edits to other fields. An imported rule type the engine cannot expose is not shown; any listed type without an editor is read-only except for its range, priority and stop-if-true. A new rule starts at highest priority with a visible fill by default. Cancel and unchanged Apply do not edit the workbook; invalid input keeps the dialog open.
+Rules the importer cannot model remain opaque and are retained in the saved XLSX when a visible rule changes. Editing an imported rule's operands, range or priority retains its differential style and extension metadata; changing a supported differential color or font effect clones the original style, changing only that property and preserving unrelated source properties (such as font size, number format and borders), even when another rule shares the original style.
 
 ### Ids
 An id is unique on its sheet and stays with its rule through edits of the rule and of other rules, undo / redo, and inserted / deleted rows and columns; the component does not hand the id of a removed rule to a new one. A file stores no ids: after `ImportXlsx` each sheet's rules are numbered 1, 2, 3 ... in order of precedence (the same file gives the same ids), so a host re-reads `GetConditionalFormats` after opening a file. Ids of different sheets may coincide.
@@ -395,7 +484,7 @@ Print areas and print titles (`_xlnm.Print_Area` / `_xlnm.Print_Titles`) are not
 `{ name: string, refersTo: string, scope: number | null, scopeName: string | null, comment: string | null, isBuiltIn: boolean, hidden: boolean }`
 - `name` as it was written (lookups ignore case); `refersTo` the formula without a leading `=` (`"Data!$A$1:$A$3"`, `"0.19"`).
 - `scope`: 0-based index of the sheet a sheet-level name belongs to, `null` for a workbook-level name; `scopeName` that sheet's name.
-- `isBuiltIn`: an `_xlnm.` name; `hidden`: the file hides it from the name manager (kept through a save).
+- `isBuiltIn`: an `_xlnm.` name; `hidden`: the file's hidden flag (preserved through a save). Imported built-ins other than print area/titles, including `_xlnm.Criteria` and `_xlnm._FilterDatabase`, remain visible as read-only entries in the shell manager.
 Workbook-level names first, then sheet-level ones by sheet, each group by name (upper-cased order).
 
 ### `SetDefinedName(name: string, refersTo: string, scopeSheetIndex?: number | null, comment?: string | null): void`
@@ -409,6 +498,11 @@ a sheet index that does not exist; arguments of the wrong type.
 ### `DeleteDefinedName(name: string, scope?: number | null): void`
 Deletes the workbook-level name, or with `scope` that sheet's. Formulas using it show `#NAME?` (or fall back to the workbook-level name when a
 sheet-level one is deleted). One undo step. Throws when there is no such name in that scope, for a built-in name, or a sheet index that does not exist.
+
+### `ShowDefinedNamesDialog(): void`
+Opens the same name manager as Data → Name manager, including without a shell. It lists the reference, comment and scope of each name; identical spelling in workbook and sheet scopes denotes separate entries. New accepts a name, a scope, a reference or formula, and an optional comment. Edit changes the reference/comment but **not** the name or scope: the engine has no atomic rename/scope-move operation, so the identity remains immutable rather than implementing rename with delete/create. Built-in names are read-only. Hidden metadata is retained when editing existing names. Apply and Delete each use the underlying single undoable name operation; Cancel, unchanged Apply and invalid inputs do not edit.
+
+New rejects an existing name in the same scope, case-insensitively; it does not silently overwrite it. Comments, including untouched surrounding whitespace, are retained verbatim. The underlying `SetDefinedName` API remains an explicit upsert.
 
 ### `GoTo(nameOrRef: string): { sheetIndex: number, range: string }`
 The name box: a reference (`"B3"`, `"$B$2:$D$5"`, `"A:A"`, `"Sheet2!B3:C9"`, `"'My sheet'!A1"`), a defined name that refers to a range (the
@@ -476,13 +570,22 @@ the sheet then on display, so `Redo()` finds it there. After the user switches t
 | `MoveSheet(from, to)` | `to` = index the sheet has afterwards (0..count-1) | | The sheet on display stays on display. |
 | `DuplicateSheet(index)` | | index of the copy | The copy is placed right after the original, named "Name (2)" ("(3)", ...; cut to 31 chars) and shown. Copied: cells, formats, sizes, merges, comments, validations, conditional formats, pictures, page setup, sheet-scoped names, tables (as "Table_2"; the copy's structured references follow). The copy's formulas that named the original sheet name the copy. Also copied (since 0.1.9): the drawing objects the editor only keeps from the file - charts, shapes; `GetDrawings()` lists them on the copy, and `ExportXlsx` writes each copied chart as a chart part of its own (new part name, its own relationships and content type) whose series read the copy where the original's read the original. Pivot tables: the copy shows their cells as values in the editor, and `ExportXlsx` gives the copy **pivot tables of its own** - each a part of its own beside the original's, under another name (`PivotTable3_2`), on the same cache, where the copy has its cells (they follow rows / columns inserted or deleted in the copy; one whose cells were all deleted is not written). NOT copied: slicers and timelines (they stay with the original and do not filter the copy's pivot tables) and named cell styles. |
 | `SetSheetVisibility(index, visibility)` | `"visible"` \| `"hidden"` \| `"veryHidden"` | | Hiding the sheet on display shows the nearest visible one. Throws when it would leave no visible sheet. `SheetVisibility()` (bool per sheet) keeps working. |
-| `SetSheetTabColor(index, color)` | `"#RRGGBB"` or null (none) | | The component draws no tab strip; the colour is workbook content (GetSheetInfos, the saved file's `<tabColor>`). |
+| `SetSheetTabColor(index, color)` | `"#RRGGBB"` or null (none) | | The spreadsheet **grid** draws no tab strip; the browser shell renders the colour on its visible sheet tabs. The colour remains workbook content (GetSheetInfos, saved `<tabColor>`). |
 
 Existing members that keep working: `GetSheetNames()`, `SheetNames()`, `SheetVisibility()`, `GetActiveSheetIndex()`, `SwitchSheet(index)`,
 `OnSheetChanged(cb(index))` (now also fires when a sheet-list operation or its undo changes the sheet on display), `IsSheetLoaded(index)`.
 
+### Browser shell worksheet tabs
+
+`createSpreadsheetShell(grid, onAction).Mount(container)` renders a horizontally scrollable tab strip (`.sheet-tab-bar`, `.sheet-tab-list`, `[data-sheet-tab-id]`) in the shell; no separate `createTabs`/workbook navigation surface is mounted by the shell. Only `visibility: "visible"` sheets have tabs. Click or Enter/Space on a tab to switch; Left/Right/Home/End move keyboard focus among tabs. The `+` (`[data-sheet-tab-add]`) opens New worksheet. Each tab's adjacent options button (`[data-sheet-tab-menu-trigger="<id>"]`) opens `[data-sheet-tab-menu]` with `[data-sheet-tab-action="add|rename|duplicate|delete|moveLeft|moveRight|hide|unhide"]`; Shift+F10/Menu or right-click on the tab also requests the menu. A tab right-click/keyboard context request first calls `RaiseSheetTabContextMenu(index, clientX, clientY)` **once**: existing `OnContextMenu` hosts retain ownership if subscribed; otherwise the shell opens its own menu. The explicit options button always opens the shell's menu (without forwarding a second event). Delete asks for confirmation and is disabled alongside Hide on the last visible sheet; cancel changes nothing. Move left/right reorders by one slot. Unhide opens `[data-testid="xl-dlg-unhide-sheet"]` and lists only ordinary `"hidden"` sheets: imported `"veryHidden"` sheets remain hidden and require the host API to show them. The strip tracks `OnSheetsChange` (including import and undo/redo) and `OnSelectionChange` (switches); subscriptions leave with shell disposal.
+
+The shell command registry (`shell.Commands.Run(id, argument?)`, `State(id)`) exposes `sheet.add`, `sheet.rename`, `sheet.duplicate`, `sheet.delete`, `sheet.moveLeft`, `sheet.moveRight`, `sheet.hide`, `sheet.unhide`. Except add/unhide, an optional **0-based sheet index** targets that sheet, defaulting to the active sheet; popup actions capture the sheet's stable `id` so a non-active tab never accidentally mutates the active sheet. `sheet.add`/`sheet.rename` use `[data-testid="xl-dlg-insert-sheet"]`/`[data-testid="xl-dlg-rename-sheet"]`, validate via the host API and leave the dialog open on errors; blank new-sheet name uses the next available default. Read-only shells refuse mutations; pending invalid edits are left in place. Open menus/dialogs reject changed workbooks or revisions and re-resolve captured sheet IDs before mutation. Each accepted mutation invokes the existing API once (so one undo step when content changes); unchanged renames/moves have none. Tabs and menu fit narrow shells by scrolling horizontally and clamping the menu to the viewport.
+
+
 Lazy sheets: `MoveSheet`, `SetSheetVisibility`, `SetSheetTabColor` convert no sheet. `RenameSheet` / `DeleteSheet` / `AddSheet` convert the sheets
 that have formulas or internal hyperlinks (as any first edit does); plain-data sheets stay unconverted. `DuplicateSheet` converts the sheet it copies.
+
+Undo and redo of `RenameSheet` rewrite formulas, validation sources and defined names as well as the tab name, including names containing apostrophes (a reference to `Sales O'Brien` is written `'Sales O''Brien'!A1`). Deleting such a sheet also changes its quoted references to `#REF!`.
 
 Limits: a rename does not recalculate (a formula that builds the sheet's name as text - `INDIRECT("Old!A1")` - keeps its value until the
 next recalculation and then no longer finds the sheet, as in Excel).
@@ -548,6 +651,12 @@ In the grid: dragging a header's resize handle is now one undo step (it was none
 row (`AutoFitColumns` / `AutoFitRows`), and when whole columns / rows are selected and the handle is one of theirs, all of them. Arrow keys,
 selection, drawing anchors, the portable painter and the PDF path treat hidden rows / columns as before (size 0).
 
+### Browser shell row and column sizing
+
+Format → Row height/Column width opens `[data-testid="xl-dlg-row-height"]`/`[data-testid="xl-dlg-column-width"]` for the captured selection (`dlg-field-size`); the form labels sizes **sheet pixels at 100% zoom**. Allowed finite values: rows 0–546 px, columns 0–1785 px. Zero hides, and positive sizes reveal manually hidden axes (a filter may still hide its own rows). The dialog displays a single common size or an **empty mixed field**; submitting the empty field explicitly leaves every size untouched, including mixed values. An entered value applies to every selected row/column in one undo step, while equal sizes add no step. Bad numbers or an API error stay in the dialog's `dlg-field-error`; workbook changes, a switch of the active sheet or a changed selection while the dialog is open require reopening it. Format also offers AutoFit/Hide/Unhide for selected rows and columns. Commands: `axis.rowSize`, `axis.columnSize`, `axis.row.autofit`, `axis.column.autofit`, `axis.row.hide`, `axis.column.hide`, `axis.row.unhide`, `axis.column.unhide`. AutoFit skips hidden axes, and Unhide restores manually hidden sizes rather than cancelling a filter. All act on the current selected range; validation-rejected pending edits remain editable and read-only shells cannot perform sizing.
+
+`OnReadOnlyChange(callback)` subscribes to actual `SetReadOnly` mode transitions, passing the new boolean and returning an unsubscribe function. These are view-state notifications: no workbook revision or `OnChange` event is created. `Dispose` removes subscriptions. The shell uses this notification to refresh editing, sheet and sizing controls immediately and close an open sheet-actions menu; navigation stays available in viewer mode.
+
 **The outline strips.** A sheet with grouped rows gets a strip left of the row numbers, one with grouped columns a strip above the column
 letters, each `(deepest level + 1) x 15 + 3` px wide (48 px for two levels): a bracket per group (`.spreadsheet-outline-line`), a +/- button
 on the group's summary row / column (`.spreadsheet-outline-button` with `data-axis="rows|columns"`, `data-first`, `data-last`, `data-level`,
@@ -579,6 +688,7 @@ A **column** argument is a 0-based sheet column number or its letters (`2` or `"
 | `SortRange(range, keys, options?)` | `range` A1 (`"A1:D20"`; `"A:D"` is clipped to the used rows). `keys`: `[{ column, descending?: boolean, by?: "value" \| "cellColor" \| "fontColor", color?: "#RRGGBB" \| null }]` (one key object or a bare column is accepted too). `options`: `{ hasHeader?: boolean, caseSensitive?: boolean }` (both false by default) | | See "Sort semantics". Throws on a bad range / key / option key, a key column outside the range, merged cells among the rows to sort, a dynamic array (spilling formula or spilled cells) among them. |
 | `SortCurrentColumnAsc()` / `SortCurrentColumnDesc()` | | | Quick sort: sorts the block of data around the **active cell** (Excel's current region, see "Quick sort") by the active cell's column, as one undo step. Only the cells of that block move. Nothing happens when there is no data around the cell. Throws like `SortRange` for merged cells or a dynamic array in the block. |
 | `SetAutoFilter(range)` | A1 range; its first row is the header row | | Gives the sheet its AutoFilter (one per sheet), replacing the one it has; column filters inside the new range stay, others go. Throws on a bad range or one outside the sheet. |
+| `SetAutoFilterAndFilter(range, column, criteria)` | A1 range with first row as header, sheet column, and any supported `SetFilter` criteria | | Atomically replaces the AutoFilter range and this column's criterion. Keeps filters for columns in the new range and drops filters outside it. Validates all three arguments before changing the sheet; one undo step (no step if unchanged). |
 | `ClearAutoFilter()` | | | Removes the AutoFilter and its column filters; every row it hid is shown. |
 | `SetFilter(column, criteria)` | see "Filter criteria" | | Replaces the column's filter; rows failing it are hidden (rows failing any column's filter are). Without an AutoFilter the sheet gets an implicit one over the block of data around the column (it goes away with its last column filter). Throws on a column outside the AutoFilter's range and on criteria that are not understood. |
 | `ClearFilter(column?)` | | | Takes the filter off one column, or off all; the AutoFilter (range) stays. |
@@ -596,7 +706,7 @@ A **column** argument is a 0-based sheet column number or its letters (`2` or `"
 ### Filtering in a viewer (`SetReadOnly(true)`)
 A viewer draws **no filter buttons of its own** (its own filter menu edits). When a host subscribes with `OnFilterButton` the buttons are
 drawn and pressed as in the editor (`GetFilterButtonRects()` lists them), and the host answers a press with `SetFilter` / `ClearFilter` /
-`ReapplyFilter`. In a viewer those calls are **view state**: the rows are hidden or shown and `SUBTOTAL` / `AGGREGATE` follow, but there is
+`ReapplyFilter` (or `SetAutoFilterAndFilter` to replace range and criteria together). In a viewer those calls are **view state**: the rows are hidden or shown and `SUBTOTAL` / `AGGREGATE` follow, but there is
 no undo step, no new revision and no `OnChange` call, and `ExportXlsx()` still gives the file as it was opened (the filter is not saved).
 In the editor the same calls are edits, as before. `SortRange` and the quick sorts change cells and stay refused / edits.
 
@@ -618,7 +728,7 @@ For a filter that did not come through `SetFilter` (an opened file - XLSX stores
 - As in Excel, the rows are worked out when a filter is set (or `ReapplyFilter()` is called), **not** when a cell changes: an edited row stays visible / hidden until then. Inserted and deleted rows and columns move the range, the column filters and the hidden rows; a new row is visible.
 - On a selection that spans filtered rows, these act on the **visible rows only**: `GetSelectionText` / `GetSelectionHtml` / `Copy` (the copy holds the visible rows one after the other and pastes as one block), `Cut` and the Delete key, `ClearContents` / `ClearFormats` / `ClearAll`, every format command (`ApplyFormat`, `ApplyFormatPatch`, `ApplyBorder`, ...), `FillDown` / `FillRight` / `AutoFill`, and `SortRange` (hidden rows stay where they are). A **paste** into a filtered range is not filtered: it fills the rows one after the other, hidden ones included (Excel does the same). `SetCell` / `EnterText` write to any cell.
 - `SUBTOTAL` / `AGGREGATE` leave out the rows a filter hides; setting a filter recalculates.
-- XLSX: `<autoFilter ref>` with a `<filterColumn>` per filtered column (`<filters>`, `<customFilters>`, `<top10>`, `<colorFilter>` with its `<dxf>`, `<dynamicFilter>`), the hidden rows as `<row hidden="1">` (with their height), and the hidden sheet-scoped name `_xlnm._FilterDatabase`. An opened file with a filtered sheet opens filtered, with the rows the file hides inside the filter's range as the filter's rows; a sheet whose filter was not touched is written back as the file states it. (Before this the sheet-level `<autoFilter>` of a file was dropped on export.) The built-in name is derived from the filter and is not listed by `GetDefinedNames`.
+- XLSX: `<autoFilter ref>` with a `<filterColumn>` per filtered column (`<filters>`, `<customFilters>`, `<top10>`, `<colorFilter>` with its `<dxf>`, `<dynamicFilter>`), the hidden rows as `<row hidden="1">` (with their height), and the hidden sheet-scoped name `_xlnm._FilterDatabase`. An opened file with a filtered sheet opens filtered, with the rows the file hides inside the filter's range as the filter's rows; a sheet whose filter was not touched is written back as the file states it. (Before this the sheet-level `<autoFilter>` of a file was dropped on export.) An imported `_FilterDatabase` remains visible read-only in `GetDefinedNames`; export updates its reference from the current filter without duplicating it, retaining its comment and hidden flag.
 - **Filter buttons.** The grid draws a button (`.spreadsheet-filter-button`, with `data-row`, `data-col`, `data-active="1|0"`, `data-sorted="asc|desc|"`) at the bottom right of every header cell of the AutoFilter range and of every table header row whose table has a filter (`hasAutoFilter`), hidden columns left out. It sits in the cell's pane: a frozen header row keeps its buttons, a scrolled one takes them along (and under the frozen panes). A filtered column's button is tinted and marked, a sorted one (the `SortState` column) shows an arrow. See `OnFilterButton` / `GetFilterButtonRects` below. Without a subscriber a press opens the grid's checklist of `GetFilterValues`, which sets a `{ values }` filter (an undo step). The older button beside each column letter (`.col-filter-btn`, it filters the block of data around the column) is still drawn when no subscriber is registered. A viewer (`SetReadOnly(true)`) has neither, unless a host subscribes.
 - One AutoFilter per sheet. A table's own filter (Excel allows one per table besides the sheet's) is not modelled separately: filter a table by `SetAutoFilter(<table range>)`.
 
@@ -656,7 +766,7 @@ Comment object: `{ text, author: string | null, runs, thread }`; `runs` is `null
 
 - The cell shows a corner marker (red for a note, violet for a thread). While the pointer is over the cell (no button down) the comment is shown in a box beside it: `.spreadsheet-comment-box` with `data-row`, `data-col` and `data-kind="note" | "thread"`; a note in its runs (one `<span>` per run with its font, size, weight, style, decoration and colour), a thread as one `.spreadsheet-comment-entry` per comment (author, date, text; replies indented) and "Resolved" when it is. The box takes no pointer events. It stays inside what is in view: beside a cell with no room on its right it is on the cell's left, and for a cell near the bottom of the view it is moved up as far as it needs (before, the scroll container cut it off). The cell element itself carries the comment's text as `data-comment` (it no longer has a `title` for it: the browser tooltip would cover the box).
 - Comments move with inserted / deleted rows and columns and with `SortRange`; `ClearAll` removes notes and threads; `ClearContents` / `ClearFormats` keep them.
-- XLSX: notes go to the comments part, threads to the threaded-comments part with their persons and the `done` mark, plus the note Excel keeps beside each thread for old versions. Ids of thread comments survive a save; a note has no id.
+- XLSX: notes go to the comments part, threads to the threaded-comments part with their persons and the `done` mark. Ids of thread comments survive a save; a note has no id. Structural moves preserve an imported thread's existing legacy note, if any, without synthesizing a note when the source had none.
 
 ## Hyperlinks (group 10b)
 On the active sheet unless a sheet index is taken. `SetHyperlink` / `RemoveHyperlink` are one undo step each, bump the revision and fire `OnChange`.
@@ -679,7 +789,7 @@ Hyperlink object: `{ range, target, isInternal: boolean, tooltip: string | null,
 - XLSX: `<hyperlink ref location | r:id tooltip display>`; addresses are external relationships of the sheet. Tooltip and display are new in the model and round trip.
 
 ## Pictures (group 10c)
-On the active sheet. Every mutating member is one undo step (no recalculation), bumps the revision and fires `OnChange`.
+On the active sheet. Each content-changing mutation is one undo step (no recalculation), bumps the revision and fires `OnChange`. Rejected/no-op commands preserve revision, saved identity and redo.
 
 | Member | Arguments | Returns | Notes |
 |---|---|---|---|
@@ -696,16 +806,35 @@ On the active sheet. Every mutating member is one undo step (no recalculation), 
 - Ids: a number per sheet, stable through undo / redo, moves and re-stacking; never reused while a higher one exists. When a file is opened its drawing objects (pictures and charts alike) are numbered 1..n back to front, so ids are stable across save / reopen as long as the order of the objects is.
 - In the grid (not in read-only mode, where pictures let clicks through to the cells): click selects a picture (frame + 8 handles: `.spreadsheet-picture-frame`, `.spreadsheet-picture-handle[data-handle]`; the image is `.spreadsheet-picture[data-drawing-id]`), drag moves it, a handle sizes it (corners keep the proportions, Shift frees them; sides change one dimension; minimum 8 px), Delete / Backspace removes it, Escape or a click on a cell deselects. Each drag is one undo step. Correct under zoom and when scrolled.
 - `OnSelectionChange` payload has `Picture: id | null` and fires when the picture selection changes.
-- **The label of a frame** the grid does not draw ("Chart: Chart 1", "Shape: Rectangle 9", a slicer) is a `.spreadsheet-object-label` inside its `.spreadsheet-object` frame: one line, cut with an ellipsis where the frame is narrower, in smaller letters in a frame lower than 18 px and left out of one lower than 13 px or narrower than 24 px (the frame's `title` always has the whole label). Charts and shapes are not drawn yet.
+- **The label of a frame** the grid cannot draw (an unsupported chart or shape, a slicer) is a `.spreadsheet-object-label` inside its `.spreadsheet-object` frame; supported charts and shapes render as SVG instead.
 - **Frozen panes.** A drawing (picture, chart frame, kept object) that reaches over frozen rows / columns is cut along the frozen edges, as in Excel: the part over the frozen rows / columns stays in place, the part beside them scrolls and goes under the frozen cells. (Before, a picture anchored over frozen cells was hidden under them.) In the DOM such a drawing is one `.spreadsheet-drawing-part[data-drawing-id][data-pane="0..3"]` box per pane it reaches (0 scrolled, 1 frozen rows, 2 frozen columns, 3 the frozen corner), each holding a copy of the `.spreadsheet-picture` / `.spreadsheet-object` node: **a selector for the image may match up to four nodes**. Without frozen panes, and for a drawing wholly in the scrolled part, it is the one node as before. The selection frame sits in the pane of the picture's top-left corner.
 - Charts and other kept objects are not movable through this API (the members throw); they keep following their cells.
 - XLSX: pictures are written into the sheet's drawing part beside the kept charts (which stay byte for byte); identical image data is one media part; deleting the last drawing object of a sheet drops its drawing part and media.
 
-## Charts and shapes of a file (0.1.15)
+Browser and native adapters use `Session.DrawingCommand` / `ExecuteDrawing`.
+The typed cases are `InsertPicture`, `PlacePicture`, `DeletePicture`,
+`DescribePicture` and `InsertChart`; results carry `Changed` and an optional
+new drawing `Id`. Pointer gestures, argument conversion, image decoding and
+rendering remain adapters. When authoring a chart in a source-backed workbook,
+the package adapter supplies its reserved drawing relationship IDs; the session
+also reserves authored IDs and references in retained drawing XML. This does
+not make imported charts or opaque shapes editable through picture commands.
 
-A chart, a shape, a connector or a group of them that an opened file has on a sheet is **drawn in the grid** (before: a labelled
-frame for each). Nothing of it can be edited, and nothing of it is changed: the drawing part and the chart parts are written back as
-they were read (see "Parts the editor does not model"); drawing them does not modify the workbook.
+## Charts and shapes
+
+Imported charts, shapes, connectors and groups are drawn in the grid from their parts. Inserting a standard chart adds a new drawing and chart part without rewriting other imported chart parts; opening or merely drawing an imported chart does not modify the workbook.
+
+### Insert a chart from a contiguous cell range
+
+`GetChartSelectionSnapshot(): object | null` captures `{ epoch, serial, sheetIndex, selection }` for the current selection; it returns `null` when the current sheet is read-only. `InsertChart(range: string, options: { type: "column" | "bar" | "line" | "pie", title?: string, firstRowHeaders: boolean, firstColumnCategories: boolean }, snapshot?: object): number` adds a chart and returns its `GetDrawings()` id. Supply the captured snapshot from an insertion dialog: if the workbook, edit serial, active sheet or selection changed, insertion throws without modifying anything. A direct call may omit the snapshot.
+
+The source must be one bounded rectangular range on the active worksheet (`"A1:C8"`; not whole rows/columns), within the sheet, with at least one numeric value, one value column and one data row after optional headers/categories; at most 20,000 value cells. Columns are always series. `firstRowHeaders: true` uses the first row as series names; `firstColumnCategories: true` uses the first column as category labels; otherwise series names are `Series 1`, … and categories are `1`, `2`, …. These flags are required, not inferred or silently changed. Pie requires **exactly one** value column after the category column, if any; a wider range is refused, not truncated. An empty title suppresses it; a nonempty title is chart text (max 255 characters). The chart appears near the selected source as a 480 × 300 px one-cell drawing, follows its anchor cell, and reads its data from live `c:f` references. Its insertion, chart-part ownership and bindings undo/redo together in one transaction. Sheet renames, copies and relevant row/column insertions/deletions update those references; edited numeric values repaint the same chart and refresh XLSX caches at export. Saved files include reachable drawing/chart relationships and content types; existing imported drawings and unknown package parts retain their ownership.
+
+The browser shell **Insert → Chart…** (also `shell.Commands.Run("insert.chart")`) opens the shared dialog with range, type, title and explicit header/category checkboxes. The shell commits an existing cell entry before capturing its selection and refuses a stale dialog or a read-only sheet. This surface inserts only classic clustered columns, horizontal bars, lines and a single-series pie; it is not a general chart editor. `MovePicture`, `ResizePicture`, `DeletePicture` and picture selection still accept pictures only, not authored or imported charts.
+
+When a structural edit invalidates an authored chart reference, its old cache
+is discarded rather than displayed as deleted data. Undo restores the original
+binding; the next export regenerates caches from the current referenced cells.
 
 - **What a host sees.** The object's node is `div.spreadsheet-drawing.spreadsheet-object.spreadsheet-object-<kind>` (`kind`: `chart` |
   `shape` | `other`, as `GetDrawings()` gives it) with `data-drawing-id`; when it is drawn it also has the class
@@ -756,7 +885,7 @@ A search reads the sheet on display, or every sheet that has a tab. Replacing is
 | `FindPrevious()` | | match \| `null` | The match before the active cell (before the first: the last). Throws when `Find` was not called. |
 | `ReplaceMatch(replacement)` | string | `{ replaced: boolean, next: match \| null }` | Replaces in the active cell when it matches, then steps to the next match. One undo step, recalculates. Not on a match: nothing replaced, the next match is selected. Throws when `Find` was not called. |
 | `ReplaceAll(text, replacement, options)` | `options` as for `Find` (an object; `{}` for the defaults) | number of cells changed | ONE undo step, also with `scope: "workbook"` (one `Undo()` on the sheet it was called from restores every sheet; `OnChange` names every changed sheet). 0 matches: no step. The old call `ReplaceAll(text, replacement, caseSensitive: boolean)` still works (active sheet, text contained in value or formula text) and now also returns the count. |
-| `StartSearch(query, caseSensitive)`, `Replace(find, replace, caseSensitive)`, `GetSearchResultsCount()`, `GetSearchIndex()`, `ShowFindReplaceDialog()` | | | The earlier single-sheet search, unchanged (the built-in dialog uses it). `StartSearch` ends a search started by `Find`. |
+| `StartSearch(query, caseSensitive)`, `Replace(find, replace, caseSensitive)`, `GetSearchResultsCount()`, `GetSearchIndex()` | | | Earlier single-sheet search remains available; `StartSearch` ends a search started by `Find`. |
 
 - `lookIn: "values"` searches what cells show (number formats applied: `1,234.50`); a formula cell matches by its result. `lookIn: "formulas"` searches what was entered: a formula with its `=`, a number / date as it would be typed, text as it is.
 - `wholeCell`: the whole text has to match (for a regular expression: from the first to the last character).
@@ -765,7 +894,9 @@ A search reads the sheet on display, or every sheet that has a tab. Replacing is
 - Hidden / very hidden sheets are not searched (unless one is on display); the cells of hidden rows and filtered-out rows are.
 - A workbook search converts the sheets of an opened file that were not converted yet (`IsSheetLoaded`); a sheet search converts none.
 - Matches are found again for a sheet whose cells changed since (`FindNext` after an edit sees the edit); stepping is always relative to the active cell.
+- Shell commands `edit.find`, `edit.findNext` and `edit.replaceAll` route through the grid-owned bar and its current options; `edit.replaceAll` is unavailable in read-only mode.
 - Cost: 846 000 cells are searched in about 1 s (values) / under 2 s (formulas); a step afterwards costs nothing until cells change.
+- `grid.ShowFindReplaceDialog()` opens the grid-owned, per-instance search bar. `grid.ToggleFindReplace()` toggles it. `grid.AttachFindReplace(element)` / `grid.DetachFindReplace(element)` move that same bar into / out of the named shell; a host using `createSpreadsheetShell` does not call them itself.
 
 ## Tables (group 12)
 A table has a name (unique in the workbook, also against defined names), a range on one sheet (header row, data rows, optional total row), named columns and a style. Structured references (`Sales[Amount]`, `Sales[@Amount]`, `Sales[[#Totals],[Amount]]`, `Sales[#Headers]`, `Sales[#All]`, `Sales[[A]:[B]]`) read it from any sheet. Every mutating member is ONE undo step of the workbook (it sits on the history of the sheet on display, like sheet operations), bumps the revision, fires `OnChange`, recalculates every formula and is written to / read from XLSX (`xl/tables/tableN.xml`).
@@ -832,7 +963,7 @@ A table has a name (unique in the workbook, also against defined names), a range
 | `GetUsedRange(sheetIndex?)` | | `{ range: "B2:F40", firstRow, firstCol, lastRow, lastCol }` \| `null` (empty sheet) | |
 
 - Context menu: raised by a right click (`contextmenu`) in the grid and by the menu key / Shift+F10 (active cell, or the selected picture). As in Excel a right click outside the selection first selects what it is on (the cell; the whole row / column of a header; the picture) and one inside the selection keeps it; `OnSelectionChange` fires before the callback. A right click on the corner selects nothing. While at least one subscriber is registered the browser's own menu is prevented in the grid, except in the edit box of a cell being edited (spelling / paste menu stays). The component has no built-in menu; without a subscriber nothing changes (the browser menu shows, nothing is selected). Works in read-only mode too (the host decides what to offer). Correct under zoom, frozen panes and hidden headers (the cell is the one under the pointer).
-- `OnError` sources: the name of the subscription whose callback threw (`"OnChange"`, `"OnSelectionChange"`, `"OnSheetsChange"`, `"OnSheetChanged"`, `"OnEditStateChange"`, `"OnHyperlinkActivate"`, `"OnContextMenu"`, `"OnFilterButton"`; the other subscribers are still told); `"event:<dom event>"` (`event:keydown`, `event:mousedown`, `event:paste`, `event:scroll` ...) for an error while the grid handles a DOM event: it is reported and then thrown on, so the console shows it as before; `"picture"` (a picture drag that could not be applied); `"ImportXlsx"` (also `ImportXlsxFromBuffer`): the file could not be read; the returned promise still rejects. NOT reported: what a member called by the host throws (it is thrown to the caller); a clipboard the browser refuses (Copy / Cut / Paste resolve to `false`); an OnValidationNotice callback that throws (it propagates to the caller of the entry). An error thrown inside an OnError callback is dropped.
+- `OnError` sources: the name of the subscription whose callback threw (`"OnChange"`, `"OnSelectionChange"`, `"OnSheetsChange"`, `"OnSheetChanged"`, `"OnEditStateChange"`, `"OnReadOnlyChange"`, `"OnHyperlinkActivate"`, `"OnContextMenu"`, `"OnFilterButton"`; the other subscribers are still told); `"event:<dom event>"` (`event:keydown`, `event:mousedown`, `event:paste`, `event:scroll` ...) for an error while the grid handles a DOM event: it is reported and then thrown on, so the console shows it as before; `"picture"` (a picture drag that could not be applied); `"ImportXlsx"` (also `ImportXlsxFromBuffer`): the file could not be read; the returned promise still rejects. NOT reported: what a member called by the host throws (it is thrown to the caller); a clipboard the browser refuses (Copy / Cut / Paste resolve to `false`); an OnValidationNotice callback that throws (it propagates to the caller of the entry). An error thrown inside an OnError callback is dropped.
 - `GetStatus`: `count` = cells that hold something (empty text and format-only cells do not count), `numericCount` = numbers among them (dates are numbers; a formula counts by its result; text, booleans and errors are not numbers), `sum` / `average` / `min` / `max` over the numbers, `null` when there is none. Rows hidden by the AutoFilter are left out (Excel's status bar); rows hidden by hand are counted. Cached: the same object is returned until the sheet's cells, the filter's hidden rows or the selection change. Cost: a selection up to 20 000 cells is walked cell by cell (well under 1 ms for typical selections); larger ones (whole rows / columns / sheet) cost one pass over the cells that exist: about 100 ms for the whole 846 000-cell dashboard "Data" sheet, once.
 - `OnSelectionChange` payload gained `Status`: the `GetStatus()` object of the new selection, worked out when the property is first read (a subscriber that does not read it pays nothing: a selection change on the 846k-cell sheet stays under 1 ms). The selection event does not fire when the cells of an unchanged selection change: call `GetStatus()` from `OnChange` to keep a status bar current.
 - `GetUsedRange`: the smallest range holding every cell with a value, a format or a note and every merged cell, as Excel's `UsedRange` (it need not start at A1; it does not shrink for cells that were emptied but keep a format). A sheet of an opened file that was not converted yet (`IsSheetLoaded`) is converted by the call.
@@ -882,6 +1013,50 @@ The `pageSetup` object:
 - XLSX: a sheet of an opened file whose setup was not changed is written exactly as the file had it (also a multi-area print area and printer settings the editor does not model). Once the page setup of a sheet is changed, the `<pageSetup>` element is written from the model: `horizontalDpi` / `verticalDpi`, the printer-settings relationship (`r:id`), `draft`, `errors`, `copies` and `autoPageBreaks` are not written for that sheet.
 - Page count and page rectangles: `GetPrintPages` (above). The pagination (`Pagination.paginatePrinted`) is part of the browser bundle and is the one the PDF export (below) lays its pages out with.
 
+### Browser shell command routing and selection dialogs
+
+`createSpreadsheetShell(grid, onAction)` owns **File → Open/Save/Print PDF**, formatting, undo/redo, Format Cells, find/replace and Data → Sort/Filter/Data validation. The prior `onFind` and `onReplace` arguments are removed; `onAction` no longer receives formatting/history/file/search/sort/filter/validation actions. It still receives clipboard (`cut`, `copy`, `paste`) and row/column structure actions. Existing callers must remove their format/find/sort/filter callbacks. `shell.Commands` is the shared command registry: `Run(id, argument?)`, `State(id)` and `OnChange(listener)`; argument-bearing commands include `format.fontFamily`, `format.fontSize`, `format.textColor` and `format.bgColor`.
+
+Data menu selectors are `[data-sheet-menu-item='validation']`, `sort-custom`, `sort-asc`, `sort-desc`, `filter`, and `clear-filter`; commands are `data.validation`, `data.sort`, `data.sortAsc`, `data.sortDesc`, `data.filter`, and `data.clearFilter`. Dialog roots use `data-testid="xl-dlg-data-validation"`, `"xl-dlg-data-sort"` and `"xl-dlg-data-filter"`; each has an `error` status and Cancel/Apply buttons (`xl-dlg-data-validation-apply`, `xl-dlg-data-sort-apply`, `xl-dlg-data-filter-apply`). Validation also offers `xl-dlg-data-validation-clear`; Filter offers `xl-dlg-data-filter-clear` for the selected column. Opening commits a pending valid cell edit; a refused edit does not open the dialog. Forms seed from selection and existing rules/filters, and reject a workbook changed while open. Cancel does not change the workbook; invalid Apply keeps the values and message visible. The validation form edits the engine's eight types and eight comparison operators plus list source/values, dropdown, blanks, input and error settings. A single existing rule covering the whole selection seeds the form; mixed selections begin with defaults rather than silently copying the active cell's rule. Apply changes only the specified range; Clear takes validation off it.
+
+Custom sort takes the selected range (or current data region if one cell is selected), header and case options, and one or two value/cell-color/font-color keys with directions. Quick sort uses the engine's current-region and header-guess behavior. Filter defaults to the existing AutoFilter's range or the selected range/current region; it supports visible values and blanks, one/two conditions, top/bottom counts or percentages, cell/font color, and above/below average. An imported unsupported `{ kept: true }` criterion remains untouched unless another supported type is explicitly chosen. Apply uses `SetAutoFilterAndFilter` so changing both range and criterion validates before mutation and creates only one undo step; Clear filters removes all column criteria while preserving the AutoFilter range.
+
+The Format → Format cells dialog (Ctrl/Cmd+1) reads **the selection's** number format, font, alignment, wrap/shrink, rotation, indent, colors and border sides. A mixed field starts marked `<mixed>` and is omitted unless changed; blank nullable fields reset to defaults. Diagonal direction flags show their current value on a single cell; for a range they start `<mixed>` because `GetSelectionFormat` does not summarize these flags. The dialog sends a single `ApplyFormatPatch` with just the edited fields, producing one undo step. The font family/size controls and checked/mixed formatting buttons track selection, undo/redo, workbook imports and sheet changes. Ctrl/Cmd+B/I/U apply once to the selected cells; shortcuts never intercept foreign inputs, composition or the active cell editor.
+
+Edit → Find and replace and a mounted shell's Ctrl/Cmd+F toggle the grid-owned inline search bar. Bare grid Ctrl/Cmd+F, Ctrl/Cmd+H, `grid.ShowFindReplaceDialog()` and `shell.ShowFindReplace()` open it without spawning another bar. A shell hosts the same controls, not another dialog; multiple grids keep their own searches. The bar supports case sensitivity, whole-cell and regular-expression matching, displayed values or entered formulas, the current sheet or workbook, and an optional sheet range (`range` cannot be combined with workbook scope). Find next / previous select matches and report the position and total; Enter / Shift+Enter navigate and Escape closes the bar. Replace current uses `ReplaceMatch`, including formula and regex replacements; Replace all uses `ReplaceAll` as one undo step. A refused pending cell edit blocks navigation / replacement without losing the entry. Search and navigation work in read-only mode; replacement buttons are disabled there. Results refresh on edits, undo, sheet changes and imports; invalid options show an error without changing cells.
+
+The shell and standalone `createFormulaBar` install the same shared Office control styles once per document, scoped to `.rb-office-shell.sheet-shell` and `.rb-office-shell.sheet-formula-bar`; mounting or disposing one does not remove styles from another. The host should give each shell a width-constrained container; at narrow widths the toolbar wraps and scrolls inside its own row, search controls wrap, and menu panels stay inside the shell. The grid/canvas is not scaled by shell styles. Existing `data-sheet-*` hooks remain available to hosts.
+
+The shell displays live selection statistics in `.sheet-selection-status[role="status"]`; each labeled field has `data-sheet-selection-stat="count"`, `"numericCount"`, `"sum"`, `"average"`, `"min"` or `"max"`. Count is populated cells, not selected area; Numeric count excludes text, booleans and errors. Sum, Average, Min and Max are hidden when no numeric cells exist (including an empty or text-only selection). The values come directly from cached `GetStatus()`, including its AutoFilter exclusions and sparse whole-row/column behavior, and refresh after selections, committed cell changes/recalculation, undo/redo, sheet changes and import. Pending edits leave the displayed committed values unchanged. The statistics wrap within narrow shells and are distinct from the print/file message status.
+
+Toolbar icon buttons have full accessible names and tooltips; bold/italic/underline toggles report `aria-pressed` (`true`, `false`, or `mixed`) from the current selection, while one-shot and format-selection actions have no pressed state. Menu triggers expose `aria-expanded`, menu entries are ordinary buttons with native Tab navigation, and Escape closes an open panel. Opening the text/fill color picker leaves cells unchanged; only a picker `change` applies the chosen color. Direct `shell.Commands.Run("format.textColor", color)` and `shell.Commands.Run("format.bgColor", color)` remain available to hosts.
+
+The title shows the filename and unsaved state; Save uses the opened filename
+(initially `Workbook1.xlsx`). Downloads report browser handoff, not disk persistence.
+
+Open confirms unsaved replacement, parses before installation, and rejects stale
+completion after another open, workbook replacement, edits or disposal. Failed/
+cancelled imports retain the prior workbook, history, filename and pending entry.
+Save commits the active cell before capturing its revision; validation rejection
+retains the editable buffer and prevents a download. Later edits remain dirty.
+Active cell editing also protects replacement and page unload. Browser policy
+controls whether an unload warning is shown. Dispose the shell to remove its
+subscriptions and page listeners.
+
+Additional host APIs used by these workflows:
+
+| Member | Contract |
+|---|---|
+| `ImportXlsxIfCurrent(data, canInstall): Promise<boolean>` | Same accepted inputs/parser as `ImportXlsx`; preflights the active sheet and calls the synchronous guard before installation. False vetoes replacement without changing the workbook. Parse failures reject. |
+| `GetWorkbookEpoch(): number` | Workbook identity token; changes on replacement even when the content revision matches. |
+| `GetChangeSerial(): number` | Monotonic content-change token, including undo/redo; unlike `GetRevision`, does not return to an earlier value. |
+| `OwnsKeyboardTarget(target): boolean` | Whether a DOM keyboard target belongs to this grid. |
+| `TryCommitEdit(): boolean` | Commit through normal validation/recalculation/history; false preserves the rejected buffer for correction. Use before capturing a revision for a host-owned save. |
+
+`ExportXlsx` snapshots the source package and iteration settings before asynchronous
+archive reads, so a later replacement cannot mix another workbook into that export.
+Raw `ExportXlsx` does not itself commit an active input buffer.
+
 ### PDF and printing (in the browser)
 The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the one the .NET hosts and `tools/spreadsheet-pdf-runner` use) is in the browser build as `dist/spreadsheet-pdf`. It shares the modules of `dist/spreadsheet` (`scripts/share-bundle-modules.mjs`: it has only its own `Pdf.js` and the PDF and font-subsetting libraries, about 650 kB of JavaScript) and is loaded by the component with the first `ExportPdf` / `PrintPdf` (a dynamic `import("../spreadsheet-pdf/Pdf.js")`, which a bundler turns into a chunk of its own); a page that never asks for a PDF never loads it.
 
@@ -889,7 +1064,18 @@ The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the one the .NET hosts and 
 |---|---|---|---|
 | `SetPdfFonts(fonts)` | `[{ faceName?, family, bold, italic, data }]` or null | | The TrueType faces the PDF sets text in (`data`: a `Uint8Array` / `ArrayBuffer` of the `.ttf`; `faceName`: the face's name inside the PDF, default the family with `-Bold` / `-Italic` / `-BoldItalic`, spaces taken out). A cell is set in the face of its family, bold and italic (else the regular face of its family, else the default font's). **The faces a host makes for Word's PDF are taken as they are**: the `FontFace` records of `word-pdf/Pdf.js` (`new FontFace(faceName, family, bold, italic, data)`, fields `FaceName` ... `Data`) - a host loads its fonts once for both editors (redbat's `loadPdfFontFaces(FontFace)` of its Word PDF export). Without faces the PDF has no text. A browser cannot hand a page the bytes of the fonts it has installed: the host serves the files. |
 | `ExportPdf(options?)` | `{ what?: "sheet" \| "selection" \| "workbook", sheetIndex?, fileName?, defaultFont?, fonts? }` | `Promise<Uint8Array>` | The PDF as Excel prints: each sheet by its page setup - print area (several areas: each its own run of pages), print titles, scale or fit to pages, paper and orientation, margins and centring, headers and footers (`&P &N &D &T &A &F` and their fonts), grid lines and headings when the setup prints them, page order, manual breaks - the pages of `GetPrintPages`, with its charts, shapes, pictures and slicers. `what`: `"sheet"` (default; the sheet on display or `sheetIndex`), `"selection"` (the cells selected, Excel's *Print Selection*: the sheet's setup with the selection as its print area), `"workbook"` (every visible worksheet, one after the other, each by its own setup; chart sheets are left out). `fileName` is what `&F` prints (default `""`), `defaultFont` the family of cells that name none (default `"Calibri"`), `fonts` faces for this export only (as `SetPdfFonts`). A sheet not converted yet is converted. Pictures in PNG are drawn by the browser into JPEG on white first (the writer's browser build embeds JPEG as it is and cannot decode PNG): transparency becomes white. Throws (synchronously) for an unknown key or `what`. |
-| `PrintPdf(options?)` | as `ExportPdf` | `Promise<void>` | **Printing through the browser**: the PDF of `ExportPdf(options)` in a hidden `<iframe data-spreadsheet-print>` of the page, whose print dialog is opened (`contentWindow.print()`); the pages printed are the PDF's, so they are Excel's pages, whatever the page's own look. Resolves once the dialog was opened; the frame is removed a minute later or by the next print. |
+| `PrintPdf(options?)` | as `ExportPdf` | `Promise<void>` | **Printing through the browser**: the PDF of `ExportPdf(options)` in a hidden `<iframe data-spreadsheet-print>`, followed by `contentWindow.print()`. Resolves after requesting the browser print dialog, not after confirmed printing. The frame is removed a minute later or by the next print. |
+
+The browser shell calls **File → Print PDF** directly through `grid.PrintPdf()`.
+Its two-argument factory and callback contract are described above; see
+[shell usage](../src/Grid/TOOLBAR-USAGE.md).
+
+Configure `grid.SetPdfFonts(...)` with host-served TrueType bytes before printing:
+**without faces the PDF has no text**. The shell does not bundle or discover font
+files. Its live status reports preparation, the dialog request, or an export/
+browser error; repeated clicks while pending are ignored. Call `shell.Dispose()`
+when removing it. Detached/disposed/replaced shell UI ignores late completion;
+disposing the shell does not cancel a PDF export or browser print already begun.
 
 **The other way to print** is the page's own print (`window.print()`, Ctrl+P): it prints the page as it is on screen - the grid's cells in view, the toolbar and whatever else the page shows - not the sheet's pages; it needs a print stylesheet of the host's to hide the rest and still prints only what is in view, without page setup, headers or footers. A host that wants Ctrl+P to print the sheet catches the key (or the `beforeprint` event cannot redirect it: it can only change the page's look) and calls `PrintPdf()`. To save the PDF instead, a host hands the bytes of `ExportPdf` to a download (`URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))`).
 

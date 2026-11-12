@@ -7,7 +7,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="WordImport.fs" />
-    <Compile Include="NativeRunnerCompat.fs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />

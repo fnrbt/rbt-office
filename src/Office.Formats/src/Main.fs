@@ -101,314 +101,13 @@ module Word =
 
 // Public API for Document Processors
 module Processors =
-    let private wordColorToCss (color: string option) =
-        color
-        |> Option.bind (fun value ->
-            if value = "auto" || value = "" then None
-            elif value.StartsWith("#") then Some value
-            elif value.Length = 8 then Some ("#" + value.Substring(2).ToUpper())
-            else Some ("#" + value.ToUpper()))
-
-    let private wordFontSizeToCssPixels (size: string option) =
-        size
-        |> Option.bind (fun value ->
-            match System.Double.TryParse(value) with
-            | true, parsed -> Some ((parsed / 2.0) * 96.0 / 72.0)
-            | false, _ -> None)
-
-    let private wordTwipsToCssPixels (value: string option) =
-        value
-        |> Option.bind (fun text ->
-            match System.Double.TryParse(text) with
-            | true, parsed -> Some (parsed / 15.0)
-            | false, _ -> None)
-
-    let private wordCharacterSpacingToCssPixels = wordTwipsToCssPixels
-
-    let private wordTwipsToPoints (value: string option) =
-        value
-        |> Option.bind (fun text ->
-            match System.Double.TryParse(text) with
-            | true, parsed -> Some (parsed / 20.0)
-            | false, _ -> None)
-
-    let private wordAutoSpacingPoints = 14.0
-
-    let private wordStyleSpacing value auto =
-        if auto = Some true then Some wordAutoSpacingPoints else wordTwipsToPoints value
-
-    let private wordLineSpacingValue (fontSize: float option) (value: string option) (rule: string option) =
-        value
-        |> Option.bind (fun text ->
-            match System.Double.TryParse(text) with
-            | true, parsed ->
-                match rule with
-                | Some "exact"
-                | Some "atLeast" -> Some (parsed / 15.0)
-                | _ -> Some (parsed / 240.0)
-            | false, _ -> None)
-
-    let private wordInt (value: string option) =
-        value
-        |> Option.bind (fun text ->
-            match System.Int32.TryParse(text) with
-            | true, parsed -> Some parsed
-            | false, _ -> None)
-
-    let private resolveThemeFont (theme: DocxReader.Theme option) (themeFont: string option) =
-        match theme, themeFont with
-        | Some theme, Some value when value.StartsWith("major") -> theme.MajorFont
-        | Some theme, Some value when value.StartsWith("minor") -> theme.MinorFont
-        | _ -> None
-
-    let private hexByte (text: string) =
-        let nibble ch =
-            if ch >= '0' && ch <= '9' then Some (int ch - int '0')
-            elif ch >= 'A' && ch <= 'F' then Some (10 + int ch - int 'A')
-            elif ch >= 'a' && ch <= 'f' then Some (10 + int ch - int 'a')
-            else None
-        if text.Length <> 2 then None
-        else
-            match nibble text.[0], nibble text.[1] with
-            | Some high, Some low -> Some (high * 16 + low)
-            | _ -> None
-
-    let private clampByte value = max 0 (min 255 value)
-
-    let private transformThemeColor (themeTint: string option) (themeShade: string option) (color: string) =
-        if color.Length <> 7 || not (color.StartsWith("#")) then color
-        else
-            let transformed =
-                [ color.Substring(1, 2); color.Substring(3, 2); color.Substring(5, 2) ]
-                |> List.map (fun part ->
-                    let channel = hexByte part |> Option.defaultValue 0
-                    let shaded = themeShade |> Option.bind hexByte |> Option.map (fun shade -> int (float channel * (float shade / 255.0)) |> clampByte) |> Option.defaultValue channel
-                    themeTint |> Option.bind hexByte |> Option.map (fun tint -> int (float shaded + (float (255 - shaded) * (float tint / 255.0))) |> clampByte) |> Option.defaultValue shaded)
-            sprintf "#%02X%02X%02X" transformed.[0] transformed.[1] transformed.[2]
-
-    let private resolveThemeColor (theme: DocxReader.Theme option) (themeColor: string option) (themeTint: string option) (themeShade: string option) =
-        match theme, themeColor with
-        | Some theme, Some key -> Map.tryFind key theme.Colors |> Option.map (transformThemeColor themeTint themeShade)
-        | _ -> None
-
-    let private styleToObj (theme: DocxReader.Theme option) (style: DocxReader.StyleDefinition) =
-        createObj [
-            "StyleId" ==> style.Id
-            "Name" ==> style.Name
-            "StyleType" ==> style.StyleType
-            "IsDefaultStyle" ==> style.IsDefault
-            "BasedOn" ==> style.BasedOn
-            "NextStyle" ==> style.Next
-            "LinkedStyle" ==> style.Linked
-            "IsQuickStyle" ==> style.IsQuickStyle
-            "StyleAliases" ==> style.Aliases
-            "StyleUiPriority" ==> (style.UiPriority |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
-            "StyleSemiHidden" ==> style.SemiHidden
-            "StyleUnhideWhenUsed" ==> style.UnhideWhenUsed
-            "StyleBold" ==> (style.RunProperties |> Option.bind (fun props -> props.Bold))
-            "StyleItalic" ==> (style.RunProperties |> Option.bind (fun props -> props.Italic))
-            "StyleUnderline" ==> (style.RunProperties |> Option.bind (fun props -> props.Underline))
-            "StyleAllCaps" ==> (style.RunProperties |> Option.bind (fun props -> props.AllCaps))
-            "StyleSmallCaps" ==> (style.RunProperties |> Option.bind (fun props -> props.SmallCaps))
-            "StyleStrike" ==> (style.RunProperties |> Option.bind (fun props -> props.Strike))
-            "StyleVertAlign" ==> (style.RunProperties |> Option.bind (fun props -> props.VertAlign))
-            "StyleFontSize" ==> (style.RunProperties |> Option.bind (fun props -> wordFontSizeToCssPixels props.FontSize))
-            "StyleCharacterSpacing" ==> (style.RunProperties |> Option.bind (fun props -> wordCharacterSpacingToCssPixels props.CharacterSpacing))
-            "StyleFontFamily" ==> (style.RunProperties |> Option.bind (fun props -> props.FontFamily |> Option.orElse (resolveThemeFont theme props.ThemeFont)))
-            "StyleColor" ==> (style.RunProperties |> Option.bind (fun props -> wordColorToCss props.Color |> Option.orElse (resolveThemeColor theme props.ThemeColor props.ThemeTint props.ThemeShade)))
-            "StyleHighlight" ==> (style.RunProperties |> Option.bind (fun props -> props.Highlight))
-            "StyleSpacingBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordStyleSpacing props.SpacingBefore props.SpacingBeforeAuto))
-            "StyleSpacingAfter" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordStyleSpacing props.SpacingAfter props.SpacingAfterAuto))
-            "StyleLineSpacing" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordLineSpacingValue (style.RunProperties |> Option.bind (fun run -> wordFontSizeToCssPixels run.FontSize)) props.LineSpacing props.LineRule))
-            "StyleLineRule" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.LineRule))
-            "StyleAlignment" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.Alignment))
-            "StyleIndentLeft" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentLeft))
-            "StyleIndentRight" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordTwipsToCssPixels props.IndentRight))
-            // A hanging indent is a negative first-line indent, as on a paragraph.
-            "StyleFirstLineIndent" ==> (style.ParagraphProperties
-                                        |> Option.bind (fun props ->
-                                            wordTwipsToCssPixels props.FirstLineIndent
-                                            |> Option.orElse (wordTwipsToCssPixels props.HangingIndent |> Option.map (fun hanging -> -hanging))))
-            "StyleBackgroundColor" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordColorToCss props.BackgroundColor))
-            "StyleOutlineLevel" ==> (style.ParagraphProperties |> Option.bind (fun props -> wordInt props.OutlineLevel))
-            "StyleKeepNext" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.KeepNext))
-            "StyleKeepLines" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.KeepLines))
-            "StylePageBreakBefore" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.PageBreakBefore))
-            "StyleWidowControl" ==> (style.ParagraphProperties |> Option.bind (fun props -> props.WidowControl))
-        ]
-
-    let private editorParagraphToObj (para: DocumentProcessors.EditorProcessor.EditorParagraph) =
-        createObj [
-            "Runs" ==> (para.Runs |> List.toArray)
-            "Alignment" ==> para.Alignment
-            "IndentLeft" ==> para.IndentLeft
-            "IndentRight" ==> para.IndentRight
-            "FirstLineIndent" ==> para.FirstLineIndent
-            "RightTabPosition" ==> para.RightTabPosition
-            "RightTabLeader" ==> para.RightTabLeader
-            "SpacingBefore" ==> para.SpacingBefore
-            "SpacingAfter" ==> para.SpacingAfter
-            "LineSpacing" ==> para.LineSpacing
-        ]
-
-    /// Build editor "TextBox" objects (incl. preset/custom geometry + gradient)
-    /// for every drawing shape in the document.
-    [<Fable.Core.Emit("($0.AnchorBlock == null ? -1 : $0.AnchorBlock)")>]
-    let private anchorBlockOrMinusOne (_shape: obj) : int = Fable.Core.Util.jsNative
-
-    let private shapeObjectsFor (imageOf: string -> string option) (doc: DocxReader.WordDocument) : obj array =
-        let styleMap = DocumentProcessors.StyleResolution.buildStyleMapWithTheme doc.Theme doc.Styles
-        let comments = doc.Comments |> List.map (fun comment -> comment.Id, comment) |> Map.ofList
-        let noteText (note: DocxReader.Note) =
-            note.Content
-            |> List.collect (fun para -> para.Runs)
-            |> List.map (fun run -> DocumentProcessors.EditorProcessor.extractRunText Map.empty run.Content)
-            |> String.concat ""
-        let notes =
-            (doc.Footnotes |> List.map (fun note -> ("footnote", note.Id), noteText note)) @
-            (doc.Endnotes |> List.map (fun note -> ("endnote", note.Id), noteText note))
-            |> Map.ofList
-        let rec shapeObject (shape: DocxReader.Shape) : obj =
-            // (As the body's paragraphs are made: the same properties in the same units. They were made
-            // by an older path that gave an indent in points where the editor reads pixels.)
-            let paragraphs =
-                DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme (shape.Content |> List.map DocxReader.Para) doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
-            let geometry =
-                if not shape.CustomPath.IsEmpty then "custom"
-                else shape.Preset |> Option.defaultValue "rect"
-            let customPath =
-                shape.CustomPath
-                |> List.map (fun seg -> createObj [ "Op" ==> seg.Op; "P" ==> (seg.Pts |> List.toArray) ])
-                |> List.toArray
-            let gradient =
-                shape.Gradient
-                |> Option.map (fun g ->
-                    createObj [
-                        "Stops" ==> (g.Stops |> List.map (fun s -> createObj [ "Offset" ==> s.Offset; "Color" ==> s.Color ]) |> List.toArray)
-                        "Angle" ==> g.Angle
-                        "Radial" ==> g.Radial ])
-                |> Option.toObj
-            createObj [
-                "Type" ==> "TextBox"
-                "ShapeId" ==> shape.Id
-                "ShapeKind" ==> shape.Type
-                "Width" ==> shape.Width
-                "Height" ==> shape.Height
-                "X" ==> (shape.Position |> Option.map fst)
-                "Y" ==> (shape.Position |> Option.map snd)
-                "FillColor" ==> shape.FillColor
-                "BorderColor" ==> shape.BorderColor
-                "BorderWidth" ==> shape.BorderWidth
-                "Geometry" ==> geometry
-                "CustomPath" ==> customPath
-                "CustomW" ==> (shape.CustomW |> Option.defaultValue 0.0)
-                "CustomH" ==> (shape.CustomH |> Option.defaultValue 0.0)
-                "Gradient" ==> gradient
-                "Rotation" ==> shape.Rotation
-                "FlipH" ==> shape.FlipH
-                "FlipV" ==> shape.FlipV
-                "AnchorBlock" ==> shape.AnchorBlock
-                "Inline" ==> shape.Inline
-                "Wrap" ==> shape.Wrap
-                "PositionHRelativeFrom" ==> shape.PositionHRelativeFrom
-                "PositionVRelativeFrom" ==> shape.PositionVRelativeFrom
-                "PositionHAlign" ==> shape.PositionHAlign
-                "PositionVAlign" ==> shape.PositionVAlign
-                "BehindDoc" ==> shape.BehindDoc
-                "AllowOverlap" ==> shape.AllowOverlap
-                "LayoutInCell" ==> shape.LayoutInCell
-                "RelativeHeight" ==> shape.RelativeHeight
-                "DistanceTop" ==> shape.DistanceTop
-                "DistanceBottom" ==> shape.DistanceBottom
-                "DistanceLeft" ==> shape.DistanceLeft
-                "DistanceRight" ==> shape.DistanceRight
-                "NoFill" ==> shape.NoFill
-                "NoLine" ==> shape.NoLine
-                "BorderDash" ==> shape.LineDash
-                "Name" ==> shape.Name
-                "InsetLeft" ==> shape.InsetLeft
-                "InsetTop" ==> shape.InsetTop
-                "InsetRight" ==> shape.InsetRight
-                "InsetBottom" ==> shape.InsetBottom
-                "VerticalAnchor" ==> shape.VerticalAnchor
-                "AutoFit" ==> shape.AutoFit
-                "NoTextWrap" ==> shape.NoTextWrap
-                "FitText" ==> shape.FitText
-                "Opacity" ==> shape.Opacity
-                "SourceXml" ==> shape.SourceXml
-                "Paragraphs" ==> paragraphs
-                // (The shapes of a group or a drawing canvas, each where the group puts it.)
-                "Children" ==> (if shape.Children.IsEmpty then null else shape.Children |> List.map shapeObject |> List.toArray |> box)
-                "ChildSpaceWidth" ==> (shape.ChildSpace |> Option.map fst)
-                "ChildSpaceHeight" ==> (shape.ChildSpace |> Option.map snd)
-                "ImageSrc" ==> (shape.ImageRelationshipId |> Option.bind imageOf)
-            ]
-        doc.Shapes
-        |> List.filter (fun shape -> not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty || not shape.Children.IsEmpty)
-        |> List.map shapeObject
-        |> List.toArray
-
-    /// The header / footer parts for the editor with their shapes: a part's
-    /// shapes follow its blocks, as the body's follow the body's.
-    let private headerFootersWithShapes (doc: DocxReader.WordDocument) (parts: DocxReader.HeaderFooter list) (images: Map<string, string>) : obj array =
-        let items = DocxReader.toEditorHeaderFootersWithStylesAndTheme doc.Theme parts images doc.Styles
-        parts
-        |> List.iteri (fun index part ->
-            match part.RelationshipId |> Option.bind (fun id -> Map.tryFind id doc.PartShapes) with
-            | Some shapes when not shapes.IsEmpty && index < items.Length ->
-                let shapeItems = shapeObjectsFor (fun id -> Map.tryFind (DocxReader.partImageKey (part.RelationshipId |> Option.defaultValue "") id) images) { doc with Shapes = shapes }
-                let paragraphs : obj array = items.[index]?Paragraphs |> unbox
-                items.[index]?Paragraphs <- Array.append paragraphs shapeItems
-            | _ -> ())
-        items
-
-    /// The kept parts, with the child element of w:body each item of
-    /// Paragraphs was read from (a shape: the element of the block it is
-    /// anchored in): the writer puts an element back as it was when its items
-    /// were not changed.
-    let private preservedWithItemChunks (doc: DocxReader.WordDocument) (contentItems: obj array) (shapeItems: obj array) : obj =
-        let preserved = DocxReader.toEditorPreserved doc.Preserved
-        let contentChunks = doc.Preserved.BodyContentChunks |> List.toArray
-        if contentChunks.Length = contentItems.Length then
-            let shapeChunks =
-                shapeItems
-                |> Array.map (fun shape ->
-                    let anchor = anchorBlockOrMinusOne shape
-                    if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
-            preserved?BodyItemChunks <- Array.append contentChunks shapeChunks
-        // (Of each header and footer the same, by its relationship id: its shapes follow its blocks.)
-        let partChunks =
-            doc.Headers @ doc.Footers
-            |> List.choose (fun part ->
-                match part.RelationshipId with
-                | Some relId when part.ItemChunks.Length = part.Blocks.Length ->
-                    let contentChunks = part.ItemChunks |> List.toArray
-                    let shapeChunks =
-                        match Map.tryFind relId doc.PartShapes with
-                        | Some shapes when not shapes.IsEmpty ->
-                            shapeObjectsFor (fun _ -> None) { doc with Shapes = shapes }
-                            |> Array.map (fun shape ->
-                                let anchor = anchorBlockOrMinusOne shape
-                                if anchor >= 0 && anchor < contentChunks.Length then contentChunks.[anchor] else -1)
-                        | _ -> [||]
-                    Some (createObj [ "Part" ==> relId; "Chunks" ==> Array.append contentChunks shapeChunks; "Count" ==> part.ChunkCount ])
-                | _ -> None)
-        preserved?PartItemChunks <- List.toArray partChunks
-        // (Of each note and comment the same, by its part and id: the element of w:footnote, w:endnote or
-        // w:comment each of its blocks came from.)
-        let storyChunks (part: string) (stories: (string * DocxReader.DocumentContent list * int list * int) list) =
-            stories
-            |> List.choose (fun (id, blocks, chunks, count) ->
-                if chunks.Length = blocks.Length && count > 0 then
-                    Some (createObj [ "Part" ==> part; "Id" ==> id; "Chunks" ==> List.toArray chunks; "Count" ==> count ])
-                else None)
-        preserved?NoteItemChunks <-
-            List.toArray (
-                storyChunks "footnotes" (doc.Footnotes |> List.map (fun note -> note.Id, note.Blocks, note.ItemChunks, note.ChunkCount))
-                @ storyChunks "endnotes" (doc.Endnotes |> List.map (fun note -> note.Id, note.Blocks, note.ItemChunks, note.ChunkCount))
-                @ storyChunks "comments" (doc.Comments |> List.map (fun comment -> comment.Id, comment.Blocks, comment.ItemChunks, comment.ChunkCount)))
-        preserved
-
+    /// Portable document model; native callers retain typed source/package
+    /// information without passing through the browser object adapter.
+    let forTypedEditorPackage = WordEditorPackageReader.ofDocument
+#if !FABLE_COMPILER
+    let forTypedEditorPackageBytes = WordEditorPackageReader.loadBytesNative
+#endif
+#if FABLE_COMPILER
     /// A copy of the file a package was opened from, when it was given as bytes: kept with what
     /// the writer needs (Preserved.OpenedBytes), it is what an unchanged document is saved as
     /// (see DocumentWriter.writeFromEditorPackage).
@@ -422,24 +121,14 @@ module Processors =
 
             match docOpt with
             | Some doc ->
-                let paragraphs =
-                    DocxReader.toEditorParagraphsWithStylesThemeAndNumbering doc.Theme doc.Content doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes doc.Endnotes
-                let shapeItems = shapeObjectsFor (fun id -> Map.tryFind id doc.Images) doc
-                let preserved = preservedWithItemChunks doc paragraphs shapeItems
-                preserved?OpenedBytes <- openedBytesOf fileData
-                let paragraphs = Array.append paragraphs shapeItems
-                return createObj [
-                    "Paragraphs" ==> paragraphs
-                    "Styles" ==> (doc.Styles |> List.map (styleToObj doc.Theme) |> List.toArray)
-                    "HeaderParts" ==> headerFootersWithShapes doc doc.Headers doc.Images
-                    "FooterParts" ==> headerFootersWithShapes doc doc.Footers doc.Images
-                    "PageSetup" ==> DocxReader.toEditorPageSetup doc
-                    "Footnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Footnotes
-                    "Endnotes" ==> DocxReader.toEditorNotes doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Endnotes
-                    "Comments" ==> DocxReader.toEditorComments doc.Theme doc.Images doc.Styles doc.NumberingDefinitions doc.Comments
-                    "Preserved" ==> preserved
-                    "Theme" ==> (doc.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
-                ]
+                let typed = WordEditorPackageReader.ofDocument doc
+                let opened = openedBytesOf fileData
+                let typed =
+                    if isNull opened then typed
+                    else { typed with
+                             Preserved = typed.Preserved |> Option.map (fun preserved ->
+                                 { preserved with OpenedBytes = Some (unbox<byte[]> opened) }) }
+                return WordEditorPackage.packageToEditorObject typed
             | None ->
                 return createObj [
                     "Paragraphs" ==> [||]
@@ -568,7 +257,7 @@ module Processors =
                 let reader () : DocxReader.ProgressiveReader = match current with | Some reader -> reader | None -> cancelledReader
                 let firstBlocks = max 1 (int (numberOption options "firstBlocks" 64.0))
                 let sliceMs = max 1.0 (numberOption options "sliceMs" 10.0)
-                let convert = DocxReader.editorParagraphConverter front.Theme front.Styles front.NumberingDefinitions front.Footnotes front.Endnotes
+                let convert = WordEditorPackageReader.converter front
                 let paragraphs : obj array = [||]
                 let shapeItems = ResizeArray<obj>()
                 let listeners = ResizeArray<obj>()
@@ -581,20 +270,17 @@ module Processors =
                 let headerImages = (reader ()).ImagesOf (blocksOf front.Headers @ blocksOf front.Footers)
                 let noteImages = (reader ()).ImagesOf (noteBlocks front.Footnotes @ noteBlocks front.Endnotes)
                 let commentImages = (reader ()).ImagesOf (front.Comments |> List.collect (fun comment -> comment.Blocks))
+                let mergeImages images additional =
+                    additional |> Map.fold (fun kept id source -> Map.add id source kept) images
+                let frontWithImages =
+                    { front with Images = mergeImages (mergeImages (mergeImages front.Images headerImages) noteImages) commentImages }
+                let typedFront = WordEditorPackageReader.ofDocument frontWithImages
                 let package =
-                    createObj [
-                        "Paragraphs" ==> paragraphs
-                        "Styles" ==> (front.Styles |> List.map (styleToObj front.Theme) |> List.toArray)
-                        "HeaderParts" ==> headerFootersWithShapes front front.Headers headerImages
-                        "FooterParts" ==> headerFootersWithShapes front front.Footers headerImages
-                        "PageSetup" ==> DocxReader.toEditorPageSetup front
-                        "Footnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Footnotes
-                        "Endnotes" ==> DocxReader.toEditorNotes front.Theme noteImages front.Styles front.NumberingDefinitions front.Endnotes
-                        "Comments" ==> DocxReader.toEditorComments front.Theme commentImages front.Styles front.NumberingDefinitions front.Comments
-                        "Preserved" ==> preserved
-                        "Theme" ==> (front.Theme |> Option.map (fun theme -> createObj [ "MajorFont" ==> theme.MajorFont; "MinorFont" ==> theme.MinorFont; "Colors" ==> createObj (theme.Colors |> Map.toList |> List.map (fun (key, value) -> key ==> value)) ]))
-                        "Progressive" ==> state
-                    ]
+                    WordEditorPackage.packageToEditorObject
+                        { typedFront with Blocks = [||]; Preserved = None }
+                package?Paragraphs <- paragraphs
+                package?Preserved <- preserved
+                package?Progressive <- state
                 let mutable complete = false
                 let mutable failed : exn option = None
                 // The page setup the package states: that of the section the blocks read so far end
@@ -603,15 +289,19 @@ module Processors =
                 let statePageSetup (setup: DocxReader.PageSetup option) =
                     if setup <> pageSetup then
                         pageSetup <- setup
-                        package?PageSetup <- DocxReader.toEditorPageSetup { front with PageSetup = setup }
+                        package?PageSetup <- (setup |> Option.map WordEditorPackageReader.pageSetup |> WordEditorPackage.pageSetupToEditorObject)
                         state?PageSetupVersion <- unbox<int> (state?PageSetupVersion) + 1
                 // Blocks a pass of about a millisecond reads: what the last ones say.
                 let mutable step = 8
                 let add (batch: DocxReader.ProgressiveBatch) =
                     if not batch.Blocks.IsEmpty then
-                        for item in convert batch.Blocks ((reader ()).ImagesOf batch.Blocks) do pushItem paragraphs item
+                        for item in convert batch.Blocks ((reader ()).ImagesOf batch.Blocks) |> WordEditorPackage.blocksToEditorObjects do
+                            pushItem paragraphs item
                     if not batch.Shapes.IsEmpty then
-                        shapeItems.AddRange (shapeObjectsFor (reader ()).ImageOf { front with Shapes = batch.Shapes })
+                        let shaped =
+                            WordEditorPackageReader.shapes convert front.Images (reader ()).ImageOf batch.Shapes
+                            |> WordEditorPackage.blocksToEditorObjects
+                        shapeItems.AddRange shaped
                     if not ((reader ()).IsDone ()) then statePageSetup ((reader ()).OpenSection ())
                     // (What the reader could not read: the blocks before it were in the batch.)
                     match (reader ()).Failure () with
@@ -621,7 +311,7 @@ module Processors =
                 let finish () =
                     let final = (reader ()).Finish ()
                     let shapes = shapeItems.ToArray()
-                    assignFields preserved (preservedWithItemChunks final paragraphs shapes)
+                    assignFields preserved (final |> WordEditorPackage.preservedOfDocument |> Some |> WordEditorPackage.preservedToEditorObject)
                     // (With the rest of what the writer needs, as forEditorPackage has it.)
                     preserved?OpenedBytes <- openedBytes
                     for item in shapes do pushItem paragraphs item
@@ -780,6 +470,7 @@ module Processors =
     /// Why not (Progressive.Error); null for a package that did not fail.
     let getLoadError (package: obj) : string =
         if isLoadFailed package then unbox<string> (package?Progressive?Error) else null
+#endif
 
 // Public API for Word Writing
 module WordWriter =
@@ -787,6 +478,7 @@ module WordWriter =
     let write (paragraphs: string list) = DocxWriter.writeMinimalDocx paragraphs
 
 
+#if FABLE_COMPILER
     let writeFromEditorPackage (package: obj) =
         DocumentWriter.writeFromEditorPackage package
 
@@ -805,6 +497,7 @@ module WordWriter =
     /// as they were read.
     let getLastSaveReport () : obj =
         DocumentWriter.lastSaveReport ()
+#endif
 
     /// Create document builder (Phase 3)
     let createDocument () = DocumentBuilder.create ()
@@ -815,8 +508,10 @@ module WordWriter =
     /// Add paragraph with runs to builder
     let addParagraphWithRuns = DocumentBuilder.addParagraphWithRuns
 
+#if FABLE_COMPILER
     /// Save document
     let saveDocument = DocumentBuilder.save
+#endif
 
     /// Helper to create a run
     let createRun = DocumentBuilder.createRun
@@ -1794,6 +1489,7 @@ module Excel =
     let evaluateFormula (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) (cell: XlsxReader.Cell) =
         XlsxReader.FormulaEngine.evaluateCell wb sheet cell
 
+#if FABLE_COMPILER
 // Example usage demonstrating the DSL
 [<ExportDefault>]
 let api () = {|
@@ -1890,6 +1586,7 @@ let api () = {|
         createMergedRange = ExcelWriter.createMergedRange
     |}
 |}
+#endif
 
 // Browser-friendly usage example
 [<Emit("console.log($0)")>]

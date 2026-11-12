@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // Browser checks for the Word editor's browser-only code (Input.fs, Word.fs,
-// Renderer.fs), run in headless Chromium against Fable output. The .NET suites
+// Renderer.fs), run in a headless browser (Chromium by default) against Fable output. The .NET suites
 // cannot reach this code (it is #if FABLE_COMPILER / jsNative).
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
 //   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
+//   dotnet fable src/Word.Pdf       --outDir $DIST/word-pdf       --lang JavaScript --noCache
+//   node scripts/share-bundle-modules.mjs $DIST/word-pdf $DIST/word Pdf.js Browser.js
+//   dotnet fsi scripts/stage-word-pdf-data.fsx $DIST/word-pdf
+//   export RB_WORD_FONT_DIR=/path/to/fonts # shell-pdf needs calibri.ttf or LiberationSans-Regular.ttf
 //   node tools/word-browser/run.mjs --dist $DIST [check ...]
+//   BROWSER=firefox node tools/word-browser/run.mjs --dist $DIST [check ...]
 //
 // Checks (tools/word-browser/checks/<name>.js, all by default):
 //   explicit-format  toggle bold off under a bold style, save, undo/redo
@@ -59,6 +64,14 @@
 //   patched-paragraph-xml  a part of a paragraph made bold / given a font, size, colour; its spacing, alignment, list: saved as its own XML with runs split and properties set, w14 content, proofing marks, smart tag, field code, comment range, hyperlink kept; in a table in the table's XML, a paragraph that cannot be patched alone from the model
 //   header-footer-xml a header or footer typed in is saved as the XML it was read from with the change made in it; a paragraph split there is two made of the one read
 //   save-undo-boundary a save is an undo boundary: what is typed after the export is a step of its own, undone to the saved state
+//   shell-save       File > Save downloads a preserved DOCX snapshot; failures and in-flight changes
+//   shell-files      DOCX open, named saves, unsaved protection and asynchronous replacement races
+//   shell-pdf        shell PDF export, fonts and in-flight print behavior
+//   shell-editing   selection-only formatting, undo/live modified state, find/replace and keyboard scope
+//   shell-page-setup  current-section page geometry, validation, undo and source-preserving section XML
+//   shell-word-count live body and selection word counts, history, import and shell lifecycle
+//   shell-context-menu context actions, read-only/composition boundaries and asynchronous clipboard ownership
+//   shell-table-properties  atomic table/row properties and imported XML preservation
 //   notes-xml        a part of notes or comments in which one changed keeps the others' XML as it was read
 //   note-body-edit   a footnote's / comment's body edited in place (enterNote, enterComment, a double click, real keys) is saved as the XML it was read from with the edit made in it
 //   split-join-xml   a paragraph split in two (Enter) is saved as two paragraphs made of the XML that was read, the run split, the second half without the paragraph's id; paragraphs joined (Backspace) are the first with the second's content; in a table cell too; a split joined again is the paragraph that was read
@@ -99,7 +112,7 @@
 //   bookmark-handover  a run's bookmarks handed typed from reader to editor to writer: a bookmark across a paragraph split by Enter, paragraphs joined by Backspace (one opened after the last run among them), a split undone, text pasted from a bookmark, a bookmark set inside another, one opened after a run removed - each saved as read and from the model, the ranges balanced, read again
 //   bookmark-splice  a bookmark renamed, removed (also one ending in the next paragraph, one opened after the last run) or added in a paragraph saved as the XML it was read from: the change made in its w:bookmarkStart / w:bookmarkEnd, the rest of the paragraph its bytes; saved as read and from the model, read again
 //
-// Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022).
+// Environment (as tools/docx-roundtrip/roundtrip.mjs): PLAYWRIGHT, JSZIP_DIR, PORT (default 16022), RB_WORD_FONT_DIR (PDF fonts).
 // Exit code is non-zero when any check fails.
 import http from 'node:http';
 import fs from 'node:fs';
@@ -116,11 +129,13 @@ const dist = path.resolve(opt('--dist') ?? path.join(repo, 'dist'));
 const port = Number(process.env.PORT ?? 16022);
 const all = ['explicit-format', 'page-frames', 'ime', 'typing', 'track-changes', 'linked-images', 'opaque-click', 'viewport', 'selection-format',
     'placeholder-and-frames', 'caret-movement', 'revision', 'viewer-measurers', 'page-centering', 'commands', 'image-handles', 'painter-frames', 'viewer-entry', 'keystroke-long', 'table-tools', 'caret-frames', 'viewer-first-page', 'required-fonts', 'progressive-layout', 'xml-scan', 'header-footer-edit', 'header-footer-variants', 'merged-cell-split', 'table-columns', 'anchored-objects', 'section-pages', 'table-borders', 'table-break-borders', 'body-page-field', 'nested-table-edit', 'edited-paragraph-xml', 'list-format-numbering', 'media-pruning', 'progressive-read', 'progressive-failure', 'progressive-cancel', 'fonts-pending', 'formatted-paragraph-xml', 'drawing-order', 'mass-format', 'underline-style', 'reference-marks', 'hyperlink-relationships', 'patched-paragraph-xml', 'split-join-xml', 'text-box-navigation', 'list-level-indent', 'pending-format', 'api-positions', 'rotated-text-box', 'table-insert-xml', 'table-structure-xml', 'wrap-band', 'api-units', 'link-underline', 'block-ids', 'text-box-exact-line', 'section-starts', 'list-levels', 'paste-and-boxes', 'bookmark-integrity', 'header-text-box', 'range-marks', 'field-results', 'comment-mark', 'native-fixture', 'shape-edit', 'measure-mid-layout', 'keys', 'header-box-pointer', 'shape-select', 'shape-pointer', 'editing', 'clipboard-keys', 'header-footer-xml', 'notes-xml', 'note-body-edit', 'default-tab-stop', 'flips', 'allow-overlap', 'save-undo-boundary', 'bookmark-handover', 'group-shapes', 'bookmark-splice'];
+all.push('shell-save', 'shell-files', 'shell-pdf', 'shell-editing', 'shell-table-properties', 'shell-word-count', 'shell-context-menu');
 const checks = args.length ? args : all;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
 if (!jszipDir) { console.error('jszip not found; set JSZIP_DIR'); process.exit(2); }
 const JSZip = createRequire(import.meta.url)(path.join(jszipDir, 'dist/jszip.min.js'));
+const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(repo, 'artifacts/fonts/windows'));
 const fixtures = new Map((await syntheticFixtures(JSZip)).map((f) => [f.name, f.data]));
 
 const page = (check) => `<!doctype html><meta charset="utf-8"><body style="margin:0">
@@ -135,6 +150,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/') return send(200, 'text/html', page(url.searchParams.get('check')));
     if (url.pathname === '/jszip.min.js') return send(200, 'text/javascript', fs.readFileSync(path.join(jszipDir, 'dist/jszip.min.js')));
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
+    if (url.pathname === '/font') { const name = path.basename(url.searchParams.get('name') ?? ''); const file = path.join(fontDir, name); return name && fs.existsSync(file) ? send(200, 'application/octet-stream', fs.readFileSync(file)) : send(404, 'text/plain', 'no font'); }
     // Stands in for an address a document names as the source of a linked picture.
     if (url.pathname === '/external-probe.png') { externalProbes++; return send(200, 'image/png', Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64')); }
     if (url.pathname === '/external-probe-count') return send(200, 'text/plain', String(externalProbes));
@@ -161,7 +177,11 @@ await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 let playwright;
 try { playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright'); }
 catch { console.error('playwright not found; set PLAYWRIGHT=/path/to/playwright/index.mjs'); server.close(); process.exit(2); }
-const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+const browserName = process.env.BROWSER ?? 'chromium';
+const browserType = playwright[browserName] ?? playwright.default?.[browserName];
+if (!browserType?.launch) throw new Error(`Unknown Playwright browser: ${browserName}`);
+const browser = await browserType.launch();
+console.log(`Browser: ${browserName} ${browser.version()}`);
 let failedChecks = 0;
 try {
     const runCheck = async (check) => {

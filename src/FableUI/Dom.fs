@@ -1,5 +1,6 @@
 module Rbt.FableUI.Dom
 
+open Fable.Core
 open Fable.Core.JsInterop
 open Browser.Dom
 open Browser.Types
@@ -33,6 +34,9 @@ let private setStyle (element: Element) (prop: string) (value: string) =
     if prop.StartsWith("--") then style?setProperty(prop, value)
     else style?(prop) <- value
 
+[<Fable.Core.Emit("if ($0[$1] !== $2) $0[$1] = $2")>]
+let private setChangedProperty (_: Element) (_: string) (_: obj) : unit = jsNative
+
 let rec private mountWith (parent: Node) (view: View) : unit -> unit =
     let cleanups = ResizeArray<unit -> unit>()
     let addCleanup cleanup = cleanups.Add(cleanup)
@@ -57,7 +61,7 @@ let rec private mountWith (parent: Node) (view: View) : unit -> unit =
     | Element (tag, attrs, children) ->
         let element = document.createElement(tag)
 
-        for attr in attrs do
+        List.iter (fun attr ->
             match attr with
             | StaticAttr (name, value) -> element.setAttribute(name, value)
             | ReactiveAttr (name, getValue) ->
@@ -65,7 +69,11 @@ let rec private mountWith (parent: Node) (view: View) : unit -> unit =
                 addCleanup disposable.Dispose
             | StaticProp (name, value) -> element?(name) <- value
             | ReactiveProp (name, getValue) ->
-                let disposable = effect (fun () -> element?(name) <- getValue())
+                // Rewriting an input's own value destroys transient number input
+                // such as "-" and resets text selection during two-way binding.
+                let disposable = effect (fun () ->
+                    let value = getValue()
+                    setChangedProperty element name value)
                 addCleanup disposable.Dispose
             | EventHandler (eventName, handler) ->
                 element.addEventListener(eventName, handler)
@@ -85,11 +93,15 @@ let rec private mountWith (parent: Node) (view: View) : unit -> unit =
                     previous <- next)
                 addCleanup disposable.Dispose
             | Ref callback -> callback element
-            | RefEffect callback -> addCleanup (callback element)
+            | RefEffect callback ->
+                let cleanup = callback element
+                addCleanup cleanup
             | OnUnmount cleanup -> addCleanup cleanup
+        ) attrs
 
-        for child in children do
-            addCleanup (mountWith element child)
+        // Keep returned disposers in separate callback scopes: Fable hoists
+        // function-result adapters out of a for-loop and aliases their captures.
+        List.iter (fun child -> addCleanup (mountWith element child)) children
 
         parent.appendChild(element) |> ignore
 

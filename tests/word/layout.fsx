@@ -362,6 +362,7 @@ let wideFastTable : Doc.TableBlock =
       Rows = [ wideFastRow ]
       PreferredWidth = None
       Alignment = None
+      Indent = None
       LayoutMode = None
       GridColumns = []
       Borders = None
@@ -375,6 +376,8 @@ let wideFastTable : Doc.TableBlock =
       Floating = false
       FloatingXml = None
       StyleId = None
+      ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+      ContentControlGroup = None; ContentControlAncestors = []
       Look = None }
 let nestedAnchorTableCount = 2500
 let nestedAnchorTables =
@@ -789,6 +792,7 @@ let oversizedHeaderDepthTable : Doc.TableBlock =
       Rows = [ tableRow [ oversizedHeaderDepthCell ] ]
       PreferredWidth = None
       Alignment = None
+      Indent = None
       LayoutMode = None
       GridColumns = []
       Borders = None
@@ -802,6 +806,8 @@ let oversizedHeaderDepthTable : Doc.TableBlock =
       Floating = false
       FloatingXml = None
       StyleId = None
+      ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+      ContentControlGroup = None; ContentControlAncestors = []
       Look = None }
 let oversizedHeaderDepthDoc =
     { Doc.empty with

@@ -55,8 +55,10 @@ let cell (paragraph: ParagraphBlock) : TableCell =
 let table : TableBlock =
     { Id = "t"; Rows = [ { Cells = [ cell (withPicture "cell" "cell text" [ "img:cell", false, Some "40" ]) ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None
                            PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None } ]
-      PreferredWidth = None; Alignment = None; LayoutMode = None; GridColumns = []; Borders = None; BackgroundColor = None; Shading = None; CellSpacing = None
-      PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Floating = false; FloatingXml = None; StyleId = None; Look = None }
+      PreferredWidth = None; Alignment = None; Indent = None; LayoutMode = None; GridColumns = []; Borders = None; BackgroundColor = None; Shading = None; CellSpacing = None
+      PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Floating = false; FloatingXml = None; StyleId = None
+      ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+      ContentControlGroup = None; ContentControlAncestors = []; Look = None }
 let headerPart : HeaderFooterPart =
     { Kind = "default"; RelationshipId = Some "h1"
       Blocks = [ Paragraph (withPicture "h" "HEADER TEXT" [ "img:watermark", true, Some "1" ; "img:logo", false, Some "2" ]) ] }

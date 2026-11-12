@@ -39,9 +39,8 @@ try {
         '<w:r><w:fldChar w:fldCharType="begin"/></w:r>', '<w:r><w:fldChar w:fldCharType="end"/></w:r>', '<w:commentRangeStart w:id="7"/>', '<w:commentRangeEnd w:id="7"/>', '<w:hyperlink r:id="rId30" w:tooltip="a tip" w:history="1">',
         '<w14:ligatures w14:val="standard"/>', 'w:eastAsia="MS Mincho"', 'w:rsidRPr="00BB0002"', 'w:rsidR="00BB0004"'];
     const tableKept = ['<w:tblLook w:val="04A0" w:firstRow="1" w:noHBand="0"/><w:tblCaption w:val="a caption"/>', '<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>', '<w:noWrap/><w:hideMark/>', '<w:tcFitText/>', '<w:tr w:rsidR="00BB0006">'];
-    // One edit of a document opened anew: the saved XML, the writer's account of the save, and whether the
-    // saved document reads back as the editor's.
-    const stage = async (label, edit, where, expectXml, expectReport) => {
+    // One edit of a document opened anew: saved XML and the editor model read back from it.
+    const stage = async (label, edit, where, expectXml) => {
         const canvas = document.createElement('canvas');
         const editor = Word.initializeCanvas(canvas);
         Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
@@ -56,7 +55,6 @@ try {
         const select = (word, source = text) => { const at = source.indexOf(word); Word.setSelection(editor, id, at, id, at + word.length); };
         edit(editor, select, id);
         const out = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
-        const report = OF.word.getLastSaveReport();
         const xml = await (await window.JSZip.loadAsync(out)).file('word/document.xml').async('string');
         const again = Word.initializeCanvas(document.createElement('canvas'));
         Word.importFromDocxPackage(again, await OF.processors.forEditorPackage(out));
@@ -75,8 +73,6 @@ try {
         if (where === 'body') check(`${label}: the table is the text it was`, xml.includes(tableOf(original)), true);
         else check(`${label}: the paragraph of the body is the text it was`, xml.includes(bodyOf(original)), true);
         if (where === 'tracked') check(`${label}: the other paragraph of the table is the text it was`, xml.includes(cellOf(original)), true);
-        if (where === 'table') check(`${label}: the paragraphs the model wrote`, report.GeneratedParagraphs, expectReport);
-        else check(`${label}: the writer's account`, [report.PatchedParagraphs, report.ModelParagraphsInTables, report.ModelBlocks], expectReport);
         // (A list item whose level or list was changed is laid out with the level's indents and number once it is read again.)
         if (where === 'list' || where === 'after') check(`${label}: read again, the editor's text`, same[0], true);
         else check(`${label}: read again, the editor's text, formatting and layout`, same, [true, true, true]);
@@ -91,56 +87,56 @@ try {
         ['the run before the word', `<w:r w:rsidRPr="00BB0002"><w:rPr>${props}<w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">alpha </w:t></w:r>`],
         ['the word, bold where the schema puts it', `<w:r w:rsidRPr="00BB0002"><w:rPr>${props}<w:b/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">beta</w:t></w:r>`],
         ['the run after the word', `<w:r w:rsidRPr="00BB0002"><w:rPr>${props}<w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve"> gamma</w:t></w:r><w:proofErr w:type="spellEnd"/>`],
-    ], [1, 0, 0]);
+    ]);
     // A font: the attributes the model writes are set in the element that is there, the others stay.
     await stage('a word given a font', (editor, select) => { select('alpha'); Word.setFontFamily(editor, 'Arial'); }, 'body', [
         ['w:rFonts with its w:eastAsia', '<w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="MS Mincho" w:cs="Arial"/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">alpha</w:t></w:r>'],
         ['the rest of the run as it was', `<w:rPr>${props}<w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve"> beta gamma</w:t></w:r>`],
-    ], [1, 0, 0]);
+    ]);
     // Size, colour, highlight, capitals, superscript of a run inside a comment range.
     await stage('a run given a size, a colour, a highlight, capitals and a raised position', (editor, select) => {
         select(' theta'); Word.setFontSizePt(editor, 13); Word.setColor(editor, '#C00000'); Word.setHighlight(editor, 'yellow'); Word.toggleAllCaps(editor); Word.setVertAlign(editor, 'superscript');
     }, 'body', [
         ['all of them in the schema\'s order, in the range', '<w:commentRangeStart w:id="7"/><w:r><w:rPr><w:caps/><w:smallCaps w:val="0"/><w:color w:val="C00000"/><w:sz w:val="26"/><w:szCs w:val="26"/><w:highlight w:val="yellow"/><w:vertAlign w:val="superscript"/></w:rPr><w:t xml:space="preserve"> theta</w:t></w:r><w:commentRangeEnd w:id="7"/>'],
-    ], [1, 0, 0]);
+    ]);
     // A selection that begins after a run's tab and ends inside its second text: the tab, the break and the texts are shared out.
     await stage('a part of a run with a tab and a break made bold', (editor, select) => { select('zeta\ne'); Word.toggleBold(editor); }, 'body', [
         ['the tab, the bold part with the break, the rest', '<w:r w:rsidR="00BB0004"><w:tab/></w:r><w:r w:rsidR="00BB0004"><w:rPr><w:b/></w:rPr><w:t>zeta</w:t><w:br/><w:t>e</w:t></w:r><w:r w:rsidR="00BB0004"><w:t>ta</w:t></w:r>'],
-    ], [1, 0, 0]);
+    ]);
     // All of it: every run that shows text, also the runs in the link; not the runs of the field's code.
     await stage('the paragraph made italic', (editor, select) => { select(text); Word.toggleItalic(editor); }, 'body', [
         ['the runs of the link', '<w:hyperlink r:id="rId30" w:tooltip="a tip" w:history="1"><w:r><w:rPr><w:i/><w:u w:val="single"/></w:rPr><w:t xml:space="preserve"> link one</w:t></w:r><w:r><w:rPr><w:b/><w:i/><w:u w:val="single"/></w:rPr><w:t xml:space="preserve"> link two</w:t></w:r></w:hyperlink>'],
         ['the run with the tab and the break', '<w:r w:rsidR="00BB0004"><w:rPr><w:i/></w:rPr><w:tab/><w:t>zeta</w:t><w:br/><w:t>eta</w:t></w:r>'],
         ['the field\'s result', '<w:r><w:rPr><w:i/><w:noProof/></w:rPr><w:t>result</w:t></w:r>'],
-    ], [1, 0, 0]);
+    ]);
     // Properties of the paragraph: an attribute set in the element that is there, a new element where the schema puts it.
     await stage('the paragraph spaced and aligned', (editor, select) => { select('beta'); Word.setSpacingAfter(editor, 9); Word.alignRight(editor); }, 'body', [
         ['w:spacing with the measure set in it, w:jc after what was there', /<w:pPr><w:suppressAutoHyphens\/><w:spacing w:beforeAutospacing="[01]" w:after="\d+"[^>]*\/><w:jc w:val="right"\/><w:rPr><w:lang w:val="de-DE"\/><\/w:rPr><\/w:pPr>/],
-    ], [1, 0, 0]);
+    ]);
     // The level of a list item: w:ilvl in the w:numPr that is there.
     await stage('a list item moved a level in', (editor) => { Word.increaseIndent(editor); }, 'list', [
         ['the level set, the rest of the properties as they were', /<w:p w14:paraId="3A3B3C04"><w:pPr><w:keepNext\/><w:numPr><w:ilvl w:val="1"\/><w:numId w:val="3"\/><\/w:numPr><w:suppressAutoHyphens\/>(<w:ind [^>]*\/>)?<\/w:pPr><w:r><w:t>a list item<\/w:t><\/w:r><\/w:p>/],
-    ], [1, 0, 0]);
+    ]);
     // A paragraph made an item of a list the file does not have: the list is the writer's; the paragraph is its own
     // XML with the list in its properties.
     await stage('a paragraph made a bullet list item', (editor) => { Word.toggleBulletList(editor); }, 'after', [
         ['written with the list', /<w:pPr><w:numPr><w:ilvl w:val="0"\/><w:numId w:val="\d+"\/><\/w:numPr>/],
-    ], [1, 0, 0]);
+    ]);
     // Text typed and a word formatted before one save.
     await stage('text typed and a word made bold', (editor, select, id) => { Word.setSelection(editor, id, 5, id, 5); Word.insertText(editor, ' more'); select('gamma', text.replace('alpha', 'alpha more')); Word.toggleBold(editor); }, 'body', [
         ['the text typed into its run', '<w:t xml:space="preserve">alpha more beta </w:t></w:r>'],
         ['the word bold', `<w:rPr>${props}<w:b/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">gamma</w:t></w:r><w:proofErr w:type="spellEnd"/>`],
-    ], [1, 0, 0]);
+    ]);
     // In a table: the paragraph in the table's XML.
     await stage('in a table cell, a word made bold', (editor, select) => { select('gamma'); Word.toggleBold(editor); }, 'cell', [
         ['the word bold', `<w:rPr>${props}<w:b/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">gamma</w:t></w:r>`],
-    ], [1, 0, 0]);
+    ]);
     // A paragraph of the table whose run has a tracked change of its properties: changed in its XML, the bold
     // put in at its place among the run's properties, the tracked change (what they were before it) kept.
     await stage('in a table cell, a paragraph with a tracked change of its properties', (editor, select) => { select('format', 'tracked format here'); Word.toggleBold(editor); }, 'tracked', [
         ['the word bold, the tracked change kept', /<w:rPr><w:b\/><w:i\/><w:rPrChange w:id="9" w:author="A" w:date="2020-01-01T00:00:00Z"><w:rPr\/><\/w:rPrChange><\/w:rPr><w:t[^>]*>format<\/w:t>/],
         ['the paragraph is the one that was read', '<w:tcFitText/></w:tcPr><w:p w14:paraId="3A3B3C03">'],
-    ], [1, 0, 0]);
+    ]);
 
     // ---- the table's rows, columns and cells: what was read goes back as it was read ----
     const table = tableOf(original);
@@ -159,23 +155,23 @@ try {
         ['the new row between them', new RegExp(regexOf(firstRow) + '<w:tr[ >].*?</w:tr>' + regexOf(secondRow))],
         ['the new row: the first row\'s start tag without its ids, its properties without the header', '<w:tr w:rsidR="00BB0005"><w:trPr><w:cantSplit/></w:trPr>'],
         ['its first cell: the first row\'s first cell\'s properties, an empty paragraph like its first', '</w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:noWrap/><w:hideMark/></w:tcPr><w:p w:rsidR="00BB0001" w:rsidRDefault="00BB0003"><w:pPr><w:suppressAutoHyphens/><w:spacing w:beforeAutospacing="1" w:after="120"/><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr></w:p></w:tc>'],
-    ], 0);
+    ]);
     // A row deleted: the other row and the table's properties are the text they were.
     await stage('a row deleted', (editor, select) => { select('gamma'); Word.deleteTableRow(editor); }, 'table', [
         ['the table is its properties and the other row, as they were read', tableHead + secondRow + '</w:tbl>'],
-    ], 0);
+    ]);
     // A column inserted: every cell that was read is the text it was, in its row's own start tag and properties.
     await stage('a column inserted', (editor, select) => { select('gamma'); Word.insertTableColumnAfter(editor); }, 'table', [
         ['the table\'s properties as they were read', table.slice(0, table.indexOf('<w:tblGrid>'))],
         ['the first row: its start tag, its properties, its cells with a new one between', new RegExp(regexOf(firstRow.slice(0, firstRow.indexOf('<w:tc>')) + cellsOf(firstRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(firstRow)[1] + '</w:tr>'))],
         ['the second row likewise', new RegExp(regexOf(secondRow.slice(0, secondRow.indexOf('<w:tc>')) + cellsOf(secondRow)[0]) + '<w:tc>.*?</w:tc>' + regexOf(cellsOf(secondRow)[1] + '</w:tr>'))],
-    ], 0);
+    ]);
     // A cell shaded: the shading in the cell's properties, which keep what the model does not hold; the rest as it was read.
     await stage('a cell shaded', (editor, select) => { select('gamma'); Word.setSelectedTableCellStyleWithShading(editor, '#FFEEAA', '', '', 0, '', 0, '', -1, -1, -1, -1); }, 'table', [
         ['the shading where the schema puts it, beside what was there', /<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit\/><w:tblHeader\/><\/w:trPr><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"\/><w:shd [^>]*w:fill="FFEEAA"[^>]*\/><w:noWrap\/><w:hideMark\/><\/w:tcPr><w:p w:rsidR="00BB0001"/],
         ['the cell\'s paragraph as it was read', cellOf(original)],
         ['the cell beside it, and the other row, as they were read', cellsOf(firstRow)[1] + '</w:tr>' + secondRow],
         ['the table\'s properties and grid as they were read', tableHead],
-    ], 0);
+    ]);
 } catch (e) { fail(e); }
 finish();

@@ -38,14 +38,15 @@ let toWriter (dxfs: ResizeArray<XlsxReader.Dxf>) (formats: ConditionalFormatRang
                 ({ Type = r.Type; Operator = r.Operator; Formulas = r.Formulas
                    DxfId = r.Style |> Option.map (fun s ->
                        dxfIndex { FontColor = s.FontColor |> Option.map (fun c -> c.TrimStart '#'); FillColor = s.FillColor |> Option.map (fun c -> c.TrimStart '#')
-                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None) })
+                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None); SourceDxfIndex = None })
                    Ext = None
                    ColorScale = r.ColorScale |> List.map (fun (k, v, c) -> ({ CfvoType = k; CfvoValue = v; Color = c } : XlsxReader.CfColorStop))
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo; Text = r.Text
                    IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
                    Rank = r.Rank; Percent = r.Percent; Bottom = r.Bottom
                    AboveAverage = r.AboveAverage; EqualAverage = r.EqualAverage; StdDev = r.StdDev
-                   Priority = r.Priority; StopIfTrue = r.StopIfTrue } : XlsxReader.ConditionalFormatRule)) } : XlsxReader.ConditionalFormat))
+                   Priority = r.Priority; StopIfTrue = r.StopIfTrue; SourceXml = None } : XlsxReader.ConditionalFormatRule))
+           GroupAttributes = [] } : XlsxReader.ConditionalFormat))
 
 let fromReader (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : ConditionalFormatRange list =
     sheet.ConditionalFormats

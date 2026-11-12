@@ -18,6 +18,14 @@ type BookmarkEnd =
     | Ends of id: string
     | Opens of BookmarkStart
 
+/// Zero-width Word complex-field tokens, in document order. Unlike a simple
+/// field, a complex field can enclose several paragraphs and other fields.
+type FieldBoundary =
+    | Begin
+    | Instruction of string
+    | Separate
+    | End
+
 // ---- a run's text ----
 
 /// A piece of a run's text: text, a tab ("\t"), a break ("\n", "\r", "\r\n").

@@ -7,6 +7,7 @@ module API =
     open Fable.Core
     open Fable.Core.JsInterop
     open Browser.Types
+    open Rbt.Word.Session
 
     module Doc = Document
     module Rope = Rope
@@ -25,58 +26,19 @@ module API =
 
     let private referenceSlot (value: obj) slotCount =
         referenceHash value &&& (slotCount - 1)
-    // An identity trie: each object key is weak, so an abandoned history state
-    // is not kept alive by revision tracking. Primitive/null keys use a Map.
-    // Its keys match Input.sameContentObjects, excluding selection.
-    [<Emit("({ weak: new WeakMap(), primitive: new Map() })")>]
-    let private newRevisionIndex () : obj = jsNative
-
-    [<Emit("""((index, doc) => {
-        let node = index;
-        for (const key of [doc.Blocks, doc.PageSetup, doc.Styles, doc.Headers, doc.Footers, doc.HeaderParts, doc.FooterParts, doc.Package]) {
-            const map = key !== null && (typeof key === 'object' || typeof key === 'function') ? node.weak : node.primitive;
-            node = map.get(key);
-            if (node === undefined) return -1;
-        }
-        return node.revision === undefined ? -1 : node.revision;
-    })($0, $1)""")>]
-    let private findRevision (_index: obj) (_doc: Doc.Document) : int = jsNative
-
-    [<Emit("""((index, doc, revision) => {
-        let node = index;
-        for (const key of [doc.Blocks, doc.PageSetup, doc.Styles, doc.Headers, doc.Footers, doc.HeaderParts, doc.FooterParts, doc.Package]) {
-            const map = key !== null && (typeof key === 'object' || typeof key === 'function') ? node.weak : node.primitive;
-            let next = map.get(key);
-            if (next === undefined) { next = { weak: new WeakMap(), primitive: new Map() }; map.set(key, next); }
-            node = next;
-        }
-        node.revision = revision;
-    })($0, $1, $2)""")>]
-    let private rememberRevision (_index: obj) (_doc: Doc.Document) (_revision: int) : unit = jsNative
 
 
     /// Editor instance
     type Editor = {
         Handler: Inp.InputHandler
-        mutable Doc: Doc.Document
         /// Callbacks registered with onChange.
         Listeners: ResizeArray<obj -> unit>
         /// Undo / redo availability as last reported to the listeners.
         mutable NotifiedCanUndo: bool
         mutable NotifiedCanRedo: bool
-        /// The revision of the document's content (see getRevision): a
-        /// number given to each state of the content when it first appears.
-        /// Undo and redo go back to states that have their number already.
-        mutable Revision: int
-        mutable LastRevision: int
-        /// The revision the host last saved (see markSaved).
-        mutable SavedRevision: int
-        /// The revision the document was loaded with: the document is what
-        /// was opened while (and whenever) it has this revision.
-        mutable OpenedRevision: int
-        /// Current content and identities of states still retained elsewhere.
-        mutable RevisionDocument: Doc.Document
-        mutable RevisionIndex: obj
+        /// Cached body count, keyed by the immutable body blocks, not the caret.
+        mutable WordCountBlocks: Doc.Block list option
+        mutable BodyWordCount: int
         /// Font families the host's text stack can draw (see setFontFamilies).
         mutable FontFamilies: string array
         /// The whole document as the listeners last heard of it. (While a
@@ -96,7 +58,8 @@ module API =
         mutable LoadFailure: string option
         /// Which faces of the document the host cannot set text in yet (see setFontAvailability).
         Fonts: Viewer.FontTracker
-    }
+    } with
+        member this.Doc = this.Handler.Document
 
     /// Read the document on display to its end now, when its package is
     /// still being read: what goes by the whole document (saving, the text,
@@ -121,23 +84,6 @@ module API =
     let private enterStoryOfPage : (Editor -> int -> bool -> bool) ref = ref (fun _ _ _ -> false)
     let private storyFieldsRefresh : (Editor -> unit) ref = ref ignore
 
-    /// Bring the revision in line with the document that is now shown: the
-    /// same content keeps its number (a moved caret is not a new revision),
-    /// content seen before (undo, redo) gets its number back, anything else
-    /// a new one.
-    let private observeRevision (editor: Editor) (doc: Doc.Document) =
-        // A selection move retains the content objects; a history step brings
-        // those objects back. Intermediate coalesced typing states need not be
-        // held strongly just to preserve the history's older undo target.
-        if not (Inp.sameContentObjects doc editor.RevisionDocument) then
-            rememberRevision editor.RevisionIndex editor.RevisionDocument editor.Revision
-            let known = findRevision editor.RevisionIndex doc
-            if known >= 0 then editor.Revision <- known
-            else
-                editor.LastRevision <- editor.LastRevision + 1
-                editor.Revision <- editor.LastRevision
-            rememberRevision editor.RevisionIndex doc editor.Revision
-            editor.RevisionDocument <- doc
 
     /// The frames of the pages of the layout the layout queries read (set by
     /// `notePages` when a query begins): which page a y is on, and where that
@@ -178,15 +124,30 @@ module API =
         let newDoc = Doc.snapSelectionToMarks editor.Doc.Selection newDoc
         if not (obj.ReferenceEquals(newDoc, editor.Doc)) then
             Inp.applyEdit editor.Handler "Edit" newDoc
-            editor.Doc <- newDoc
 
-    /// A character format command (bold, a font, a size, a colour ...): the
-    /// selected text is changed; with nothing selected it is kept for the text
-    /// typed next at the caret, getSelectionFormat says it, and it is dropped
-    /// when the caret moves (Inp.PendingFormat). `command`: as on a selection.
-    let private commitCharacterFormat (editor: Editor) (command: Doc.Document -> Doc.Document) =
-        let after = Inp.characterFormatted editor.Handler command
-        if not (obj.ReferenceEquals(after, editor.Handler.Document)) then commitDocumentUpdate editor after
+    let private executeWord (editor: Editor) command =
+        Inp.executeWordCommand editor.Handler command
+
+    let private runWord editor command = executeWord editor command |> ignore
+
+    /// Character commands are committed by the shared session (including
+    /// pending typing style at a caret and one undo step for a range).
+    let private commitCharacterFormat (editor: Editor) format =
+        runWord editor (Character format)
+
+    /// Shell-only partial formatting transaction. At a caret it changes the
+    /// pending typing format rather than expanding the selection to a word.
+    let applyFontDialogFormat (editor: Editor) (change: TextBuffer.TextStyle -> TextBuffer.TextStyle) =
+        commitCharacterFormat editor (CharacterCommand.FontDialog change)
+
+    /// Shell-only partial paragraph metadata transaction.
+    let applyParagraphDialogFormat (editor: Editor) change =
+        runWord editor (ParagraphMetadata change)
+
+    /// Shell-only list dialog transaction; validation errors do not commit.
+    let applyListDialog (editor: Editor) allocateId change =
+        executeWord editor (ListDialog (allocateId, change)) |> Result.map ignore
+
 
     /// A number a host gave where an offset is meant, as an offset: a whole
     /// number (a fraction is cut off; no number at all - undefined, NaN - is 0).
@@ -272,14 +233,8 @@ module API =
         // first; the rest follows in idle slices (see isLayoutComplete).
         Ren.beginProgressiveLayout editor.Handler.RenderContext
         Inp.loadDocument editor.Handler newDoc
-        editor.Doc <- newDoc
         editor.Whole <- newDoc
-        // A loaded document is a new document: nothing of the old one can be
-        // come back to, and it is as it was saved.
-        editor.RevisionIndex <- newRevisionIndex ()
-        observeRevision editor newDoc
-        editor.SavedRevision <- editor.Revision
-        editor.OpenedRevision <- editor.Revision
+        // Input.loadDocument replaced the session and its saved baseline.
 
     let private loadDocument (editor: Editor) newDoc = loadDocumentOf editor newDoc None
 
@@ -344,8 +299,8 @@ module API =
                         "SelectionChanged" ==> selectionChanged
                         "CanUndo" ==> canUndoNow
                         "CanRedo" ==> canRedoNow
-                        "Revision" ==> editor.Revision
-                        "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                        "Revision" ==> editor.Handler.Session.Revision
+                        "Modified" ==> editor.Handler.Session.IsModified
                         "LayoutChanged" ==> false
                         "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                         "LoadChanged" ==> false
@@ -372,8 +327,8 @@ module API =
                     "FormatChanged" ==> true
                     "CanUndo" ==> Inp.canUndo editor.Handler
                     "CanRedo" ==> Inp.canRedo editor.Handler
-                    "Revision" ==> editor.Revision
-                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "Revision" ==> editor.Handler.Session.Revision
+                    "Modified" ==> editor.Handler.Session.IsModified
                     "LayoutChanged" ==> false
                     "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                     "LoadChanged" ==> false
@@ -397,8 +352,8 @@ module API =
                     "ShapeSelectionChanged" ==> true
                     "CanUndo" ==> Inp.canUndo editor.Handler
                     "CanRedo" ==> Inp.canRedo editor.Handler
-                    "Revision" ==> editor.Revision
-                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "Revision" ==> editor.Handler.Session.Revision
+                    "Modified" ==> editor.Handler.Session.IsModified
                     "LayoutChanged" ==> false
                     "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                     "LoadChanged" ==> false
@@ -421,8 +376,8 @@ module API =
                     "ScrollTop" ==> (match scrollTop with Some top -> box top | None -> null)
                     "CanUndo" ==> Inp.canUndo editor.Handler
                     "CanRedo" ==> Inp.canRedo editor.Handler
-                    "Revision" ==> editor.Revision
-                    "Modified" ==> (editor.Revision <> editor.SavedRevision)
+                    "Revision" ==> editor.Handler.Session.Revision
+                    "Modified" ==> editor.Handler.Session.IsModified
                     "LayoutChanged" ==> layoutChanged
                     "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
                     "LoadChanged" ==> loadChanged
@@ -533,15 +488,10 @@ module API =
         let sameWhole = obj.ReferenceEquals(editor.Whole, editor.Doc)
         // History commands extend lazily. Transfer their old identity when
         // each retained document is extended, not just the current state.
-        let extend doc =
-            let revision = findRevision editor.RevisionIndex doc
-            let extended = step.Extend doc
-            if revision >= 0 then rememberRevision editor.RevisionIndex extended revision
-            extended
+        let extend doc = editor.Handler.Session.TransferExtension(step.Extend, doc)
         let doc = Inp.extendDocuments editor.Handler extend
-        editor.Doc <- doc
         editor.Whole <- (if sameWhole then doc else extend editor.Whole)
-        editor.RevisionDocument <- extend editor.RevisionDocument
+        editor.Handler.Session.ExtendObserved(step.Extend)
         match editor.Loading with
         | Some importing -> editor.Fonts.Extend importing step
         | None -> ()
@@ -660,7 +610,7 @@ module API =
     /// never repeats for different content, and comes back when undo or redo
     /// brings the content back. Undoing to the state that was saved gives the
     /// revision that was saved.
-    let getRevision (editor: Editor) : int = editor.Revision
+    let getRevision (editor: Editor) : int = editor.Handler.Session.Revision
 
     /// Remember the current content as the saved one: isModified is false
     /// until the content differs from it (and false again after undoing or
@@ -675,13 +625,14 @@ module API =
     /// (isModified is true), and undoing it gives the saved state. Without a
     /// revision (or with null) the current content is the saved one.
     let markSaved (editor: Editor) (revision: obj) : unit =
-        editor.SavedRevision <-
-            if isNull revision || jsTypeof revision <> "number" || System.Double.IsNaN (unbox<float> revision) then editor.Revision
-            else int (unbox<float> revision)
+        if isNull revision || jsTypeof revision <> "number" || System.Double.IsNaN (unbox<float> revision) then
+            editor.Handler.Session.CaptureSave() |> editor.Handler.Session.MarkSaved
+        else
+            editor.Handler.Session.MarkSavedRevision(int (unbox<float> revision))
 
     /// Whether the content differs from what was last loaded or marked saved.
     let isModified (editor: Editor) : bool =
-        editor.Revision <> editor.SavedRevision
+        editor.Handler.Session.IsModified
 
     let private formatValueToJs (convert: 'T -> obj) (value: WordStyles.FormatValue<'T>) : obj =
         match value with
@@ -708,10 +659,13 @@ module API =
     ///   Hyperlink: the target of the link the caret / selection is in (null: none)
     ///   Color: "#RRGGBB" (null: automatic), Highlight: colour name / value (null: none)
     ///   VertAlign: "superscript" | "subscript" (null: on the baseline)
+    ///   CharacterStyleId: named character style id (null: none, "mixed": different ids)
     ///   Paragraph: { StyleId (null: default style; never an internal entry such as "__docDefaults"),
     ///     HeadingLevel (0: body text),
     ///     Alignment "left" | "center" | "right" | "justify",
     ///     ListKind "none" | "bullet" | "numbered", ListLevel, IndentLeft, IndentRight, FirstLineIndent,
+    ///     ListNumberFormat (null: unnumbered or unspecified), IndentLeft, IndentRight, FirstLineIndent,
+    ///     BackgroundColor (null: none stated),
     ///     LineSpacing (a multiple of single spacing - what setLineSpacing takes - for the rule
     ///       "auto"; layout pixels for "exact" / "atLeast"; null: not stated, single spacing),
     ///     LineSpacingRule "auto" | "exact" | "atLeast" | null,
@@ -738,7 +692,11 @@ module API =
             "Bold" ==> boolean format.Bold
             "Italic" ==> boolean format.Italic
             "Underline" ==> boolean format.Underline
+            "UnderlineMode" ==> formatValueToJs (fun (value: string) -> box value) format.UnderlineMode
             "Strike" ==> boolean format.Strike
+            "Hidden" ==> boolean format.Hidden
+            "AllCaps" ==> boolean format.AllCaps
+            "SmallCaps" ==> boolean format.SmallCaps
             "FontFamily" ==> text format.FontFamily
             "FontSize" ==> number format.FontSize
             "FontSizePt" ==> formatValueToJs (fun (pixels: float) -> box (System.Math.Round (pixels * 72.0 / 96.0 * 100.0) / 100.0)) format.FontSize
@@ -752,6 +710,7 @@ module API =
             "Color" ==> text format.Color
             "Highlight" ==> text format.Highlight
             "VertAlign" ==> text format.VertAlign
+            "CharacterStyleId" ==> text format.CharacterStyleId
             "Paragraph" ==> createObj [
                 "StyleId" ==> text format.StyleId
                 "HeadingLevel" ==> formatValueToJs (fun (level: int) -> box level) format.HeadingLevel
@@ -766,10 +725,12 @@ module API =
                                     | Doc.NoList -> box "none"
                                     | Doc.Bullet -> box "bullet"
                                     | Doc.Numbered -> box "numbered") format.ListKind
+                "ListNumberFormat" ==> text format.NumberFormat
                 "ListLevel" ==> formatValueToJs (fun (level: int) -> box level) format.ListLevel
                 "IndentLeft" ==> number format.IndentLeft
                 "IndentRight" ==> number format.IndentRight
                 "FirstLineIndent" ==> number format.FirstLineIndent
+                "BackgroundColor" ==> text format.BackgroundColor
                 "LineSpacing" ==> formatValueToJs (fun (spacing: float option) -> match spacing with Some value -> box value | None -> null) format.ParagraphLineSpacing
                 "LineSpacingRule" ==> text format.ParagraphLineSpacingRule
                 // (Points, as the model holds them and a file states them: a file's 12 pt used to be said to be 9.)
@@ -790,31 +751,26 @@ module API =
             // (Revisions and what the listeners hear are about the whole document: entering a
             // header or footer changes the selection, not the content.)
             let previous = editor.Whole
-            editor.Doc <- newDoc
             let whole = Inp.wholeDocument editor.Handler newDoc
             editor.Whole <- whole
-            observeRevision editor whole
+            editor.Handler.Session.ObserveWhole whole
             afterChange ()
             notifyListeners editor previous whole
             continueLayout editor
             if editor.Handler.Story.IsSome then storyFieldsRefresh.Value editor
 
         let handler = Inp.create canvas doc onChange
+        handler.Session.UseWholeObservation <- true
 
         handler.OnDoubleClick <- fun x y -> doubleClick.Value editor x y
         handler.OnHistoryPlace <- fun pageIndex isHeader -> enterStoryOfPage.Value editor pageIndex isHeader
         editor <- {
             Handler = handler
-            Doc = doc
             Listeners = ResizeArray()
             NotifiedCanUndo = false
             NotifiedCanRedo = false
-            Revision = 0
-            LastRevision = 0
-            SavedRevision = 0
-            OpenedRevision = 0
-            RevisionDocument = doc
-            RevisionIndex = newRevisionIndex ()
+            WordCountBlocks = None
+            BodyWordCount = 0
             FontFamilies = [||]
             Whole = doc
             Loading = None
@@ -1838,22 +1794,51 @@ module API =
                 "Page" ==> pageForYInDoc editor.Doc y
             ]
 
-    let private isWordSeparator c =
-        c = ' ' || c = '\t' || c = '\r' || c = '\n'
+    let private isWordSeparator c = System.Char.IsWhiteSpace c
 
-    let private countWordsInRange (text: string) start length =
-        let endIndex = min text.Length (start + length)
+    // Walk rope leaves directly: a word can span leaves and formatting runs.
+    let private countWordsInRange (buffer: TextBuf.TextBuffer) start length =
+        let first = max 0 start
+        let last = min (TextBuf.length buffer) (start + length)
         let mutable count = 0
         let mutable inWord = false
-        let mutable i = max 0 start
-        while i < endIndex do
-            if isWordSeparator text.[i] then
-                inWord <- false
-            elif not inWord then
-                count <- count + 1
-                inWord <- true
-            i <- i + 1
+        let rec visit offset rope =
+            if offset < last && offset + Rbt.Word.Rope.length rope > first then
+                match rope with
+                | Rbt.Word.Rope.Empty -> ()
+                | Rbt.Word.Rope.Leaf text ->
+                    for i = max 0 (first - offset) to min text.Length (last - offset) - 1 do
+                        if isWordSeparator text.[i] then inWord <- false
+                        elif not inWord then
+                            count <- count + 1
+                            inWord <- true
+                | Rbt.Word.Rope.Node (left, right, _) ->
+                    visit offset left
+                    visit (offset + Rbt.Word.Rope.length left) right
+        visit 0 buffer.Rope
         count
+
+    /// Counts body words and words in the active selection, without changing the editor.
+    /// The body count includes text boxes and nested tables, but not other stories.
+    let getWordCounts (editor: Editor) =
+        let body = (wholeDocument editor).Blocks
+        match editor.WordCountBlocks with
+        | Some blocks when obj.ReferenceEquals(blocks, body) -> ()
+        | _ ->
+            editor.BodyWordCount <-
+                Doc.paragraphsOfBlocks body
+                |> List.sumBy (fun para -> countWordsInRange para.Buffer 0 (TextBuf.length para.Buffer))
+            editor.WordCountBlocks <- Some body
+        let mutable selected = 0
+        let hasSelection =
+            Doc.forEachSelectedParagraphRange editor.Doc (fun para first last ->
+                selected <- selected + countWordsInRange para.Buffer first (last - first)
+                true)
+        createObj [
+            "BodyWords" ==> editor.BodyWordCount
+            "SelectedWords" ==> selected
+            "HasSelection" ==> hasSelection
+        ]
 
     let private markerColumnOffset (metadata: Doc.BlockMetadata) =
         let markerLengthWithSeparator (marker: string) =
@@ -1894,9 +1879,9 @@ module API =
         match Doc.findParagraph editor.Doc blockId with
         | None -> null
         | Some para ->
-            let text = TextBuf.toString para.Buffer
-            let boundedStart = max 0 (min startOffset text.Length)
-            let boundedEnd = max boundedStart (min endOffset text.Length)
+            let textLength = TextBuf.length para.Buffer
+            let boundedStart = max 0 (min startOffset textLength)
+            let boundedEnd = max boundedStart (min endOffset textLength)
             let rangeLength = boundedEnd - boundedStart
             let layouts = layoutsForEditor editor
             let context = paragraphContexts editor.Doc |> tryFindDictionary blockId
@@ -1920,7 +1905,7 @@ module API =
                 "Lines" ==> rangeLineCount
                 "Pages" ==> pages.Count
                 "Paragraphs" ==> 1
-                "Words" ==> countWordsInRange text boundedStart rangeLength
+                "Words" ==> countWordsInRange para.Buffer boundedStart rangeLength
                 "Characters" ==> rangeLength
                 "CharactersWithSpaces" ==> rangeLength
             ]
@@ -1977,6 +1962,7 @@ module API =
         let tryFindLayout = Ren.layoutLookupFor editor.Handler.RenderContext editor.Doc
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
+        let controlParagraphs = Doc.contentControlMemberships editor.Doc
         let paragraphs = paragraphMap editor.Doc
         let measureRange = measureRangeForEditor editor
         let pageCount = pageCountFromLines editor.Doc layouts
@@ -2022,7 +2008,7 @@ module API =
                 "wdEndOfRangeColumnNumber" ==> (context |> Option.bind _.EndColumnIndex |> jsOpt)
                 "wdMaximumNumberOfColumns" ==> (context |> Option.bind _.MaxColumns |> jsOpt)
                 "wdAtEndOfRowMarker" ==> false
-                "wdInContentControl" ==> layout.Metadata.ContentControlId.IsSome
+                "wdInContentControl" ==> controlParagraphs.ContainsKey layout.BlockId
                 "wdInFieldCode" ==> lineHasFieldCode line
                 "wdInFieldResult" ==> lineHasFieldResult line
                 "wdFrameIsSelected" ==> (context |> Option.map _.InTextBox |> Option.defaultValue false)
@@ -2053,6 +2039,7 @@ module API =
         let layouts = layoutsForEditor editor
         let contexts = paragraphContexts editor.Doc
         let sections = sectionNumbersByParagraphId editor.Doc
+        let controlParagraphs = Doc.contentControlMemberships editor.Doc
         let paragraphs = paragraphMap editor.Doc
         let pageCount = pageCountFromLines editor.Doc layouts
         let pageLineCounts = Dictionary<int, int>()
@@ -2162,7 +2149,7 @@ module API =
                     "EndColumn" ==> (context |> Option.bind _.EndColumnIndex |> jsOpt)
                     "MaximumColumns" ==> (context |> Option.bind _.MaxColumns |> jsOpt)
                     "AtEndOfRowMarker" ==> false
-                    "InContentControl" ==> layout.Metadata.ContentControlId.IsSome
+                    "InContentControl" ==> controlParagraphs.ContainsKey layout.BlockId
                     "InFieldCode" ==> lineHasFieldCode line
                     "InFieldResult" ==> lineHasFieldResult line
                     "FrameIsSelected" ==> (context |> Option.map _.InTextBox |> Option.defaultValue false)
@@ -2200,6 +2187,9 @@ module API =
     let getVbaLayoutLines (editor: Editor) =
         ensureLoaded editor
         getLayoutLines editor
+
+    let getParagraphOrder (editor: Editor) =
+        Doc.allParagraphs editor.Doc |> List.map (fun paragraph -> paragraph.Id) |> List.toArray
 
     /// Find literal text matches across editable paragraphs.
     let findText (editor: Editor) (query: string) (matchCase: bool) =
@@ -2411,49 +2401,47 @@ module API =
     
     /// Toggle bold on selection
     let toggleBold (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleBold
+        commitCharacterFormat editor CharacterCommand.Bold
     
     /// Toggle italic on selection
     let toggleItalic (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleItalic
+        commitCharacterFormat editor CharacterCommand.Italic
     
     /// Toggle underline on selection
     let toggleUnderline (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleUnderline
+        commitCharacterFormat editor CharacterCommand.Underline
 
     /// Toggle all caps on selection
     let toggleAllCaps (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleAllCaps
+        commitCharacterFormat editor CharacterCommand.AllCaps
 
     /// Toggle small caps on selection
     let toggleSmallCaps (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleSmallCaps
+        commitCharacterFormat editor CharacterCommand.SmallCaps
 
     /// Set numbered-list marker format on current block
     let setNumberFormat (editor: Editor) (format: string) =
-        let newDoc = Doc.setNumberFormat format editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (NumberFormat format)
 
     /// Toggle strikethrough on selection
     let toggleStrike (editor: Editor) =
-        commitCharacterFormat editor WordStyles.toggleStrike
+        commitCharacterFormat editor CharacterCommand.Strike
 
     /// Clear direct character formatting on selection
     let clearFormatting (editor: Editor) =
-        let newDoc = Doc.clearFormatting editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor CharacterCommand.Clear
 
     /// Set vertical alignment on selection
     let setVertAlignFor (editor: Editor) (align: string) =
-        commitCharacterFormat editor (Doc.setVertAlign (if isNull (box align) || align = "" || align = "baseline" then None else Some align))
+        commitCharacterFormat editor (CharacterCommand.VertAlign (if isNull (box align) || align = "" || align = "baseline" then None else Some align))
 
     /// Set text color on selection
     let setColorFor (editor: Editor) (color: string) =
-        commitCharacterFormat editor (Doc.setColor (if isNull (box color) || color = "" then None else Some color))
+        commitCharacterFormat editor (CharacterCommand.Color (if isNull (box color) || color = "" then None else Some color))
 
     /// Set highlight color on selection
     let setHighlightFor (editor: Editor) (color: string) =
-        commitCharacterFormat editor (Doc.setHighlight (if isNull (box color) || color = "" || color = "none" then None else Some color))
+        commitCharacterFormat editor (CharacterCommand.Highlight (if isNull (box color) || color = "" || color = "none" then None else Some color))
 
     /// Set hyperlink on selection
     let setHyperlinkFor (editor: Editor) (target: string) =
@@ -2541,12 +2529,10 @@ module API =
         commitDocumentUpdate editor newDoc
 
     let setParagraphStyleFor (editor: Editor) (styleId: string) =
-        let newDoc = Doc.setParagraphStyle styleId editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (ParagraphStyle styleId)
 
     let setCharacterStyleFor (editor: Editor) (styleId: string) =
-        let newDoc = Doc.setCharacterStyle styleId editor.Doc
-        commitDocumentUpdate editor newDoc
+        commitCharacterFormat editor (CharacterCommand.NamedStyle styleId)
 
     let getStyleCatalog (editor: Editor) =
         Docx.exportStylesToEditor editor.Doc.Styles
@@ -2585,11 +2571,11 @@ module API =
     
     /// Set font size on selection
     let setFontSizeFor (editor: Editor) (size: float) =
-        commitCharacterFormat editor (Doc.setFontSize size)
+        commitCharacterFormat editor (CharacterCommand.FontSize size)
     
     /// Set font family on selection
     let setFontFamilyFor (editor: Editor) (family: string) =
-        commitCharacterFormat editor (Doc.setFontFamily family)
+        commitCharacterFormat editor (CharacterCommand.FontFamily family)
 
     /// Set the font size of the selection in points (11, 12, 14 ...: the unit
     /// documents state sizes in and a size box shows). setFontSize takes
@@ -2661,48 +2647,36 @@ module API =
     /// Line spacing of the selected paragraphs as a multiple of single
     /// spacing (1, 1.15, 1.5, 2 ...); 0 or less goes back to the style's.
     let setLineSpacing (editor: Editor) (multiple: float) =
-        commitDocumentUpdate editor (Doc.setLineSpacing (if multiple > 0.0 then Some multiple else None) editor.Doc)
+        runWord editor (LineSpacing (if multiple > 0.0 then Some multiple else None))
 
     /// Space before / after the selected paragraphs, in points; a negative
     /// value goes back to the style's.
     let setSpacingBefore (editor: Editor) (points: float) =
         // (The model holds paragraph spacing in points, as a file states it - the layout makes pixels of
         // it. It was given pixels here, which were laid out and saved as points: 10 pt became 13.35 pt.)
-        commitDocumentUpdate editor (Doc.setSpacingBefore (if points >= 0.0 then Some points else None) editor.Doc)
+        runWord editor (SpacingBefore (if points >= 0.0 then Some points else None))
 
     let setSpacingAfter (editor: Editor) (points: float) =
-        commitDocumentUpdate editor (Doc.setSpacingAfter (if points >= 0.0 then Some points else None) editor.Doc)
+        runWord editor (SpacingAfter (if points >= 0.0 then Some points else None))
 
     /// Insert a page break at the caret (Ctrl+Enter in Word).
     /// False - and nothing is done - where a page cannot break: in a text
     /// box, a header or a footer (the story that is edited is not the body),
     /// in a footnote, or with nothing selected.
     let insertPageBreak (editor: Editor) : bool =
-        if not (Inp.pageBreakAllowed editor.Handler) then false
-        else
-            let newDoc = Doc.insertPageBreak editor.Doc
-            if obj.ReferenceEquals(newDoc, editor.Doc) then false
-            else
-                commitDocumentUpdate editor newDoc
-                true
+        executeWord editor PageBreak = Ok ContentChanged
 
     /// Insert a column break at the caret (Ctrl+Shift+Enter): what follows
     /// starts the next column of its section - the next page where the
     /// section has one column. Saved as <w:br w:type="column"/>. False where
     /// insertPageBreak is, and in a table cell.
     let insertColumnBreak (editor: Editor) : bool =
-        if not (Inp.pageBreakAllowed editor.Handler) then false
-        else
-            let newDoc = Doc.insertColumnBreak editor.Doc
-            if obj.ReferenceEquals(newDoc, editor.Doc) then false
-            else
-                commitDocumentUpdate editor newDoc
-                true
+        executeWord editor ColumnBreak = Ok ContentChanged
 
     /// Insert a line break at the caret (Shift+Enter): the paragraph goes on
     /// in the next line (<w:br/>). Over a selection: in its place.
     let insertLineBreak (editor: Editor) : unit =
-        insertTextAt editor "\n"
+        runWord editor LineBreak
 
     /// Insert a hyperlink to `target`: the selected text becomes the link;
     /// with a caret, `text` (or the target, when it is empty) is inserted as
@@ -2739,13 +2713,11 @@ module API =
 
     /// Apply Heading 1-3 to the current block
     let setHeadingLevel (editor: Editor) (level: int) =
-        let newDoc = Doc.setHeadingLevel level editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (HeadingLevel level)
 
     /// Convert the current heading block back to a normal paragraph
     let clearHeading (editor: Editor) =
-        let newDoc = Doc.clearHeading editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor ClearHeading
     
     /// Select all text
     let selectAll (editor: Editor) =
@@ -2755,18 +2727,15 @@ module API =
 
     /// Align left
     let alignLeft (editor: Editor) =
-        let newDoc = Doc.alignLeft editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor AlignLeft
 
     /// Align center
     let alignCenter (editor: Editor) =
-        let newDoc = Doc.alignCenter editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor AlignCenter
 
     /// Align right
     let alignRight (editor: Editor) =
-        let newDoc = Doc.alignRight editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor AlignRight
 
     /// Insert image at cursor
     let insertImage (editor: Editor) (src: string) (width: float) (height: float) (alt: string) =
@@ -2782,21 +2751,19 @@ module API =
 
     /// Insert a table row after the row containing the current selection
     let insertTableRowAfter (editor: Editor) =
-        let newDoc = Doc.insertTableRowAfterSelection editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor InsertRowAfter
 
     /// Insert a table column after the column containing the current selection
     let insertTableColumnAfter (editor: Editor) =
-        let newDoc = Doc.insertTableColumnAfterSelection editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor InsertColumnAfter
 
     /// Insert a table row above the row containing the current selection
     let insertTableRowBefore (editor: Editor) =
-        commitDocumentUpdate editor (Doc.insertTableRowBeforeSelection editor.Doc)
+        runWord editor InsertRowBefore
 
     /// Insert a table column to the left of the column containing the current selection
     let insertTableColumnBefore (editor: Editor) =
-        commitDocumentUpdate editor (Doc.insertTableColumnBeforeSelection editor.Doc)
+        runWord editor InsertColumnBefore
 
     /// Whether the selection spans several cells of one table (mergeTableCells would merge them).
     let canMergeTableCells (editor: Editor) : bool =
@@ -2804,21 +2771,19 @@ module API =
 
     /// Merge the selected table cells into one.
     let mergeTableCells (editor: Editor) =
-        commitDocumentUpdate editor (Doc.mergeSelectedTableCells editor.Doc)
+        runWord editor MergeCells
 
     /// Split the merged cell the caret is in back into single cells.
     let splitTableCell (editor: Editor) =
-        commitDocumentUpdate editor (Doc.splitSelectedTableCell editor.Doc)
+        runWord editor SplitCell
 
     /// Delete the table row containing the current selection
     let deleteTableRow (editor: Editor) =
-        let newDoc = Doc.deleteSelectedTableRow editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor DeleteRow
 
     /// Delete the table column containing the current selection
     let deleteTableColumn (editor: Editor) =
-        let newDoc = Doc.deleteSelectedTableColumn editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor DeleteColumn
 
     /// Insert a table of `rows` x `columns` after the block the caret is in.
     /// It has single thin borders (and refers to the document's "Table Grid"
@@ -2826,13 +2791,12 @@ module API =
     /// cell: getCaretRect, getSelectionInformation and getCaretContext answer
     /// at once, and Tab / Shift+Tab go from cell to cell.
     let insertTable (editor: Editor) (rows: int) (columns: int) =
-        let newDoc = Doc.insertTable rows columns editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (InsertTable (rows, columns))
 
     // ---- headers and footers edited in place ----------------------------------
 
     /// The header or footer being edited in place (None in the body, and in a text box).
-    let private headerFooterStory (editor: Editor) : Inp.StorySession option =
+    let private headerFooterStory (editor: Editor) : Rbt.Word.Session.StorySession option =
         editor.Handler.Story |> Option.filter (fun session -> session.Box.IsNone && session.Note.IsNone)
 
     let private storyLabel (isHeader: bool) (kind: string) =
@@ -2842,59 +2806,6 @@ module API =
          | _ -> "")
         + (if isHeader then "Header" else "Footer")
 
-    /// The paragraphs that end the sections before the last one, in order.
-    let private sectionEnds (doc: Doc.Document) : Doc.ParagraphBlock list =
-        doc.Blocks
-        |> List.choose (function
-            | Doc.Paragraph para
-            | Doc.Heading (_, para) when para.Metadata.SectionBreak.IsSome -> Some para
-            | _ -> None)
-
-    /// The header (or footer) references a section states itself: (kind, relationship id).
-    let private sectionReferences (doc: Doc.Document) (section: int) (isHeader: bool) : (string * string) list =
-        match List.tryItem section (sectionEnds doc) with
-        | Some para -> if isHeader then para.Metadata.HeaderReferences else para.Metadata.FooterReferences
-        | None -> if isHeader then doc.PageSetup.HeaderReferences else doc.PageSetup.FooterReferences
-
-    let private withSectionReferences (doc: Doc.Document) (section: int) (isHeader: bool) (references: (string * string) list) : Doc.Document =
-        match List.tryItem section (sectionEnds doc) with
-        | Some para ->
-            let metadata = if isHeader then { para.Metadata with HeaderReferences = references } else { para.Metadata with FooterReferences = references }
-            Doc.replaceParagraph doc para.Id { para with Metadata = metadata }
-        | None ->
-            { doc with PageSetup = (if isHeader then { doc.PageSetup with HeaderReferences = references } else { doc.PageSetup with FooterReferences = references }) }
-
-    let private freshId (prefix: string) = prefix + System.Guid.NewGuid().ToString().Replace("-", "")
-
-    /// A relationship id no header or footer of the document has.
-    let private freshPartId (doc: Doc.Document) =
-        let used = System.Collections.Generic.HashSet<string>()
-        for part in doc.HeaderParts @ doc.FooterParts do
-            match part.RelationshipId with
-            | Some id -> used.Add id |> ignore
-            | None -> ()
-        let mutable number = 1
-        while used.Contains (sprintf "rIdRbtHf%d" number) do
-            number <- number + 1
-        sprintf "rIdRbtHf%d" number
-
-    /// The document with a new header (or footer) of `kind` for a section,
-    /// holding `blocks` (none: one empty paragraph), and the part's place.
-    let private withNewPart (doc: Doc.Document) (section: int) (isHeader: bool) (kind: string) (blocks: Doc.Block list) : Doc.Document * int =
-        let blocks =
-            if blocks.IsEmpty then
-                let para : Doc.ParagraphBlock =
-                    { Id = freshId (if isHeader then "header-" else "footer-")
-                      Buffer = TextBuf.empty
-                      Metadata = { Doc.defaultMetadata with Style = Some (if isHeader then "Header" else "Footer") } }
-                [ Doc.Paragraph para ]
-            else blocks
-        let id = freshPartId doc
-        let part : Doc.HeaderFooterPart = { Kind = kind; RelationshipId = Some id; Blocks = blocks }
-        let references = (sectionReferences doc section isHeader |> List.filter (fun (referenceKind, _) -> referenceKind <> kind)) @ [ kind, id ]
-        let doc = withSectionReferences doc section isHeader references
-        if isHeader then { doc with HeaderParts = doc.HeaderParts @ [ part ]; Headers = [] }, doc.HeaderParts.Length
-        else { doc with FooterParts = doc.FooterParts @ [ part ]; Footers = [] }, doc.FooterParts.Length
 
     /// The blocks of a header or footer as a part of their own: every block - paragraphs,
     /// tables (and the tables in their cells), text boxes - with an id of its own.
@@ -2933,50 +2844,10 @@ module API =
         | None -> false
         | Some target ->
             let doc = editor.Doc
-            let parts = if isHeader then doc.HeaderParts else doc.FooterParts
-            let existing =
-                match target.TargetPart with
-                | Some part -> parts |> List.tryFindIndex (fun candidate -> obj.ReferenceEquals(candidate, part))
-                | None -> None
-            // The document the story's blocks belong in once they are edited, and the part's place there.
-            let edited, partIndex =
-                match existing with
-                | Some index ->
-                    match List.item index parts with
-                    | part when part.Blocks.IsEmpty ->
-                        // (A part without a paragraph: it gets one with the first edit.)
-                        let para : Doc.ParagraphBlock =
-                            { Id = freshId (if isHeader then "header-" else "footer-"); Buffer = TextBuf.empty
-                              Metadata = { Doc.defaultMetadata with Style = Some (if isHeader then "Header" else "Footer") } }
-                        let filled = parts |> List.mapi (fun at candidate -> if at = index then { candidate with Blocks = [ Doc.Paragraph para ] } else candidate)
-                        (if isHeader then { doc with HeaderParts = filled } else { doc with FooterParts = filled }), index
-                    | _ -> doc, index
-                | None ->
-                    // No header here: one is made by the first edit (the document's plain header paragraphs become its blocks).
-                    let seed =
-                        if target.TargetKind <> "default" || not parts.IsEmpty then []
-                        else (if isHeader then doc.Headers else doc.Footers) |> List.map Doc.Paragraph
-                    withNewPart doc target.TargetSection isHeader target.TargetKind seed
-            match List.tryItem partIndex (if isHeader then edited.HeaderParts else edited.FooterParts) with
+            let pageCount = Ren.pageCount ctx doc
+            match Rbt.Word.Session.headerFooterStory doc (min pageIndex (max 0 (pageCount - 1))) isHeader target.TargetKind target.TargetSection target.TargetPart (storyLabel isHeader target.TargetKind) (Paint.blocksWithRunningFields target.TargetFields) with
             | None -> false
-            | Some part ->
-                let pageCount = Ren.pageCount ctx doc
-                let session : Inp.StorySession =
-                    { IsHeader = isHeader
-                      PageIndex = min pageIndex (max 0 (pageCount - 1))
-                      Kind = target.TargetKind
-                      Section = target.TargetSection
-                      PartIndex = partIndex
-                      Label = storyLabel isHeader target.TargetKind
-                      Main = doc
-                      Edited = edited
-                      PartBlocks = part.Blocks
-                      EntryBlocks = Paint.blocksWithRunningFields target.TargetFields part.Blocks
-                      Folded = ResizeArray()
-                      Box = None
-                      BoxFolded = ResizeArray()
-                      Note = None
-                      NoteFolded = ResizeArray() }
+            | Some session ->
                 Inp.enterStory editor.Handler session None
                 true
 
@@ -3114,7 +2985,7 @@ module API =
         | Some blocks when not (Doc.paragraphsOfBlocks blocks).IsEmpty && storyIsReferenced doc kind id ->
             // (The note areas of every page: the note is found where its page shows it.)
             Ren.completeLayout editor.Handler.RenderContext
-            let session : Inp.StorySession =
+            let session : Rbt.Word.Session.StorySession =
                 { IsHeader = false
                   PageIndex = 0
                   Kind = kind
@@ -3301,11 +3172,9 @@ module API =
     /// Tab (forward) / Shift+Tab in a table, for a host's own keys or
     /// buttons: true when the caret moved to another cell.
     let moveToAdjacentTableCell (editor: Editor) (forward: bool) : bool =
-        match Doc.moveToAdjacentTableCell forward editor.Doc with
-        | Some moved ->
-            commitDocumentUpdate editor moved
-            true
-        | None -> false
+        match executeWord editor (MoveCell forward) with
+        | Ok SelectionChanged | Ok ContentChanged -> true
+        | _ -> false
 
     /// Insert a text box with `text`, anchored in the paragraph (or the table)
     /// the caret is in: 240 x 96 px, 24 px right of and below the start of
@@ -3554,12 +3423,19 @@ module API =
         let newDoc = Doc.setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth editor.Doc
         commitDocumentUpdate editor newDoc
 
+    /// Apply a partial cell update as one editor transaction. Used by the F# shell.
+    let updateSelectedTableCell (editor: Editor) (change: Doc.TableCell -> Doc.TableCell) =
+        runWord editor (TableCell change)
+
+    /// Apply table and current-row changes as one editor transaction.
+    let updateSelectedTableProperties (editor: Editor) (change: Doc.TableBlock -> int -> Doc.TableBlock) =
+        runWord editor (TableProperties change)
+
     let setSelectedTableCellStyle (editor: Editor) (backgroundColor: string) (cellWidth: float) (borderColor: string) (borderWidth: float) (verticalAlignment: string) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalCellWidth = if cellWidth > 0.0 then Some cellWidth else None
         let optionalWidth = if borderWidth > 0.0 then Some borderWidth else None
         let optionalPadding value = if value >= 0.0 then Some value else None
-        let newDoc = Doc.setSelectedTableCellStyle (optionalText backgroundColor) optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (TableFormat (Doc.setSelectedTableCellStyle (optionalText backgroundColor) optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft)))
 
     let setSelectedTableCellStyleWithShading (editor: Editor) (backgroundColor: string) (shadingPattern: string) (shadingForegroundColor: string) (cellWidth: float) (borderColor: string) (borderWidth: float) (verticalAlignment: string) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalCellWidth = if cellWidth > 0.0 then Some cellWidth else None
@@ -3582,8 +3458,7 @@ module API =
             if normalizedPattern = "none" then None
             elif shading.IsSome then None
             else background
-        let newDoc = Doc.setSelectedTableCellStyleWithShading fillColor shading optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (TableFormat (Doc.setSelectedTableCellStyleWithShading fillColor shading optionalCellWidth (optionalText borderColor) optionalWidth (optionalText verticalAlignment) (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft)))
 
     /// The shading of the cell at the caret alone (a background colour, or a pattern with its colours):
     /// what else the cell has stays.
@@ -3595,49 +3470,79 @@ module API =
             | "" | "clear" | "none" -> None
             | p -> Some { Pattern = Some p; ForegroundColor = optionalText shadingForegroundColor; BackgroundColor = background }
         let fill = if pattern = "none" || shading.IsSome then None else background
-        commitDocumentUpdate editor (Doc.setSelectedTableCellShading fill shading editor.Doc)
+        runWord editor (TableFormat (Doc.setSelectedTableCellShading fill shading))
 
     let setCurrentTableCellMargins (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) =
         let optionalPadding value = if value >= 0.0 then Some value else None
-        let newDoc = Doc.setCurrentTableCellMargins (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (TableFormat (Doc.setCurrentTableCellMargins (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft)))
 
     let setCurrentTableCellMarginsAndSpacing (editor: Editor) (paddingTop: float) (paddingRight: float) (paddingBottom: float) (paddingLeft: float) (cellSpacing: float) =
         let optionalPadding value = if value >= 0.0 then Some value else None
         let optionalSpacing value = if value >= 0.0 then Some value else None
-        let newDoc = Doc.setCurrentTableCellMarginsAndSpacing (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) (optionalSpacing cellSpacing) editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (TableFormat (Doc.setCurrentTableCellMarginsAndSpacing (optionalPadding paddingTop) (optionalPadding paddingRight) (optionalPadding paddingBottom) (optionalPadding paddingLeft) (optionalSpacing cellSpacing)))
 
     /// Align justify
     let alignJustify (editor: Editor) =
-        let newDoc = Doc.alignJustify editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor AlignJustify
 
     let toggleBulletList (editor: Editor) =
-        let newDoc = Doc.toggleBulletList editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor ToggleBulletList
 
     let toggleNumberedList (editor: Editor) =
-        let newDoc = Doc.toggleNumberedList editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor ToggleNumberedList
 
     /// The selected list items one level down (what Tab does at the start of
     /// a list item). In a list that came from a file the items get the number
     /// format, the text, the start and the indents the file's numbering gives
     /// that level - at once, as they are after the file is read again.
     let increaseIndent (editor: Editor) =
-        let newDoc = Doc.increaseIndent editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor IncreaseIndent
 
     /// The selected list items one level up (Shift+Tab); from the first level out of the list.
     let decreaseIndent (editor: Editor) =
-        let newDoc = Doc.decreaseIndent editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor DecreaseIndent
 
     /// The selected list items at a level of their list (1-9; see increaseIndent).
     let setListLevel (editor: Editor) (level: int) =
-        let newDoc = Doc.setListLevel level editor.Doc
-        commitDocumentUpdate editor newDoc
+        runWord editor (ListLevel level)
+
+    [<Emit("$0 === null || $0 === undefined")>]
+    let private isNullOrUndefined (_value: obj) : bool = jsNative
+
+    let applyParagraphStyleChanges (editor: Editor) (changes: obj) =
+        let get key = changes?(key)
+        let number key =
+            let value = get key
+            if isNullOrUndefined value then None else Some (unbox<float> value)
+        let alignment =
+            let value = get "Alignment"
+            if isNullOrUndefined value then None
+            else
+                match unbox<string> value with
+                | "center" -> Some Doc.Center
+                | "right" -> Some Doc.Right
+                | "justify" -> Some Doc.Justify
+                | _ -> Some Doc.Left
+        let firstLineIndent = number "FirstLineIndent"
+        let background =
+            let value = get "BackgroundColor"
+            if isNullOrUndefined value then None else Some (optionalText (unbox<string> value))
+        let change doc =
+            let changed =
+                doc
+                |> Doc.setSelectedParagraphStyleChanges
+                    alignment
+                    (number "IndentLeft" |> Option.map Some)
+                    (number "IndentRight" |> Option.map Some)
+                    (number "SpacingBefore" |> Option.map Some)
+                    (number "SpacingAfter" |> Option.map Some)
+                    (number "LineSpacing" |> Option.map Some)
+                    (firstLineIndent |> Option.map Some)
+                    background
+            match number "FontSizePt" with
+            | Some points -> Doc.setFontSize (points * 96.0 / 72.0) changed
+            | None -> changed
+        runWord editor (ParagraphFormat change)
 
     let applyParagraphStyle (editor: Editor) (alignment: string) (indentLeft: float) (indentRight: float) (spacingBefore: float) (spacingAfter: float) (lineSpacing: float) (fontSize: float) (firstLineIndent: float option) (backgroundColor: string) =
         let alignmentValue =
@@ -3646,12 +3551,11 @@ module API =
             | "right" -> Doc.Right
             | "justify" -> Doc.Justify
             | _ -> Doc.Left
-        let newDoc =
-            editor.Doc
+        runWord editor (ParagraphFormat (fun doc ->
+            doc
             |> Doc.setCurrentParagraphStyle alignmentValue (Some indentLeft) (Some indentRight) (Some spacingBefore) (Some spacingAfter) (Some lineSpacing) firstLineIndent (optionalText backgroundColor)
             |> Doc.selectAll
-            |> Doc.setFontSize fontSize
-        commitDocumentUpdate editor newDoc
+            |> Doc.setFontSize fontSize))
 
     /// A section break after the caret's paragraph (a paragraph of the body).
     /// `kind` is how the section that starts at the break - the text after
@@ -3741,6 +3645,14 @@ module API =
                 loadDocumentOf editor state.Document (Some state)
                 state.Package?Progressive?start () |> ignore
         | _ -> loadDocument editor (Docx.importFromEditorPackage package)
+    /// Shell page setup is a single transaction on the selected section.
+    let currentPageSetupForDialog (editor: Editor) =
+        ensureLoaded editor
+        Doc.currentSectionPageSetup editor.Doc
+
+    let applyCurrentPageSetupDialog (editor: Editor) setup =
+        commitDocumentUpdate editor (Doc.setCurrentSectionPageSetup setup editor.Doc)
+
 
     let setPageSetup (editor: Editor) (pageWidth: float) (pageHeight: float) (marginLeft: float) (marginRight: float) (marginTop: float) (marginBottom: float) (headerDistance: float) (footerDistance: float) =
         let setup: Doc.PageSetup =
@@ -3871,6 +3783,7 @@ module API =
           Rows = [{ Cells = [tableCell (id + "-left") left; tableCell (id + "-right") right]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None }]
           PreferredWidth = Some { Kind = Doc.PercentWidth; Value = Some 100.0 }
           Alignment = None
+          Indent = None
           LayoutMode = Some Doc.FixedTableLayout
           GridColumns = [{ Kind = Doc.PercentWidth; Value = Some 50.0 }; { Kind = Doc.PercentWidth; Value = Some 50.0 }]
           Borders = None
@@ -3884,6 +3797,8 @@ module API =
           Floating = false
           FloatingXml = None
           StyleId = None
+          ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+          ContentControlGroup = None; ContentControlAncestors = []
           Look = None }
 
     let private imageParagraph id src alt width height : Doc.ParagraphBlock =
@@ -4076,11 +3991,9 @@ module API =
         refuseFailedLoad editor
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
-        let package = Docx.exportDocumentPackage (wholeDocument editor)
-        package?Unchanged <- (editor.Revision = editor.OpenedRevision)
-        // An export is what a save writes: what is typed after it is an undo step of its own, so that undoing it
-        // gives the state that was saved (the keys typed before and after would otherwise be one run of typing).
-        editor.Handler.Typing <- None
+        let snapshot = editor.Handler.Session.CaptureSave()
+        let package = Docx.exportDocumentPackage snapshot.Document
+        package?Unchanged <- snapshot.Unchanged
         package
 
     /// Test rope operations
@@ -4182,7 +4095,9 @@ module API =
             "getSelectionInformation" ==> getSelectionInformation
             "getRangeBounds" ==> getRangeBounds
             "computeRangeStatistics" ==> computeRangeStatistics
+            "getWordCounts" ==> getWordCounts
             "findText" ==> findText
+            "getParagraphOrder" ==> getParagraphOrder
             "selectFindMatch" ==> selectFindMatch
             "selectRevisionInfo" ==> selectRevisionInfo
             "replaceAllText" ==> replaceAllText
@@ -4238,7 +4153,7 @@ module API =
             "setLineSpacing" ==> setLineSpacing
             "setSpacingBefore" ==> setSpacingBefore
             "setSpacingAfter" ==> setSpacingAfter
-            "applyParagraphStyle" ==> applyParagraphStyle
+            "applyParagraphStyleChanges" ==> applyParagraphStyleChanges
             "insertPageBreak" ==> insertPageBreak
             "insertColumnBreak" ==> insertColumnBreak
             "insertLineBreak" ==> insertLineBreak

@@ -218,31 +218,18 @@ insertDeleteToolbar.Mount(container);
 
 **Note:** Currently uses prompts for row/column index. In a real app, you'd determine the index from the current selection automatically.
 
-### 7. Data Toolbar
+### 7. Data commands
 
-Sorting and filtering operations.
+The unified shell now owns quick/custom sorting, filters and validation.
+Use `createSpreadsheetShell(spreadsheet, onAction)` rather than the removed
+per-category data toolbar. Data actions no longer reach `onAction`.
 
-**Create:**
-```javascript
-import { createDataToolbar } from './Toolbar.js';
-
-const dataToolbar = createDataToolbar((action) => {
-    switch (action) {
-        case 'sortAsc': spreadsheet.SortCurrentColumnAsc(); break;
-        case 'sortDesc': spreadsheet.SortCurrentColumnDesc(); break;
-        case 'filter': /* not yet implemented */ break;
-        case 'clearFilter': /* not yet implemented */ break;
-    }
-});
-
-dataToolbar.Mount(container);
-```
-
-**Buttons:**
-- ↓A Sort ascending (A→Z)
-- ↓Z Sort descending (Z→A)
-- ⚲ Filter (infrastructure in place, UI not implemented)
-- ✕ Clear filters
+Custom sort supports a range, header/case options and two ordered keys.
+Filter supports values, conditions, top/bottom, color and averages.
+Validation supports the engine's rule types, input/error messages and clearing.
+These forms validate before applying and use the grid's undo history.
+See [shell usage](TOOLBAR-USAGE.md) and the
+[host contract](../../docs/spreadsheet-host-api.md#browser-shell-command-routing-and-selection-dialogs).
 
 ### 8. Find/Replace Toolbar
 

@@ -130,6 +130,43 @@ try {
     Word.setHyperlinkTarget(editor, '');
     check('an empty target removes the link and keeps the text', [Word.getHyperlink(editor), Word.getText(editor).split('\n')[0].includes('link text')], [null, true]);
 
+    // Rejected commands and selection-only navigation must not consume redo.
+    {
+        const target = Word.initializeCanvas(document.createElement('canvas'));
+        Word.setParagraphs(target, ['Body']);
+        const body = Word.getLayoutLines(target)[0].BlockId;
+        Word.setSelection(target, body, 0, body, 0);
+        Word.alignCenter(target);
+        Word.markSaved(target);
+        const centeredRevision = Word.getRevision(target);
+        Word.insertText(target, 'x');
+        Word.undo(target);
+        Word.alignCenter(target);
+        check('repeating paragraph alignment preserves saved identity and redo',
+            [Word.getRevision(target), Word.isModified(target), Word.canRedo(target)],
+            [centeredRevision, false, true]);
+        Word.redo(target);
+        check('redo survives the unchanged paragraph command', Word.getText(target), 'xBody');
+
+        Word.insertTable(target, 1, 2);
+        const firstCellId = Word.getSelection(target).FocusBlockId;
+        Word.markSaved(target);
+        const tableRevision = Word.getRevision(target);
+        Word.insertText(target, 'cell');
+        Word.undo(target);
+        Word.moveToAdjacentTableCell(target, true);
+        Word.mergeTableCells(target);
+        check('table navigation and an unavailable merge preserve saved identity and redo',
+            [Word.getCaretContext(target).Column, Word.getRevision(target),
+                Word.isModified(target), Word.canRedo(target)],
+            [1, tableRevision, false, true]);
+        Word.redo(target);
+        check('redo restores the original cell edit after table navigation',
+            [Word.getSelection(target).FocusBlockId, Word.getSelection(target).FocusOffset,
+                Word.getText(target).includes('cell')], [firstCellId, 4, true]);
+        Word.dispose(target);
+    }
+
     // (Resizing a picture by its handles: see image-handles.js, which finds the picture in the painted pixels.)
     void canvas; void stepsBefore;
 } catch (e) { fail(e); }

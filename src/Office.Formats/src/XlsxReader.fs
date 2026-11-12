@@ -229,6 +229,9 @@ type Dxf = {
     /// `<u/>` (any kind but "none") and `<strike/>` of the dxf's font.
     Underline: bool option
     Strike: bool option
+    /// Only on a newly derived differential format: the original styles.xml
+    /// dxf to clone and patch, retaining properties the editor does not model.
+    SourceDxfIndex: int option
 }
 
 /// A line of a table style's format: its kind ("thin", "medium", ...) and colour (RRGGBB).
@@ -422,11 +425,17 @@ type ConditionalFormatRule = {
     StopIfTrue: bool
     /// The rule's x14 extension, when it has one.
     Ext: CfRuleExt option
+    /// Source `<cfRule>` for opaque rules the editor does not model. The writer
+    /// patches its priority while preserving its unrecognised children.
+    SourceXml: string option
 }
 
 type ConditionalFormat = {
     Range: string
     Rules: ConditionalFormatRule list
+    /// Attributes on the `<conditionalFormatting>` group other than sqref
+    /// (notably pivot="1"), retained when its rules are rearranged.
+    GroupAttributes: (string * string) list
 }
 
 type DataValidation = {
@@ -4606,6 +4615,7 @@ module ConditionalFormats =
                 match Ns.childNs "iconSet" ruleNode |> Option.bind (Xml.attr "showValue") with
                 | Some text when not (isTrueText text) -> Some { emptyCfRuleExt with ShowValue = false }
                 | _ -> None
+            SourceXml = None
         }
 
     /// One `<dxf>` (of the styles part, or the `<x14:dxf>` of an x14 rule).
@@ -4638,6 +4648,7 @@ module ConditionalFormats =
                 |> Option.bind (Xlsx.sElem "u")
                 |> Option.map (fun node -> Xml.attr "val" node <> Some "none")
             Strike = boolChild "strike"
+            SourceDxfIndex = None
         }
 
     /// The rule types of the x14 list this reader makes rules of.
@@ -4661,15 +4672,14 @@ module ConditionalFormats =
                 let sqref = directChildren "sqref" block |> List.tryHead |> Option.bind Xml.text |> Option.map (fun text -> text.Trim()) |> Option.defaultValue ""
                 directChildren "cfRule" block |> List.map (fun rule -> sqref, rule))
 
-    /// Whether every x14 rule of the sheet is one this reader makes a rule
-    /// of. When not, the extension is kept as it is and none is read.
+    /// Every x14 rule with a range is represented as a rule, even if its
+    /// type is unknown: the writer can then carry that one opaque rule without
+    /// dropping or duplicating recognized siblings in the same extension.
+    /// An extension with an unlocated rule is retained whole instead.
     let x14Understood (sheet: XmlNode) : bool =
         x14RuleNodes sheet
         |> List.forall (fun (sqref, rule) ->
-            let kind = Xml.attr "type" rule |> Option.defaultValue ""
-            Xml.attr "pivot" rule |> Option.forall (fun text -> not (isTrueText text))
-            && List.contains kind x14RuleTypes
-            && (sqref <> "" || kind = "dataBar"))
+            sqref <> "" || Xml.attr "type" rule = Some "dataBar")
 
     let private x14Cfvo (parent: XmlNode) : (string * string option) list =
         directChildren "cfvo" parent
@@ -4700,6 +4710,9 @@ module ConditionalFormats =
     /// A rule that is in the x14 list only.
     let private x14Rule (themeColors: string array) (ruleNode: XmlNode) : ConditionalFormatRule =
         let basic = parseRule themeColors ruleNode
+        let basic =
+            if List.contains basic.Type x14RuleTypes && (Xml.attr "pivot" ruleNode |> Option.forall (fun value -> not (isTrueText value))) then basic
+            else { basic with SourceXml = Some (DocxReader.Docx.xmlToString ruleNode) }
         let formulas = directChildren "f" ruleNode |> List.choose Xml.text
         let ext = { emptyCfRuleExt with InExtList = true; Dxf = Ns.childNs "dxf" ruleNode |> Option.map (parseDxf themeColors) }
         match Ns.childNs "dataBar" ruleNode, Ns.childNs "iconSet" ruleNode, Ns.childNs "colorScale" ruleNode with
@@ -4745,6 +4758,10 @@ module ConditionalFormats =
             {
                 Range = range
                 Rules = rules
+                GroupAttributes =
+                    match cfNode with
+                    | Element (_, attrs, _, _) -> attrs |> Map.toList |> List.filter (fun (name, _) -> name <> "sqref")
+                    | _ -> []
             })
 
     let parseConditionalFormats (themeColors: string array) (sheet: XmlNode) : ConditionalFormat list =
@@ -4774,14 +4791,19 @@ module ConditionalFormats =
                                     DataBarColor = (match fill with Some _ -> fill | None -> rule.DataBarColor)
                                     Ext = Some { emptyCfRuleExt with DataBar = Some barExt } }
                             | _ -> rule)
-                    { Range = range; Rules = rules }))
+                    { Range = range
+                      Rules = rules
+                      GroupAttributes =
+                        match cfNode with
+                        | Element (_, attrs, _, _) -> attrs |> Map.toList |> List.filter (fun (name, _) -> name <> "sqref")
+                        | _ -> [] }))
         let extOnly =
             x14
             |> List.choose (fun (sqref, ruleNode) ->
                 match Xml.attr "id" ruleNode with
                 | Some id when paired.Contains id -> None
                 | _ when sqref = "" -> None
-                | _ -> Some { Range = sqref; Rules = [ x14Rule themeColors ruleNode ] })
+                | _ -> Some { Range = sqref; Rules = [ x14Rule themeColors ruleNode ]; GroupAttributes = [] })
         main @ extOnly
 
     /// Parse the `<dxfs>` table out of styles.xml. Each `<dxf>` carries a
@@ -5002,9 +5024,8 @@ module NamedRanges =
 
     /// Pull the print-related `_xlnm.*` defined names out of the workbook's
     /// name list and group their values per sheet (by `localSheetId`, the
-    /// 0-based sheet index). Returns the rest of the names (regular user
-    /// names) and a per-sheet lookup. Other `_xlnm.*` built-ins
-    /// (`_FilterDatabase`, …) are dropped — they're Excel internals.
+    /// 0-based sheet index). Other built-ins remain defined names: callers
+    /// can display them read-only and preserve their comments/hidden flags.
     let splitPrintNames (names: NamedRange list) : NamedRange list * Map<int, WorksheetPrintNames> =
         let mutable regular = []
         let mutable perSheet : Map<int, WorksheetPrintNames> = Map.empty
@@ -5026,7 +5047,6 @@ module NamedRanges =
                 for p in parts do
                     if isRowsRef p then update idx (fun w -> { w with PrintTitleRows = Some p })
                     elif isColsRef p then update idx (fun w -> { w with PrintTitleCols = Some p })
-            | n, _ when ValueText.Sheet.isBuiltInName n -> ()  // other built-ins: drop
             | _ -> regular <- nr :: regular
         (List.rev regular, perSheet)
 
@@ -5823,16 +5843,16 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int arra
 /// The `<ext>` elements of a sheet's own `<extLst>` (the one that closes the
 /// worksheet element) that hold a slicer list or timeline references (`true`:
 /// parts the model does not hold), sparkline groups or x14 conditional formats
-/// it does not understand (`false`), each with the namespace declarations it
-/// needs. Both sheet parsers leave the extension list alone.
+/// without a usable rule range (`false`), each with the namespace declarations
+/// it needs. Both sheet parsers leave the extension list alone.
 let private keptSheetExtensions (sheet: XmlPatch.SourceElement) : (bool * string) list =
     match sheet.Node with
     | XmlDsl.Element (rootName, rootAttributes, kids, rootSpan) ->
         match kids |> List.filter (function XmlDsl.Element _ -> true | _ -> false) |> List.tryLast with
         | Some (XmlDsl.Element ("extLst", _, _, _) as extLst) ->
             try
-                // The x14 conditional formats are read as rules (and written from
-                // them); they are only kept as they are when one is not understood.
+                // Rules with a range, including unknown types, are read
+                // individually. Only extensions with unlocated rules stay whole.
                 let rulesRead = ConditionalFormats.x14Understood (XmlDsl.Element (rootName, rootAttributes, [ extLst ], rootSpan))
                 Xml.children extLst
                 |> List.choose (fun ext ->

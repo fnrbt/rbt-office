@@ -5,6 +5,181 @@ open System.Collections.Generic
 open System.Globalization
 open Rbt.Spreadsheet.Model
 
+/// Deliberately curated user-facing syntax. Evaluator lifting signatures below
+/// describe array/scalar evaluation, NOT function arguments.
+type FunctionHelp = { Name: string; Arguments: string array; Description: string; RepeatFrom: int option }
+
+let functionHelpCatalog : FunctionHelp array =
+    [| { Name = "SUM"; Arguments = [| "number1: first number or range"; "number2...: more numbers or ranges (optional)" |]; Description = "Adds numbers in values and ranges."; RepeatFrom = Some 1 }
+       { Name = "IF"; Arguments = [| "test: condition to check"; "value_if_true: result when true"; "value_if_false: result when false (optional)" |]; Description = "Returns one of two values based on a condition."; RepeatFrom = None }
+       { Name = "AVERAGE"; Arguments = [| "number1: first number or range"; "number2...: more numbers or ranges (optional)" |]; Description = "Arithmetic mean of numeric values."; RepeatFrom = Some 1 }
+       { Name = "COUNT"; Arguments = [| "value1: first value or range"; "value2...: more values or ranges (optional)" |]; Description = "Counts numeric values."; RepeatFrom = Some 1 }
+       { Name = "COUNTA"; Arguments = [| "value1: first value or range"; "value2...: more values or ranges (optional)" |]; Description = "Counts nonempty values."; RepeatFrom = Some 1 }
+       { Name = "MIN"; Arguments = [| "number1: first number or range"; "number2...: more numbers or ranges (optional)" |]; Description = "Smallest numeric value."; RepeatFrom = Some 1 }
+       { Name = "MAX"; Arguments = [| "number1: first number or range"; "number2...: more numbers or ranges (optional)" |]; Description = "Largest numeric value."; RepeatFrom = Some 1 }
+       { Name = "ROUND"; Arguments = [| "number: value to round"; "num_digits: decimal places (optional; defaults to 0)" |]; Description = "Rounds a number to the specified digits."; RepeatFrom = None }
+       { Name = "IFERROR"; Arguments = [| "value: expression to evaluate"; "value_if_error: result on error" |]; Description = "Returns a fallback when the expression has an error."; RepeatFrom = None }
+       { Name = "AND"; Arguments = [| "logical1: first condition"; "logical2...: more conditions (optional)" |]; Description = "True when all conditions are true."; RepeatFrom = Some 1 }
+       { Name = "OR"; Arguments = [| "logical1: first condition"; "logical2...: more conditions (optional)" |]; Description = "True when at least one condition is true."; RepeatFrom = Some 1 }
+       { Name = "NOT"; Arguments = [| "logical: condition" |]; Description = "Reverses a logical result."; RepeatFrom = None }
+       { Name = "CONCAT"; Arguments = [| "text1: first text or range"; "text2...: more text or ranges (optional)" |]; Description = "Joins text values."; RepeatFrom = Some 1 }
+       { Name = "LEFT"; Arguments = [| "text: source text"; "num_chars: characters to take (optional)" |]; Description = "Takes characters from the beginning of text."; RepeatFrom = None }
+       { Name = "RIGHT"; Arguments = [| "text: source text"; "num_chars: characters to take (optional)" |]; Description = "Takes characters from the end of text."; RepeatFrom = None }
+       { Name = "MID"; Arguments = [| "text: source text"; "start_num: first character (1-based)"; "num_chars: characters to take" |]; Description = "Takes characters from inside text."; RepeatFrom = None }
+       { Name = "LEN"; Arguments = [| "text: text to measure" |]; Description = "Counts characters in text."; RepeatFrom = None }
+       { Name = "VLOOKUP"; Arguments = [| "lookup_value: value to find"; "table_array: table to search"; "col_index_num: result column (1-based)"; "range_lookup: approximate match (optional; defaults to TRUE)" |]; Description = "Finds a value in a table's first column."; RepeatFrom = None }
+       { Name = "XLOOKUP"; Arguments = [| "lookup_value: value to find"; "lookup_array: values to search"; "return_array: matching results"; "if_not_found: fallback (optional)"; "match_mode: match method (optional)"; "search_mode: search direction (optional)" |]; Description = "Looks up a value and returns the corresponding result."; RepeatFrom = None }
+       { Name = "SUMIF"; Arguments = [| "range: cells to test"; "criteria: condition"; "sum_range: cells to add (optional; defaults to range)" |]; Description = "Adds values whose cells meet a condition."; RepeatFrom = None }
+       { Name = "SUMIFS"; Arguments = [| "sum_range: cells to add"; "criteria_range1: first cells to test"; "criteria1: first condition"; "criteria_range...: additional cells to test (optional)"; "criteria...: additional condition (optional)" |]; Description = "Adds values meeting every condition; additional conditions must be range/criteria pairs."; RepeatFrom = Some 3 }
+       { Name = "COUNTIF"; Arguments = [| "range: cells to test"; "criteria: condition" |]; Description = "Counts cells meeting a condition."; RepeatFrom = None }
+       { Name = "COUNTIFS"; Arguments = [| "criteria_range1: first cells to test"; "criteria1: first condition"; "criteria_range...: additional cells to test (optional)"; "criteria...: additional condition (optional)" |]; Description = "Counts cells meeting every condition; additional conditions must be range/criteria pairs."; RepeatFrom = Some 2 }
+       { Name = "AVERAGEIF"; Arguments = [| "range: cells to test"; "criteria: condition"; "average_range: cells to average (optional; defaults to range)" |]; Description = "Averages matching numeric cells; no numbers gives #DIV/0!."; RepeatFrom = None }
+       { Name = "AVERAGEIFS"; Arguments = [| "average_range: cells to average"; "criteria_range1: first cells to test"; "criteria1: first condition"; "criteria_range...: additional cells to test (optional)"; "criteria...: additional condition (optional)" |]; Description = "Averages numeric cells meeting every range/criteria pair; no numbers gives #DIV/0!."; RepeatFrom = Some 3 }
+       { Name = "IFNA"; Arguments = [| "value: expression to evaluate"; "value_if_na: result on #N/A" |]; Description = "Returns a fallback only for #N/A errors."; RepeatFrom = None }
+       { Name = "IFS"; Arguments = [| "test1: first condition"; "value1: result when true"; "test...: additional condition (optional)"; "value...: corresponding result (optional)" |]; Description = "Returns the result of the first true condition; unmatched conditions give #N/A. Add complete test/value pairs."; RepeatFrom = Some 2 }
+       { Name = "SWITCH"; Arguments = [| "expression: value to compare"; "case1: first matching value"; "result1: first result"; "case...: additional matching value or final default"; "result...: corresponding result (optional)" |]; Description = "Returns the first matching case's result; an unmatched expression gives #N/A unless a final default follows the case/result pairs."; RepeatFrom = Some 3 }
+       { Name = "INDEX"; Arguments = [| "array: range or array to read"; "row_num: 1-based row (or position in a single row)"; "column_num: 1-based column (optional; defaults to 1)" |]; Description = "Returns one cell from an array; index 0 selects the first cell, not an entire row or column."; RepeatFrom = None }
+       { Name = "MATCH"; Arguments = [| "lookup_value: value to find"; "lookup_array: range to search"; "match_type: 0 exact, 1 ascending approximate (default), -1 descending approximate" |]; Description = "Returns the 1-based position of a match; exact text matches support wildcards."; RepeatFrom = None }
+       { Name = "HLOOKUP"; Arguments = [| "lookup_value: value to find"; "table_array: table to search"; "row_index_num: result row (1-based)"; "range_lookup: approximate match (optional; defaults to TRUE)" |]; Description = "Finds a value in a table's first row and returns a cell in the selected row."; RepeatFrom = None }
+       { Name = "FILTER"; Arguments = [| "array: values to filter"; "include: matching rows or columns"; "if_empty: result when nothing matches (optional; otherwise #CALC!)" |]; Description = "Spills values selected by a Boolean include array."; RepeatFrom = None }
+       { Name = "SORT"; Arguments = [| "array: values to sort"; "sort_index: column or row to sort by (optional; defaults to 1)"; "sort_order: 1 ascending or -1 descending (optional; defaults to 1)"; "by_col: sort columns instead of rows (optional; defaults to FALSE)" |]; Description = "Spills a sorted copy of an array."; RepeatFrom = None }
+       { Name = "UNIQUE"; Arguments = [| "array: values to deduplicate"; "by_col: compare columns instead of rows (optional; defaults to FALSE)" |]; Description = "Spills distinct rows or columns, retaining their first appearance; text comparisons ignore case."; RepeatFrom = None }
+       { Name = "SEQUENCE"; Arguments = [| "rows: positive row count"; "columns: positive column count (optional; defaults to 1)"; "start: first number (optional; defaults to 1)"; "step: increment (optional; defaults to 1)" |]; Description = "Spills a row-major sequence of numbers."; RepeatFrom = None }
+       { Name = "DATE"; Arguments = [| "year: year"; "month: month (may roll over)"; "day: day (may roll over)" |]; Description = "Returns a date serial number."; RepeatFrom = None }
+       { Name = "TIME"; Arguments = [| "hour: hours"; "minute: minutes"; "second: seconds" |]; Description = "Returns a time fraction, wrapping at 24 hours."; RepeatFrom = None }
+       { Name = "TODAY"; Arguments = [||]; Description = "Returns the current local date as a serial number; takes no arguments."; RepeatFrom = None }
+       { Name = "NOW"; Arguments = [||]; Description = "Returns the current local date and time as a serial number; takes no arguments."; RepeatFrom = None }
+       { Name = "YEAR"; Arguments = [| "serial_number: date serial" |]; Description = "Returns the year of a date."; RepeatFrom = None }
+       { Name = "MONTH"; Arguments = [| "serial_number: date serial" |]; Description = "Returns the month of a date."; RepeatFrom = None }
+       { Name = "DAY"; Arguments = [| "serial_number: date serial" |]; Description = "Returns the day of the month of a date."; RepeatFrom = None }
+       { Name = "DAYS"; Arguments = [| "end_date: later date serial"; "start_date: earlier date serial" |]; Description = "Returns whole days between two dates (negative when reversed)."; RepeatFrom = None }
+       { Name = "EDATE"; Arguments = [| "start_date: date serial"; "months: whole months to move" |]; Description = "Moves a date by a number of months, preserving the day where possible."; RepeatFrom = None }
+       { Name = "EOMONTH"; Arguments = [| "start_date: date serial"; "months: whole months to move" |]; Description = "Returns the last day of the month the given number of months away."; RepeatFrom = None }
+       { Name = "NETWORKDAYS"; Arguments = [| "start_date: start date serial"; "end_date: end date serial"; "holidays: date serials to omit (optional)" |]; Description = "Counts weekdays inclusively, excluding optional holidays; weekends are Saturday and Sunday."; RepeatFrom = None }
+       { Name = "WORKDAY"; Arguments = [| "start_date: start date serial"; "days: working days to move"; "holidays: date serials to omit (optional)" |]; Description = "Moves by weekdays, excluding optional holidays; weekends are Saturday and Sunday."; RepeatFrom = None }
+       { Name = "TEXT"; Arguments = [| "value: number or date serial"; "format_text: number format code" |]; Description = "Formats a numeric value as text using a supported number format code."; RepeatFrom = None }
+       { Name = "TEXTJOIN"; Arguments = [| "delimiter: text between values"; "ignore_empty: whether to skip blank values"; "text1: first text or range"; "text...: additional text or ranges (optional)" |]; Description = "Joins text values and ranges with a delimiter."; RepeatFrom = Some 3 }
+       { Name = "TRIM"; Arguments = [| "text: text to clean" |]; Description = "Removes leading, trailing and repeated spaces."; RepeatFrom = None }
+       { Name = "LOWER"; Arguments = [| "text: text to convert" |]; Description = "Converts text to lowercase."; RepeatFrom = None }
+       { Name = "UPPER"; Arguments = [| "text: text to convert" |]; Description = "Converts text to uppercase."; RepeatFrom = None }
+       { Name = "SUBSTITUTE"; Arguments = [| "text: source text"; "old_text: text to replace"; "new_text: replacement text"; "instance_num: occurrence to replace (optional; otherwise all)" |]; Description = "Replaces matching text; comparisons are case-sensitive."; RepeatFrom = None }
+       { Name = "REPLACE"; Arguments = [| "old_text: source text"; "start_num: first character (1-based)"; "num_chars: characters to replace"; "new_text: replacement text" |]; Description = "Replaces characters at a position."; RepeatFrom = None }
+       { Name = "FIND"; Arguments = [| "find_text: case-sensitive text to find"; "within_text: text to search"; "start_num: first character to search (optional; defaults to 1)" |]; Description = "Returns the 1-based position of text, or #VALUE! when not found."; RepeatFrom = None }
+       { Name = "SEARCH"; Arguments = [| "find_text: case-insensitive text or wildcard pattern"; "within_text: text to search"; "start_num: first character to search (optional; defaults to 1)" |]; Description = "Returns the 1-based position of text, or #VALUE! when not found; supports *, ? and ~ wildcards."; RepeatFrom = None }
+       { Name = "ROUNDUP"; Arguments = [| "number: value to round away from zero"; "num_digits: decimal places (optional; defaults to 0)" |]; Description = "Rounds away from zero at the specified digits."; RepeatFrom = None }
+       { Name = "ROUNDDOWN"; Arguments = [| "number: value to round toward zero"; "num_digits: decimal places (optional; defaults to 0)" |]; Description = "Rounds toward zero at the specified digits."; RepeatFrom = None }
+       { Name = "INT"; Arguments = [| "number: value to round down" |]; Description = "Rounds down to an integer, including negative numbers."; RepeatFrom = None }
+       { Name = "MOD"; Arguments = [| "number: dividend"; "divisor: nonzero divisor" |]; Description = "Returns the remainder with the sign of the divisor."; RepeatFrom = None }
+       { Name = "ABS"; Arguments = [| "number: value" |]; Description = "Returns the absolute value of a number."; RepeatFrom = None }
+       { Name = "SQRT"; Arguments = [| "number: nonnegative value" |]; Description = "Returns the square root; negative values give #NUM!."; RepeatFrom = None }
+       { Name = "POWER"; Arguments = [| "number: base"; "power: exponent" |]; Description = "Raises a base to an exponent."; RepeatFrom = None }
+       { Name = "PRODUCT"; Arguments = [| "number1: first value or range"; "number...: additional values or ranges (optional)" |]; Description = "Multiplies numeric values in values and ranges."; RepeatFrom = Some 1 }
+       { Name = "SUMPRODUCT"; Arguments = [| "array1: first array or range"; "array...: additional equally shaped arrays (optional)" |]; Description = "Sums element-wise products; text, blanks and booleans count as zero."; RepeatFrom = Some 1 }
+       { Name = "SUBTOTAL"; Arguments = [| "function_num: aggregate code (1–11; 101–111 also skip manually hidden rows)"; "ref1: first range"; "ref...: additional ranges (optional)" |]; Description = "Aggregates ranges while excluding filtered rows and nested subtotals."; RepeatFrom = Some 2 } |]
+
+let findFunctionHelp (name: string) =
+    functionHelpCatalog |> Array.tryFind (fun item -> String.Equals(item.Name, name, StringComparison.OrdinalIgnoreCase))
+
+/// A trailing argument group can repeat; the starting index lives alongside
+/// the displayed labels rather than being inferred from their wording.
+let functionArgumentHelp (info: FunctionHelp) (index: int) =
+    if info.Arguments.Length = 0 then "No arguments"
+    elif index < info.Arguments.Length then info.Arguments.[index]
+    else
+        match info.RepeatFrom with
+        | Some first -> info.Arguments.[first + (index - first) % (info.Arguments.Length - first)]
+        | None -> "Additional argument"
+
+let private functionNameChar (c: char) = Char.IsLetterOrDigit c || c = '_' || c = '.'
+
+/// A lexical caret context only; never interprets/evaluates formula expressions.
+/// Parentheses in strings, quoted sheet names and structured references are ignored.
+let formulaHelpAt (text: string) (caret: int) : (FunctionHelp * int) option =
+    if String.IsNullOrEmpty text || text.[0] <> '=' then None
+    else
+        let frames = ResizeArray<string * int>()
+        let mutable inText = false
+        let mutable inSheetName = false
+        let mutable bracketDepth = 0
+        let mutable arrayDepth = 0
+        let mutable i = 1
+        let finish = max 1 (min caret text.Length)
+        while i < finish do
+            let c = text.[i]
+            if inText then
+                if c = '"' then
+                    if i + 1 < text.Length && text.[i + 1] = '"' then i <- i + 1
+                    else inText <- false
+            elif inSheetName then
+                if c = '\'' then
+                    if i + 1 < text.Length && text.[i + 1] = '\'' then i <- i + 1
+                    else inSheetName <- false
+            elif c = '"' then inText <- true
+            elif c = '\'' then inSheetName <- true
+            elif c = '[' then bracketDepth <- bracketDepth + 1
+            elif c = ']' then bracketDepth <- max 0 (bracketDepth - 1)
+            elif bracketDepth = 0 && c = '{' then arrayDepth <- arrayDepth + 1
+            elif bracketDepth = 0 && c = '}' then arrayDepth <- max 0 (arrayDepth - 1)
+            elif bracketDepth = 0 then
+                if c = '(' then
+                    let mutable endName = i - 1
+                    while endName >= 1 && Char.IsWhiteSpace text.[endName] do endName <- endName - 1
+                    let mutable startName = endName
+                    while startName >= 1 && functionNameChar text.[startName] do startName <- startName - 1
+                    let name =
+                        if startName < endName then text.Substring(startName + 1, endName - startName)
+                        else ""
+                    frames.Add((name, 0))
+                elif c = ')' && frames.Count > 0 then frames.RemoveAt(frames.Count - 1)
+                elif c = ',' && frames.Count > 0 && arrayDepth = 0 then
+                    let name, index = frames.[frames.Count - 1]
+                    frames.[frames.Count - 1] <- (name, index + 1)
+            i <- i + 1
+        if inText || inSheetName || frames.Count = 0 then None
+        else
+            let name, index = frames.[frames.Count - 1]
+            findFunctionHelp name |> Option.map (fun info -> info, index)
+
+/// Completion is confined to a function token in a formula (not a cell
+/// reference, quoted string, sheet name or an already-open function call).
+let formulaFunctionCompletion (text: string) (caret: int) : (int * FunctionHelp) option =
+    if String.IsNullOrEmpty text || text.[0] <> '=' || caret < 2 || caret > text.Length then None
+    else
+        let mutable start = caret
+        while start > 1 && functionNameChar text.[start - 1] do start <- start - 1
+        if start = caret || (start > 1 && not ("=+-*/^(,;:&<>".Contains(string text.[start - 1]))) then None
+        else
+            let prefix = text.Substring(start, caret - start)
+            let before = text.Substring(0, start)
+            // A quoted token may not be completed, even when the quote is unclosed.
+            let mutable quoted = false
+            let mutable sheet = false
+            let mutable bracketDepth = 0
+            let mutable arrayDepth = 0
+            let mutable i = 1
+            while i < before.Length do
+                if before.[i] = '"' && not sheet then
+                    if quoted && i + 1 < before.Length && before.[i + 1] = '"' then i <- i + 1
+                    else quoted <- not quoted
+                elif before.[i] = '\'' && not quoted then
+                    if sheet && i + 1 < before.Length && before.[i + 1] = '\'' then i <- i + 1
+                    else sheet <- not sheet
+                elif not quoted && not sheet then
+                    match before.[i] with
+                    | '[' -> bracketDepth <- bracketDepth + 1
+                    | ']' -> bracketDepth <- max 0 (bracketDepth - 1)
+                    | '{' when bracketDepth = 0 -> arrayDepth <- arrayDepth + 1
+                    | '}' when bracketDepth = 0 -> arrayDepth <- max 0 (arrayDepth - 1)
+                    | _ -> ()
+                i <- i + 1
+            if quoted || sheet || bracketDepth > 0 || arrayDepth > 0 || (caret < text.Length && (functionNameChar text.[caret] || text.[caret] = '(')) then None
+            else
+                let matching = functionHelpCatalog |> Array.filter (fun item -> item.Name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                match findFunctionHelp prefix with
+                | Some exact -> Some(start, exact)
+                | None when matching.Length = 1 && prefix.Length >= 2 -> Some(start, matching.[0])
+                | _ -> None
+
 let private resizeArrayToList (items: System.Collections.Generic.List<'T>) =
     let mutable result = []
     for i = items.Count - 1 downto 0 do

@@ -456,6 +456,53 @@ let effectiveRunStyleResolver (doc: Document) : ParagraphBlock -> TextStyle -> T
             | Some level -> Heading (level, para)
             | None -> Paragraph para
         effectiveTextStyleWithResolved context.ResolvedCharacterStyles (forBlockInContext context block) runStyle
+/// Imported runs may cache the effective fonts supplied by their old named
+/// styles. Drop only matching, non-direct values before changing the style;
+/// unrelated values (including table formatting) and explicit overrides stay.
+let private releaseInheritedFonts (inherited: TextStyle) (style: TextStyle) =
+    let family =
+        if not (ExplicitFormat.has ExplicitFormat.FontFamily style) && style.FontFamily = inherited.FontFamily then None
+        else style.FontFamily
+    let size =
+        if not (ExplicitFormat.has ExplicitFormat.FontSize style) && abs (style.FontSize - inherited.FontSize) < 0.01 then TextBuffer.defaultStyle.FontSize
+        else style.FontSize
+    if family = style.FontFamily && size = style.FontSize then style
+    else { style with FontFamily = family; FontSize = size }
+
+let private inheritedFontsFor (context: DocumentStyleContext) (doc: Document) (para: ParagraphBlock) =
+    let block = findBlock doc para.Id |> Option.defaultValue (Paragraph para)
+    let paragraph = forBlockInContext context block
+    fun (style: TextStyle) ->
+        effectiveTextStyleInContext context paragraph { TextBuffer.defaultStyle with Style = style.Style }
+
+/// Apply a named paragraph style, retaining direct run formatting.
+let setParagraphStyle styleId (doc: Document) =
+    let normalized = if System.String.IsNullOrWhiteSpace styleId then None else Some (styleId.Trim())
+    let context = styleContext doc
+    let updated =
+        (doc, Document.paragraphFormattingTargets doc)
+        ||> List.fold (fun current para ->
+            if para.Metadata.Style = normalized then current
+            else
+                let inherited = inheritedFontsFor context doc para
+                let buffer = TextBuffer.applyStyle 0 (TextBuffer.length para.Buffer) (fun style -> releaseInheritedFonts (inherited style) style) para.Buffer
+                if obj.ReferenceEquals(buffer, para.Buffer) then current
+                else Document.replaceParagraph current para.Id { para with Buffer = buffer })
+    updated |> Document.clearHeading |> Document.setParagraphStyle styleId
+
+/// Apply a named character style to a selected range (also used by the
+/// pending-typing probe for a caret).
+let setCharacterStyle styleId (doc: Document) =
+    let normalized = if System.String.IsNullOrWhiteSpace styleId then None else Some (styleId.Trim())
+    let context = styleContext doc
+    Document.applyFormattingToSelectionInParagraph (fun para start length buffer ->
+        let inherited = inheritedFontsFor context doc para
+        TextBuffer.applyStyle start length (fun style ->
+            if style.Style = normalized then style
+            else
+                let released = releaseInheritedFonts (inherited style) style
+                { released with Style = normalized }) buffer) doc
+
 
 /// Toggle commands decided on the effective formatting of the selection, so
 /// toggling text that is bold through its style produces explicit non-bold.
@@ -636,24 +683,22 @@ let isInternalStyleId (styleId: string) =
 
 /// The formatting a toolbar shows for the selection: what is displayed
 /// (styles resolved), not just what the runs state themselves.
-[<RequireQualifiedAccess>]
 type SelectionFormat = {
     Bold: FormatValue<bool>
     Italic: FormatValue<bool>
     Underline: FormatValue<bool>
+    UnderlineMode: FormatValue<string>
     Strike: FormatValue<bool>
-    /// None: no family stated anywhere (the renderer's default face).
+    Hidden: FormatValue<bool>
+    AllCaps: FormatValue<bool>
+    SmallCaps: FormatValue<bool>
     FontFamily: FormatValue<string option>
-    /// Same unit as Document.setFontSize.
     FontSize: FormatValue<float>
-    /// None: automatic colour.
     Color: FormatValue<string option>
     Highlight: FormatValue<string option>
-    /// "superscript" | "subscript"; None: on the baseline.
     VertAlign: FormatValue<string option>
-    /// The paragraph style id; None for the default paragraph style.
+    CharacterStyleId: FormatValue<string option>
     StyleId: FormatValue<string option>
-    /// 0 for body text.
     HeadingLevel: FormatValue<int>
     Alignment: FormatValue<Alignment>
     ListKind: FormatValue<ListStyle>
@@ -661,13 +706,10 @@ type SelectionFormat = {
     IndentLeft: FormatValue<float>
     IndentRight: FormatValue<float>
     FirstLineIndent: FormatValue<float>
-    /// Line spacing as the paragraph or its style states it: a multiple of
-    /// single spacing for the rule "auto" (None), layout pixels for "exact" /
-    /// "atLeast". None: not stated anywhere (single spacing).
+    BackgroundColor: FormatValue<string option>
+    NumberFormat: FormatValue<string option>
     ParagraphLineSpacing: FormatValue<float option>
-    /// "auto" | "exact" | "atLeast"; None when not stated.
     ParagraphLineSpacingRule: FormatValue<string option>
-    /// Space before / after the paragraph, in layout pixels (0 when none is stated).
     ParagraphSpacingBefore: FormatValue<float>
     ParagraphSpacingAfter: FormatValue<float>
 }
@@ -687,12 +729,17 @@ let selectionFormat (doc: Document) : SelectionFormat =
     let mutable bold = NoValue
     let mutable italic = NoValue
     let mutable underline = NoValue
+    let mutable underlineMode = NoValue
     let mutable strike = NoValue
+    let mutable hidden = NoValue
+    let mutable allCaps = NoValue
+    let mutable smallCaps = NoValue
     let mutable fontFamily = NoValue
     let mutable fontSize = NoValue
     let mutable color = NoValue
     let mutable highlight = NoValue
     let mutable vertAlign = NoValue
+    let mutable characterStyleId = NoValue
     let mutable styleId = NoValue
     let mutable headingLevel = NoValue
     let mutable alignment = NoValue
@@ -701,17 +748,20 @@ let selectionFormat (doc: Document) : SelectionFormat =
     let mutable indentLeft = NoValue
     let mutable indentRight = NoValue
     let mutable firstLineIndent = NoValue
+    let mutable backgroundColor = NoValue
+    let mutable numberFormat = NoValue
     let mutable lineSpacing = NoValue
     let mutable lineSpacingRule = NoValue
     let mutable spacingBefore = NoValue
     let mutable spacingAfter = NoValue
     let inline isMixed (value: FormatValue<'T>) = (match value with Mixed -> true | _ -> false)
     let charactersMixed () =
-        isMixed bold && isMixed italic && isMixed underline && isMixed strike
-        && isMixed fontFamily && isMixed fontSize && isMixed color && isMixed highlight && isMixed vertAlign
+        isMixed bold && isMixed italic && isMixed underline && isMixed underlineMode && isMixed strike
+        && isMixed allCaps && isMixed smallCaps && isMixed hidden
+        && isMixed fontFamily && isMixed fontSize && isMixed color && isMixed highlight && isMixed vertAlign && isMixed characterStyleId
     let paragraphsMixed () =
         isMixed styleId && isMixed headingLevel && isMixed alignment && isMixed listKind && isMixed listLevel
-        && isMixed indentLeft && isMixed indentRight && isMixed firstLineIndent
+        && isMixed indentLeft && isMixed indentRight && isMixed firstLineIndent && isMixed backgroundColor && isMixed numberFormat
         && isMixed lineSpacing && isMixed lineSpacingRule && isMixed spacingBefore && isMixed spacingAfter
     match doc.Selection with
     | None -> ()
@@ -778,12 +828,16 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 && (obj.ReferenceEquals(runStyle, lastRunStyle)
                     || (runStyle.Explicit = lastRunStyle.Explicit
                         && runStyle.Bold = lastRunStyle.Bold && runStyle.Italic = lastRunStyle.Italic
+                        && runStyle.FontSize = lastRunStyle.FontSize
                         && runStyle.Underline = lastRunStyle.Underline && runStyle.Strike = lastRunStyle.Strike
-                        && runStyle.DoubleStrike = lastRunStyle.DoubleStrike && runStyle.FontSize = lastRunStyle.FontSize
+                        && runStyle.DoubleStrike = lastRunStyle.DoubleStrike && runStyle.Hidden = lastRunStyle.Hidden
+                        && sameText runStyle.UnderlineStyle lastRunStyle.UnderlineStyle
+                        && runStyle.AllCaps = lastRunStyle.AllCaps && runStyle.SmallCaps = lastRunStyle.SmallCaps
                         && sameText runStyle.FontFamily lastRunStyle.FontFamily && sameText runStyle.Color lastRunStyle.Color
                         && sameText runStyle.Highlight lastRunStyle.Highlight && sameText runStyle.Style lastRunStyle.Style
                         && sameText runStyle.VertAlign lastRunStyle.VertAlign))
             if not asLast then
+                if not (isMixed characterStyleId) then characterStyleId <- FormatValue.add (runStyle.Style |> Option.filter (isInternalStyleId >> not)) characterStyleId
                 lastRunStyle <- runStyle
                 lastParagraphStyle <- paragraphStyle
                 // (The run's own style when a character style has a part in it: what
@@ -798,16 +852,22 @@ let selectionFormat (doc: Document) : SelectionFormat =
                         | Some namedText -> mergeTextStyle namedText runStyle
                         | None -> runStyle
                 let inherited = paragraphStyle.Text
+                if not (isMixed fontFamily) then fontFamily <- FormatValue.add (own.FontFamily |> Option.orElse inherited.FontFamily) fontFamily
                 if not (isMixed bold) then bold <- FormatValue.add (inheritToggle ExplicitFormat.Bold inherited.Bold own.Bold own) bold
                 if not (isMixed italic) then italic <- FormatValue.add (inheritToggle ExplicitFormat.Italic inherited.Italic own.Italic own) italic
                 if not (isMixed underline) then underline <- FormatValue.add (inheritToggle ExplicitFormat.Underline inherited.Underline own.Underline own || TextBuffer.underlineShown own) underline
+                if not (isMixed underlineMode) then
+                    let shown = inheritToggle ExplicitFormat.Underline inherited.Underline own.Underline own || TextBuffer.underlineShown own
+                    underlineMode <- FormatValue.add (if shown then own.UnderlineStyle |> Option.orElse inherited.UnderlineStyle |> Option.defaultValue "single" else "none") underlineMode
                 if not (isMixed strike) then
                     strike <-
                         FormatValue.add
                             (inheritToggle ExplicitFormat.Strike inherited.Strike own.Strike own
                              || inheritToggle ExplicitFormat.DoubleStrike inherited.DoubleStrike own.DoubleStrike own)
                             strike
-                if not (isMixed fontFamily) then fontFamily <- FormatValue.add (inheritFontFamily inherited own) fontFamily
+                if not (isMixed hidden) then hidden <- FormatValue.add (inheritToggle ExplicitFormat.Hidden inherited.Hidden own.Hidden own) hidden
+                if not (isMixed allCaps) then allCaps <- FormatValue.add (inheritToggle ExplicitFormat.AllCaps inherited.AllCaps own.AllCaps own) allCaps
+                if not (isMixed smallCaps) then smallCaps <- FormatValue.add (inheritToggle ExplicitFormat.SmallCaps inherited.SmallCaps own.SmallCaps own) smallCaps
                 if not (isMixed fontSize) then fontSize <- FormatValue.add (inheritFontSize inherited.FontSize own) fontSize
                 if not (isMixed color) then
                     color <- FormatValue.add (if ExplicitFormat.has ExplicitFormat.ColorAuto own then own.Color else own.Color |> Option.orElse inherited.Color) color
@@ -845,6 +905,8 @@ let selectionFormat (doc: Document) : SelectionFormat =
             if not (isMixed indentLeft) then indentLeft <- FormatValue.add (own.IndentLeft |> Option.orElse paragraphStyle.IndentLeft |> Option.defaultValue 0.0) indentLeft
             if not (isMixed indentRight) then indentRight <- FormatValue.add (own.IndentRight |> Option.orElse paragraphStyle.IndentRight |> Option.defaultValue 0.0) indentRight
             if not (isMixed firstLineIndent) then firstLineIndent <- FormatValue.add (own.FirstLineIndent |> Option.orElse paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0) firstLineIndent
+            if not (isMixed backgroundColor) then backgroundColor <- FormatValue.add (own.BackgroundColor |> Option.orElse paragraphStyle.BackgroundColor) backgroundColor
+            if not (isMixed numberFormat) then numberFormat <- FormatValue.add (if own.ListStyle = Numbered then own.ListNumberFormat else None) numberFormat
         let caretStyle (para: ParagraphBlock) offset =
             // What typing here continues with: the character before the caret.
             TextBuffer.getStyleAt (if offset > 0 then offset - 1 else 0) para.Buffer
@@ -885,8 +947,10 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 | Some (para, rangeStart) -> addCharacter (paragraphStyleOf para) (caretStyle para rangeStart)
                 | None -> ()
             if styleId = NoValue then addCaret selection.Focus.BlockId selection.Focus.Offset
-    { SelectionFormat.Bold = bold; Italic = italic; Underline = underline; Strike = strike
+    { SelectionFormat.Bold = bold; Italic = italic; Underline = underline; UnderlineMode = underlineMode; Strike = strike
+      Hidden = hidden; AllCaps = allCaps; SmallCaps = smallCaps
       FontFamily = fontFamily; FontSize = fontSize; Color = color; Highlight = highlight; VertAlign = vertAlign
-      StyleId = styleId; HeadingLevel = headingLevel; Alignment = alignment
+      CharacterStyleId = characterStyleId; StyleId = styleId; HeadingLevel = headingLevel; Alignment = alignment
       ListKind = listKind; ListLevel = listLevel; IndentLeft = indentLeft; IndentRight = indentRight; FirstLineIndent = firstLineIndent
+      BackgroundColor = backgroundColor; NumberFormat = numberFormat
       ParagraphLineSpacing = lineSpacing; ParagraphLineSpacingRule = lineSpacingRule; ParagraphSpacingBefore = spacingBefore; ParagraphSpacingAfter = spacingAfter }

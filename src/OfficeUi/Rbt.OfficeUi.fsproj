@@ -6,5 +6,6 @@
 
   <ItemGroup>
     <Compile Include="Specs.fs" />
+    <Compile Include="Commands.fs" />
   </ItemGroup>
 </Project>

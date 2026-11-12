@@ -191,10 +191,12 @@
         <div id="spreadsheet-root"></div>
     </div>
 
+    <script src="../../node_modules/jszip/dist/jszip.min.js"></script>
+    <script type="importmap">{"imports":{"jszip":"data:text/javascript,export%20default%20window.JSZip%3B"}}</script>
     <script type="module">
         // Import the compiled Fable modules
-        import createSpreadsheet from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Spreadsheet.js';
-        import { createSpreadsheetShell } from './../../hosts/mega/frontend/src/lib/grid/Spreadsheet/Toolbar.js';
+        import createSpreadsheet from '../../dist/spreadsheet/Spreadsheet.js';
+        import { createSpreadsheetShell } from '../../dist/spreadsheet/Toolbar.js';
 
         // Get the container elements
         const toolbarContainer = document.getElementById('toolbar-container');
@@ -206,19 +208,13 @@
 
         const dispatchAction = (action) => {
             switch (action) {
-                case 'textColor': spreadsheet.ApplyTextColor('#ff0000'); break;
-                case 'bgColor':   spreadsheet.ApplyBgColor('#ffff00'); break;
-                case 'formatNumber':   spreadsheet.ApplyNumberFormat('number'); break;
-                case 'formatCurrency': spreadsheet.ApplyNumberFormat('currency'); break;
-                case 'formatPercent':  spreadsheet.ApplyNumberFormat('percentage'); break;
-                default: spreadsheet.ApplyFormat(action);
+                case 'cut': spreadsheet.Cut(); break;
+                case 'copy': spreadsheet.Copy(); break;
+                case 'paste': spreadsheet.Paste(); break;
+                default: break;
             }
         };
-        const shell = createSpreadsheetShell(
-            dispatchAction,
-            (query) => spreadsheet.StartSearch?.(query, false),
-            ([find, replace]) => spreadsheet.ReplaceAll?.(find, replace, false)
-        );
+        const shell = createSpreadsheetShell(spreadsheet, dispatchAction);
         shell.Mount(toolbarContainer);
 
         // ===== PHASE 2 TEST DATA =====

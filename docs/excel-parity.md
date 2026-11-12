@@ -14,13 +14,13 @@ Active tracker: `docs/excel-parity-tracker.md`. Visual fix history:
   - Workbook/sheet model: `src/Spreadsheet/Workbook.fs`
   - Shared UI specs: `src/Spreadsheet/SpreadsheetUi.fs` (consumes `Rbt.Office.Ui` types)
   - Browser shell entry points: `src/Spreadsheet/Spreadsheet.fs`, `src/Spreadsheet/Toolbar.fs`, `src/Spreadsheet/Tabs.fs`
-- Native path: `spreadsheet-native/`
-  - Native grid widget: `spreadsheet-native/SpreadsheetGrid.fs`
-  - Native chrome wiring: `spreadsheet-native/SpreadsheetUiNative.fs`
-  - Uses the shared chrome renderer in `office-native/OfficeShell.fs` plus `../widgets`.
+- Native path: `spreadsheet-wisp/`
+  - Shared grid painter: `office-wisp/spreadsheet-native/SpreadsheetRender.fs`
+  - Native chrome wiring: `spreadsheet-wisp/Program.fs`
+  - Shared fonts/images: `office-wisp/native/`; the Widgets host is retired.
 - XLSX read path: `src/Spreadsheet/XlsxImporter.fs`
 - Shared UI primitives: `src/OfficeUi/Specs.fs` (consumed by both Word and Spreadsheet).
-- Shared native chrome: `office-native/OfficeShell.fs` (rendered by `Word`, `Spreadsheet`, and future Office-style apps via the `OfficeShell.view`/`ShellConfig` API).
+- Shared native chrome: `office-wisp/OfficeShell.fs`, consumed by both Wisp apps.
 
 ## Fixtures
 
@@ -29,7 +29,7 @@ Excel fixtures live under (to be populated):
 - `tests/repros/excel/` — focused, deterministically generated XLSX repros.
 - `tests/test-documents-excel/` — captured real-world workbooks.
 
-The Word VM (`wordvm`) used by the parity tooling also ships Excel; the same VBS-on-task-scheduler infrastructure works for Excel automation.
+The Windows VM (`winvm`) is the shared host for Word and Excel parity tooling; the same VBS-on-task-scheduler infrastructure works for both.
 
 ## Comparison Loop
 
@@ -51,7 +51,7 @@ For each identified bug, prefer the stricter loop used by the Word parity work:
 
 ## Current Machine State
 
-- `ssh wordvm hostname` works and returns `DESKTOP-OP2QS0N`. The same VM hosts Microsoft Excel.
+- Use `winvm` for Office automation. `ssh winvm "hostname && whoami"` returns `DESKTOP-NNIBN4S` and `desktop-nnibn4s\olivia`.
 - Excel automation lives in checked-in `.vbs` files invoked with `cscript`; avoid one-off SSH/PowerShell command lines.
 - The Linux wrappers default to `WORD_VM_RUN_MODE=task`, copying the checked-in VBS to the VM and running it through an interactive-user scheduled task. Excel needs the same path because the SSH-launched `cscript` cannot instantiate `Excel.Application` directly.
 - Windows/Excel fonts come from `tools/word-parity/fetch-windows-fonts.sh`. The same fonts cover Excel cell rendering.
@@ -61,7 +61,9 @@ For each identified bug, prefer the stricter loop used by the Word parity work:
 - `tools/excel-parity/extract-excel-layout.vbs` — extracts Microsoft Excel cell geometry/format/value to TSV, including row/column index, merged ranges, and the active sheet name.
 - `docs/excel-vba-layout-api.md` — tracks the Microsoft Excel VBA layout-query API surface and which parts our browser API mirrors.
 - `tools/excel-parity/print-excel-pdf.vbs` — opens an XLSX in Excel and prints it to PDF.
-- `tools/excel-parity/run-excel-vbs-on-vm.sh` — copies a VBS script and XLSX to `wordvm`, runs `cscript`, and copies the output back. Mirrors `run-word-vbs-on-vm.sh`.
+- `tools/excel-parity/run-excel-vbs-on-vm.sh` — copies a VBS script and XLSX to `winvm`, runs `cscript`, and copies the output back. Mirrors `run-word-vbs-on-vm.sh`.
+- `tools/excel-parity/open-all.vbs` retains aggregate `opened.tsv` and writes UTF-16 `evidence/<workbook>.tsv`: sheets, populated cells, formulas, tables, shapes, chart series, legacy notes and threaded comments/replies when available. Single-cell ranges are included; numeric values use Excel's 15-significant-digit formatting. Opens are read-only with macros/link updates disabled. Each `*.original.xlsx` also gets an `*.expected-insert.xlsx.tsv` snapshot after Excel inserts row 2 and column B in memory; source files are never saved. Rejected operations produce an `OPERATION_ERROR` sidecar record and nonzero exit without preventing inspection of later files. Appearance is not certified by these records, and the repaired-caption check is not an authoritative repair audit. `tools/xlsx-browser/run.mjs --keep DIR` also captures `.save2.xlsx` after reimport and fails on capture errors.
+  The installed Excel 16.0.19127 rejects `CommentsThreaded` with error 1004 (“Object Model … not supported in your version”). This exact capability failure is recorded as `CAPABILITY_ERROR` and retains a nonzero exit while other workbook evidence continues. Unexpected COM failures still abort capture. Thread identities, replies and anchors can be checked independently in package XML, but that is not an Excel thread-text acceptance pass.
 - `tools/excel-parity/run-excel-vbs-task.ps1` — runs the copied VBS through Windows Task Scheduler with an interactive-user token. Mirrors `run-word-vbs-task.ps1`.
 - `tools/excel-parity/excel-layout-tsv.sh` — wraps the layout extractor.
 - `tools/excel-parity/excel-print-pdf.sh` — wraps the PDF generator.

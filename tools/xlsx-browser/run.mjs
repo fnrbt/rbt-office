@@ -16,8 +16,10 @@
 //
 // Usage:
 //   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
+//   dotnet fable src/Spreadsheet.Pdf --outDir $DIST/spreadsheet-pdf --lang JavaScript --noCache
 //   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
-//   node tools/xlsx-browser/run.mjs --dist $DIST [--only NAME] [file.xlsx ...]
+//   RB_WORD_FONT_DIR=/usr/share/fonts/truetype/liberation node tools/xlsx-browser/run.mjs --dist $DIST --only shell-print-pdf,shell-print-pdf-failure
+//   BROWSER=firefox node tools/xlsx-browser/run.mjs --dist $DIST --only shell-selection-commands,shell-insert-chart
 // (--only runs the named component checks (comma separated), or "roundtrip" for the reader / writer part.)
 // The Spreadsheet bundle carries its own compiled copy of the XLSX reader and
 // writer (Office.Formats is a project reference of it); the checks read the
@@ -42,8 +44,8 @@ const port = Number(process.env.PORT ?? 16023);
 // Each check gets this long (the page is closed when one takes longer).
 const checkTimeout = Number(process.env.CHECK_TIMEOUT ?? 240000);
 // --keep DIR: saves of every workbook of the tests into DIR instead of the checks: as it was opened
-// (.save.xlsx), a cell typed (.edit.xlsx), a row and a column inserted (.insert.xlsx), beside a copy of
-// the original (.original.xlsx): for tools/excel-parity/open-all.vbs.
+// (.save.xlsx), a cell typed (.edit.xlsx), a row and a column inserted (.insert.xlsx),
+// and a reimported second save (.save2.xlsx), beside the original (.original.xlsx): for tools/excel-parity/open-all.vbs.
 const keepDir = opt('--keep');
 const only = keepDir ? 'keep-saves' : opt('--only');
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip'), path.resolve(repo, '../rbt-office/node_modules/jszip')].find((p) => p && fs.existsSync(p));
@@ -68,7 +70,7 @@ const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSy
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
 const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
-try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/chrome.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
+try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/shell-file.js'); await import('/shell-commands.js'); await import('/chrome.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
 </script>`;
 
 const page = `<!doctype html><meta charset="utf-8"><script src="/jszip.min.js"></script>
@@ -126,7 +128,13 @@ const server = http.createServer((req, res) => {
 if (!fs.existsSync(path.join(dist, 'office-formats/src/Main.js'))) { console.error(`missing office-formats/src/Main.js under ${dist}; Fable-compile first (see header)`); process.exit(2); }
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
-const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+// PDF checks need full Chromium's built-in PDF viewer; the legacy headless shell never loads PDF iframes.
+const pdfViewerNeeded = !only || only.split(',').some((name) => name === 'sheet-pdf' || name === 'shell-print-pdf');
+const browserName = process.env.BROWSER ?? 'chromium';
+const browserType = playwright[browserName] ?? playwright.default?.[browserName];
+if (!browserType?.launch) throw new Error(`Unknown Playwright browser: ${browserName}`);
+const browser = await browserType.launch(browserName === 'chromium' && pdfViewerNeeded ? { channel: 'chromium' } : {});
+console.log(`Browser: ${browserName} ${browser.version()}`);
 let failed = 0, pictures = 0, charts = 0, componentChecks = 0;
 try {
     const tab = await browser.newPage();
@@ -164,10 +172,14 @@ try {
         await componentTab.waitForFunction('window.componentReady !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
         const componentLoadError = await componentTab.evaluate('window.loadError');
         if (componentLoadError) throw new Error('component page failed to load modules: ' + componentLoadError);
-        const debuggerSession = await componentTab.context().newCDPSession(componentTab);
-        await debuggerSession.send('Debugger.enable');
+        const debuggerSession = browserName === 'chromium' ? await componentTab.context().newCDPSession(componentTab) : null;
+        if (debuggerSession) await debuggerSession.send('Debugger.enable');
         // For the checks that a disposed grid can be collected: a full garbage collection on request.
-        await componentTab.exposeFunction('collectGarbage', async () => { await debuggerSession.send('HeapProfiler.enable'); await debuggerSession.send('HeapProfiler.collectGarbage'); });
+        await componentTab.exposeFunction('collectGarbage', async () => {
+            if (!debuggerSession) throw new Error('This check requires Chromium CDP garbage collection');
+            await debuggerSession.send('HeapProfiler.enable');
+            await debuggerSession.send('HeapProfiler.collectGarbage');
+        });
         // For the pixel checks of the DOM grid: a screenshot of a region of the page, as a PNG in base64.
         await componentTab.exposeFunction('screenshotRegion', async (x, y, width, height) => {
             const png = await componentTab.screenshot({ clip: { x, y, width, height } });
@@ -189,14 +201,33 @@ try {
         await componentTab.exposeFunction('keepPdf', (name, base64) => { if (process.env.SHEET_PDF_OUT) { fs.mkdirSync(process.env.SHEET_PDF_OUT, { recursive: true }); fs.writeFileSync(path.join(process.env.SHEET_PDF_OUT, path.basename(name)), Buffer.from(base64, 'base64')); } });
         await componentTab.exposeFunction('realKey', async (key) => { await componentTab.keyboard.press(key); });
         await componentTab.exposeFunction('realType', async (text) => { await componentTab.keyboard.type(text); });
-        for (const name of await componentTab.evaluate('Object.keys(window.componentChecks)')) {
-            if (only && !only.split(',').includes(name)) continue;
+        const checkNames = await componentTab.evaluate('Object.keys(window.componentChecks)');
+        const requestedChecks = only ? new Set(only.split(',')) : null;
+        const unknownChecks = requestedChecks ? [...requestedChecks].filter(name => !checkNames.includes(name)) : [];
+        if (unknownChecks.length) throw new Error(`Unknown component checks: ${unknownChecks.join(', ')}`);
+        for (const name of checkNames) {
+            if (requestedChecks && !requestedChecks.has(name)) continue;
+            // Module imports are cached per page; failure needs an isolated page
+            // whose real PDF module request is aborted before any PDF export.
+            const failureTab = name === 'shell-print-pdf-failure'
+                ? await browser.newPage({ viewport: { width: 1200, height: 900 } })
+                : null;
+            const testTab = failureTab ?? componentTab;
+            const testErrors = failureTab ? [] : pageErrors;
+            if (failureTab) {
+                failureTab.on('pageerror', (e) => testErrors.push(e.message));
+                await failureTab.route('**/spreadsheet-pdf/Pdf.js', (route) => route.abort());
+                await failureTab.goto(`http://127.0.0.1:${port}/component`);
+                await failureTab.waitForFunction('window.componentReady !== undefined || window.loadError !== undefined', null, { timeout: 120000 });
+                const loadError = await failureTab.evaluate('window.loadError');
+                if (loadError) throw new Error('failure check page failed to load modules: ' + loadError);
+            }
             componentChecks++;
             let lines;
-            try { lines = await Promise.race([componentTab.evaluate((n) => window.componentChecks[n](), name), new Promise((_, reject) => setTimeout(() => reject(new Error(`no result after ${checkTimeout} ms`)), checkTimeout))]); }
+            try { lines = await Promise.race([testTab.evaluate((n) => window.componentChecks[n](), name), new Promise((_, reject) => setTimeout(() => reject(new Error(`no result after ${checkTimeout} ms`)), checkTimeout))]); }
             catch (e) {
                 lines = ['FAIL threw: ' + String(e.message).split('\n')[0]];
-                if (/no result after/.test(String(e.message))) {
+                if (debuggerSession && /no result after/.test(String(e.message))) {
                     // Where the page is stuck: pause it and read the stack.
                     try {
                         const paused = new Promise((resolve) => debuggerSession.once('Debugger.paused', resolve));
@@ -206,13 +237,14 @@ try {
                     } catch { /* the page is gone */ }
                 }
             }
-            lines.push(...pageErrors.splice(0).map((message) => 'FAIL page error: ' + message));
+            lines.push(...testErrors.splice(0).map((message) => 'FAIL page error: ' + message));
             // Every workbook the check exported went through the package-integrity check (component.js).
-            try { lines.push(...[...new Set(await componentTab.evaluate('window.exportProblems.splice(0)'))].map((message) => 'FAIL exported package: ' + message)); } catch { /* the page is gone */ }
+            try { lines.push(...[...new Set(await testTab.evaluate('window.exportProblems.splice(0)'))].map((message) => 'FAIL exported package: ' + message)); } catch { /* the page is gone */ }
             const bad = lines.filter((line) => !line.startsWith('ok'));
             console.log(`${bad.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${lines.length - bad.length} passed, ${bad.length} failed)`);
             for (const line of (verbose ? lines : bad)) console.log('     ' + line);
             if (bad.length) failed++;
+            if (failureTab) await failureTab.close();
         }
             try { console.log(`(${await componentTab.evaluate('window.exportsChecked')} exported workbooks checked for package integrity)`); } catch { /* the page is gone */ }
     }

@@ -11,9 +11,9 @@ module Ui = Wisp.Atrium
 module Shell = Wisp.OfficeShell
 module XlUi = Rbt.Spreadsheet.Ui
 module M = Rbt.Spreadsheet.Model
+module Session = Rbt.Spreadsheet.Session
 module L = Rbt.Spreadsheet.Layout
 module EH = Rbt.SpreadsheetWisp.EditorHost
-module GR = Rbt.SpreadsheetWisp.GridRender
 module Pivot = Rbt.Spreadsheet.Pivot
 module CF = Rbt.Spreadsheet.ConditionalFormatting
 
@@ -103,13 +103,11 @@ let private cellFormatAt st =
     let r, c = EH.focusCell model
     M.getCell ({ Row = r; Col = c } : M.CellAddress) model |> Option.map (fun d -> d.Format) |> Option.defaultValue M.defaultFormat
 
+let private format st command =
+    EH.executeFormatting st command |> ignore
+
 let private updateFormat st update =
-    let model = EH.activeModel st
-    let r, c = EH.focusCell model
-    let addr : M.CellAddress = { Row = r; Col = c }
-    EH.applyChange st (fun m ->
-        let existing = M.getCell addr m |> Option.defaultValue { Value = M.Empty; Format = M.defaultFormat; Comment = None }
-        M.setCell addr { existing with Format = update existing.Format } m) |> ignore
+    format st (Session.TransformFormat update)
 
 let private parseRange (s: string) =
     match s.Split(':') with
@@ -163,8 +161,10 @@ let main argv =
         sprintf "%s - wisp-spreadsheet" name
 
     let writeTo path =
+        let captured = EH.captureSave st
         try
             XlsxWrite.save st path
+            EH.markSaved st captured
             currentPath.Value <- Some path
             rememberRecent path
             status.Value <- sprintf "Saved %s" (Path.GetFileName path)
@@ -298,25 +298,34 @@ let main argv =
           Paste = (fun () -> if EH.pasteFromClipboard st then status.Value <- "Pasted" else status.Value <- "Clipboard empty")
           Undo = (fun () -> EH.undo st |> ignore)
           Redo = (fun () -> EH.redo st |> ignore)
-          ToggleBold = (fun () -> updateFormat st (fun f -> { f with Bold = not f.Bold }))
-          ToggleItalic = (fun () -> updateFormat st (fun f -> { f with Italic = not f.Italic }))
-          ToggleUnderline = (fun () -> updateFormat st (fun f -> { f with Underline = not f.Underline }))
-          ToggleStrike = (fun () -> updateFormat st (fun f -> { f with Strikethrough = not f.Strikethrough }))
-          ToggleWrapText = (fun () -> updateFormat st (fun f -> { f with WrapText = not f.WrapText }))
-          ClearFormatting = (fun () -> updateFormat st (fun _ -> M.defaultFormat))
-          ApplyHorizontalAlign = (fun v -> updateFormat st (fun f -> { f with HorizontalAlign = Some(if v = "right" || v = "center" then v else "left") }))
-          ApplyVerticalAlign = (fun v -> updateFormat st (fun f -> { f with VerticalAlign = Some(if v = "top" || v = "middle" then v else "bottom") }))
-          ApplyNumberFormat = (fun v -> updateFormat st (fun f -> { f with NumberFormat = Some v }))
+          ToggleBold = (fun () -> format st Session.ToggleBold)
+          ToggleItalic = (fun () -> format st Session.ToggleItalic)
+          ToggleUnderline = (fun () -> format st Session.ToggleUnderline)
+          ToggleStrike = (fun () -> format st Session.ToggleStrikethrough)
+          ToggleWrapText = (fun () -> format st Session.ToggleWrapText)
+          ClearFormatting = (fun () -> format st (Session.ClearCells Rbt.Spreadsheet.SheetOps.ClearFormats))
+          ApplyHorizontalAlign = (fun v -> format st (Session.HorizontalAlign (Some(if v = "right" || v = "center" then v else "left"))))
+          ApplyVerticalAlign = (fun v -> format st (Session.VerticalAlign (Some(if v = "top" || v = "middle" then v else "bottom"))))
+          ApplyNumberFormat = (fun v -> format st (Session.NumberFormat (Some v)))
           IncreaseDecimals = (fun () -> status.Value <- "Increase decimals not wired")
           DecreaseDecimals = (fun () -> status.Value <- "Decrease decimals not wired")
           ApplyFontFamily = (fun v -> updateFormat st (fun f -> { f with FontName = Some v }))
           ApplyFontSize = (fun v -> match Int32.TryParse v with true, n -> updateFormat st (fun f -> { f with FontSize = Some n }) | _ -> ())
           ApplyTextColor = (fun v -> updateFormat st (fun f -> { f with TextColor = Some v }))
           ApplyBgColor = (fun v -> updateFormat st (fun f -> { f with BgColor = Some v }))
-          ApplyBorderStyle = (fun side -> if side <> "none" then updateFormat st (fun f -> { f with BorderTop = Some { Style = "thin"; Color = Some "#000000" }; BorderBottom = Some { Style = "thin"; Color = Some "#000000" }; BorderLeft = Some { Style = "thin"; Color = Some "#000000" }; BorderRight = Some { Style = "thin"; Color = Some "#000000" } }))
+          ApplyBorderStyle = (fun side ->
+              let edge, style =
+                  if side = "thick-outside" then "outside", "thick"
+                  else side, "thin"
+              format st (Session.Border (edge, style, "#000000")))
           ApplyZoom = (fun v -> zoom.Value <- v)
-          MergeCells = (fun () -> match (EH.activeModel st).Selection with M.Range(sr, sc, er, ec) -> EH.applyChange st (M.addMergedCell sr sc er ec) |> ignore | _ -> status.Value <- "Select a range to merge")
-          UnmergeCells = (fun () -> let r, c = EH.focusCell (EH.activeModel st) in EH.applyChange st (M.removeMergedCell { Row = r; Col = c }) |> ignore)
+          MergeCells = (fun () ->
+              match (EH.activeModel st).Selection with
+              | M.Range _ -> format st Session.MergeCells
+              | _ -> status.Value <- "Select a range to merge")
+          UnmergeCells = (fun () ->
+              let r, c = EH.focusCell (EH.activeModel st)
+              format st (Session.UnmergeCells { Row = r; Col = c }))
           InsertRow = (fun () -> let r, _ = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.InsertRows (r, 1)) |> ignore)
           InsertColumn = (fun () -> let _, c = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.InsertCols (c, 1)) |> ignore)
           DeleteRow = (fun () -> let r, _ = EH.focusCell (EH.activeModel st) in EH.applyStructureEdit st (M.DeleteRows (r, 1)) |> ignore)
@@ -365,8 +374,8 @@ let main argv =
           ActiveSheet = (fun () -> st.SheetNames.Value |> Array.tryItem st.ActiveSheet.Value |> Option.defaultValue "")
           Sheets = (fun () -> st.SheetNames.Value |> Array.map (fun n -> XlUi.choice n n) |> Array.toList)
           SelectionSummary = (fun () -> EH.selectionSummary st)
-          CanUndo = (fun () -> not (List.isEmpty st.UndoStack.Value))
-          CanRedo = (fun () -> not (List.isEmpty st.RedoStack.Value)) }
+          CanUndo = (fun () -> EH.canUndo st)
+          CanRedo = (fun () -> EH.canRedo st) }
 
     let menus =
         let fileMenu =

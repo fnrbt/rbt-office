@@ -1621,6 +1621,14 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
         match rule.StdDev with Some d -> yield sprintf "stdDev=\"%d\"" d | None -> ()
         if rule.EqualAverage then yield "equalAverage=\"1\""
     ]
+    let sourceRule (xml: string) (rule: XlsxReader.ConditionalFormatRule) (priority: int) =
+        match XmlPatch.readPart xml with
+        | None -> failwith "The imported conditional-format rule XML cannot be preserved."
+        | Some part ->
+            XmlPatch.apply (fun _ -> []) part
+                [ XmlPatch.SetAttribute ("priority", string priority)
+                  if rule.StopIfTrue then XmlPatch.SetAttribute ("stopIfTrue", "1")
+                  else XmlPatch.RemoveAttribute "stopIfTrue" ]
     let extBlocks = ResizeArray<string>()
     let extBlock (sqref: string) (ruleXml: string) =
         extBlocks.Add (sprintf "<x14:conditionalFormatting xmlns:xm=\"%s\">%s<xm:sqref>%s</xm:sqref></x14:conditionalFormatting>" xmNamespace ruleXml (escaped sqref))
@@ -1635,9 +1643,15 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                     ruleNumber <- ruleNumber + 1
                     let priority = rule.Priority |> Option.defaultValue nextPriority
                     let id = x14RuleId sheetIndex ruleNumber
-                    match rule.Ext with
+                    match rule.SourceXml, rule.Ext with
+                    | Some xml, extension ->
+                        let written = sourceRule xml rule priority
+                        if extension |> Option.exists (fun ext -> ext.InExtList) then
+                            extBlock cf.Range written
+                            ""
+                        else written
                     // In the x14 list only.
-                    | Some ext when ext.InExtList ->
+                    | None, Some ext when ext.InExtList ->
                         let body =
                             match rule.Type with
                             | "iconSet" ->
@@ -1708,7 +1722,12 @@ let private conditionalFormattingParts (dxfCount: int) (sheetIndex: int) (format
                         ]
                         sprintf "<cfRule %s>%s</cfRule>" (String.concat " " (ruleAttrs rule priority true)) (String.concat "" children))
                 |> String.concat ""
-            if rules = "" then "" else sprintf "<conditionalFormatting %s>%s</conditionalFormatting>" (attr "sqref" cf.Range) rules)
+            if rules = "" then "" else
+                let attributes =
+                    attr "sqref" cf.Range
+                    :: [ for key, value in cf.GroupAttributes do
+                             if key <> "sqref" then attr key value ]
+                sprintf "<conditionalFormatting %s>%s</conditionalFormatting>" (String.concat " " attributes) rules)
         |> String.concat ""
     main, String.concat "" extBlocks
 
@@ -3512,10 +3531,20 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
               match s.Extras.AutoFilter with
               | Some filter ->
                   let reference = CellRef.corners filter.Ref |> List.map CellRef.absolute |> CellRef.ofCorners
-                  yield { Name = "_xlnm._FilterDatabase"; RefersTo = sprintf "%s!%s" (quoted s.Name) reference; LocalSheetIndex = Some i; Comment = None; Hidden = true }
+                  let fromFile =
+                      workbook.DefinedNames
+                      |> List.tryFind (fun name -> name.Name = "_xlnm._FilterDatabase" && name.LocalSheetIndex = Some i)
+                  let generated = { Name = "_xlnm._FilterDatabase"; RefersTo = ""; LocalSheetIndex = Some i; Comment = None; Hidden = true }
+                  yield { defaultArg fromFile generated with RefersTo = sprintf "%s!%s" (quoted s.Name) reference }
               | None -> () ])
         |> List.concat
-    let names = workbook.DefinedNames @ printNames
+    let names =
+        (workbook.DefinedNames
+         |> List.filter (fun name ->
+             not (name.Name = "_xlnm._FilterDatabase"
+                  && (name.LocalSheetIndex
+                      |> Option.exists (fun i -> i >= 0 && i < workbook.Sheets.Length && workbook.Sheets.[i].Extras.AutoFilter.IsSome)))))
+        @ printNames
     let definedNames =
         if List.isEmpty names then ""
         else
@@ -4059,8 +4088,57 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                             | None -> indexOfKey key
                         byIdentity.[format] <- index
                         index
+            let sourceDxfs = itemsOf "dxfs" "dxf" |> Option.defaultValue [] |> List.toArray
+            let dxfArray = workbook.Dxfs |> List.toArray
+            let derivedDxfXml (d: XlsxReader.Dxf) =
+                match d.SourceDxfIndex with
+                | None -> dxfXml "dxf" d
+                | Some index when index >= 0 && index < sourceDxfs.Length ->
+                    let original = dxfArray.[index]
+                    let putBool name before after =
+                        if before = after then None
+                        else Some (match after with
+                                   | Some true -> XmlPatch.SetChild (name, "<" + name + "/>")
+                                   | Some false -> XmlPatch.SetChild (name, if name = "u" then "<u val=\"none\"/>" else "<" + name + " val=\"0\"/>")
+                                   | None -> XmlPatch.RemoveChild name)
+                    let colorEdit name before after =
+                        if before = after then None
+                        else Some (match xmlColor after with
+                                   | Some rgb -> XmlPatch.SetChild (name, sprintf "<%s rgb=\"%s\"/>" name rgb)
+                                   | None -> XmlPatch.RemoveChild name)
+                    let fontEdits =
+                        [ putBool "b" original.Bold d.Bold
+                          putBool "i" original.Italic d.Italic
+                          putBool "u" original.Underline d.Underline
+                          putBool "strike" original.Strike d.Strike
+                          colorEdit "color" original.FontColor d.FontColor ]
+                        |> List.choose id
+                    let fillEdits =
+                        if original.FillColor = d.FillColor then []
+                        else
+                            match xmlColor d.FillColor with
+                            | None -> [ XmlPatch.RemoveChild "fill" ]
+                            | Some rgb ->
+                                let colorName =
+                                    XmlPatch.whole part sourceDxfs.[index]
+                                    |> Option.bind (fun source ->
+                                        XmlPatch.child "fill" source.Node
+                                        |> Option.bind (XmlPatch.child "patternFill")
+                                        |> Option.bind (XmlPatch.child "fgColor"))
+                                    |> Option.map (fun _ -> "fgColor")
+                                    |> Option.defaultValue "bgColor"
+                                let child = sprintf "<%s rgb=\"%s\"/>" colorName rgb
+                                [ XmlPatch.EditChild ("fill",
+                                    [ XmlPatch.EditChild ("patternFill", [ XmlPatch.SetChild (colorName, child) ], Some "<patternFill/>") ],
+                                    Some "<fill/>") ]
+                    match XmlPatch.whole part sourceDxfs.[index] with
+                    | Some source ->
+                        let edits = (if fontEdits.IsEmpty then [] else [ XmlPatch.EditChild ("font", fontEdits, Some "<font/>") ]) @ fillEdits
+                        XmlPatch.apply order source edits
+                    | None -> failwith "Cannot preserve the imported conditional-format differential style."
+                | _ -> failwith "The original conditional-format differential style is unavailable."
             let finish () =
-                let newDxfs = workbook.Dxfs |> List.skip dxfCount |> List.map (dxfXml "dxf")
+                let newDxfs = workbook.Dxfs |> List.skip dxfCount |> List.map derivedDxfXml
                 // (The part is the file's text; a list written `<dxfs count="0"/>` is opened only to add to it.)
                 let appendTo (name: string) (item: string) (items: string list) =
                     if items.IsEmpty then []
@@ -4282,6 +4360,8 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             match workbook.Preserved.StylesPart |> Option.bind partText |> Option.bind (inPlaceStyles workbook), sharedText |> Option.bind (inPlaceSharedStrings workbook) with
             | Some styles, Some strings -> Some (styles, strings)
             | _ -> None
+    if inPlace.IsNone && (workbook.Dxfs |> List.exists (fun dxf -> dxf.SourceDxfIndex.IsSome)) then
+        failwith "The original styles part is unavailable; cannot save an edited imported conditional format without losing its differential style."
     // Without them a worksheet cannot go back as it was read: it is written from its cells.
     let workbook =
         if inPlace.IsSome then workbook

@@ -134,6 +134,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
         state.Paragraphs <- para :: state.Paragraphs
         this
 
+#if FABLE_COMPILER
     /// Save the document to a blob
     member this.Save() =
         let paraObjects =
@@ -153,6 +154,7 @@ type DocumentBuilder(state: DocumentBuilderState) =
             )
             |> List.toArray
         writeFromEditorPackage (createObj [ "Paragraphs" ==> paraObjects ])
+#endif
 
 /// Create a new document builder
 let create () =
@@ -167,9 +169,11 @@ let addParagraph (builder: DocumentBuilder) (options: ParagraphOptions) =
 let addParagraphWithRuns (builder: DocumentBuilder) (alignment: string) (runs: EditorRun list) =
     builder.AddParagraphWithRuns(alignment, runs)
 
+#if FABLE_COMPILER
 /// Save document (for JavaScript interop)
 let save (builder: DocumentBuilder) =
     builder.Save()
+#endif
 
 /// Helper to create a run
 let createRun (text: string) (bold: bool) (italic: bool) (fontSize: float) (fontFamily: string) (color: string option) : EditorRun =

@@ -9,7 +9,9 @@
 set -u
 cd "$(dirname "$0")/.."
 declare -A LIMIT=(
-    [src/Office.Formats/src/DocumentWriter.fs]=0
+    [src/Office.Formats/src/WordPackageWriterModel.fs]=0
+    [src/Office.Formats/src/WordPackageWriterSplice.fs]=0
+    [src/Office.Formats/src/WordPackageWriterAssembly.fs]=0
     [src/Office.Formats/src/XlsxWriter.fs]=0
     [src/Office.Formats/src/DocxReader.fs]=0
     [src/Office.Formats/src/XlsxReader.fs]=0

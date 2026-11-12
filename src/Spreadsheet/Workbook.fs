@@ -518,6 +518,8 @@ type StructureEditUndo = {
     /// Formula-bearing rules on other sheets: (sheet, rule id, before, after).
     ForeignFormats: (SheetId * int * ConditionalFormatRule * ConditionalFormatRule) list
     ForeignValidations: (SheetId * int * ValidationRule * ValidationRule) list
+    /// Authored chart references on other sheets, before and after this edit.
+    ForeignCharts: (SheetId * Map<string, string> * Map<string, string>) list
     /// Structured-reference tables moved or removed: (key, before, after).
     Tables: (string * Table * Table option) list
     /// Defined names whose refers-to text changed: (key, before, after).
@@ -582,7 +584,7 @@ let private moveTableForEdit (edit: StructureEdit) (table: Table) : Table option
 let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workbook) : Workbook * StructureEditUndo =
     match Map.tryFind sheetId workbook.Sheets with
     | None ->
-        workbook, { Sheet = sheetId; Before = createEmpty 1 1; ForeignCells = []; ForeignFormats = []; ForeignValidations = []; Tables = []; Names = [] }
+        workbook, { Sheet = sheetId; Before = createEmpty 1 1; ForeignCells = []; ForeignFormats = []; ForeignValidations = []; ForeignCharts = []; Tables = []; Names = [] }
     | Some sheet ->
         let namesThisSheet (qualifier: string) =
             qualifier.Equals(sheet.Name, System.StringComparison.OrdinalIgnoreCase)
@@ -598,13 +600,18 @@ let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workb
         let foreign = ResizeArray<SheetId * CellAddress * CellData * CellData>()
         let foreignFormats = ResizeArray<SheetId * int * ConditionalFormatRule * ConditionalFormatRule>()
         let foreignValidations = ResizeArray<SheetId * int * ValidationRule * ValidationRule>()
+        let foreignCharts = ResizeArray<SheetId * Map<string, string> * Map<string, string>>()
         let sheets =
             workbook.Sheets
             |> Map.map (fun id other ->
                 if id = sheetId then
-                    { other with Model = applyStructureEditWith fromEditedSheet edit other.Model }
+                    let edited = applyStructureEditWith fromEditedSheet edit other.Model
+                    let rewrite formula = adjustFormulaForEdit edit fromEditedSheet formula
+                    { other with Model = mapAuthoredChartFormulas rewrite edited }
                 else
                     let rewritten = mapModelFormulas (adjustFormulaForEdit edit fromOtherSheet) other.Model
+                    if rewritten.AuthoredCharts <> other.Model.AuthoredCharts then
+                        foreignCharts.Add((id, other.Model.AuthoredCharts, rewritten.AuthoredCharts))
                     if not (obj.ReferenceEquals(rewritten, other.Model)) then
                         if not (obj.ReferenceEquals(rewritten.Cells, other.Model.Cells)) then
                             for KeyValue(addr, after) in rewritten.Cells do
@@ -648,6 +655,7 @@ let applyStructureEdit (sheetId: SheetId) (edit: StructureEdit) (workbook: Workb
           ForeignCells = List.ofSeq foreign
           ForeignFormats = List.ofSeq foreignFormats
           ForeignValidations = List.ofSeq foreignValidations
+          ForeignCharts = List.ofSeq foreignCharts
           Tables = List.ofSeq tableChanges
           Names = List.ofSeq nameChanges }
 
@@ -718,6 +726,9 @@ let undoStructureEdit (undo: StructureEditUndo) (workbook: Workbook) : Workbook 
                             Macros = current.Macros } }
             else
                 let mutable model = sheet.Model
+                for (owner, before, after) in undo.ForeignCharts do
+                    if owner = id && model.AuthoredCharts = after then
+                        model <- { model with AuthoredCharts = before }
                 for (owner, addr, before, after) in undo.ForeignCells do
                     if owner = id then
                         match Map.tryFind addr model.Cells with
@@ -910,6 +921,13 @@ let freshSheetId (used: SheetId -> bool) (workbook: Workbook) : SheetId =
     while Map.containsKey (sprintf "sheet%d" number) workbook.Sheets || used (sprintf "sheet%d" number) do number <- number + 1
     sprintf "sheet%d" number
 
+/// A formula's quoted sheet qualifier doubles apostrophes. Keep the cheap
+/// prefilter (most formulas are unrelated) without skipping an undo/redo
+/// rename or a deletion of a sheet whose name contains an apostrophe.
+let private mentionsSheetName (name: string) (escapedName: string) (formula: string) =
+    formula.IndexOf(name, System.StringComparison.OrdinalIgnoreCase) >= 0
+    || (not (isNull escapedName) && formula.IndexOf(escapedName, System.StringComparison.OrdinalIgnoreCase) >= 0)
+
 /// Rename a sheet, with everything that names it following: the formulas of
 /// every sheet (cells, conditional formats, validations), the defined names
 /// and the hyperlinks into the sheet. The new name is written quoted where a
@@ -920,11 +938,12 @@ let renameSheetEverywhere (sheetId: SheetId) (newName: string) (workbook: Workbo
     | Some sheet when sheet.Name = newName -> workbook
     | Some sheet ->
         let oldName = sheet.Name
+        let escapedName = if oldName.IndexOf('\'') >= 0 then oldName.Replace("'", "''") else null
         let change = RenameSheetRefs (oldName, newName)
         // (Most formulas do not mention the sheet: those are not parsed.)
         let rewrite (formula: string) =
-            if formula.IndexOf(oldName, System.StringComparison.OrdinalIgnoreCase) < 0 then formula
-            else rewriteFormulaForSheets change formula
+            if mentionsSheetName oldName escapedName formula then rewriteFormulaForSheets change formula
+            else formula
         let rewriteLink (link: SheetHyperlink) =
             if not link.IsInternal then link
             else
@@ -957,6 +976,7 @@ type SheetRemoval = {
     Validations: (SheetId * ValidationRange list * ValidationRange list) list
     /// Links of other sheets that led into it: (sheet, before, after).
     Hyperlinks: (SheetId * SheetHyperlink list * SheetHyperlink list) list
+    Charts: (SheetId * Map<string, string> * Map<string, string>) list
     /// Defined names that referred to it: (key, before, after).
     Names: ((SheetId option * string) * string * string) list
     /// The names of its own scope, gone with it: (key, refers-to, spelling and comment).
@@ -1001,13 +1021,15 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
     | Some sheet ->
         let tabNames = workbook.SheetOrder |> List.choose (fun id -> Map.tryFind id workbook.Sheets |> Option.map (fun known -> known.Name))
         let change = DeleteSheetRefs (sheet.Name, tabNames)
+        let escapedName = if sheet.Name.IndexOf('\'') >= 0 then sheet.Name.Replace("'", "''") else null
         let rewrite (formula: string) =
-            if formula.IndexOf(sheet.Name, System.StringComparison.OrdinalIgnoreCase) < 0 then formula
-            else rewriteFormulaForSheets change formula
+            if mentionsSheetName sheet.Name escapedName formula then rewriteFormulaForSheets change formula
+            else formula
         let cells = ResizeArray<SheetId * CellAddress * CellData * CellData>()
         let formats = ResizeArray<SheetId * ConditionalFormatRange list * ConditionalFormatRange list>()
         let validations = ResizeArray<SheetId * ValidationRange list * ValidationRange list>()
         let hyperlinks = ResizeArray<SheetId * SheetHyperlink list * SheetHyperlink list>()
+        let charts = ResizeArray<SheetId * Map<string, string> * Map<string, string>>()
         // A link into the deleted sheet leads nowhere: its target says #REF!, as in Excel.
         let rewriteLink (link: SheetHyperlink) =
             if not link.IsInternal then link
@@ -1039,6 +1061,8 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
                         formats.Add((id, other.Model.ConditionalFormats, model.ConditionalFormats))
                     if not (obj.ReferenceEquals(model.Validations, other.Model.Validations)) then
                         validations.Add((id, other.Model.Validations, model.Validations))
+                    if model.AuthoredCharts <> other.Model.AuthoredCharts then
+                        charts.Add((id, other.Model.AuthoredCharts, model.AuthoredCharts))
                     { other with Model = model })
         let scoped = workbook.Names |> Map.toList |> List.filter (fun ((scope, _), _) -> scope = Some sheetId)
         let nameChanges = ResizeArray<(SheetId option * string) * string * string>()
@@ -1068,6 +1092,7 @@ let removeSheet (sheetId: SheetId) (workbook: Workbook) : (Workbook * SheetRemov
                 Formats = List.ofSeq formats
                 Validations = List.ofSeq validations
                 Hyperlinks = List.ofSeq hyperlinks
+                Charts = List.ofSeq charts
                 Names = List.ofSeq nameChanges
                 ScopedNames = scoped |> List.map (fun (key, refersTo) -> key, refersTo, Map.tryFind key workbook.NameInfo)
                 Tables = tables })
@@ -1099,6 +1124,8 @@ let restoreSheet (removal: SheetRemoval) (workbook: Workbook) : Workbook =
                     if owner = id && model.Validations = after then model <- { model with Validations = before }
                 for (owner, before, after) in removal.Hyperlinks do
                     if owner = id && model.Hyperlinks = after then model <- { model with Hyperlinks = before }
+                for (owner, before, after) in removal.Charts do
+                    if owner = id && model.AuthoredCharts = after then model <- { model with AuthoredCharts = before }
                 if obj.ReferenceEquals(model, sheet.Model) then sheet else { sheet with Model = model })
             |> Map.add sheetId removal.Sheet
         let order =

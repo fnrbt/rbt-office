@@ -192,5 +192,64 @@ check "list-default-indent: the numbers at the margin, the texts half an inch in
     (defaultIndentItems |> List.map (fun layout -> Math.Round(layout.Indent + Rbt.Word.WordLayout.Paragraph.firstLineIndent layout.Metadata, 2), Math.Round(textFromIndent layout + layout.Indent, 2)) |> List.distinct)
     [ 0.0, 48.0 ]
 
+// Dialog operations split only the affected list instance and remain one
+// document value for the caller's transaction.
+let keep: Doc.ListDialogChange = { Kind = None; Marker = None; Level = None; Sequence = "keep"; Start = 1 }
+let edited result = match result with Ok doc -> doc | Error message -> failwith message
+let noChange = Doc.applyListDialog (fun () -> failwith "no id should be allocated") keep (caretIn flat 1) |> edited
+check "list dialog unchanged keeps document" (obj.ReferenceEquals(noChange, noChange |> Doc.applyListDialog (fun () -> failwith "unexpected allocation") keep |> edited)) true
+let allocator first =
+    let mutable next = first - 1
+    fun () -> next <- next + 1; string next
+let changedMarker =
+    Doc.applyListDialog (allocator 100) { keep with Marker = Some "lowerLetter" } (caretIn flat 1) |> edited
+check "partial marker edit leaves first list instance alone"
+    ((paragraphs changedMarker).[0].Metadata.ListId, (paragraphs changedMarker).[1].Metadata.ListSourceId, (paragraphs changedMarker).[2].Metadata.ListSourceId)
+    (Some "1", Some "1", Some "1")
+check "partial marker edit retains ordinal continuity" (prefixes changedMarker) [ "I. "; "b. "; "III. " ]
+let nestedSequence = import (item 1 0 "one" + item 1 0 "two" + item 1 1 "nested" + item 1 0 "four") numbering
+let nestedEdited = Doc.applyListDialog (allocator 100) { keep with Marker = Some "lowerLetter" } (caretIn nestedSequence 1) |> edited
+check "partial marker edit keeps unselected nested parent counters"
+    (prefixes nestedEdited) [ "I. "; "b. "; "II.a)"; "III. " ]
+let nestedRepeated = Doc.applyListDialog (allocator 200) { keep with Marker = Some "upperLetter" } (caretIn nestedEdited 1) |> edited
+check "repeated partial marker edit preserves all ordinals"
+    (prefixes nestedRepeated) [ "I. "; "B. "; "II.a)"; "III. " ]
+let deepEdited = Doc.applyListDialog (allocator 300) { keep with Marker = Some "lowerRoman" } (caretIn deep 1) |> edited
+check "partial marker edit preserves restarted and never-restarted child counters"
+    (prefixes deepEdited) [ "I. "; "I.i)"; "I.b)"; "(1) "; "II. "; "II.a)"; "(2) "; "2.1.3 "; "2.1.4 " ]
+let movedAndFormatted = Doc.applyListDialog (allocator 400) { keep with Marker = Some "lowerRoman"; Level = Some 2 } (caretIn flat 1) |> edited
+check "format and level use the target imported template"
+    ((paragraphs movedAndFormatted).[1].Metadata.ListLevelText, (paragraphs movedAndFormatted).[1].Metadata.ListLevels |> List.find (fun level -> level.Level = 2) |> fun level -> level.Suffix)
+    (Some "%1.%2)", Some "nothing")
+let rangeIn (doc: Doc.Document) first last =
+    let a, b = (paragraphs doc).[first], (paragraphs doc).[last]
+    { doc with Selection = Some { Anchor = { BlockId = a.Id; Offset = 0 }; Focus = { BlockId = b.Id; Offset = 1 } } }
+let combined = Doc.applyListDialog (allocator 500) { keep with Marker = Some "lowerLetter"; Sequence = "restart"; Start = 5 } (rangeIn flat 1 2) |> edited
+check "format and restart together number the selected run once"
+    (prefixes combined) [ "I. "; "e. "; "f. " ]
+let plain = Doc.setParagraphContents [ "first"; "second" ] Doc.empty |> fun doc -> rangeIn doc 0 1
+let newRestarted = Doc.applyListDialog (allocator 600) { keep with Kind = Some Doc.Numbered; Marker = Some "lowerLetter"; Sequence = "restart"; Start = 5 } plain |> edited
+check "ordinary paragraphs can become a restarted formatted list in one edit"
+    (prefixes newRestarted) [ "e. "; "f. " ]
+check "partial marker edit changes only selected formatting"
+    (paragraphs changedMarker |> List.map (fun p -> p.Metadata.ListNumberFormat))
+    [ Some "upperRoman"; Some "lowerLetter"; Some "upperRoman" ]
+let restarted = Doc.applyListDialog (fun () -> "100") { keep with Sequence = "restart"; Start = 5 } (caretIn flat 1) |> edited
+check "restart splits the contiguous tail" (paragraphs restarted |> List.map (fun p -> p.Metadata.ListId)) [ Some "1"; Some "100"; Some "100" ]
+check "restart changes live counters" (prefixes restarted) [ "I. "; "V. "; "VI. " ]
+let restartedAndFormatted = Doc.applyListDialog (allocator 200) { keep with Marker = Some "lowerLetter" } (caretIn restarted 1) |> edited
+let restartedItem = (paragraphs restartedAndFormatted).[1].Metadata
+check "formatting a restarted item retains its restart provenance"
+    (restartedItem.ListSourceId, restartedItem.ListRestart, restartedItem.ListStart)
+    (Some "1", true, Some 5)
+let separated = import (item 1 0 "one" + "<w:p><w:r><w:t>between</w:t></w:r></w:p>" + item 3 0 "two" + item 3 0 "three") numbering
+let continued = Doc.applyListDialog (fun () -> failwith "continue must not allocate") { keep with Sequence = "continue" } (caretIn separated 2) |> edited
+check "continue reaches preceding list across ordinary paragraph"
+    (paragraphs continued |> List.map (fun p -> p.Metadata.ListId)) [ Some "1"; None; Some "1"; Some "1" ]
+check "continue uses preceding list counters" (prefixes continued) [ "I. "; ""; "II. "; "III. " ]
+let continuedCaret = caretIn continued 2
+let continuedAgain = Doc.applyListDialog (fun () -> failwith "continue no-op must not allocate") { keep with Sequence = "continue" } continuedCaret |> edited
+check "continuing the same list keeps the document" (obj.ReferenceEquals(continuedAgain, continuedCaret)) true
+
 printfn "word list levels: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

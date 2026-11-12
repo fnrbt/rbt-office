@@ -11,7 +11,7 @@ try {
     const editor = Word.initialize('c');
     Word.setParagraphs(editor, ['Hello world', 'Second paragraph']);
     Word.setViewport(editor, { scale: 1, devicePixelRatio: 1, scrollTop: 0, scrollLeft: 0, width: 1000, height: 700 });
-    const ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+    let ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
     const caret = (offset, block = 0) => Word.setSelection(editor, ids[block], offset, ids[block], offset);
     const formatOf = (from, to, block = 0) => { Word.setSelection(editor, ids[block], from, ids[block], to); const f = Word.getSelectionFormat(editor); return f; };
     const text = () => Word.getText(editor).split('\n')[0];
@@ -86,6 +86,57 @@ try {
     caret(11);
     Word.toggleItalic(editor);
     check('at the end of a word: for what is typed next, the document as it was', [Word.getSelectionFormat(editor).Italic, Word.canUndo(editor) && formatOf(6, 11).Italic], [true, false]);
+
+    // Named character styles at a caret affect future typing even inside a word.
+    Word.setParagraphs(editor, ['Hello world', 'Second paragraph']);
+    const styledIds = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
+    const selectStyled = (a, b) => Word.setSelection(editor, styledIds[0], a, styledIds[0], b);
+    selectStyled(1, 4);
+    Word.toggleBold(editor);
+    Word.setCharacterStyle(editor, 'Emphasis');
+    check('named style keeps direct bold on selected text', [Word.getSelectionFormat(editor).CharacterStyleId, Word.getSelectionFormat(editor).Bold], ['Emphasis', true]);
+    selectStyled(0, 5);
+    check('character style state across runs is mixed', Word.getSelectionFormat(editor).CharacterStyleId, 'mixed');
+    check('one undo restores the previous character style', Word.undo(editor), true);
+    selectStyled(1, 4);
+    check('undo keeps unrelated direct formatting', [Word.getSelectionFormat(editor).CharacterStyleId, Word.getSelectionFormat(editor).Bold], [null, true]);
+    selectStyled(2, 2);
+    Word.setCharacterStyle(editor, 'Strong');
+    check('named style at caret is pending, not an edit to the word', [Word.getSelectionFormat(editor).CharacterStyleId, Word.getText(editor).split('\n')[0]], ['Strong', 'Hello world']);
+    Word.insertText(editor, 'X');
+    selectStyled(2, 3);
+    check('typed text receives the pending named style and direct bold', [Word.getSelectionFormat(editor).CharacterStyleId, Word.getSelectionFormat(editor).Bold], ['Strong', true]);
+    selectStyled(0, 2);
+    check('surrounding text did not receive the pending style', Word.getSelectionFormat(editor).CharacterStyleId, null);
+    Word.undo(editor);
+
+    // Pending formatting belongs to one caret in one story, not the whole editor.
+    Word.setParagraphs(editor, ['Body']);
+    const bodyId = Word.getLayoutLines(editor)[0].BlockId;
+    Word.setSelection(editor, bodyId, 4, bodyId, 4);
+    Word.toggleBold(editor);
+    check('entering a blank header drops body pending formatting without an edit',
+        [Word.enterHeaderFooter(editor, 0, 'header'), Word.getSelectionFormat(editor).Bold,
+            Word.isModified(editor), Word.canUndo(editor)], [true, false, false, false]);
+    Word.insertText(editor, 'Header');
+    check('header typing does not inherit the body caret choice',
+        [Word.getText(editor), Word.getSelectionFormat(editor).Bold], ['Header', false]);
+    Word.toggleItalic(editor);
+    Word.exitHeaderFooter(editor);
+    check('leaving a story restores the body caret and drops its pending format',
+        [Word.getSelection(editor).FocusBlockId, Word.getSelection(editor).FocusOffset,
+            Word.getSelectionFormat(editor).Bold, Word.getSelectionFormat(editor).Italic],
+        [bodyId, 4, false, false]);
+    Word.insertText(editor, 'x');
+    Word.undo(editor);
+    Word.undo(editor);
+    check('undo across stories restores the clean lazy header without pending format',
+        [Word.getCaretContext(editor).Story, Word.getText(editor), Word.isModified(editor),
+            Word.getSelectionFormat(editor).Italic], ['header', '', false, false]);
+
+    // Restore the original fixture for the keyboard portion below.
+    Word.setParagraphs(editor, ['Hello world', 'Second paragraph']);
+    ids = [...new Set(Word.getLayoutLines(editor).map((line) => line.BlockId))];
 
     // ---- by the keyboard ----
     const line = Word.getLayoutLines(editor).find((item) => item.BlockId === ids[0]);

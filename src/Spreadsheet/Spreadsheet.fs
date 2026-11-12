@@ -2,7 +2,7 @@ module Rbt.Spreadsheet.Spreadsheet
 
 open Fable.Core
 open Fable.Core.JsInterop
-open Rbt.Grid.Dom
+open Rbt.Spreadsheet.Dom
 open Rbt.Spreadsheet.Model
 open Rbt.Spreadsheet.Formula
 open Rbt.Spreadsheet.Workbook
@@ -14,6 +14,7 @@ module SpreadsheetCellText = Rbt.Spreadsheet.CellText
 module SpreadsheetInput = Rbt.Spreadsheet.Input
 module SheetOps = Rbt.Spreadsheet.SheetOps
 module SpreadsheetCharts = Rbt.Spreadsheet.Charts
+module SpreadsheetChartAuthoring = Rbt.Spreadsheet.ChartAuthoring
 module SpreadsheetSlicers = Rbt.Spreadsheet.Slicers
 module Host = Rbt.Spreadsheet.HostShapes
 
@@ -89,6 +90,8 @@ let private stopPropagation (e: obj): unit = jsNative
 
 [<Emit("$0.querySelector($1)")>]
 let private queryOne (root: Element) (selector: string): Element = jsNative
+[<Emit("document.activeElement")>]
+let private activeElement (): Element = jsNative
 
 /// A picture being moved or sized with the mouse.
 type private PictureDrag = {
@@ -217,8 +220,11 @@ let private pictureReady (image: Element): bool = jsNative
 [<Emit("$0.drawImage($1, $2, $3, $4, $5)")>]
 let private canvasDrawImage (ctx: obj) (image: Element) (x: float) (y: float) (width: float) (height: float): unit = jsNative
 
-[<Emit("(($0.__rbtPictureUrl) ? (URL.revokeObjectURL($0.__rbtPictureUrl), delete $0.__rbtPictureUrl, delete $0.__rbtPictureElement) : undefined)")>]
+[<Emit("(($0.__rbtPictureUrl) ? ($0.__rbtPictureElement?.removeAttribute('src'), URL.revokeObjectURL($0.__rbtPictureUrl), delete $0.__rbtPictureUrl, delete $0.__rbtPictureElement) : undefined)")>]
 let private releasePicture (data: byte[]): unit = jsNative
+
+[<Emit("$0.removeAttribute('src'); $0.querySelectorAll('img').forEach(img => img.removeAttribute('src'))")>]
+let private clearImageSources (element: Element): unit = jsNative
 
 [<Emit("(typeof ResizeObserver === 'function' ? (() => { const o = new ResizeObserver(() => $1()); o.observe($0); return () => o.disconnect(); })() : (() => {}))")>]
 let private observeResize (el: Element) (callback: unit -> unit): unit -> unit = jsNative
@@ -277,6 +283,9 @@ let private resolvedCopy (bytes: byte[]): JS.Promise<byte[]> = jsNative
 
 [<Emit("new Uint8Array($0)")>]
 let private bytesOfArrayBuffer (buffer: obj): byte[] = jsNative
+[<Emit("$0.closest($1)")>]
+let private gridClosest (element: Element) (selector: string): Element = jsNative
+
 
 /// The document content a workbook holds outside its sheets (defined names
 /// with their spelling and comments). A change of it is a change of the
@@ -317,38 +326,9 @@ type private HostSearch = {
     Request: Host.FindRequest
 }
 
-/// Whether two models of a sheet hold the same document content: everything
-/// that is part of the workbook, as opposed to view and editing state
-/// (selection, edit buffer, clipboard, search, undo history).
-let private sameSheetContent (a: SpreadsheetModel) (b: SpreadsheetModel) =
-    sameRef a b
-    || (sameRef a.Cells b.Cells
-        && sameRef a.RichRuns b.RichRuns
-        && sameRef a.RowHeights b.RowHeights
-        && sameRef a.ColumnWidths b.ColumnWidths
-        && sameAxes a.Axes b.Axes
-        && sameRef a.Validations b.Validations
-        && (sameRef a.MergedCells b.MergedCells || a.MergedCells = b.MergedCells)
-        && sameRef a.ConditionalFormats b.ConditionalFormats
-        && (sameRef a.Tables b.Tables || a.Tables = b.Tables)
-        && sameRef a.Filters b.Filters
-        && a.AutoFilter = b.AutoFilter
-        && (sameRef a.FilterHiddenRows b.FilterHiddenRows || a.FilterHiddenRows = b.FilterHiddenRows)
-        && (sameRef a.PageSetup b.PageSetup || a.PageSetup = b.PageSetup)
-        // (Rows and columns inserted or deleted; how many the grid offers beyond what is used is not content: `giveRoom`.)
-        && a.StructureVersion = b.StructureVersion
-        && a.FrozenRows = b.FrozenRows
-        && a.FrozenCols = b.FrozenCols
-        && a.ShowGridLines = b.ShowGridLines
-        && a.ShowHeaders = b.ShowHeaders
-        && a.ShowFormulas = b.ShowFormulas
-        && a.ShowZeros = b.ShowZeros
-        && a.TabColor = b.TabColor
-        && a.VeryHidden = b.VeryHidden
-        && sameRef a.Drawings b.Drawings
-        && sameRef a.Threads b.Threads
-        && (sameRef a.Hyperlinks b.Hyperlinks || a.Hyperlinks = b.Hyperlinks)
-        && a.Macros = b.Macros)
+/// Compare document content through the same identity policy as the shared
+/// session; OnChange must not miss a field that dirties the workbook.
+let private sameSheetContent = Rbt.Spreadsheet.Session.sameSheetContent
 
 /// A comment thread as the text of a tooltip: the comment, then its replies.
 let private threadText (thread: CommentThread) =
@@ -434,46 +414,6 @@ let private tsvOfRows (rows: string array array) : string =
         else text
     rows |> Array.map (fun row -> row |> Array.map field |> String.concat "\t") |> String.concat "\n"
 
-/// The inverse of `tsvOfRows`.
-let private rowsOfTsv (text: string) : string array array =
-    let rows = ResizeArray<string array>()
-    let row = ResizeArray<string>()
-    let field = System.Text.StringBuilder()
-    let mutable quoted = false
-    let mutable atFieldStart = true
-    let mutable i = 0
-    let endField () =
-        row.Add (field.ToString())
-        field.Clear() |> ignore
-        atFieldStart <- true
-    let endRow () =
-        endField ()
-        rows.Add (row.ToArray())
-        row.Clear()
-    while i < text.Length do
-        let ch = text.[i]
-        if quoted then
-            if ch = '"' then
-                if i + 1 < text.Length && text.[i + 1] = '"' then
-                    field.Append '"' |> ignore
-                    i <- i + 1
-                else quoted <- false
-            else field.Append ch |> ignore
-        elif ch = '"' && atFieldStart then
-            quoted <- true
-            atFieldStart <- false
-        elif ch = '\t' then endField ()
-        elif ch = '\r' then
-            if i + 1 < text.Length && text.[i + 1] = '\n' then i <- i + 1
-            endRow ()
-        elif ch = '\n' then endRow ()
-        else
-            field.Append ch |> ignore
-            atFieldStart <- false
-        i <- i + 1
-    // A trailing line end does not start another row.
-    if field.Length > 0 || row.Count > 0 then endRow ()
-    rows.ToArray()
 
 let private htmlEscape (text: string) =
     text.Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;")
@@ -534,6 +474,7 @@ type private GridLayers = {
     Actives: Element array
     FillHandle: Element
     EditInput: Element
+    EditHelp: Element
     Notice: Element
     InputMessage: Element
     /// The box of the comment the pointer is over (a note, or a thread).
@@ -555,7 +496,7 @@ type private GridLayers = {
 /// SpreadsheetModel so each sheet remembers where the user was, the way
 /// Excel does.
 [<AttachMembers>]
-type Spreadsheet(container: Element) =
+type Spreadsheet(container: Element) as this =
     let mutable sheets: SpreadsheetModel array = [| createEmpty 1000 26 |]
     let mutable sheetNames: string array = [| "Sheet1" |]
     let mutable activeSheetIndex = 0
@@ -583,31 +524,25 @@ type Spreadsheet(container: Element) =
     let mutable drawingOriginY = 0.0
     let mutable drawingShiftX = 0.0
     let mutable drawingShiftY = 0.0
-    // --- revisions ----------------------------------------------------------------
-    // The revision is a number that names the workbook's content: every
-    // change gives a new one, and undo / redo bring back the number the
-    // content had before (so a host that remembers the revision it saved
-    // knows the workbook is clean again after undoing back to it).
-    let mutable revision = 0
-    let mutable lastRevision = 0
-    let mutable savedRevision = 0
-    /// The file ImportXlsx opened, while the workbook is still that file:
-    /// its bytes, and the revision and the sheet on display right after
-    /// opening. ExportXlsx gives these bytes back for a workbook nothing was
-    /// changed in.
-    let mutable importedPackage: (byte[] * int * int) option = None
-    /// The content the current revision was given to.
+    // The portable session owns the workbook, calculation state and revision
+    // identities. Sheet models below are projections for the browser grid.
+    let initialBook = createWorkbook()
+    let session =
+        Rbt.Spreadsheet.Session.Session(
+            { initialBook with
+                Sheets =
+                    Map.add initialBook.ActiveSheet
+                        { initialBook.Sheets.[initialBook.ActiveSheet] with Model = model } initialBook.Sheets },
+            historyBySheet = true)
     let mutable revisionSheets: SpreadsheetModel array = Array.copy sheets
-    let mutable revisionNames: string array = Array.copy sheetNames
-    /// ... and the workbook-level content (defined names) it was given to.
-    let mutable revisionBook: BookContent = bookContentOf None
-    /// The undoable steps in the order they were taken, each with the
-    /// revision before and after it, and the ones undone since (for redo).
-    let appliedSteps = ResizeArray<Command * int * int>()
-    let undoneSteps = ResizeArray<Command * int * int>()
+    /// The file ImportXlsx opened; unchanged exports reuse its original bytes.
+    let mutable importedPackage: (byte[] * int * int) option = None
     /// Undo what Mount set up outside the grid's own nodes (document-level
     /// listeners, observers, overlays appended to <body>).
     let cleanups = ResizeArray<unit -> unit>()
+#if FABLE_COMPILER
+    let mutable managerDialog: Rbt.FableUI.OfficeUiDialog.DialogState option = None
+#endif
     let mutable disposed = false
     /// Every DOM listener the component registered: (target, event, handler).
     /// Dispose removes them all, also those on nodes that are no longer in
@@ -685,22 +620,9 @@ type Spreadsheet(container: Element) =
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
-    /// The dependency graph of the workbook as it was last calculated (see
-    /// Recalc): an edit of cells evaluates the formulas that read them, not
-    /// the workbook. Built at the first edit (or shortly after a workbook is
-    /// installed, when no sheet waits to be converted) from
-    /// `calculatedWorkbook`, the workbook as it was last calculated or
-    /// installed, and kept up to date by the edits.
-    let mutable recalcEngine: SpreadsheetRecalc.Engine option = None
-    let mutable calculatedWorkbook: Workbook option = None
+    // The browser keeps a generation to cancel stale scheduled warmups.
+    // Calculation graphs and statistics belong only to the shared session.
     let mutable engineGeneration = 0
-    /// What the last recalculation did: "incremental" (with the engine's
-    /// counts) or "full".
-    /// False: every edit recalculates the whole workbook (SetIncrementalRecalculation).
-    let mutable incrementalRecalculation = true
-    let mutable lastRecalculation = "none"
-    let mutable lastFullReason = ""
-    let mutable lastRecalcStats : SpreadsheetRecalc.RecalcStats = { ChangedCells = 0; ReachedFormulas = 0; EvaluatedFormulas = 0; Evaluations = 0 }
     let mutable readOnly = false
     /// What the host asked for (SetReadOnly). `readOnly` is that, or a sheet
     /// on display that has no cells to edit (a chart sheet, a dialog sheet).
@@ -862,15 +784,10 @@ type Spreadsheet(container: Element) =
     /// The active cell of each sheet (parallel to `sheets`), kept across sheet switches.
     let mutable sheetAnchors : CellAddress array = [| { Row = 0; Col = 0 } |]
     let editStateListeners = ResizeArray<obj -> unit>()
+    let readOnlyListeners = ResizeArray<bool -> unit>()
     /// The edit state the listeners were last told (cell and text).
     let mutable notifiedEdit : (CellAddress * string) option = None
-    /// What Copy / Cut last put on the system clipboard: a paste of the same
-    /// text is a paste of the grid's own cells (formulas, formats).
-    let mutable copiedText : string = ""
-    /// Clipboard belongs to the workbook session, not to the displayed sheet.
-    let mutable sessionClipboard : (SheetId * ClipboardData) option = None
     let mutable clipboardGeneration = 0
-    let mutable clipboardVersion = 0
     /// Counts the clipboard events the grid handled (see handleKeyDown).
     let mutable clipboardEvents = 0
 
@@ -916,6 +833,11 @@ type Spreadsheet(container: Element) =
                     if converted.TabColor = standIn.TabColor && converted.VeryHidden = standIn.VeryHidden then converted
                     else { converted with TabColor = standIn.TabColor; VeryHidden = standIn.VeryHidden }
                 sheets.[index] <- loaded
+                // The array has already been reordered by installBook; the
+                // committed journal can still contain the previous order.
+                match workbook |> Option.bind (fun current -> current.SheetOrder |> List.tryItem index) with
+                | Some id -> session.ResolveDeferredSheet(id, loaded)
+                | None -> ()
                 if index < revisionSheets.Length && revisionSheets.[index].Deferred.IsSome then revisionSheets.[index] <- loaded
                 if index < notifiedSheets.Length && notifiedSheets.[index].Deferred.IsSome then notifiedSheets.[index] <- loaded
             | None -> ()
@@ -940,17 +862,6 @@ type Spreadsheet(container: Element) =
                     | Some deferred when deferred.HasFormulas -> convertInPlace index
                     | _ -> ()
 
-    /// The undo steps that change no value (formats, merges): undoing or
-    /// redoing one needs no recalculation of the workbook.
-    let valueNeutralSteps = ResizeArray<Command>()
-    let pushValueNeutral (command: Command) =
-        valueNeutralSteps.Add command
-        if valueNeutralSteps.Count > 200 then valueNeutralSteps.RemoveAt 0
-        model <- pushCommand command model
-    let isValueNeutral (command: Command option) =
-        match command with
-        | Some command -> valueNeutralSteps |> Seq.exists (fun known -> obj.ReferenceEquals(known, command))
-        | None -> false
 
     let convertAllSheets () =
         formulaSheetsConverted <- true
@@ -994,7 +905,14 @@ type Spreadsheet(container: Element) =
     let mutable chartXmlRewrite : (string -> string) option = None
     let mutable chartBindingVersion = 0
     let mutable renderedChartBindingVersion = -1
+    let mutable authoredBindingState : Map<string, string> array = [||]
     let ensureChartBindings () =
+        let mutable authoredChanged = sheets.Length <> authoredBindingState.Length
+        let mutable index = 0
+        while not authoredChanged && index < sheets.Length do
+            let current = if index = activeSheetIndex then model.AuthoredCharts else sheets.[index].AuthoredCharts
+            authoredChanged <- not (obj.ReferenceEquals(current, authoredBindingState.[index]))
+            index <- index + 1
         let same =
             match xlsxSource, workbook, chartBindingState with
             | None, _, None | _, None, None -> true
@@ -1013,7 +931,7 @@ type Spreadsheet(container: Element) =
                     index <- index + 1
                 matches && index = previous.Length
             | _ -> false
-        if not same then
+        if not same || authoredChanged then
             chartBindingState <-
                 match xlsxSource, workbook with
                 | Some source, Some wb ->
@@ -1025,6 +943,7 @@ type Spreadsheet(container: Element) =
                         |> List.toArray
                     Some (source.Id, box wb.Names, identities)
                 | _ -> None
+            authoredBindingState <- Array.init sheets.Length (fun index -> if index = activeSheetIndex then model.AuthoredCharts else sheets.[index].AuthoredCharts)
             chartModels.Clear()
             drawnObjects.Clear()
             chartXmlRewrite <- None
@@ -1080,6 +999,8 @@ type Spreadsheet(container: Element) =
                 faceName.Replace(" ", ""), family, bold, italic, data)
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
         ensureChartBindings ()
+        let authored theme id =
+            sheet.AuthoredCharts |> Map.tryFind id |> Option.bind (SpreadsheetCharts.parseChart theme)
         match xlsxSource, sheet.SourceSheet with
         | Some source, Some origin when origin.Book = source.Id && origin.Sheet >= 0 && origin.Sheet < source.Workbook.Sheets.Length ->
             let parts, theme =
@@ -1109,40 +1030,43 @@ type Spreadsheet(container: Element) =
             Some { Theme = theme
                    Chart =
                     (fun id ->
-                        target id
-                        |> Option.bind (fun path ->
-                            match chartModels.TryGetValue path with
-                            | true, known -> known
-                            | false, _ ->
-                                let read =
-                                    match parts.TryGetValue path with
-                                    | true, data ->
-                                        // Always parse the original part: structural and sheet edits are
-                                        // applied once, from the imported baseline, without changing its bytes.
-                                        let sheetIndex =
-                                            if obj.ReferenceEquals(sheet, model) then activeSheetIndex
-                                            else sheets |> Array.tryFindIndex (fun known -> obj.ReferenceEquals(known, sheet)) |> Option.defaultValue origin.Sheet
-                                        let names (name: string) =
-                                            workbook |> Option.bind (fun wb ->
-                                                Rbt.Spreadsheet.Workbook.getName (List.tryItem sheetIndex wb.SheetOrder) name wb)
-                                        let originalXml = System.Text.Encoding.UTF8.GetString data
-                                        let xml = chartRewriter source originalXml
-                                        let parsed = SpreadsheetCharts.parseChartWith names theme xml
-                                        if xml = originalXml
-                                           && (not (SpreadsheetCharts.isChartEx xml)
-                                               || (workbook |> Option.forall (fun wb -> wb.Names = source.BaselineNames))) then parsed
-                                        else
-                                            let baselineNames (name: string) =
-                                                let key = name.ToUpperInvariant()
-                                                source.BaselineNames
-                                                |> Map.tryFind (Some (Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex origin.Sheet), key)
-                                                |> Option.orElseWith (fun () -> Map.tryFind (None, key) source.BaselineNames)
-                                            match SpreadsheetCharts.parseChartWith baselineNames theme originalXml, parsed with
-                                            | Some original, Some current -> Some (SpreadsheetCharts.markChangedReferences original current)
-                                            | _ -> parsed
-                                    | false, _ -> None
-                                chartModels.[path] <- read
-                                read))
+                        match authored theme id with
+                        | Some chart -> Some chart
+                        | None ->
+                            target id
+                            |> Option.bind (fun path ->
+                                match chartModels.TryGetValue path with
+                                | true, known -> known
+                                | false, _ ->
+                                    let read =
+                                        match parts.TryGetValue path with
+                                        | true, data ->
+                                            // Always parse the original part: structural and sheet edits are
+                                            // applied once, from the imported baseline, without changing its bytes.
+                                            let sheetIndex =
+                                                if obj.ReferenceEquals(sheet, model) then activeSheetIndex
+                                                else sheets |> Array.tryFindIndex (fun known -> obj.ReferenceEquals(known, sheet)) |> Option.defaultValue origin.Sheet
+                                            let names (name: string) =
+                                                workbook |> Option.bind (fun wb ->
+                                                    Rbt.Spreadsheet.Workbook.getName (List.tryItem sheetIndex wb.SheetOrder) name wb)
+                                            let originalXml = System.Text.Encoding.UTF8.GetString data
+                                            let xml = chartRewriter source originalXml
+                                            let parsed = SpreadsheetCharts.parseChartWith names theme xml
+                                            if xml = originalXml
+                                               && (not (SpreadsheetCharts.isChartEx xml)
+                                                   || (workbook |> Option.forall (fun wb -> wb.Names = source.BaselineNames))) then parsed
+                                            else
+                                                let baselineNames (name: string) =
+                                                    let key = name.ToUpperInvariant()
+                                                    source.BaselineNames
+                                                    |> Map.tryFind (Some (Rbt.Spreadsheet.XlsxBridge.sheetIdOfIndex origin.Sheet), key)
+                                                    |> Option.orElseWith (fun () -> Map.tryFind (None, key) source.BaselineNames)
+                                                match SpreadsheetCharts.parseChartWith baselineNames theme originalXml, parsed with
+                                                | Some original, Some current -> Some (SpreadsheetCharts.markChangedReferences original current)
+                                                | _ -> parsed
+                                        | false, _ -> None
+                                    chartModels.[path] <- read
+                                    read))
                    Picture =
                     (fun id ->
                         target id
@@ -1157,7 +1081,12 @@ type Spreadsheet(container: Element) =
                                 if contentType = "" then None else Some (pictureUrl data contentType)
                             | false, _ -> None))
                    Slicer = slicers }
-        | _ -> None
+        | _ ->
+            if Map.isEmpty sheet.AuthoredCharts then None
+            else Some { Theme = SpreadsheetCharts.defaultTheme
+                        Chart = authored SpreadsheetCharts.defaultTheme
+                        Picture = (fun _ -> None)
+                        Slicer = (fun _ _ _ _ _ -> None) }
     /// A block of cells of a sheet (by name) as a chart reads it; None when the sheet is not there.
     let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =
         match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
@@ -1238,13 +1167,10 @@ type Spreadsheet(container: Element) =
     /// (`layOut` false: only what is known - None when the object would have to be laid out.)
     let drawingSvgWhen (layOut: bool) (drawing: SheetDrawing) (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option option =
         ensureChartBindings ()
-        let key =
-            match xlsxSource, model.SourceSheet with
-            | Some source, Some origin when origin.Book = source.Id -> string origin.Sheet + ":" + string drawing.Id
-            | _ -> ""
+        let key = string activeSheetIndex + ":" + string drawing.Id
         // (An object that is not drawn is kept as such - no SVG: a slicer is not looked at again either.)
         let kept =
-            match (if key = "" then (false, Unchecked.defaultof<_>) else drawnObjects.TryGetValue key) with
+            match drawnObjects.TryGetValue key with
             | true, (knownXml, knownWidth, knownHeight, svg, reads)
                 when knownWidth = width && knownHeight = height && (obj.ReferenceEquals(knownXml, xml) || knownXml = xml) && Array.forall chartBlockStands reads ->
                 Some (if isNull svg then None else Some (svg, reads))
@@ -1252,7 +1178,7 @@ type Spreadsheet(container: Element) =
         match kept with
         | Some known -> Some known
         // (An object of no file part is not drawn: there is nothing to lay out later.)
-        | None when key = "" -> Some None
+        | None when Map.isEmpty model.AuthoredCharts && xlsxSource.IsNone -> Some None
         | None ->
             if not layOut then None
             else
@@ -1287,21 +1213,11 @@ type Spreadsheet(container: Element) =
             | None -> result <- clearCell addr result
         result
 
-    let restoreCellMap (cells: Map<CellAddress, CellData>) (m: SpreadsheetModel) =
-        { m with Cells = cells } |> invalidateFilterProjection
-
-    /// Put a sheet's cells back with the spill map they had: the cells a
-    /// dynamic array had spilled into are spilled cells again, not ordinary
-    /// ones in the formula's way (it showed #SPILL! after the undo of a Delete
-    /// or Cut that had removed it).
-    let restoreCellMapWithSpill (cells: Map<CellAddress, CellData>) (spill: Map<CellAddress, CellAddress>) (m: SpreadsheetModel) =
-        { m with Cells = cells; Spill = spill } |> invalidateFilterProjection
 
     /// The workbook was replaced or changed in more than its cells: the
     /// dependency graph and the calculated state it stands on are dropped.
     let invalidateCalcEngine () =
-        recalcEngine <- None
-        calculatedWorkbook <- None
+        session.InvalidateCalculation()
         engineGeneration <- engineGeneration + 1
 
     /// What hosts gave SetFilter, by "sheet id|column", with the criteria it
@@ -1410,14 +1326,17 @@ type Spreadsheet(container: Element) =
             | Some sheet -> sheets.[i] <- sheet.Model
             | None -> ()
         model <- sheets.[activeSheetIndex]
-        workbook <- workbook |> Option.map (fun existing ->
-            { existing with
-                Sheets = wb.Sheets
-                SheetOrder = wb.SheetOrder
-                ActiveSheet = wb.ActiveSheet
-                Tables = wb.Tables
-                Names = wb.Names
-                NameInfo = wb.NameInfo })
+        workbook <- Some wb
+
+    /// Register an already-applied browser operation through the shared
+    /// workbook journal; the browser retains only UI projections.
+    let pushCommand (description: string) (updated: SpreadsheetModel) =
+        let transaction: Rbt.Spreadsheet.Session.AppliedTransaction =
+            { Description = description; Workbook = currentWorkbookSnapshot() }
+        session.CommitApplied(transaction)
+        updated
+    let pushValueNeutral (description: string) =
+        model <- pushCommand description model
 
     /// The workbook that conditional-format and validation formulas are
     /// evaluated against; refreshed at each render.
@@ -1622,78 +1541,31 @@ type Spreadsheet(container: Element) =
                 | _ -> ()
             canvasRestore ctx
 
-    /// The engine for the workbook as it was last calculated, built now when there is none yet.
-    let ensureRecalcEngine () =
-        match recalcEngine, calculatedWorkbook with
-        | Some engine, _ -> Some engine
-        | None, Some calculated ->
-            let engine = SpreadsheetRecalc.build calculated
-            recalcEngine <- Some engine
-            Some engine
-        | None, None -> None
+    /// Browser projection of the shared session's incremental calculation.
+    let ensureRecalcEngine () = session.EnsureRecalcEngine()
 
-    /// Recalculate after an edit. `hint` names the cells the edit touched
-    /// when they are known. The formulas that read the changed cells are
-    /// evaluated (Recalc); every formula of the workbook is - in one
-    /// dependency order across the sheets, circular references marked - when
-    /// the edit is more than one of cells, when it reaches a cycle, and before
-    /// there is a calculated state to start from.
     let recalculateAfterEdit (hint: (SheetId * CellAddress) list option) =
-        let edited = currentWorkbookSnapshot()
-        let incremental =
-            match (if incrementalRecalculation then ensureRecalcEngine () else None) with
-            | Some engine ->
-                match SpreadsheetRecalc.recalculate engine edited hint with
-                | Some recalculated ->
-                    lastRecalculation <- "incremental"
-                    lastRecalcStats <- SpreadsheetRecalc.lastStats engine
-                    Some recalculated
-                | None ->
-                    lastFullReason <- SpreadsheetRecalc.lastDecline engine
-                    None
-            | None ->
-                lastFullReason <- if incrementalRecalculation then "no calculated state to start from" else "incremental recalculation is switched off"
-                None
-        match incremental with
-        | Some recalculated ->
-            installWorkbookSnapshot recalculated
-            calculatedWorkbook <- Some recalculated
-        | None ->
-            lastRecalculation <- "full"
-            // Every sheet with formulas is recalculated: those not converted yet are now.
+        session.UpdateView(currentWorkbookSnapshot())
+        let prepareFull () =
+            // Import keeps formula sheets deferred until incremental evaluation
+            // needs them, or until the engine declines and a full pass is required.
             convertFormulaSheets ()
-            let edited = currentWorkbookSnapshot()
-            // (The full recalculation is a pass over the workbook's dependency graph:
-            // the graph it built is the one the edits that follow go on from.)
-            let recalculated, engine = SpreadsheetRecalc.recalculateAll edited
-            installWorkbookSnapshot recalculated
-            recalcEngine <- (if incrementalRecalculation then Some engine else None)
-            calculatedWorkbook <- Some recalculated
+            currentWorkbookSnapshot()
+        session.Recalculate(?hint = hint, beforeFull = prepareFull)
+        installWorkbookSnapshot session.Workbook
         adoptConvertedSheets ()
 
-    /// Recalculation after an edit whose cells are not named: the sheets'
-    /// cells are compared with the calculated state.
-    let recalculateFormulas () =
-        recalculateAfterEdit None
+    let recalculateFormulas () = recalculateAfterEdit None
+    let recalculateEverything () = recalculateAfterEdit None
 
-    /// Recalculation after an edit that is more than one of cells (rows /
-    /// columns moved, sheets, names, tables): the engine calculates the
-    /// formulas that can tell (see Recalc), and every formula of the
-    /// workbook only when it has no calculated state to start from.
-    let recalculateEverything () =
-        recalculateAfterEdit None
-
-    /// The full recalculation of the whole workbook, whatever the engine holds.
     let recalculateFromScratch () =
         invalidateCalcEngine()
         convertFormulaSheets ()
-        let recalculated, engine = currentWorkbookSnapshot() |> SpreadsheetRecalc.recalculateAll
-        installWorkbookSnapshot recalculated
-        lastRecalculation <- "full"
-        lastFullReason <- "the workbook was calculated from scratch"
+        session.UpdateView(currentWorkbookSnapshot())
+        session.RecalculateFromScratch()
+        installWorkbookSnapshot session.Workbook
         adoptConvertedSheets ()
-        recalcEngine <- (if incrementalRecalculation then Some engine else None)
-        calculatedWorkbook <- Some recalculated
+
 
     /// Insert or delete rows/columns on the active sheet as one undoable
     /// step. The edit and its undo both go through the workbook so formulas on
@@ -1702,181 +1574,59 @@ type Spreadsheet(container: Element) =
         // Formulas of every sheet follow the rows / columns that move.
         convertFormulaSheets ()
         let sheetId = sheetIdForIndex activeSheetIndex
-        let edited, undoInfo = Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit (currentWorkbookSnapshot())
-        installWorkbookSnapshot edited
-        recalculateEverything()
-        // Undo()/Redo() recalculate after running the command.
-        let command = {
-            Undo = fun _ ->
-                currentWorkbookSnapshot()
-                |> Rbt.Spreadsheet.Workbook.undoStructureEdit undoInfo
-                |> installWorkbookSnapshot
-                model
-            Redo = fun _ ->
-                currentWorkbookSnapshot()
-                |> Rbt.Spreadsheet.Workbook.applyStructureEdit sheetId edit
-                |> fst
-                |> installWorkbookSnapshot
-                model
-            Description = description
-        }
-        model <- pushCommand command model
-
-    /// Cut the selection: copy it to the clipboard, clear the cells and
-    /// recalculate, as one undoable step.
-    let cutSelection () =
-        let selection = model.Selection
-        let clipboardData = serializeSelection selection model true
-        let oldCells = model.Cells
-        let cutCells =
-            clipboardData.Cells
-            |> List.map (fun (row, col, data) ->
-                { Row = clipboardData.SourceStartRow + row; Col = clipboardData.SourceStartCol + col }, Some data)
-        clipboardVersion <- clipboardVersion + 1
-        let cutVersion = clipboardVersion
-        sessionClipboard <- Some (sheetIdForIndex activeSheetIndex, clipboardData)
-        model <- clearSelectionCells selection model
-        recalculateFormulas()
-        if not (obj.ReferenceEquals(oldCells, model.Cells)) then
-            let command = {
-                Undo = fun m ->
-                    if clipboardVersion = cutVersion then
-                        sessionClipboard <- None
-                        copiedText <- ""
-                    restoreCellOptions cutCells m
-                Redo = fun m -> clearSelectionCells selection m
-                Description = "Cut"
-            }
-            model <- pushCommand command model
-
-    /// Paste the clipboard at the selection as one undoable step. A pasted
-    /// cut is a move: every formula and defined name in the workbook that
-    /// referred to the moved cells is re-pointed at their new place.
-    let pasteClipboardAtSelection () =
-        match sessionClipboard with
-        | None -> false
-        | Some (sourceSheet, clipboardData) when not (Map.containsKey sourceSheet (currentWorkbookSnapshot()).Sheets) ->
-            sessionClipboard <- None
-            copiedText <- ""
-            false
-        | Some (sourceSheet, clipboardData) ->
-            let targetSheet = sheetIdForIndex activeSheetIndex
-            // (A pasted cut re-points the formulas of every sheet.)
+        session.UpdateView(currentWorkbookSnapshot())
+        let prepareFull () =
+            installWorkbookSnapshot session.Workbook
             convertFormulaSheets ()
-            let anchors = pasteAnchors model.Selection clipboardData
-            let touched =
-                [ for anchor in anchors do
-                    for (relRow, relCol, _) in clipboardData.Cells do
-                        yield { Row = anchor.Row + relRow; Col = anchor.Col + relCol } ]
-                |> List.distinct
-            let oldCells = touched |> List.map (fun addr -> addr, getCell addr model)
-            for anchor in anchors do
-                model <- pasteClipboard anchor clipboardData model
-            // Redo must start with the un-repointed formulas, not the calculated
-            // result of the first move.
-            let newCells = touched |> List.map (fun addr -> addr, getCell addr model)
-            let mutable moveUndo =
-                match anchors with
-                | [ anchor ] when clipboardData.IsCut ->
-                    let sheetId = targetSheet
-                    let source =
-                        clipboardData.SourceStartRow, clipboardData.SourceStartCol,
-                        clipboardData.SourceEndRow, clipboardData.SourceEndCol
-                    let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
-                    let repointed, undoInfo =
-                        Rbt.Spreadsheet.Workbook.repointMovedCells sourceSheet source sheetId delta (currentWorkbookSnapshot())
-                    installWorkbookSnapshot repointed
-                    Some undoInfo
-                | _ -> None
-            recalculateFormulas()
-            let afterSelection = pasteSelection anchors clipboardData model.Selection
-            model <- { model with Selection = afterSelection }
-            let command = {
-                Undo = fun m ->
-                    model <- m
-                    match moveUndo with
-                    | Some undoInfo ->
-                        currentWorkbookSnapshot()
-                        |> Rbt.Spreadsheet.Workbook.undoRepointMovedCells undoInfo
-                        |> installWorkbookSnapshot
-                    | None -> ()
-                    model <- restoreCellOptions oldCells model
-                    model
-                Redo = fun m ->
-                    model <- restoreCellOptions newCells m
-                    match moveUndo with
-                    | Some _ ->
-                        // Re-run the move against the workbook as it is now.
-                        match anchors with
-                        | [ anchor ] ->
-                            let sheetId = targetSheet
-                            let source =
-                                clipboardData.SourceStartRow, clipboardData.SourceStartCol,
-                                clipboardData.SourceEndRow, clipboardData.SourceEndCol
-                            let delta = anchor.Row - clipboardData.SourceStartRow, anchor.Col - clipboardData.SourceStartCol
-                            let repointed, undoInfo =
-                                currentWorkbookSnapshot()
-                                |> Rbt.Spreadsheet.Workbook.repointMovedCells sourceSheet source sheetId delta
-                            moveUndo <- Some undoInfo
-                            installWorkbookSnapshot repointed
-                        | _ -> ()
-                    | None -> ()
-                    model
-                Description = "Paste"
-            }
-            model <- pushCommand command model
-            // A cut can be pasted once.
-            if clipboardData.IsCut then
-                sessionClipboard <- None
-                copiedText <- ""
-            true
+            currentWorkbookSnapshot()
+        match session.ExecuteStructural(Rbt.Spreadsheet.Session.EditStructure (sheetId, edit), description = description, beforeFull = prepareFull) with
+        | Ok true ->
+            installWorkbookSnapshot session.Workbook
+            adoptConvertedSheets ()
+        | Ok false -> ()
+        | Result.Error problem -> failwith problem
+
+    let prepareClipboardFull () =
+        installWorkbookSnapshot session.Workbook
+        convertFormulaSheets ()
+        currentWorkbookSnapshot()
+
+    let pasteClipboardAtSelection () =
+        match session.Clipboard with
+        | None -> false
+        | Some captured ->
+            if captured.Data.IsCut then convertFormulaSheets ()
+            session.UpdateView(currentWorkbookSnapshot())
+            match session.PasteClipboard(sheetIdForIndex activeSheetIndex, beforeFull = prepareClipboardFull) with
+            | Result.Error problem -> failwith problem
+            | Ok _ ->
+                installWorkbookSnapshot session.Workbook
+                adoptConvertedSheets ()
+                true
 
     /// Replace in the selected cell as one undoable step. True when it matched.
     let replaceInSelection (findText: string) (replaceText: string) (caseSensitive: bool) =
-        let changedAddr =
-            match model.Selection with
-            | SingleCell (row, col) -> Some { Row = row; Col = col }
-            | _ -> None
-        let oldCells =
-            match changedAddr with
-            | Some addr -> [ addr, getCell addr model ]
-            | None -> []
         match replaceAtSelection findText replaceText caseSensitive model with
         | Some newModel ->
-            let newCells =
-                match changedAddr with
-                | Some addr -> [ addr, getCell addr newModel ]
-                | None -> []
-            let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
-                Description = "Replace"
-            }
             model <- newModel
-            // Formulas reading the replaced cell must see the new text.
             recalculateFormulas()
-            model <- pushCommand command model
+            model <- pushCommand "Replace" model
             true
         | None -> false
 
     /// Replace every match on the sheet as one undoable step; returns the count.
     let replaceEverywhere (findText: string) (replaceText: string) (caseSensitive: bool) =
-        let newModel, count, oldCells, newCells = replaceAllWithChanges findText replaceText caseSensitive model
+        let newModel, count, _, _ = replaceAllWithChanges findText replaceText caseSensitive model
         if count > 0 then
             model <- newModel
             recalculateFormulas()
-            let command = {
-                Undo = restoreCellOptions oldCells
-                Redo = restoreCellOptions newCells
-                Description = "Replace All"
-            }
-            model <- pushCommand command model
+            model <- pushCommand "Replace All" model
         count
 
     let recalculateSingleCellEdit (addr: CellAddress) (cellData: CellData) =
-        // (The engine is built from the workbook as it is before the entry.)
-        if calculatedWorkbook.IsNone && recalcEngine.IsNone then calculatedWorkbook <- Some (currentWorkbookSnapshot())
-        if incrementalRecalculation then ensureRecalcEngine () |> ignore
+        // Build the graph before replacing the cell, not against its new value.
+        session.UpdateView(currentWorkbookSnapshot())
+        ensureRecalcEngine ()
         model <- setCell addr cellData model
         recalculateAfterEdit (Some [ sheetIdForIndex activeSheetIndex, addr ])
 
@@ -2297,106 +2047,71 @@ type Spreadsheet(container: Element) =
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (typed: bool) : bool =
         giveRoomFor addr
-        // (A chart sheet has no cells: nothing typed into it could be saved.)
         if sheetLocked then false else
-        let oldCellData = getCell addr model
-        // An entry that concerns a table (a header cell, a cell directly below or right of the
-        // table, a formula in one of its columns) is a change of the workbook's tables: one
-        // step with what follows from it (see `SheetOps.tableEntry`).
-        let asTableEntry (entry: CellData option) =
-            typed && SheetOps.entryConcernsTable addr model && tableEntryHook.Value (addr, entry)
-        // A cell a dynamic array had spilled into is that array's cell again
-        // after the undo of an entry typed over it, not a cell in its way.
-        let spilledFrom = Map.tryFind addr model.Spill
-        let asItWas (m: SpreadsheetModel) =
-            match spilledFrom with
-            | Some anchor when not (Map.containsKey addr m.Spill) -> { m with Spill = Map.add addr anchor m.Spill }
-            | _ -> m
-        if System.String.IsNullOrWhiteSpace text then
-            // Empty input clears the cell.
-            match oldCellData with
-            | Some _ when asTableEntry None -> ()
-            | Some old ->
-                model <- clearCell addr model
-                recalculateFormulas()
-                model <- pushCommand { Undo = (fun m -> setCell addr old m)
-                                       Redo = (fun m -> clearCell addr m)
-                                       Description = sprintf "Clear cell %s" (formatCellRef addr.Row addr.Col) } model
-            | None -> ()
-            true
-        else
-            let parsed = SpreadsheetInput.cellFromInputFor model.Date1904 (currentYear()) oldCellData text
-            // A formula entered into a General cell shows its result in the format of what it
-            // reads, as in Excel (`=A1+1` under a date is a date): see `SheetOps.inheritedNumberFormat`.
-            let parsed =
-                match parsed.Value, parsed.Format.NumberFormat with
-                | CellValue.Formula (formula, _), (None | Some "" | Some "General") ->
-                    let formatAt (sheet: string option) (row: int) (col: int) : string option =
-                        let source =
-                            match sheet with
-                            | None -> Some model
-                            | Some name ->
-                                sheetNames
-                                |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase))
-                                |> Option.map (fun index -> if index = activeSheetIndex then model else (convertInPlace index; sheets.[index]))
-                        source |> Option.bind (fun sheet -> getCell { Row = row; Col = col } sheet) |> Option.bind (fun cell -> cell.Format.NumberFormat)
-                    (match (try SheetOps.inheritedNumberFormat formatAt formula with _ -> None) with
-                     | Some code -> { parsed with Format = { parsed.Format with NumberFormat = Some code } }
-                     | None -> parsed)
-                | _ -> parsed
-            let outcome =
-                if validate && not model.Validations.IsEmpty then
-                    refreshRuleWorkbook()
-                    checkEntryIn listReader ruleEvaluator addr parsed.Value model
-                else EntryValid
-            let notify style title message =
-                let styleName =
-                    match style with
-                    | StopStyle -> "stop"
-                    | WarningStyle -> "warning"
-                    | InformationStyle -> "information"
-                validationNotice <- Some (styleName, defaultArg title "", message, addr)
-                for listener in validationListeners.ToArray() do
-                    try listener styleName (defaultArg title "") message with error -> reportError "OnValidationNotice" (box error)
-            match outcome with
-            | EntryInvalid (StopStyle, title, message) ->
-                notify StopStyle title message
-                false
-            | _ ->
-                (match outcome with
-                 | EntryInvalid (style, title, message) -> notify style title message
-                 | EntryValid -> validationNotice <- None)
-                let cellData =
-                    match parsed.Value with
-                    // Store a first result with the formula; the recalculation
-                    // that follows settles it and everything that reads it.
-                    | CellValue.Formula (formula, _) -> { parsed with Value = CellValue.Formula (formula, evaluateFormula formula model workbook) }
-                    | _ -> parsed
-                if not (asTableEntry (Some cellData)) then
-                    recalculateSingleCellEdit addr cellData
-                    model <- pushCommand { Undo = (fun m -> (match oldCellData with
-                                                             | Some old -> setCell addr old m
-                                                             | None -> clearCell addr m) |> asItWas)
-                                           Redo = (fun m -> setCell addr cellData m)
-                                           Description = sprintf "Edit cell %s" (formatCellRef addr.Row addr.Col) } model
+        let isClear = System.String.IsNullOrWhiteSpace text
+        let hadCell = getCell addr model |> Option.isSome
+        let mutable tableHandled = false
+        let asTableEntry (cell: CellData option) =
+            if typed && SheetOps.entryConcernsTable addr model && tableEntryHook.Value (addr, cell) then
+                tableHandled <- true
                 true
+            else false
+        let notify style title message =
+            let styleName =
+                match style with
+                | StopStyle -> "stop"
+                | WarningStyle -> "warning"
+                | InformationStyle -> "information"
+            validationNotice <- Some (styleName, defaultArg title "", message, addr)
+            for listener in validationListeners.ToArray() do
+                try listener styleName (defaultArg title "") message with error -> reportError "OnValidationNotice" (box error)
+        let accept (cell: CellData) =
+            if isClear then not (asTableEntry None)
+            else
+                let outcome =
+                    if validate && not model.Validations.IsEmpty then
+                        refreshRuleWorkbook()
+                        checkEntryIn listReader ruleEvaluator addr cell.Value model
+                    else EntryValid
+                match outcome with
+                | EntryInvalid (StopStyle, title, message) ->
+                    notify StopStyle title message
+                    false
+                | _ ->
+                    match outcome with
+                    | EntryInvalid (style, title, message) -> notify style title message
+                    | EntryValid -> validationNotice <- None
+                    not (asTableEntry (Some cell))
+        if isClear && not hadCell then true else
+        session.UpdateView(currentWorkbookSnapshot())
+        let prepareFull () =
+            installWorkbookSnapshot session.Workbook
+            convertFormulaSheets ()
+            currentWorkbookSnapshot()
+        let accepted =
+            if isClear then
+                session.ClearCell(sheetIdForIndex activeSheetIndex, addr, accept = accept, beforeFull = prepareFull)
+            else
+                session.EnterCell(sheetIdForIndex activeSheetIndex, addr, text, currentYear(),
+                                  accept = accept, beforeFull = prepareFull)
+        if accepted then
+            installWorkbookSnapshot session.Workbook
+            adoptConvertedSheets ()
+        accepted || tableHandled
 
     /// Continue the block `source` in `direction` by `count` rows/columns as
     /// one undoable step. `series` continues series (the fill handle);
     /// without it the block is copied (Ctrl+D / Ctrl+R).
     let fillFrom (source: int * int * int * int) (direction: SpreadsheetInput.FillDirection) (count: int) (series: bool) =
         if count > 0 && not readOnly then
-            let targets = SpreadsheetInput.fillTargets source direction count
             // (A fill past the last row or column of the sheet makes the sheet that large.)
             (let _, _, bottom, right = source
              match direction with
              | SpreadsheetInput.FillDown -> giveRoomFor { Row = bottom + count; Col = right }
              | SpreadsheetInput.FillRight -> giveRoomFor { Row = bottom; Col = right + count }
              | _ -> ())
-            let oldCells = targets |> List.map (fun addr -> addr, getCell addr model)
             model <- SpreadsheetInput.fillCells source direction count series model
             recalculateFormulas()
-            let newCells = targets |> List.map (fun addr -> addr, getCell addr model)
             let top, left, bottom, right = source
             let selection =
                 match direction with
@@ -2405,9 +2120,7 @@ type Spreadsheet(container: Element) =
                 | SpreadsheetInput.FillRight -> Range (top, left, bottom, right + count)
                 | SpreadsheetInput.FillLeft -> Range (top, max 0 (left - count), bottom, right)
             model <- { model with Selection = selection }
-            model <- pushCommand { Undo = restoreCellOptions oldCells
-                                   Redo = restoreCellOptions newCells
-                                   Description = "Fill" } model
+            model <- pushCommand "Fill" model
 
     /// Ctrl+D / Ctrl+R: copy the first row (column) of the selection through
     /// the rest of it; with one cell selected, copy its neighbour into it.
@@ -2428,184 +2141,86 @@ type Spreadsheet(container: Element) =
     let clearSelection () =
         let selection = model.Selection
         let oldCells = model.Cells
-        let oldSpill = model.Spill
         model <- clearSelectionCells selection model
         if not (obj.ReferenceEquals(oldCells, model.Cells)) then
             recalculateFormulas()
-            model <- pushCommand { Undo = (fun m -> restoreCellMapWithSpill oldCells oldSpill m)
-                                   Redo = (fun m -> clearSelectionCells selection m)
-                                   Description = "Delete" } model
+            model <- pushCommand "Delete" model
 
-    /// Paste text from outside the grid (another spreadsheet, a text editor)
-    /// at the active cell, as one undoable step: `rows` are the cells, each
-    /// read like a typed entry. One copied cell fills the whole selection.
+    /// Paste external table cells through the shared workbook transaction.
     let pasteExternalRows (rows: string array array) : bool =
-        let rows = rows |> Array.filter (fun row -> row.Length > 0)
-        if readOnly || rows.Length = 0 then false
+        if readOnly || not (rows |> Array.exists (fun row -> row.Length > 0)) then false
         else
-            let top, left, bottom, right = selectionBounds()
-            let height = rows.Length
-            let width = rows |> Array.map Array.length |> Array.max
-            // A single value is repeated over the selection, as Excel does.
-            let repeat = height = 1 && width = 1 && selectionIsRange ()
-            // (What is pasted at the end of the sheet makes the sheet longer / wider.)
-            if not repeat then giveRoomFor { Row = top + height - 1; Col = left + width - 1 }
-            let lastRow = if repeat then bottom else min (model.RowCount - 1) (top + height - 1)
-            let lastCol = if repeat then right else min (model.ColCount - 1) (left + width - 1)
-            let targets =
-                [ for row in top .. lastRow do
-                    for col in left .. lastCol do
-                        let source = if repeat then rows.[0] else rows.[row - top]
-                        let text = if repeat then source.[0] elif col - left < source.Length then source.[col - left] else ""
-                        yield { Row = row; Col = col }, text ]
-            let year = currentYear()
-            let oldCells = targets |> List.map (fun (addr, _) -> addr, getCell addr model)
-            for addr, text in targets do
-                // Only the first cell of a merged cell takes a value.
-                match findMergedCell addr model with
-                | Some merge when merge.StartRow <> addr.Row || merge.StartCol <> addr.Col -> ()
-                | _ ->
-                    let existing = getCell addr model
-                    if System.String.IsNullOrEmpty text then
-                        match existing with
-                        | Some cell when cell.Value <> CellValue.Empty -> model <- setCell addr { cell with Value = CellValue.Empty } model
-                        | _ -> ()
-                    else
-                        model <- setCell addr (SpreadsheetInput.cellFromInputFor model.Date1904 year existing text) model
-            recalculateFormulas()
-            let newCells = targets |> List.map (fun (addr, _) -> addr, getCell addr model)
-            selectFromTo { Row = top; Col = left } { Row = lastRow; Col = lastCol }
-            model <- pushCommand { Undo = restoreCellOptions oldCells
-                                   Redo = restoreCellOptions newCells
-                                   Description = "Paste" } model
-            true
+            let top, left, _, _ = selectionBounds()
+            let originalRows, originalCols = model.RowCount, model.ColCount
+            session.UpdateView(currentWorkbookSnapshot())
+            match session.PasteRows(sheetIdForIndex activeSheetIndex, rows, currentYear(), beforeFull = prepareClipboardFull) with
+            | Result.Error problem -> failwith problem
+            | Ok _ ->
+                installWorkbookSnapshot session.Workbook
+                adoptConvertedSheets ()
+                anchorCell <- { Row = top; Col = left }
+                if model.RowCount > originalRows || model.ColCount > originalCols then
+                    let id = sheetKeyForRoom ()
+                    if not (roomBefore.ContainsKey id) then roomBefore.[id] <- (originalRows, originalCols)
+                true
 
-    /// Paste what a clipboard holds: the grid's own cells when the text is
-    /// what the grid copied last (formulas and formats come along), else the
-    /// cells of an HTML table, else tab-separated text.
     let pasteFlavours (text: string) (html: string) : bool =
         if readOnly then false
         else
-            let normalised (value: string) = if isNull value then "" else value.Replace("\r\n", "\n").TrimEnd('\n')
-            if sessionClipboard.IsSome && copiedText <> "" && normalised text = normalised copiedText then
-                pasteClipboardAtSelection()
-            else
+            let pasteExternal () =
                 let fromHtml = if System.String.IsNullOrEmpty html then null else htmlTableCells html
                 if not (isNull (box fromHtml)) && fromHtml.Length > 0 then pasteExternalRows fromHtml
-                elif not (System.String.IsNullOrEmpty text) then pasteExternalRows (rowsOfTsv text)
+                elif not (System.String.IsNullOrEmpty text) then
+                    pasteExternalRows (Rbt.Spreadsheet.Session.clipboardRowsOfText text)
                 else false
+            match session.ClipboardSource(Some text) with
+            | Rbt.Spreadsheet.Session.InternalPaste -> pasteClipboardAtSelection()
+            | Rbt.Spreadsheet.Session.IgnoredPaste when System.String.IsNullOrEmpty text -> pasteExternal ()
+            | Rbt.Spreadsheet.Session.IgnoredPaste -> false
+            | Rbt.Spreadsheet.Session.ExternalPaste -> pasteExternal ()
 
-    /// Apply `update` to the format of every cell of the selection as one
-    /// undoable step. A selection too large to give every cell a format of
-    /// its own (whole rows or columns) changes the cells that exist.
-    let formatBlockAt (description: string) (top: int, left: int, bottom: int, right: int) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
-        let bottom = min bottom (model.RowCount - 1)
-        let right = min right (model.ColCount - 1)
-        let block = top, left, bottom, right
-        let area = float (bottom - top + 1) * float (right - left + 1)
-        let oldCells = model.Cells
-        let oldSpill = model.Spill
-        let apply (m: SpreadsheetModel) : SpreadsheetModel =
-            let mutable cells = m.Cells
-            let change (addr: CellAddress) (existing: CellData option) =
-                let data = existing |> Option.defaultValue { Value = CellValue.Empty; Format = defaultFormat; Comment = None }
-                let format = updateAt block addr data.Format
-                if not (obj.ReferenceEquals(format, data.Format)) && format <> data.Format then
-                    cells <- Map.add addr { data with Format = format } cells
-            // (The rows an AutoFilter hides keep their formats, as in Excel.)
-            if area <= 20000.0 then
-                for row in top .. bottom do
-                    if not (isFilterHiddenRow row m) then
-                        for col in left .. right do
-                            let addr = { Row = row; Col = col }
-                            change addr (Map.tryFind addr m.Cells)
-            else
-                for KeyValue(addr, data) in m.Cells do
-                    if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right && not (isFilterHiddenRow addr.Row m) then change addr (Some data)
-            if obj.ReferenceEquals(cells, m.Cells) then m else { m with Cells = cells } |> invalidateFilterProjection
-        let updated = apply model
-        if obj.ReferenceEquals(updated, model) then false
-        else
-            model <- updated
-            pushValueNeutral { Undo = (fun m -> restoreCellMapWithSpill oldCells oldSpill m)
-                               Redo = apply
-                               Description = description }
+    let executeFormatting description block command =
+        let sheetId = sheetIdForIndex activeSheetIndex
+        session.UpdateView(currentWorkbookSnapshot())
+        let prepareFull () =
+            installWorkbookSnapshot session.Workbook
+            convertFormulaSheets ()
+            currentWorkbookSnapshot()
+        match session.ExecuteFormatting(sheetId, command, bounds = block, activeCell = activeCellAddress(),
+                                        description = description, beforeFull = prepareFull) with
+        | Ok true ->
+            installWorkbookSnapshot session.Workbook
+            adoptConvertedSheets ()
             true
+        | Ok false -> false
+        | Result.Error problem -> failwith problem
 
-    let formatSelectionAt (description: string) (updateAt: int * int * int * int -> CellAddress -> CellFormat -> CellFormat) : bool =
-        formatBlockAt description (selectionBounds()) updateAt
-
-    let formatSelection (description: string) (update: CellFormat -> CellFormat) : bool =
-        formatSelectionAt description (fun _ _ format -> update format)
+    let formatSelection description update =
+        executeFormatting description (selectionBounds()) (Rbt.Spreadsheet.Session.TransformFormat update)
 
     /// An argument a host must give: throws when it is undefined or null.
     let requiredArg (memberName: string) (what: string) (value: obj) : obj =
         if Host.isNullish value then Host.hostFail memberName (what + " is missing") else value
 
-    /// Clear the cells of a block (their contents, their formats, or both and
-    /// their comments) as one undoable step; what read the cleared values is
-    /// recalculated. False when there was nothing to clear.
-    let clearBlock (description: string) (what: SheetOps.ClearWhat) (block: int * int * int * int) : bool =
-        let oldCells = model.Cells
-        let oldSpill = model.Spill
-        let oldRuns = model.RichRuns
-        let oldThreads = model.Threads
-        let cleared = SheetOps.clearCells what block model
-        if obj.ReferenceEquals(cleared, model) then false
-        else
-            model <- cleared
-            let command =
-                { Undo = (fun m -> { restoreCellMapWithSpill oldCells oldSpill m with RichRuns = oldRuns; Threads = oldThreads })
-                  Redo = SheetOps.clearCells what block
-                  Description = description }
-            if what = SheetOps.ClearFormats then pushValueNeutral command
-            else
-                recalculateFormulas()
-                model <- pushCommand command model
-            true
+    let clearBlock description what block =
+        executeFormatting description block (Rbt.Spreadsheet.Session.ClearCells what)
 
-    /// The highest conditional-format id the component has handed out: a new
-    /// rule gets one above it and above every id on its sheet, so that the id
-    /// of a removed rule is not given to another.
-    let mutable lastRuleId = 0
+    let executeRule memberName command =
+        session.UpdateView(currentWorkbookSnapshot())
+        match session.ExecuteRule(sheetIdForIndex activeSheetIndex, command) with
+        | Result.Error problem -> Host.hostFail memberName problem
+        | Ok result ->
+            if result.Changed then
+                installWorkbookSnapshot session.Workbook
+                match command with
+                | Rbt.Spreadsheet.Session.SetValidation _ | Rbt.Spreadsheet.Session.ClearValidation _ ->
+                    invalidCircles.Remove activeSheetIndex |> ignore
+                | _ -> ()
+            result
 
-    /// Change the active sheet's conditional formats as one undoable step
-    /// (no value changes: no recalculation). False when nothing changed.
-    let changeConditionalFormats (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
-        let before = model.ConditionalFormats
-        let changed = change model
-        let after = changed.ConditionalFormats
-        if obj.ReferenceEquals(before, after) || before = after then false
-        else
-            model <- { model with ConditionalFormats = after }
-            pushValueNeutral { Undo = (fun m -> { m with ConditionalFormats = before })
-                               Redo = (fun m -> { m with ConditionalFormats = after })
-                               Description = description }
-            true
-
-    /// Add a conditional format to the active sheet as one undoable step; its id.
-    let addRule (ranges: CellRange list) (stopIfTrue: bool) (format: ConditionalFormat) : int =
-        let id = (max lastRuleId (SheetOps.highestConditionalFormatId model)) + 1
-        lastRuleId <- id
-        changeConditionalFormats "Conditional format" (SheetOps.addConditionalFormatWithId id ranges stopIfTrue format) |> ignore
-        id
-
-    /// Change the active sheet's validations as one undoable step (no value
-    /// changes: no recalculation). The circles of CircleInvalid go: they
-    /// showed what the earlier validations made of the cells. False when
-    /// nothing changed.
-    let changeValidations (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
-        let before = model.Validations
-        let changed = change model
-        let after = changed.Validations
-        if obj.ReferenceEquals(before, after) || before = after then false
-        else
-            model <- { model with Validations = after }
-            invalidCircles.Remove activeSheetIndex |> ignore
-            pushValueNeutral { Undo = (fun m -> { m with Validations = before })
-                               Redo = (fun m -> { m with Validations = after })
-                               Description = description }
-            true
+    let addRule ranges stopIfTrue format =
+        let result = executeRule "AddConditionalFormat" (Rbt.Spreadsheet.Session.AddConditionalFormat (ranges, stopIfTrue, format))
+        result.Id.Value
 
     /// Change the comments of the active sheet (notes are on the cells,
     /// threads beside them) as one undoable step; no value changes. False
@@ -2617,9 +2232,7 @@ type Spreadsheet(container: Element) =
         if sameRef cellsBefore cellsAfter && (sameRef threadsBefore threadsAfter || threadsBefore = threadsAfter) then false
         else
             model <- { model with Cells = cellsAfter; Threads = threadsAfter }
-            pushValueNeutral { Undo = (fun m -> { m with Cells = cellsBefore; Threads = threadsBefore })
-                               Redo = (fun m -> { m with Cells = cellsAfter; Threads = threadsAfter })
-                               Description = description }
+            pushValueNeutral description
             true
     /// The author of a comment as a host gives it: a text, or nothing.
     let commentAuthorArg (memberName: string) (value: obj) : string option =
@@ -2630,40 +2243,31 @@ type Spreadsheet(container: Element) =
     /// Change the hyperlinks of the active sheet, with the text and the look
     /// of the linked cells, as one undoable step. False when nothing changed.
     let changeHyperlinks (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
-        let cellsBefore, spillBefore, linksBefore = model.Cells, model.Spill, model.Hyperlinks
+        let cellsBefore, linksBefore = model.Cells, model.Hyperlinks
         let changed = change model
         let cellsAfter, linksAfter = changed.Cells, changed.Hyperlinks
         if sameRef cellsBefore cellsAfter && (sameRef linksBefore linksAfter || linksBefore = linksAfter) then false
         else
             model <- { model with Cells = cellsAfter; Hyperlinks = linksAfter } |> invalidateFilterProjection
-            let command =
-                { Undo = (fun m -> { restoreCellMapWithSpill cellsBefore spillBefore m with Hyperlinks = linksBefore })
-                  Redo = (fun m -> { restoreCellMap cellsAfter m with Hyperlinks = linksAfter })
-                  Description = description }
             // (A link can give its first cell a text: what reads the cell follows.)
             let sameValues =
                 sameRef cellsBefore cellsAfter
                 || (cellsBefore.Count = cellsAfter.Count
                     && Seq.forall2 (fun (KeyValue(a, before: CellData)) (KeyValue(b, after: CellData)) -> a = b && (sameRef before after || before.Value = after.Value)) cellsBefore cellsAfter)
-            if sameValues then pushValueNeutral command
+            if sameValues then pushValueNeutral description
             else
                 recalculateFormulas()
-                model <- pushCommand command model
+                model <- pushCommand description model
             true
 
     // --- pictures -------------------------------------------------------------------
-    /// Change the drawing objects of the active sheet as one undoable step
-    /// (no value changes). False when nothing changed.
-    let changeDrawings (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
-        let before = model.Drawings
-        let after = (change model).Drawings
-        if sameRef before after || before = after then false
-        else
-            model <- { model with Drawings = after }
-            pushValueNeutral { Undo = (fun m -> { m with Drawings = before })
-                               Redo = (fun m -> { m with Drawings = after })
-                               Description = description }
-            true
+    let executeDrawing memberName description command =
+        session.UpdateView(currentWorkbookSnapshot())
+        match session.ExecuteDrawing(sheetIdForIndex activeSheetIndex, command, description = description) with
+        | Result.Error problem -> Host.hostFail memberName problem
+        | Ok result ->
+            if result.Changed then installWorkbookSnapshot session.Workbook
+            result
     /// The cell a point of the sheet (pixels at 100%) is in, and how far into it.
     let cellAtSheetPoint (x: float) (y: float) : CellAddress * float * float =
         let metrics = SpreadsheetLayout.metricsOf model
@@ -2676,9 +2280,7 @@ type Spreadsheet(container: Element) =
     /// named) when there is no such picture.
     let placePictureAt (memberName: string) (description: string) (id: int) (rect: SpreadsheetLayout.Rect) : bool =
         let cell, offsetX, offsetY = cellAtSheetPoint rect.X rect.Y
-        match SheetOps.placePicture id cell offsetX offsetY (max 1.0 rect.Width) (max 1.0 rect.Height) model with
-        | Result.Error message -> Host.hostFail memberName message
-        | Ok changed -> changeDrawings description (fun _ -> changed)
+        (executeDrawing memberName description (Rbt.Spreadsheet.Session.PlacePicture (id, cell, offsetX, offsetY, max 1.0 rect.Width, max 1.0 rect.Height))).Changed
     /// The rectangle a drag has taken a picture to: moved by the pointer's
     /// travel, or sized from the handle held - a corner keeps the picture's
     /// proportions unless `free` (Shift), a side changes one dimension.
@@ -2722,24 +2324,19 @@ type Spreadsheet(container: Element) =
     let sheetIndexOfName (name: string) : int =
         sheetNames |> Array.tryFindIndex (fun known -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase)) |> Option.defaultValue -1
 
-    /// Change one defined name as one undoable step: every formula is
-    /// recalculated (those that use the name read something else now), and
-    /// undo / redo put the name back as it was / as it became. False when
-    /// nothing changed.
-    let changeDefinedName (description: string) (scope: SheetId option) (name: string) (change: Workbook -> Workbook) : bool =
-        let wb = ensureWorkbook ()
-        let before = Rbt.Spreadsheet.Workbook.tryFindDefinedName scope name wb
-        let changed = change wb
-        let after = Rbt.Spreadsheet.Workbook.tryFindDefinedName scope name changed
-        if before = after then false
-        else
-            workbook <- Some changed
-            recalculateEverything()
-            let restore (state: Rbt.Spreadsheet.Workbook.DefinedName option) (m: SpreadsheetModel) =
-                workbook <- workbook |> Option.map (Rbt.Spreadsheet.Workbook.restoreDefinedName scope name state)
-                m
-            model <- pushCommand { Undo = restore before; Redo = restore after; Description = description } model
-            true
+    let executeName memberName command =
+        session.UpdateView(currentWorkbookSnapshot())
+        let prepareFull () =
+            installWorkbookSnapshot session.Workbook
+            convertFormulaSheets ()
+            currentWorkbookSnapshot()
+        match session.ExecuteName(command, beforeFull = prepareFull) with
+        | Result.Error problem -> Host.hostFail memberName problem
+        | Ok changed ->
+            if changed then
+                installWorkbookSnapshot session.Workbook
+                adoptConvertedSheets ()
+            changed
 
     /// Change the active sheet's frozen panes and what its view shows (grid
     /// lines, headers, formulas, zeros) as one undoable step (no value
@@ -2753,15 +2350,13 @@ type Spreadsheet(container: Element) =
             let put (rows, cols, gridLines, headers, formulas, zeros) (m: SpreadsheetModel) =
                 { m with FrozenRows = rows; FrozenCols = cols; ShowGridLines = gridLines; ShowHeaders = headers; ShowFormulas = formulas; ShowZeros = zeros }
             model <- put after model
-            pushValueNeutral { Undo = put before; Redo = put after; Description = description }
+            pushValueNeutral description
             true
 
     // --- rows and columns: sizes, hidden ones, outline ---------------------------
     // One undo step holds the sizes of the rows and columns and what the
     // sheet keeps beside them (Model.SheetAxes) before and after.
     let axesState (m: SpreadsheetModel) = m.RowHeights, m.ColumnWidths, m.Axes
-    let putAxes (rowHeights: Map<int, float>, columnWidths: Map<int, float>, axes: SheetAxes) (m: SpreadsheetModel) =
-        { m with RowHeights = rowHeights; ColumnWidths = columnWidths; Axes = axes }
     /// Make an undo step of the change of sizes since `before` (the grid's own
     /// resize handles change the model while the mouse moves). False when
     /// nothing changed.
@@ -2772,7 +2367,7 @@ type Spreadsheet(container: Element) =
         if (sameRef rowsBefore rowsAfter || rowsBefore = rowsAfter) && (sameRef colsBefore colsAfter || colsBefore = colsAfter)
            && (sameRef axesBefore axesAfter || axesBefore = axesAfter) then false
         else
-            pushValueNeutral { Undo = putAxes before; Redo = putAxes after; Description = description }
+            pushValueNeutral description
             true
     let changeAxes (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
         let before = axesState model
@@ -2783,8 +2378,6 @@ type Spreadsheet(container: Element) =
     // they hide (Model.reapplyFilter works those out). A change of any of the
     // three is one undo step.
     let filterState (m: SpreadsheetModel) = m.AutoFilter, m.Filters, m.FilterHiddenRows
-    let putFilter (autoFilter: SheetFilter option, filters: Map<int, ColumnFilter>, hidden: int array) (m: SpreadsheetModel) =
-        { m with AutoFilter = autoFilter; Filters = filters; FilterHiddenRows = hidden; FilterVisibleRows = None }
     /// Change the active sheet's AutoFilter as one undoable step. False when nothing changed.
     let changeFilter (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
         let before = filterState model
@@ -2798,36 +2391,17 @@ type Spreadsheet(container: Element) =
             if not sameHidden then recalculateFormulas()
             // In a viewer a filter is how the sheet is looked at: no undo step, no new revision.
             if readOnly then absorbViewState <- true
-            else model <- pushCommand { Undo = putFilter before; Redo = putFilter after; Description = description } model
+            else model <- pushCommand description model
             true
     /// Sort a range of the active sheet as one undoable step, then recalculate.
     let sortBlock (memberName: string) (range: CellRange) (keys: SheetOps.SortKey list) (options: SheetOps.SortOptions) (description: string) : bool =
-        let before = model
         let sorted = SheetOps.sortRange memberName range keys options model
         if sameRef sorted.Cells model.Cells && sorted.SortState = model.SortState then false
         else
             model <- sorted
             recalculateFormulas()
-            // The cells as the sort and its recalculation left them: taken back from these, the sort
-            // is a sort the other way round for the recalculation (the formulas of the sheet changed
-            // value and nothing else, when the sheet has no dynamic arrays).
-            let calculated = model.Cells
-            let mutable undoable = sorted.RowsSorted
-            let put (from: SpreadsheetModel) (m: SpreadsheetModel) =
-                { restoreCellMapWithSpill from.Cells from.Spill m with RichRuns = from.RichRuns; Threads = from.Threads; Hyperlinks = from.Hyperlinks; SortState = from.SortState }
-            let undoSort (m: SpreadsheetModel) =
-                let restored = put before m
-                match undoable with
-                | Some sort when sameRef m.Cells calculated && Map.isEmpty m.Spill && Map.isEmpty before.Spill ->
-                    { restored with RowsSorted = Some (RowsSorted(sort.Left, sort.Right, sort.Sources, sort.Rows, m.Cells, restored.Cells)) }
-                | _ -> restored
             model <- { model with RowsSorted = None }
-            model <- pushCommand { Undo = undoSort
-                                   Redo = (fun m ->
-                                       // (Calculated anew after the redo: its undo compares the cells.)
-                                       undoable <- None
-                                       SheetOps.sortRange memberName range keys options m)
-                                   Description = description } model
+            model <- pushCommand description model
             true
     /// Sort the block of data around a cell by the cell's column (a quick
     /// sort), as one undoable step. With only a column in hand (a click on a
@@ -2881,8 +2455,6 @@ type Spreadsheet(container: Element) =
     /// The sizes as they were when a drag of a resize handle began.
     let mutable resizeBefore : (Map<int, float> * Map<int, float> * SheetAxes) option = None
 
-    /// The highest validation id the component has handed out (see lastRuleId).
-    let mutable lastValidationId = 0
 
     /// What GetSelectionFormat last gave, and what it gave it for (the cells,
     /// the column styles and the selected block): asked again for the same,
@@ -2934,8 +2506,19 @@ type Spreadsheet(container: Element) =
     // --- find and replace ---------------------------------------------------------
     /// The search Find started (None: none, or StartSearch started one since).
     let mutable hostSearch : HostSearch option = None
+    /// The public search owned by the visible bar, not a later host Find call.
+    let mutable findSession: HostSearch option = None
     /// The matches of that search on each sheet, for the cells they were found in.
     let searchCache = System.Collections.Generic.Dictionary<SheetId, obj * (CellAddress * string) list>()
+    /// One search surface per grid; a shell may host the same node.
+    let mutable findBar: Element option = None
+    let mutable findHost: Element option = None
+    let mutable findRefresh: (unit -> unit) = fun () -> ()
+    let mutable findNextAction: (unit -> unit) = fun () -> ()
+    let mutable findReplaceAllAction: (unit -> unit) = fun () -> ()
+    let mutable findFocus: Element option = None
+    let mutable findSelected = false
+    let mutable findEpoch = -1
 
     /// Whether the sheet at an index has a tab.
     let sheetHasTab (index: int) : bool =
@@ -2987,22 +2570,7 @@ type Spreadsheet(container: Element) =
             | None, None -> Host.hostFail memberName "the size has neither a width nor a height"
 
     // --- the list of sheets ---------------------------------------------------------
-    // Adding, deleting, renaming, moving, copying, hiding and colouring a sheet
-    // are steps of the workbook, not of one sheet, while undo histories are
-    // kept per sheet (Undo acts on the sheet on display). Such a step is put
-    // on the history of the sheet that is on display once it is done - the new
-    // sheet after AddSheet, the sheet that took a deleted one's place - so
-    // that Undo right after it takes it back. Undoing or redoing it can change
-    // which sheet is on display (undoing AddSheet removes the sheet on
-    // display): the step then moves to the history of the sheet that is on
-    // display afterwards, so that Redo / Undo find it there.
-
-    /// The steps that change the list of sheets (see above), by identity.
-    let bookSteps = ResizeArray<Command>()
-    let isBookStep (command: Command) = bookSteps |> Seq.exists (fun known -> obj.ReferenceEquals(known, command))
-    /// Every sheet id the workbook has had: a new sheet gets one that was
-    /// never used, since undo brings a deleted sheet back under its id.
-    let usedSheetIds = System.Collections.Generic.HashSet<SheetId>()
+    // Sheet-list edits join the same workbook journal as cell and formatting edits.
     let sheetsListeners = ResizeArray<obj -> unit>()
     /// What the OnSheetsChange subscribers were last told (the list as one text).
     let mutable notifiedSheetList : string = ""
@@ -3039,12 +2607,6 @@ type Spreadsheet(container: Element) =
         let active = max 0 (System.Array.IndexOf(order, wb.ActiveSheet))
         activeSheetIndex <- active
         workbook <- Some { wb with SheetOrder = List.ofArray order; ActiveSheet = order.[active] }
-        match sessionClipboard with
-        | Some (source, _) when not (Map.containsKey source wb.Sheets) ->
-            sessionClipboard <- None
-            copiedText <- ""
-        | _ -> ()
-        for id in order do usedSheetIds.Add id |> ignore
         convertInPlace active
         model <- sheets.[active]
         anchorCell <- sheetAnchors.[active]
@@ -3054,26 +2616,27 @@ type Spreadsheet(container: Element) =
             scrollHome ()
             for listener in sheetChangedListeners do
                 try listener active with error -> reportError "OnSheetChanged" (box error)
+    let executeSheetStructure memberName command =
+        session.UpdateView(bookSnapshot ())
+        let prepareFull () =
+            installBook session.Workbook
+            convertFormulaSheets ()
+            bookSnapshot ()
+        match session.ExecuteStructural(command, beforeFull = prepareFull) with
+        | Ok true ->
+            installBook session.Workbook
+            adoptConvertedSheets ()
+            true
+        | Ok false -> false
+        | Result.Error problem -> Host.hostFail memberName problem
 
-    /// The formulas of the workbook stand as they are, but the workbook they
-    /// were calculated in is another one (sheets renamed, moved, added): the
-    /// dependency graph is built again from the workbook as it is now.
-    let rebaseCalcEngine () =
-        invalidateCalcEngine ()
-        calculatedWorkbook <- Some (currentWorkbookSnapshot ())
 
-    /// Run a change of the list of sheets as one undoable step (see above).
-    /// `forward` makes the change and `back` takes it back; each reads the
-    /// workbook as it is when it runs, installs the changed one and
-    /// recalculates what it has to.
-    let runBookStep (description: string) (forward: unit -> unit) (back: unit -> unit) =
-        // The sheet on display is in `sheets` as it is now.
+
+    /// Register a workbook-level operation as one step in the shared journal.
+    let runBookStep (description: string) (forward: unit -> unit) =
         sheets.[activeSheetIndex] <- model
         forward ()
-        let step = { Undo = (fun m -> back (); m); Redo = (fun m -> forward (); m); Description = description }
-        bookSteps.Add step
-        if bookSteps.Count > 400 then bookSteps.RemoveAt 0
-        model <- pushCommand step model
+        model <- pushCommand description model
 
     /// Change the page setup of a sheet (the active one, or the one a host
     /// names) as one undoable step. False when nothing changed. A step on
@@ -3089,7 +2652,7 @@ type Spreadsheet(container: Element) =
         if after = before then false
         elif index = activeSheetIndex then
             model <- { model with PageSetup = after }
-            pushValueNeutral { Undo = (fun m -> { m with PageSetup = before }); Redo = (fun m -> { m with PageSetup = after }); Description = description }
+            pushValueNeutral description
             true
         else
             let id = sheetIdForIndex index
@@ -3098,16 +2661,11 @@ type Spreadsheet(container: Element) =
                 match Map.tryFind id current.Sheets with
                 | Some sheet -> installBook { current with Sheets = Map.add id { sheet with Model = { sheet.Model with PageSetup = value } } current.Sheets }
                 | None -> ()
-            runBookStep description (put after) (put before)
+            runBookStep description (put after)
             true
 
-    /// Run a change of the workbook's tables as one undoable step of the
-    /// workbook (see above): `op` gives the changed workbook and the cells
-    /// it wrote. The step keeps what differs - those cells, the tables, and
-    /// the rules and defined names whose formulas were rewritten - and undo /
-    /// redo put that back / in again in the workbook as it is then; every
-    /// formula is recalculated (structured references read the tables).
-    /// False when nothing changed.
+    /// Apply a table change and its formula recalculation in one workbook step.
+    /// The session retains its persistent before/after workbook state for undo.
     let changeTables (description: string) (op: Workbook -> SheetOps.TableChange) : bool =
         // Formulas of every sheet can name a table, and a table's sheet is changed.
         convertFormulaSheets ()
@@ -3115,58 +2673,12 @@ type Spreadsheet(container: Element) =
             if index <> activeSheetIndex && not sheets.[index].Tables.IsEmpty then convertInPlace index
         sheets.[activeSheetIndex] <- model
         let before = bookSnapshot ()
-        let change = op before
-        let after = change.Book
-        if obj.ReferenceEquals(after, before) then false
+        let edited = (op before).Book
+        if obj.ReferenceEquals(edited, before) then false
         else
-            let cellOf (wb: Workbook) (id: SheetId) (addr: CellAddress) = Map.tryFind id wb.Sheets |> Option.bind (fun sheet -> Map.tryFind addr sheet.Model.Cells)
-            let cells = change.Cells |> List.map (fun (id, addr) -> id, addr, cellOf before id addr, cellOf after id addr)
-            let lists =
-                [ for KeyValue(id, sheet) in before.Sheets do
-                    match Map.tryFind id after.Sheets with
-                    | Some changed when not (obj.ReferenceEquals(changed.Model, sheet.Model)) ->
-                        let was, now = sheet.Model, changed.Model
-                        if was.Tables <> now.Tables || was.ConditionalFormats <> now.ConditionalFormats || was.Validations <> now.Validations then
-                            yield id, (was.Tables, was.ConditionalFormats, was.Validations), (now.Tables, now.ConditionalFormats, now.Validations)
-                    | _ -> () ]
-            let keysOf (a: Map<'K, 'V>) (b: Map<'K, 'V>) =
-                [ for KeyValue(key, _) in a do yield key
-                  for KeyValue(key, _) in b do if not (Map.containsKey key a) then yield key ]
-                |> List.filter (fun key -> Map.tryFind key a <> Map.tryFind key b)
-            let tables = keysOf before.Tables after.Tables |> List.map (fun key -> key, Map.tryFind key before.Tables, Map.tryFind key after.Tables)
-            let names = keysOf before.Names after.Names |> List.map (fun key -> key, Map.tryFind key before.Names, Map.tryFind key after.Names)
-            let put (key: 'K) (value: 'V option) (map: Map<'K, 'V>) =
-                match value with
-                | Some value -> Map.add key value map
-                | None -> Map.remove key map
-            let apply (forward: bool) () =
-                let current = bookSnapshot ()
-                let mutable models = current.Sheets |> Map.map (fun _ sheet -> sheet.Model)
-                for id, addr, was, now in cells do
-                    match Map.tryFind id models with
-                    | Some sheetModel ->
-                        let sheetModel = resolveSheet sheetModel
-                        models <- Map.add id (match (if forward then now else was) with
-                                              | Some data -> setCell addr data sheetModel
-                                              | None -> clearCell addr sheetModel) models
-                    | None -> ()
-                for id, was, now in lists do
-                    match Map.tryFind id models with
-                    | Some sheetModel ->
-                        let tablesOf, formats, validations = if forward then now else was
-                        models <- Map.add id { resolveSheet sheetModel with Tables = tablesOf; ConditionalFormats = formats; Validations = validations } models
-                    | None -> ()
-                let mutable bookTables = current.Tables
-                for key, was, now in tables do bookTables <- put key (if forward then now else was) bookTables
-                let mutable bookNames = current.Names
-                for key, was, now in names do bookNames <- put key (if forward then now else was) bookNames
-                installBook
-                    { current with
-                        Sheets = current.Sheets |> Map.map (fun id sheet -> match Map.tryFind id models with Some changed when not (obj.ReferenceEquals(changed, sheet.Model)) -> { sheet with Model = changed } | _ -> sheet)
-                        Tables = bookTables
-                        Names = bookNames }
-                recalculateEverything ()
-            runBookStep description (apply true) (apply false)
+            runBookStep description (fun () ->
+                installBook edited
+                recalculateEverything ())
             true
 
     do
@@ -3243,11 +2755,31 @@ type Spreadsheet(container: Element) =
                 for listener in sheetsListeners.ToArray() do
                     if sheetsListeners.Contains listener then (try listener (box infos) with error -> reportError "OnSheetsChange" (box error))
 
-    /// The format a toggle (bold, italic ...) goes by: the active cell's.
-    let activeFormat () : CellFormat =
-        match getCell (activeCellAddress()) model with
-        | Some data -> data.Format
-        | None -> defaultFormat
+
+    let updateFormulaHelp () =
+        match layers, model.EditingCell with
+        | Some layer, Some _ when not disposed ->
+            let caret = unbox<int> (getProp layer.EditInput "selectionStart")
+            match formulaHelpAt model.EditBuffer caret with
+            | Some (info, argument) ->
+                let label = functionArgumentHelp info argument
+                setTextContent layer.EditHelp (info.Name + " — " + label + " · " + info.Description)
+                let grid = gridContainer |> Option.get
+                let editRect = boundingRect layer.EditInput
+                let gridRect = boundingRect grid
+                let x = max 4.0 (min (getClientWidth grid - 306.0) (editRect.[0] - gridRect.[0]))
+                let below = editRect.[1] - gridRect.[1] + editRect.[3] + 4.0
+                setCssText layer.EditHelp
+                    ("position:absolute;left:" + string (int (getScrollLeft grid + x)) + "px;top:" + string (int (unbox<float> (getProp grid "scrollTop") + below)) +
+                     "px;box-sizing:border-box;max-width:min(300px,calc(100% - 12px));padding:5px 8px;background:#fff;border:1px solid #217346;" +
+                     "box-shadow:0 3px 10px #0002;white-space:normal;font:12px Arial,sans-serif;color:#202124;z-index:30;pointer-events:none")
+                let helpHeight = (boundingRect layer.EditHelp).[3]
+                if below + helpHeight > getClientHeight grid then
+                    let above = max 4.0 (editRect.[1] - gridRect.[1] - helpHeight - 4.0)
+                    setStyle layer.EditHelp "top" (string (int (unbox<float> (getProp grid "scrollTop") + above)) + "px")
+            | None -> setStyle layer.EditHelp "display" "none"
+        | Some layer, _ -> setStyle layer.EditHelp "display" "none"
+        | _ -> ()
 
     /// Tell the OnEditStateChange subscribers when the entry in progress
     /// (which cell, what text) is not what they were last told.
@@ -3262,6 +2794,7 @@ type Spreadsheet(container: Element) =
                     | None -> createObj [ "Editing" ==> false; "Row" ==> -1; "Col" ==> -1; "Text" ==> ""; "SheetIndex" ==> activeSheetIndex ]
                 for listener in editStateListeners.ToArray() do
                     if editStateListeners.Contains listener then (try listener state with error -> reportError "OnEditStateChange" (box error))
+
 
     /// Start editing a cell. `seed` replaces the cell's content in the edit
     /// box — the character typed over the cell — instead of loading it.
@@ -3298,28 +2831,35 @@ type Spreadsheet(container: Element) =
                 focus layer.EditInput
                 if editCaretAtEnd then caretToEnd layer.EditInput else select layer.EditInput
             | None -> ()
+            updateFormulaHelp ()
             notifyEditState ()
 
     and startEditing (row: int) (col: int) = startEditingWith row col None
 
-    /// Finish editing. With `save` the entry is committed; the result is
-    /// false when a validation rule refused it (the cell is unchanged and a
-    /// notice says why).
-    and finishEditing (save: bool) : bool =
+    /// Finish editing. `preserveInvalid` keeps a rejected entry visible for
+    /// workflows (such as File > Save/Open) that must not discard its buffer.
+    and finishEditingWith (preserveInvalid: bool) (save: bool) : bool =
         match model.EditingCell with
         | None -> true
         | Some addr ->
             let buffer = model.EditBuffer
             model <- { model with EditingCell = None; EditBuffer = "" }
             let accepted = if save then commitInput addr buffer true true else true
+            if not accepted && preserveInvalid then
+                model <- { model with EditingCell = Some addr; EditBuffer = buffer }
             scheduleNoticeDismiss()
-            // The keyboard goes back to the grid.
-            match layers, contentElement with
-            | Some layer, Some content when isActiveElement layer.EditInput -> focusQuietly content
-            | _ -> ()
+            if accepted || not preserveInvalid then
+                match layers, contentElement with
+                | Some layer, Some content when isActiveElement layer.EditInput -> focusQuietly content
+                | _ -> ()
             render()
+            if not accepted && preserveInvalid then
+                layers |> Option.iter (fun layer -> focus layer.EditInput)
+            updateFormulaHelp ()
             notifyEditState ()
             accepted
+
+    and finishEditing (save: bool) : bool = finishEditingWith false save
 
     /// A validation notice goes away by itself after a few seconds.
     and scheduleNoticeDismiss () =
@@ -3385,17 +2925,16 @@ type Spreadsheet(container: Element) =
             revealCell cell.Row cell.Col
             render()
 
-    /// Copy the selection: the grid's own clipboard (formulas, formats) and
-    /// the text of what is shown.
+    /// Copy displayed flavours while the session owns clipboard identity.
     and copySelection (isCut: bool) : string * string =
         let text = selectionText ()
         let html = selectionHtml ()
-        copiedText <- text
-        if isCut && not readOnly then
-            cutSelection()
-        else
-            sessionClipboard <- Some (sheetIdForIndex activeSheetIndex, serializeSelection model.Selection model false)
-            clipboardVersion <- clipboardVersion + 1
+        session.UpdateView(currentWorkbookSnapshot())
+        match session.CaptureClipboard(sheetIdForIndex activeSheetIndex, isCut && not readOnly, text, beforeFull = prepareClipboardFull) with
+        | Result.Error problem -> failwith problem
+        | Ok _ ->
+            installWorkbookSnapshot session.Workbook
+            adoptConvertedSheets ()
         text, html
 
     /// Handle keyboard events
@@ -3411,9 +2950,8 @@ type Spreadsheet(container: Element) =
             | Some id, None when not isModifier && (key = "Escape" || ((key = "Delete" || key = "Backspace") && not readOnly)) ->
                 preventDefault e
                 if key <> "Escape" then
-                    (match SheetOps.deletePicture id model with
-                     | Ok changed -> changeDrawings "Delete picture" (fun _ -> changed) |> ignore
-                     | Result.Error _ -> ())
+                    (try executeDrawing "picture" "Delete picture" (Rbt.Spreadsheet.Session.DeletePicture id) |> ignore
+                     with _ -> ())
                 selectedPicture <- None
                 render()
                 true
@@ -3457,6 +2995,27 @@ type Spreadsheet(container: Element) =
             | "Escape" ->
                 preventDefault e
                 finishEditing false |> ignore
+            | "Tab" when not shift && not isModifier && not (eventFlag e "altKey") && not (eventFlag e "isComposing") ->
+                match layers with
+                | Some layer ->
+                    let caret = unbox<int> (getProp layer.EditInput "selectionStart")
+                    let selectionEnd = unbox<int> (getProp layer.EditInput "selectionEnd")
+                    match formulaFunctionCompletion model.EditBuffer caret with
+                    | Some (start, info) when caret = selectionEnd ->
+                        preventDefault e
+                        let replacement = info.Name + "("
+                        model <- { model with EditBuffer = model.EditBuffer.Substring(0, start) + replacement + model.EditBuffer.Substring(caret) }
+                        setValue layer.EditInput model.EditBuffer
+                        setProp layer.EditInput "selectionStart" (box (start + replacement.Length))
+                        setProp layer.EditInput "selectionEnd" (box (start + replacement.Length))
+                        notifyEditState ()
+                        updateFormulaHelp ()
+                    | _ ->
+                        preventDefault e
+                        if finishEditing true then moveWithinSelection 0 1
+                | None ->
+                    preventDefault e
+                    if finishEditing true then moveWithinSelection 0 1
             | "Tab" ->
                 preventDefault e
                 if finishEditing true then moveWithinSelection 0 (if shift then -1 else 1)
@@ -3492,8 +3051,7 @@ type Spreadsheet(container: Element) =
                 | "y" when not readOnly ->
                     preventDefault e
                     redoStep ()
-                | "f" ->
-                    // Find/Replace dialog
+                | "f" | "h" ->
                     preventDefault e
                     showFindReplaceDialog()
                 | "d" when not readOnly ->
@@ -3586,7 +3144,10 @@ type Spreadsheet(container: Element) =
                 else false
             promiseThen (readSystemClipboard ()) (fun flavours ->
                 if disposed || generation <> clipboardGeneration || readOnly then false
-                elif isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then pasteOwn ()
+                elif isNull (box flavours) || (flavours.[0] = "" && flavours.[1] = "") then
+                    match session.ClipboardSource(None) with
+                    | Rbt.Spreadsheet.Session.InternalPaste -> pasteOwn ()
+                    | _ -> false
                 elif pasteFlavours flavours.[0] flavours.[1] then
                     render()
                     true
@@ -3594,51 +3155,22 @@ type Spreadsheet(container: Element) =
 
     and undoStep () =
         observeRevision ()
-        let command = List.tryHead model.History.Past
-        match command with
-        | Some step when isBookStep step ->
-            // A step of the sheet list: it leaves this sheet's history, is
-            // taken back, and waits for Redo on the sheet then on display.
-            model <- { model with History = { model.History with Past = List.tail model.History.Past } }
-            sheets.[activeSheetIndex] <- model
-            step.Undo model |> ignore
-            model <- { model with History = { model.History with Future = step :: model.History.Future } }
-            observeRevisionAfter 1 command
+        if session.Undo() then
+            installBook session.Workbook
             render()
-        | _ ->
-        match undo model with
-        | Some undoneModel ->
-            model <- undoneModel
-            if not (isValueNeutral command) then recalculateFormulas()
-            observeRevisionAfter 1 command
-            render()
-        | None -> ()
 
     and redoStep () =
         observeRevision ()
-        let command = List.tryHead model.History.Future
-        match command with
-        | Some step when isBookStep step ->
-            model <- { model with History = { model.History with Future = List.tail model.History.Future } }
-            sheets.[activeSheetIndex] <- model
-            step.Redo model |> ignore
-            model <- { model with History = { model.History with Past = step :: model.History.Past } }
-            observeRevisionAfter 2 command
+        if session.Redo() then
+            installBook session.Workbook
             render()
-        | _ ->
-        match redo model with
-        | Some redoneModel ->
-            model <- redoneModel
-            if not (isValueNeutral command) then recalculateFormulas()
-            observeRevisionAfter 2 command
-            render()
-        | None -> ()
 
     /// Handle input change (while editing)
     and handleInput (e: obj) =
         let target = getEventTarget e
         let value = getValue target
         model <- { model with EditBuffer = value }
+        updateFormulaHelp ()
         notifyEditState ()
 
     /// Draw a cell into its node: position, look and text. Selection is not
@@ -4392,56 +3924,18 @@ type Spreadsheet(container: Element) =
             // Not mounted: nothing to draw, but the revision still follows the content.
             observeRevision ()
 
-    /// Bring the revision in line with the workbook as it is now. `step`
-    /// says what brought it there: 1 an undo of `command`, 2 a redo of it,
-    /// 0 anything else. Unchanged content keeps its number.
-    and observeRevisionAfter (step: int) (command: Command option) =
+    /// Observe content not already registered as an undoable transaction.
+    /// View changes and deferred-sheet conversion never create revisions.
+    and observeRevision () =
         let current = Array.init sheets.Length (fun i -> if i = activeSheetIndex then model else sheets.[i])
+        let snapshot = currentWorkbookSnapshot()
         if absorbViewState then
             absorbViewState <- false
-            if current.Length = revisionSheets.Length then revisionSheets <- current
+            session.AbsorbView(snapshot)
             if current.Length = notifiedSheets.Length then notifiedSheets <- Array.copy current
-        let same =
-            current.Length = revisionSheets.Length
-            && sheetNames = revisionNames
-            && sameBookContent (bookContentOf workbook) revisionBook
-            && Array.forall2 sameSheetContent current revisionSheets
-        if not same then
-            revisionSheets <- current
-            revisionNames <- Array.copy sheetNames
-            revisionBook <- bookContentOf workbook
-            let fresh () =
-                lastRevision <- lastRevision + 1
-                lastRevision
-            let isTop (steps: ResizeArray<Command * int * int>) (command: Command) =
-                steps.Count > 0 && (let known, _, _ = steps.[steps.Count - 1] in obj.ReferenceEquals(known, command))
-            match step, command with
-            | 1, Some command when isTop appliedSteps command ->
-                let entry = appliedSteps.[appliedSteps.Count - 1]
-                appliedSteps.RemoveAt (appliedSteps.Count - 1)
-                undoneSteps.Add entry
-                let _, before, _ = entry
-                revision <- before
-            | 2, Some command when isTop undoneSteps command ->
-                let entry = undoneSteps.[undoneSteps.Count - 1]
-                undoneSteps.RemoveAt (undoneSteps.Count - 1)
-                appliedSteps.Add entry
-                let _, _, after = entry
-                revision <- after
-            | _ ->
-                let before = revision
-                revision <- fresh ()
-                undoneSteps.Clear()
-                // An undoable step is the one on top of the active sheet's
-                // history; any other change (a change without a step, an undo out of
-                // order) cannot be walked back to a known revision.
-                match (if step = 0 then List.tryHead model.History.Past else None) with
-                | Some pushed when not (appliedSteps |> Seq.exists (fun (known, _, _) -> obj.ReferenceEquals(known, pushed))) ->
-                    appliedSteps.Add ((pushed, before, revision))
-                    if appliedSteps.Count > 400 then appliedSteps.RemoveAt 0
-                | _ -> appliedSteps.Clear()
-
-    and observeRevision () = observeRevisionAfter 0 None
+        else
+            session.Observe(snapshot) |> ignore
+        revisionSheets <- current
 
     /// Tell OnChange / OnSelectionChange subscribers what changed since they
     /// were last told. Every change to the workbook ends in a render, so this
@@ -4475,8 +3969,8 @@ type Spreadsheet(container: Element) =
                         "StructureChanged" ==> structureChanged
                         "WorkbookChanged" ==> bookChanged
                         "ActiveSheetIndex" ==> activeSheetIndex
-                        "Revision" ==> revision
-                        "Modified" ==> (revision <> savedRevision)
+                        "Revision" ==> session.Revision
+                        "Modified" ==> session.IsModified
                     ]
                 for listener in changeListeners.ToArray() do
                     if changeListeners.Contains listener then (try listener change with error -> reportError "OnChange" (box error))
@@ -4531,7 +4025,9 @@ type Spreadsheet(container: Element) =
             drawingShiftX <- originX
             drawingShiftY <- originY
             renderedChartBindingVersion <- chartBindingVersion
-            for node in drawingNodes do detach node
+            for node in drawingNodes do
+                clearImageSources node
+                detach node
             drawingNodes.Clear()
             chartFrames.Clear()
             pendingObjects.Clear()
@@ -5558,662 +5054,226 @@ type Spreadsheet(container: Element) =
             detach dropdown)
 
 
-    /// Show find/replace dialog
-    and showFindReplaceDialog () =
-        // Remove any existing dialog
-        let existingDialog = getElementById "find-replace-dialog"
-        if not (isNull existingDialog) then
-            closePopup existingDialog
+    /// One search session per grid, hosted by its shell when one is mounted.
+    and closeFindBar () =
+        findBar |> Option.iter (fun bar ->
+            setStyle bar "display" "none"
+            setAttribute bar "data-hidden" "true")
+        findFocus |> Option.iter (fun target -> if unbox<bool> (getProp target "isConnected") then focus target)
+        findFocus <- None
 
-        // Create modal overlay
-        let overlay = createElement "div"
-        setAttribute overlay "id" "find-replace-dialog"
-        setStyles overlay [
-            "position", "fixed"
-            "top", "0"
-            "left", "0"
-            "width", "100%"
-            "height", "100%"
-            "background", "rgba(0,0,0,0.5)"
-            "display", "flex"
-            "align-items", "center"
-            "justify-content", "center"
-            "z-index", "2000"
-        ]
-
-        // Create dialog box
-        let dialog = createElement "div"
-        setStyles dialog [
-            "background", "white"
-            "border-radius", "8px"
-            "padding", "20px"
-            "box-shadow", "0 4px 16px rgba(0,0,0,0.3)"
-            "width", "400px"
-            "font-family", "Arial, sans-serif"
-        ]
-
-        // Title
-        let title = createElement "h3"
-        setTextContent title "Find and Replace"
-        setStyles title [
-            "margin", "0 0 16px 0"
-            "font-size", "16px"
-            "font-weight", "bold"
-        ]
-        appendChild dialog title
-
-        // Find input
-        let findLabel = createElement "label"
-        setTextContent findLabel "Find:"
-        setStyles findLabel [
-            "display", "block"
-            "margin-bottom", "4px"
-            "font-size", "12px"
-        ]
-        appendChild dialog findLabel
-
-        let findInput = createElement "input"
-        setAttribute findInput "type" "text"
-        setAttribute findInput "placeholder" "Enter text to find..."
-        setStyles findInput [
-            "width", "100%"
-            "padding", "8px"
-            "margin-bottom", "12px"
-            "border", "1px solid #ccc"
-            "border-radius", "4px"
-            "font-size", "14px"
-            "box-sizing", "border-box"
-        ]
-        appendChild dialog findInput
-
-        // Replace input
-        let replaceLabel = createElement "label"
-        setTextContent replaceLabel "Replace with:"
-        setStyles replaceLabel [
-            "display", "block"
-            "margin-bottom", "4px"
-            "font-size", "12px"
-        ]
-        appendChild dialog replaceLabel
-
-        let replaceInput = createElement "input"
-        setAttribute replaceInput "type" "text"
-        setAttribute replaceInput "placeholder" "Enter replacement text..."
-        setStyles replaceInput [
-            "width", "100%"
-            "padding", "8px"
-            "margin-bottom", "12px"
-            "border", "1px solid #ccc"
-            "border-radius", "4px"
-            "font-size", "14px"
-            "box-sizing", "border-box"
-        ]
-        appendChild dialog replaceInput
-
-        // Options
-        let optionsRow = createElement "div"
-        setStyles optionsRow [
-            "margin-bottom", "16px"
-        ]
-
-        let caseSensitiveCheckbox = createElement "input"
-        setAttribute caseSensitiveCheckbox "type" "checkbox"
-        setAttribute caseSensitiveCheckbox "id" "case-sensitive"
-        setStyles caseSensitiveCheckbox [
-            "margin-right", "6px"
-        ]
-
-        let caseSensitiveLabel = createElement "label"
-        setAttribute caseSensitiveLabel "for" "case-sensitive"
-        setTextContent caseSensitiveLabel "Match case"
-        setStyles caseSensitiveLabel [
-            "font-size", "12px"
-            "cursor", "pointer"
-        ]
-
-        appendChild optionsRow caseSensitiveCheckbox
-        appendChild optionsRow caseSensitiveLabel
-        appendChild dialog optionsRow
-
-        // Results display
-        let resultsDiv = createElement "div"
-        setAttribute resultsDiv "id" "search-results"
-        setStyles resultsDiv [
-            "margin-bottom", "16px"
-            "font-size", "12px"
-            "color", "#666"
-            "min-height", "20px"
-        ]
-        appendChild dialog resultsDiv
-
-        // Button row
-        let buttonRow = createElement "div"
-        setStyles buttonRow [
-            "display", "flex"
-            "gap", "8px"
-        ]
-
-        // Find Next button
-        let findNextBtn = createElement "button"
-        setTextContent findNextBtn "Find Next"
-        setStyles findNextBtn [
-            "flex", "1"
-            "padding", "8px 12px"
-            "background", "#0066cc"
-            "color", "white"
-            "border", "none"
-            "border-radius", "4px"
-            "cursor", "pointer"
-            "font-size", "13px"
-        ]
-        listen findNextBtn "click" (fun _ ->
-            let query = getValue findInput
-            if not (System.String.IsNullOrWhiteSpace(query)) then
-                let caseSensitive = getChecked caseSensitiveCheckbox
-
-                // Start search if not already searching
-                if model.SearchQuery <> Some query || model.SearchCaseSensitive <> Some caseSensitive then
-                    model <- startSearch query caseSensitive model
-
-                // Find next
-                match nextSearchResult model with
-                | Some newModel ->
-                    model <- newModel
-                    let current = model.SearchIndex + 1
-                    let total = model.SearchResults.Length
-                    setTextContent resultsDiv (sprintf "Found %d of %d" current total)
-                    render()
-                | None ->
-                    setTextContent resultsDiv "No results found"
-        )
-        appendChild buttonRow findNextBtn
-
-        // Replace button
-        let replaceBtn = createElement "button"
-        setTextContent replaceBtn "Replace"
-        setStyles replaceBtn [
-            "flex", "1"
-            "padding", "8px 12px"
-            "background", "#28a745"
-            "color", "white"
-            "border", "none"
-            "border-radius", "4px"
-            "cursor", "pointer"
-            "font-size", "13px"
-        ]
-        listen replaceBtn "click" (fun _ ->
-            let findText = getValue findInput
-            let replaceText = getValue replaceInput
-            let caseSensitive = getChecked caseSensitiveCheckbox
-
-            match replaceInSelection findText replaceText caseSensitive with
-            | true ->
-                setTextContent resultsDiv "Replaced current match"
-
-                // Find next automatically
-                match nextSearchResult model with
-                | Some nextModel ->
-                    model <- nextModel
-                    render()
-                | None ->
-                    render()
-                    setTextContent resultsDiv "No more matches"
-            | false ->
-                setTextContent resultsDiv "No match at current selection"
-        )
-        appendChild buttonRow replaceBtn
-
-        // Replace All button
-        let replaceAllBtn = createElement "button"
-        setTextContent replaceAllBtn "Replace All"
-        setStyles replaceAllBtn [
-            "flex", "1"
-            "padding", "8px 12px"
-            "background", "#ffc107"
-            "color", "#000"
-            "border", "none"
-            "border-radius", "4px"
-            "cursor", "pointer"
-            "font-size", "13px"
-        ]
-        listen replaceAllBtn "click" (fun _ ->
-            let findText = getValue findInput
-            let replaceText = getValue replaceInput
-            let caseSensitive = getChecked caseSensitiveCheckbox
-
-            if not (System.String.IsNullOrWhiteSpace(findText)) then
-                let count = replaceEverywhere findText replaceText caseSensitive
-
-                if count > 0 then
-                    setTextContent resultsDiv (sprintf "Replaced %d matches" count)
-                    render()
-                else
-                    setTextContent resultsDiv "No matches found"
-        )
-        appendChild buttonRow replaceAllBtn
-
-        // Close button
-        let closeBtn = createElement "button"
-        setTextContent closeBtn "Close"
-        setStyles closeBtn [
-            "flex", "1"
-            "padding", "8px 12px"
-            "background", "#666"
-            "color", "white"
-            "border", "none"
-            "border-radius", "4px"
-            "cursor", "pointer"
-            "font-size", "13px"
-        ]
-        listen closeBtn "click" (fun _ ->
-            closePopup overlay
-        )
-        appendChild buttonRow closeBtn
-
-        appendChild dialog buttonRow
-        appendChild overlay dialog
-        appendChild (getBody()) overlay
-
-        // Focus find input
-        JS.setTimeout (fun () ->
-            let _ : obj = emitJsExpr findInput "$0.focus()"
-            ()
-        ) 100 |> ignore
-
-        // Close on Escape key
-        let rec handleEscape = fun (e: obj) ->
-            let key = getEventKey e
-            if key = "Escape" then
-                closePopup overlay
-                unlisten (getDocument()) "keydown" handleEscape
-
-        listen (getDocument()) "keydown" handleEscape
-        cleanups.Add(fun () ->
-            unlisten (getDocument()) "keydown" handleEscape
-            detach overlay)
-
-        ()
-
-
-    /// Show conditional formatting dialog for current selection
-    and showConditionalFormattingDialog () =
-        // Remove any existing dialog
-        let existingDialog = getElementById "conditional-format-dialog"
-        if not (isNull existingDialog) then
-            closePopup existingDialog
-
-        // Get current selection
-        let targetAddr =
-            match model.Selection with
-            | SingleCell (row, col) -> Some { Row = row; Col = col }
-            | _ -> None
-
-        match targetAddr with
+    and ensureFindBar () =
+        match findBar with
+        | Some bar -> bar
         | None ->
-            // No single cell selected, show error
-            let _ : obj = emitJsExpr "Please select a single cell to apply conditional formatting" "alert($0)"
-            ()
-        | Some addr ->
-            // Create modal overlay
-            let overlay = createElement "div"
-            setAttribute overlay "id" "conditional-format-dialog"
-            setStyles overlay [
-                "position", "fixed"
-                "top", "0"
-                "left", "0"
-                "width", "100%"
-                "height", "100%"
-                "background", "rgba(0,0,0,0.5)"
-                "display", "flex"
-                "align-items", "center"
-                "justify-content", "center"
-                "z-index", "2000"
+            let bar = createElement "div"
+            setClassName bar "sheet-find-bar"
+            setAttribute bar "data-hidden" "true"
+            setAttribute bar "role" "search"
+            setAttribute bar "aria-label" "Find and replace"
+            setStyles bar [
+                "display", "none"; "flex-wrap", "wrap"; "align-items", "center"
+                "gap", "8px"; "padding", "8px"; "box-sizing", "border-box"
+                "background", "#f8f8f8"; "border-bottom", "1px solid #ccc"
+                "font-family", "Arial, sans-serif"; "font-size", "12px"
             ]
-
-            // Create dialog box
-            let dialog = createElement "div"
-            setStyles dialog [
-                "background", "white"
-                "border-radius", "8px"
-                "padding", "20px"
-                "box-shadow", "0 4px 16px rgba(0,0,0,0.3)"
-                "width", "450px"
-                "font-family", "Arial, sans-serif"
-            ]
-
-            // Title
-            let title = createElement "h3"
-            setTextContent title (sprintf "Conditional Formatting for %s" (formatCellRef addr.Row addr.Col))
-            setStyles title [
-                "margin", "0 0 16px 0"
-                "font-size", "16px"
-                "font-weight", "bold"
-            ]
-            appendChild dialog title
-
-            // Rule type selector
-            let ruleLabel = createElement "label"
-            setTextContent ruleLabel "Rule Type:"
-            setStyles ruleLabel [
-                "display", "block"
-                "margin-bottom", "4px"
-                "font-size", "12px"
-                "font-weight", "bold"
-            ]
-            appendChild dialog ruleLabel
-
-            let ruleSelect = createElement "select"
-            setStyles ruleSelect [
-                "width", "100%"
-                "padding", "8px"
-                "margin-bottom", "12px"
-                "border", "1px solid #ccc"
-                "border-radius", "4px"
-                "font-size", "14px"
-            ]
-
-            let ruleTypes = [
-                ("greater", "Greater Than")
-                ("less", "Less Than")
-                ("between", "Between")
-                ("equal", "Equal To")
-                ("contains", "Contains Text")
-            ]
-
-            for (value, label) in ruleTypes do
-                let option = createElement "option"
-                setAttribute option "value" value
-                setTextContent option label
-                appendChild ruleSelect option
-
-            appendChild dialog ruleSelect
-
-            // Value inputs (will be shown/hidden based on rule type)
-            let value1Label = createElement "label"
-            setTextContent value1Label "Value:"
-            setStyles value1Label [
-                "display", "block"
-                "margin-bottom", "4px"
-                "font-size", "12px"
-            ]
-            appendChild dialog value1Label
-
-            let value1Input = createElement "input"
-            setAttribute value1Input "type" "text"
-            setAttribute value1Input "placeholder" "Enter value..."
-            setStyles value1Input [
-                "width", "100%"
-                "padding", "8px"
-                "margin-bottom", "12px"
-                "border", "1px solid #ccc"
-                "border-radius", "4px"
-                "font-size", "14px"
-                "box-sizing", "border-box"
-            ]
-            appendChild dialog value1Input
-
-            // Second value input (for "between" rule)
-            let value2Label = createElement "label"
-            setTextContent value2Label "And:"
-            setStyles value2Label [
-                "display", "none"
-                "margin-bottom", "4px"
-                "font-size", "12px"
-            ]
-            appendChild dialog value2Label
-
-            let value2Input = createElement "input"
-            setAttribute value2Input "type" "text"
-            setAttribute value2Input "placeholder" "Enter second value..."
-            setStyles value2Input [
-                "display", "none"
-                "width", "100%"
-                "padding", "8px"
-                "margin-bottom", "12px"
-                "border", "1px solid #ccc"
-                "border-radius", "4px"
-                "font-size", "14px"
-                "box-sizing", "border-box"
-            ]
-            appendChild dialog value2Input
-
-            // Update input visibility based on rule type
-            let updateInputVisibility () =
-                let ruleType = getValue ruleSelect
-                if ruleType = "between" then
-                    setStyles value2Label ["display", "block"]
-                    setStyles value2Input ["display", "block"]
+            let input name placeholder =
+                let field = createElement "input"
+                setAttribute field "type" "text"
+                setAttribute field "aria-label" name
+                setAttribute field "placeholder" placeholder
+                field
+            let label caption field =
+                let node = createElement "label"
+                setTextContent node caption
+                appendChild node field
+                appendChild bar node
+            let optionSelect name className choices =
+                let field = createElement "select"
+                setAttribute field "aria-label" name
+                setClassName field className
+                for value, caption in choices do
+                    let option = createElement "option"
+                    setAttribute option "value" value
+                    setTextContent option caption
+                    appendChild field option
+                label (name + " ") field
+                field
+            let button icon caption action =
+                let node = createElement "button"
+                setAttribute node "type" "button"
+                setAttribute node "data-sheet-icon" icon
+                setTextContent node caption
+                listen node "click" (fun _ -> action ())
+                appendChild bar node
+                node
+            let findInput = input "Find in spreadsheet" "Search..."
+            setClassName findInput "sheet-find-input"
+            label "Find " findInput
+            let replaceInput = input "Replace with" "Replace with..."
+            setClassName replaceInput "sheet-replace-input"
+            label "Replace " replaceInput
+            let caseInput = createElement "input"
+            setAttribute caseInput "type" "checkbox"
+            setClassName caseInput "sheet-find-case"
+            label "Match case " caseInput
+            let wholeInput = createElement "input"
+            setAttribute wholeInput "type" "checkbox"
+            setClassName wholeInput "sheet-find-whole"
+            label "Whole cell " wholeInput
+            let regexInput = createElement "input"
+            setAttribute regexInput "type" "checkbox"
+            setClassName regexInput "sheet-find-regex"
+            label "Regular expression " regexInput
+            let lookIn = optionSelect "Look in" "sheet-find-look-in" [ "values", "Values"; "formulas", "Formulas" ]
+            let scope = optionSelect "Scope" "sheet-find-scope" [ "sheet", "Sheet"; "workbook", "Workbook" ]
+            let range = input "Search range" "B2:D9 (optional)"
+            setClassName range "sheet-find-range"
+            label "Range " range
+            let result = createElement "span"
+            setClassName result "sheet-find-result"
+            setAttribute result "role" "status"
+            setAttribute result "aria-live" "polite"
+            setTextContent result "Enter text to find"
+            let status message = setTextContent result message
+            let options () =
+                createObj [
+                    "matchCase" ==> getChecked caseInput
+                    "wholeCell" ==> getChecked wholeInput
+                    "regex" ==> getChecked regexInput
+                    "lookIn" ==> getValue lookIn
+                    "scope" ==> getValue scope
+                    if getValue range <> "" then "range" ==> getValue range
+                ]
+            let mutable matches: obj array = [||]
+            let mutable query = ""
+            let mutable settings = ""
+            let mutable seenSerial = -1
+            let mutable seenSheet = -1
+            let mutable replaceButtons: Element array = [||]
+            let refresh () =
+                if not disposed && getAttribute bar "data-hidden" = "false" then
+                    for node in replaceButtons do setProp node "disabled" (box readOnly)
+                    let text = getValue findInput
+                    let currentSettings =
+                        string (getChecked caseInput) + "|" + string (getChecked wholeInput)
+                        + "|" + string (getChecked regexInput) + "|" + getValue lookIn
+                        + "|" + getValue scope + "|" + getValue range
+                    let changed = text <> query || currentSettings <> settings || findEpoch <> session.Epoch
+                    if changed then findSelected <- false
+                    query <- text
+                    settings <- currentSettings
+                    findEpoch <- session.Epoch
+                    try
+                        if text = "" then
+                            matches <- [||]
+                            findSession <- None
+                        elif changed || seenSerial <> session.ChangeSerial || seenSheet <> activeSheetIndex then
+                            matches <- this.Find(box text, options ())
+                            findSession <- hostSearch
+                        seenSerial <- session.ChangeSerial
+                        seenSheet <- activeSheetIndex
+                        if text = "" then status "Enter text to find"
+                        else
+                            let active = activeCellAddress ()
+                            let index =
+                                if findSelected then
+                                    matches |> Array.tryFindIndex (fun found ->
+                                        unbox<int> (getProp found "sheetIndex") = activeSheetIndex
+                                        && unbox<int> (getProp found "row") = active.Row
+                                        && unbox<int> (getProp found "col") = active.Col)
+                                else None
+                            match index with
+                            | Some index -> status (sprintf "%d of %d matches" (index + 1) matches.Length)
+                            | None -> status (sprintf "%d matches" matches.Length)
+                    with error ->
+                        matches <- [||]
+                        status ("Find failed: " + errorMessageOf (box error))
+            let ensureOwnSearch () =
+                match hostSearch, findSession with
+                | Some current, Some own when obj.ReferenceEquals(current, own) -> ()
+                | _ ->
+                    this.Find(box query, options ()) |> ignore
+                    findSession <- hostSearch
+            findRefresh <- refresh
+            let navigate forward =
+                if not (this.TryCommitEdit()) then status "Find blocked: correct the cell entry first."
                 else
-                    setStyles value2Label ["display", "none"]
-                    setStyles value2Input ["display", "none"]
-
-                // Update label text based on type
-                if ruleType = "contains" then
-                    setTextContent value1Label "Text:"
+                    refresh ()
+                    if query <> "" && matches.Length > 0 then
+                        try
+                            ensureOwnSearch ()
+                            let found = if forward then this.FindNext() else this.FindPrevious()
+                            findSelected <- not (isNull found)
+                            refresh ()
+                        with error -> status ("Find failed: " + errorMessageOf (box error))
+            let replace single =
+                if readOnly then status "Replace unavailable in read-only mode."
+                elif not (this.TryCommitEdit()) then status "Replace blocked: correct the cell entry first."
                 else
-                    setTextContent value1Label "Value:"
-
-            listen ruleSelect "change" (fun _ -> updateInputVisibility())
-
-            // Format section
-            let formatTitle = createElement "h4"
-            setTextContent formatTitle "Format to Apply:"
-            setStyles formatTitle [
-                "margin", "16px 0 8px 0"
-                "font-size", "14px"
-                "font-weight", "bold"
-            ]
-            appendChild dialog formatTitle
-
-            // Background color
-            let bgColorLabel = createElement "label"
-            setTextContent bgColorLabel "Background Color:"
-            setStyles bgColorLabel [
-                "display", "block"
-                "margin-bottom", "4px"
-                "font-size", "12px"
-            ]
-            appendChild dialog bgColorLabel
-
-            let bgColorInput = createElement "input"
-            setAttribute bgColorInput "type" "color"
-            setAttribute bgColorInput "value" "#ff0000"
-            setStyles bgColorInput [
-                "width", "100%"
-                "height", "40px"
-                "padding", "4px"
-                "margin-bottom", "12px"
-                "border", "1px solid #ccc"
-                "border-radius", "4px"
-                "cursor", "pointer"
-            ]
-            appendChild dialog bgColorInput
-
-            // Text color
-            let textColorLabel = createElement "label"
-            setTextContent textColorLabel "Text Color:"
-            setStyles textColorLabel [
-                "display", "block"
-                "margin-bottom", "4px"
-                "font-size", "12px"
-            ]
-            appendChild dialog textColorLabel
-
-            let textColorInput = createElement "input"
-            setAttribute textColorInput "type" "color"
-            setAttribute textColorInput "value" "#ffffff"
-            setStyles textColorInput [
-                "width", "100%"
-                "height", "40px"
-                "padding", "4px"
-                "margin-bottom", "12px"
-                "border", "1px solid #ccc"
-                "border-radius", "4px"
-                "cursor", "pointer"
-            ]
-            appendChild dialog textColorInput
-
-            // Bold checkbox
-            let boldRow = createElement "div"
-            setStyles boldRow [
-                "margin-bottom", "12px"
-            ]
-
-            let boldCheckbox = createElement "input"
-            setAttribute boldCheckbox "type" "checkbox"
-            setAttribute boldCheckbox "id" "bold-check"
-            setStyles boldCheckbox [
-                "margin-right", "6px"
-            ]
-
-            let boldLabel = createElement "label"
-            setAttribute boldLabel "for" "bold-check"
-            setTextContent boldLabel "Bold"
-            setStyles boldLabel [
-                "font-size", "12px"
-                "cursor", "pointer"
-            ]
-
-            appendChild boldRow boldCheckbox
-            appendChild boldRow boldLabel
-            appendChild dialog boldRow
-
-            // Button row
-            let buttonRow = createElement "div"
-            setStyles buttonRow [
-                "display", "flex"
-                "gap", "8px"
-                "margin-top", "16px"
-            ]
-
-            // Apply button
-            let applyBtn = createElement "button"
-            setTextContent applyBtn "Apply"
-            setStyles applyBtn [
-                "flex", "1"
-                "padding", "8px 12px"
-                "background", "#0066cc"
-                "color", "white"
-                "border", "none"
-                "border-radius", "4px"
-                "cursor", "pointer"
-                "font-size", "13px"
-            ]
-            listen applyBtn "click" (fun _ ->
-                let ruleType = getValue ruleSelect
-                let value1 = getValue value1Input
-
-                if System.String.IsNullOrWhiteSpace(value1) then
-                    let _ : obj = emitJsExpr "Please enter a value" "alert($0)"
-                    ()
-                else
-                    // Parse rule
-                    let rule =
-                        match ruleType with
-                        | "greater" ->
-                            match System.Double.TryParse(value1) with
-                            | true, n -> Some (GreaterThan n)
-                            | _ -> None
-                        | "less" ->
-                            match System.Double.TryParse(value1) with
-                            | true, n -> Some (LessThan n)
-                            | _ -> None
-                        | "between" ->
-                            let value2 = getValue value2Input
-                            match System.Double.TryParse(value1), System.Double.TryParse(value2) with
-                            | (true, n1), (true, n2) -> Some (Between (n1, n2))
-                            | _ -> None
-                        | "equal" ->
-                            match System.Double.TryParse(value1) with
-                            | true, n -> Some (Equal n)
-                            | _ -> None
-                        | "contains" ->
-                            Some (ContainsText value1)
-                        | _ -> None
-
-                    match rule with
-                    | Some ruleValue ->
-                        // Create format
-                        let format = {
-                            defaultFormat with
-                                BgColor = Some (getValue bgColorInput)
-                                TextColor = Some (getValue textColorInput)
-                                Bold = getChecked boldCheckbox
-                        }
-
-                        // Create conditional format
-                        let conditionalFormat = {
-                            Rule = ruleValue
-                            Style = format
-                        }
-
-                        // Apply to cell (one undo step)
-                        addRule [ { From = addr; To = addr } ] false conditionalFormat |> ignore
-
-                        // Close dialog
-                        closePopup overlay
-                        render()
-                    | None ->
-                        let _ : obj = emitJsExpr "Invalid value(s) for selected rule type" "alert($0)"
-                        ()
-            )
-            appendChild buttonRow applyBtn
-
-            // Clear button
-            let clearBtn = createElement "button"
-            setTextContent clearBtn "Clear Rules"
-            setStyles clearBtn [
-                "flex", "1"
-                "padding", "8px 12px"
-                "background", "#ffc107"
-                "color", "#000"
-                "border", "none"
-                "border-radius", "4px"
-                "cursor", "pointer"
-                "font-size", "13px"
-            ]
-            listen clearBtn "click" (fun _ ->
-                changeConditionalFormats "Clear conditional formats" (removeConditionalFormats addr) |> ignore
-                closePopup overlay
-                render()
-            )
-            appendChild buttonRow clearBtn
-
-            // Close button
-            let closeBtn = createElement "button"
-            setTextContent closeBtn "Cancel"
-            setStyles closeBtn [
-                "flex", "1"
-                "padding", "8px 12px"
-                "background", "#666"
-                "color", "white"
-                "border", "none"
-                "border-radius", "4px"
-                "cursor", "pointer"
-                "font-size", "13px"
-            ]
-            listen closeBtn "click" (fun _ ->
-                closePopup overlay
-            )
-            appendChild buttonRow closeBtn
-
-            appendChild dialog buttonRow
-            appendChild overlay dialog
-            appendChild (getBody()) overlay
-
-            // Close on Escape key
-            let rec handleEscape = fun (e: obj) ->
-                let key = getEventKey e
-                if key = "Escape" then
-                    closePopup overlay
-                    unlisten (getDocument()) "keydown" handleEscape
-
-            listen (getDocument()) "keydown" handleEscape
+                    refresh ()
+                    if query <> "" && matches.Length > 0 then
+                        try
+                            if single then ensureOwnSearch ()
+                            if single then
+                                let outcome = this.ReplaceMatch(box (getValue replaceInput))
+                                findSelected <- not (isNull (getProp outcome "next"))
+                                refresh ()
+                                if not (unbox<bool> (getProp outcome "replaced")) then
+                                    status "No replaceable match at current selection"
+                            else
+                                let count = this.ReplaceAll(box query, box (getValue replaceInput), options ())
+                                findSelected <- false
+                                refresh ()
+                                status (sprintf "Replaced %d cells" count)
+                        with error -> status ("Replace failed: " + errorMessageOf (box error))
+            button "find-run" "Next" (fun () -> navigate true) |> ignore
+            button "find-previous" "Previous" (fun () -> navigate false) |> ignore
+            let replaceButton = button "replace-one" "Replace" (fun () -> replace true)
+            let replaceAllButton = button "replace-run" "Replace all" (fun () -> replace false)
+            replaceButtons <- [| replaceButton; replaceAllButton |]
+            findNextAction <- (fun () -> navigate true)
+            findReplaceAllAction <- (fun () -> replace false)
+            button "find-close" "Close" closeFindBar |> ignore
+            for field in [ findInput; caseInput; wholeInput; regexInput; lookIn; scope; range ] do
+                listen field (if obj.ReferenceEquals(field, findInput) || obj.ReferenceEquals(field, range) then "input" else "change")
+                    (fun _ -> findSelected <- false; refresh ())
+            listen bar "keydown" (fun event ->
+                match getEventKey event with
+                | "Escape" -> preventDefault event; closeFindBar ()
+                | "Enter" when not (eventFlag event "isComposing") ->
+                    preventDefault event
+                    navigate (not (eventFlag event "shiftKey"))
+                | _ -> ())
+            for node in replaceButtons do setProp node "disabled" (box readOnly)
+            let selectionSubscription = this.OnSelectionChange(System.Action<obj>(fun _ -> refresh ()))
+            let changeSubscription = this.OnChange(System.Action<obj>(fun _ -> refresh ()))
+            let readonlySubscription = this.OnReadOnlyChange(System.Action<bool>(fun _ -> refresh ()))
             cleanups.Add(fun () ->
-                unlisten (getDocument()) "keydown" handleEscape
-                detach overlay)
+                selectionSubscription.Invoke()
+                changeSubscription.Invoke()
+                readonlySubscription.Invoke()
+                detach bar)
+            appendChild bar result
+            let host = findHost |> Option.defaultValue container
+            if obj.ReferenceEquals(host, container) then
+                let _ : obj = emitJsExpr (container, bar) "$0.insertBefore($1, $0.firstChild)"
+                ()
+            else appendChild host bar
+            findBar <- Some bar
+            bar
 
-            ()
+    and showFindReplaceDialog () =
+        if not disposed && gridContainer.IsSome then
+            let bar = ensureFindBar ()
+            if getAttribute bar "data-hidden" = "true" then
+                findFocus <- Some (activeElement ())
+                setStyle bar "display" "flex"
+                setAttribute bar "data-hidden" "false"
+            findRefresh ()
+            let input = queryOne bar ".sheet-find-input"
+            if not (isNull input) then focus input
+
 
     /// Put the grid at the top-left corner of the sheet (after another sheet
     /// or workbook became the one on display).
@@ -6337,6 +5397,8 @@ type Spreadsheet(container: Element) =
         setStyle editBox "display" "none"
         appendChild content editBox
         listen editBox "input" handleInput
+        listen editBox "keyup" (fun _ -> updateFormulaHelp ())
+        listen editBox "mouseup" (fun _ -> updateFormulaHelp ())
         layers <-
             Some { Panes = panes
                    ColHeaders = colHeaderStrip
@@ -6346,10 +5408,14 @@ type Spreadsheet(container: Element) =
                    Actives = panes |> Array.map (overlay "spreadsheet-active-cell")
                    FillHandle = overlay "spreadsheet-fill-handle" content
                    EditInput = editBox
+                   EditHelp = overlay "spreadsheet-formula-help" content
                    Notice = overlay "spreadsheet-validation-notice" content
                    InputMessage = overlay "spreadsheet-input-message" content
                    CommentBox = overlay "spreadsheet-comment-box" content
                    ListButton = overlay "spreadsheet-list-button" content }
+        layers |> Option.iter (fun layer ->
+            setAttribute layer.EditHelp "role" "status"
+            setAttribute layer.EditHelp "aria-live" "polite")
 
         // The box of a comment, beside its cell while the pointer is over the
         // cell: a note in its runs (font, size, bold, italic, underline,
@@ -6929,15 +5995,27 @@ type Spreadsheet(container: Element) =
     member _.Dispose() =
         disposed <- true
         clipboardGeneration <- clipboardGeneration + 1
-        sessionClipboard <- None
-        copiedText <- ""
+        session.ClearClipboard()
         for cleanup in cleanups.ToArray() do
             try cleanup () with _ -> ()
         cleanups.Clear()
+        findBar <- None
+        findHost <- None
+        findFocus <- None
+        findRefresh <- (fun () -> ())
+        findNextAction <- (fun () -> ())
+        findReplaceAllAction <- (fun () -> ())
+        findSelected <- false
+        findSession <- None
         match noticeTimer with
         | Some id ->
             clearTimeoutId id
             noticeTimer <- None
+        | None -> ()
+        // Cancel image loads before revoking URLs, including a mount disposed
+        // in the same event turn in which its picture nodes were created.
+        match gridContainer with
+        | Some gridDiv -> clearImageSources gridDiv
         | None -> ()
         // Object URLs made for the pictures on display.
         for sheetModel in Array.append [| model |] sheets do
@@ -6961,8 +6039,7 @@ type Spreadsheet(container: Element) =
         // of conditional-format formulas (a closure over this workbook).
         Rbt.Spreadsheet.ConditionalFormatting.resetFormulaEvaluator ()
         ruleWorkbook <- None
-        recalcEngine <- None
-        calculatedWorkbook <- None
+        session.InvalidateCalculation()
         engineGeneration <- engineGeneration + 1
         overflowSources.Clear()
         overflowCells <- null
@@ -6987,6 +6064,7 @@ type Spreadsheet(container: Element) =
         renderedDrawings <- null
         renderedMetrics <- null
         editStateListeners.Clear()
+        readOnlyListeners.Clear()
         notifiedEdit <- None
         changeListeners.Clear()
         selectionListeners.Clear()
@@ -7034,7 +6112,19 @@ type Spreadsheet(container: Element) =
     /// since a save gives the revision that was saved.
     member _.GetRevision() : int =
         observeRevision ()
-        revision
+        session.CaptureRevision()
+    /// Unlike GetRevision, this changes even when undo restores an earlier revision.
+    member _.GetChangeSerial() : int =
+        observeRevision ()
+        session.ChangeSerial
+
+    /// Identifies the current workbook across replacements, even if its revision matches.
+    member _.GetWorkbookEpoch() : int = session.Epoch
+    /// Whether a keyboard event target is in this grid (not a neighbouring editor).
+    member _.OwnsKeyboardTarget(target: Element) : bool =
+        contains container target && not (isNull (gridClosest target ".spreadsheet-container"))
+
+
 
     /// Remember a revision as the saved one: IsModified() is false while the
     /// workbook is at it, also after undoing back to it. Without an argument
@@ -7046,12 +6136,12 @@ type Spreadsheet(container: Element) =
     /// SetWorkbook / InstallWorkbook count as a change.
     member _.MarkSaved(?savedAt: int) : unit =
         observeRevision ()
-        savedRevision <- defaultArg savedAt revision
+        session.MarkSaved(?revision = savedAt)
 
     /// Whether the workbook's content differs from the saved revision.
     member _.IsModified() : bool =
         observeRevision ()
-        revision <> savedRevision
+        session.IsModified
 
     /// Every sheet's current model, in sheet order (the active sheet's
     /// included, with its latest edits).
@@ -7085,9 +6175,21 @@ type Spreadsheet(container: Element) =
             if readOnly && model.EditingCell.IsSome then
                 finishEditing false |> ignore
             else render()
+            if readOnlyListeners.Count > 0 then
+                let current = viewerMode
+                for listener in readOnlyListeners.ToArray() do
+                    if readOnlyListeners.Contains listener then
+                        try listener current with error -> reportError "OnReadOnlyChange" (box error)
 
     /// Whether the grid is in viewer mode.
     member _.IsReadOnly() : bool = viewerMode
+
+    /// Call `callback` after viewer mode changes, without a workbook edit.
+    /// Returns an unsubscribe function; Dispose removes all subscriptions.
+    member _.OnReadOnlyChange(callback: System.Action<bool>) : System.Action =
+        let listener = callback.Invoke
+        readOnlyListeners.Add listener
+        System.Action(fun () -> readOnlyListeners.Remove listener |> ignore)
 
     /// What kind of sheet the sheet at `index` (default: the one on display)
     /// is: "worksheet", or - for a sheet of an opened file that has no cells -
@@ -7156,13 +6258,9 @@ type Spreadsheet(container: Element) =
         sheetChangedListeners.Add(listener.Invoke)
 
     // ===== Sheets =====
-    // Every member below that changes the list of sheets is ONE undo step,
-    // gives a new revision and is reported by OnChange (StructureChanged) and
-    // OnSheetsChange. The step is undone from the sheet that is on display
-    // once it is done (the new sheet after AddSheet / DuplicateSheet, the
-    // sheet that took a deleted one's place, else the sheet that was on
-    // display): CanUndo() / Undo() there take it back. Undo histories stay
-    // per sheet: after switching to another sheet, Undo acts on that sheet.
+    // Sheet-list edits join the shared workbook journal on the sheet displayed
+    // after the operation. Undo/redo selects that sheet's steps without
+    // dropping edits made later on another sheet.
 
     /// The sheets in tab order: [{ index, id (stays with the sheet when it is
     /// renamed or moved), name, visibility: "visible" | "hidden" |
@@ -7192,43 +6290,9 @@ type Spreadsheet(container: Element) =
     member _.AddSheet(name: obj, atIndex: obj) : int =
         let memberName = "AddSheet"
         if model.EditingCell.IsSome then finishEditing true |> ignore
-        let wb = bookSnapshot ()
-        let name =
-            match Host.optionalArg (Host.stringArg memberName "name") name with
-            | Some name ->
-                (match Rbt.Spreadsheet.Workbook.sheetNameProblem name with
-                 | Some problem -> Host.hostFail memberName problem
-                 | None -> ())
-                if Rbt.Spreadsheet.Workbook.sheetNameTaken None name wb then Host.hostFail memberName (sprintf "there is already a sheet named \"%s\"" name)
-                name
-            | None -> Rbt.Spreadsheet.Workbook.nextSheetName wb
-        let at =
-            match Host.optionalArg (Host.intArg memberName "atIndex") atIndex with
-            | Some at when at < 0 || at > sheets.Length -> Host.hostFail memberName (sprintf "atIndex %d is outside 0 to %d" at sheets.Length)
-            | Some at -> at
-            | None -> sheets.Length
-        let id = Rbt.Spreadsheet.Workbook.freshSheetId usedSheetIds.Contains wb
-        usedSheetIds.Add id |> ignore
-        let sheet : Rbt.Spreadsheet.Workbook.Sheet = { Id = id; Name = name; Model = { createEmpty 1000 26 with Date1904 = model.Date1904 }; Visible = true }
-        let activeBefore = wb.ActiveSheet
-        // (Once undone, redo puts back the sheet as the undo took it away.)
-        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
-        runBookStep "Add sheet"
-            (fun () ->
-                let current = bookSnapshot ()
-                (match removed.Value with
-                 | Some removal -> { Rbt.Spreadsheet.Workbook.restoreSheet removal current with ActiveSheet = id }
-                 | None -> Rbt.Spreadsheet.Workbook.insertSheet sheet at current)
-                |> installBook
-                // (A formula that named a sheet of this name before there was one reads it now.)
-                recalculateEverything ())
-            (fun () ->
-                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
-                | Some (without, removal) ->
-                    removed.Value <- Some removal
-                    installBook (if Map.containsKey activeBefore without.Sheets then { without with ActiveSheet = activeBefore } else without)
-                    recalculateEverything ()
-                | None -> ())
+        let name = Host.optionalArg (Host.stringArg memberName "name") name
+        let at = Host.optionalArg (Host.intArg memberName "atIndex") atIndex
+        executeSheetStructure memberName (Rbt.Spreadsheet.Session.AddSheet (name, at, 1000, 26)) |> ignore
         render()
         activeSheetIndex
 
@@ -7244,32 +6308,15 @@ type Spreadsheet(container: Element) =
         let index = Host.intArg memberName "index" index
         if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
         let name = Host.stringArg memberName "name" name
-        (match Rbt.Spreadsheet.Workbook.sheetNameProblem name with
-         | Some problem -> Host.hostFail memberName problem
-         | None -> ())
+        // Reject malformed input before committing an in-progress cell edit.
+        match Rbt.Spreadsheet.Workbook.sheetNameProblem name with
+        | Some problem -> Host.hostFail memberName problem
+        | None -> ()
         if model.EditingCell.IsSome then finishEditing true |> ignore
-        let wb = bookSnapshot ()
         let id = sheetIdForIndex index
-        if Rbt.Spreadsheet.Workbook.sheetNameTaken (Some id) name wb then Host.hostFail memberName (sprintf "there is already a sheet named \"%s\"" name)
         let oldName = sheetNames.[index]
-        if oldName <> name then
-            let rename (newName: string) () =
-                // The formulas of every sheet follow: those not converted yet are now.
-                convertFormulaSheets ()
-                let previousName = (bookSnapshot ()).Sheets.[id].Name
-                sessionClipboard <-
-                    sessionClipboard |> Option.map (fun (source, data) ->
-                        let cells =
-                            data.Cells |> List.map (fun (row, col, cell) ->
-                                let value =
-                                    match cell.Value with
-                                    | Formula (formula, cached) -> Formula (rewriteFormulaForSheets (RenameSheetRefs (previousName, newName)) formula, cached)
-                                    | other -> other
-                                row, col, { cell with Value = value })
-                        source, { data with Cells = cells })
-                installBook (Rbt.Spreadsheet.Workbook.renameSheetEverywhere id newName (bookSnapshot ()))
-                rebaseCalcEngine ()
-            runBookStep "Rename sheet" (rename name) (rename oldName)
+        if oldName <> name then convertFormulaSheets ()
+        if executeSheetStructure memberName (Rbt.Spreadsheet.Session.RenameSheet (id, name)) then
             render()
 
     /// Delete the sheet at `index`. As in Excel, references to it in the
@@ -7285,25 +6332,8 @@ type Spreadsheet(container: Element) =
         if index < 0 || index >= sheets.Length then Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
         if model.EditingCell.IsSome then finishEditing true |> ignore
         let id = sheetIdForIndex index
-        (match Rbt.Spreadsheet.Workbook.lastVisibleSheetProblem id (bookSnapshot ()) with
-         | Some problem -> Host.hostFail memberName problem
-         | None -> ())
-        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
-        runBookStep "Delete sheet"
-            (fun () ->
-                convertFormulaSheets ()
-                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
-                | Some (without, removal) ->
-                    removed.Value <- Some removal
-                    installBook without
-                    recalculateEverything ()
-                | None -> ())
-            (fun () ->
-                match removed.Value with
-                | Some removal ->
-                    installBook (Rbt.Spreadsheet.Workbook.restoreSheet removal (bookSnapshot ()))
-                    recalculateEverything ()
-                | None -> ())
+        convertFormulaSheets ()
+        executeSheetStructure memberName (Rbt.Spreadsheet.Session.DeleteSheet id) |> ignore
         render()
 
     /// Move the sheet at index `from` so that it is at index `toIndex`
@@ -7321,13 +6351,7 @@ type Spreadsheet(container: Element) =
         if from <> target then
             if model.EditingCell.IsSome then finishEditing true |> ignore
             let id = sheetIdForIndex from
-            let move (position: int) () =
-                installBook (Rbt.Spreadsheet.Workbook.moveSheet id position (bookSnapshot ()))
-                // A 3-D reference (`Jan:Mar!B1`) reads the sheets between its two ends:
-                // other sheets now. (No formula and no cell changed otherwise: the
-                // engine calculates the formulas with such a reference, and SHEET().)
-                recalculateEverything ()
-            runBookStep "Move sheet" (move target) (move from)
+            executeSheetStructure memberName (Rbt.Spreadsheet.Session.MoveSheet (id, target)) |> ignore
             render()
 
     /// Copy the sheet at `index`; the copy is put right after it, named
@@ -7348,28 +6372,8 @@ type Spreadsheet(container: Element) =
         if model.EditingCell.IsSome then finishEditing true |> ignore
         // (The copy is one of the sheet as it is: a sheet not converted yet is now.)
         sheetModelAt index |> ignore
-        let wb = bookSnapshot ()
         let sourceId = sheetIdForIndex index
-        let id = Rbt.Spreadsheet.Workbook.freshSheetId usedSheetIds.Contains wb
-        usedSheetIds.Add id |> ignore
-        let name = Rbt.Spreadsheet.Workbook.copySheetName sheetNames.[index] wb
-        let activeBefore = wb.ActiveSheet
-        let removed : Rbt.Spreadsheet.Workbook.SheetRemoval option ref = ref None
-        runBookStep "Copy sheet"
-            (fun () ->
-                let current = bookSnapshot ()
-                (match removed.Value with
-                 | Some removal -> { Rbt.Spreadsheet.Workbook.restoreSheet removal current with ActiveSheet = id }
-                 | None -> Rbt.Spreadsheet.Workbook.duplicateSheet sourceId id name (Rbt.Spreadsheet.Workbook.sheetIndex sourceId current + 1) current)
-                |> installBook
-                rebaseCalcEngine ())
-            (fun () ->
-                match Rbt.Spreadsheet.Workbook.removeSheet id (bookSnapshot ()) with
-                | Some (without, removal) ->
-                    removed.Value <- Some removal
-                    installBook (if Map.containsKey activeBefore without.Sheets then { without with ActiveSheet = activeBefore } else without)
-                    recalculateEverything ()
-                | None -> ())
+        executeSheetStructure memberName (Rbt.Spreadsheet.Session.DuplicateSheet sourceId) |> ignore
         render()
         activeSheetIndex
 
@@ -7390,24 +6394,9 @@ type Spreadsheet(container: Element) =
             | "veryHidden" -> false, true
             | other -> Host.hostFail memberName (sprintf "visibility must be \"visible\", \"hidden\" or \"veryHidden\", got \"%s\"" other)
         if model.EditingCell.IsSome then finishEditing true |> ignore
-        let wb = bookSnapshot ()
         let id = sheetIdForIndex index
-        match Map.tryFind id wb.Sheets with
-        | None -> ()
-        | Some sheet ->
-            let before = sheet.Visible, (not sheet.Visible && sheet.Model.VeryHidden)
-            if before <> (visible, veryHidden) then
-                if not visible then
-                    match Rbt.Spreadsheet.Workbook.lastVisibleSheetProblem id wb with
-                    | Some problem when sheet.Visible -> Host.hostFail memberName problem
-                    | _ -> ()
-                let activeBefore = wb.ActiveSheet
-                runBookStep (if visible then "Unhide sheet" else "Hide sheet")
-                    (fun () -> installBook (Rbt.Spreadsheet.Workbook.setSheetVisibility id visible veryHidden (bookSnapshot ())))
-                    (fun () ->
-                        let restored = Rbt.Spreadsheet.Workbook.setSheetVisibility id (fst before) (snd before) (bookSnapshot ())
-                        installBook (if Map.containsKey activeBefore restored.Sheets then { restored with ActiveSheet = activeBefore } else restored))
-                render()
+        if executeSheetStructure memberName (Rbt.Spreadsheet.Session.SetSheetVisibility (id, visible, veryHidden)) then
+            render()
 
     /// Give the tab of the sheet at `index` a colour ("#RRGGBB"), or none
     /// (null). The component draws no tabs itself: the colour is part of the
@@ -7427,7 +6416,7 @@ type Spreadsheet(container: Element) =
                 match Map.tryFind id current.Sheets with
                 | Some sheet -> installBook { current with Sheets = Map.add id { sheet with Model = { sheet.Model with TabColor = value } } current.Sheets }
                 | None -> ()
-            runBookStep "Tab colour" (put color) (put before)
+            runBookStep "Tab colour" (put color)
             render()
 
     /// Replace the entire workbook content. Used after loading an XLSX
@@ -7445,9 +6434,8 @@ type Spreadsheet(container: Element) =
     /// would resolve sheet ids, tables and names against sheets that are gone.
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         if newSheets.Length = 0 then () else
+        // Session.Replace below advances the workbook epoch and clears history.
         clipboardGeneration <- clipboardGeneration + 1
-        sessionClipboard <- None
-        copiedText <- ""
         importedPackage <- None
         invalidateCalcEngine()
         invalidCircles.Clear()
@@ -7465,10 +6453,6 @@ type Spreadsheet(container: Element) =
             if names.Length = newSheets.Length then Array.copy names
             else Array.init newSheets.Length (fun i -> sprintf "Sheet%d" (i + 1))
         let safeIndex = max 0 (min (sheets.Length - 1) activeIndex)
-        // The sheet on display is a converted one; the others may be
-        // stand-ins (ImportXlsx), converted when they are needed.
-        convertInPlace safeIndex
-        formulaSheetsConverted <- not (sheets |> Array.exists isDeferredSheet)
         activeSheetIndex <- safeIndex
         model <- sheets.[safeIndex]
         refreshSheetLock ()
@@ -7480,12 +6464,15 @@ type Spreadsheet(container: Element) =
                 Some (buildWorkbookContext sheets sheetNames (Array.create sheets.Length true) Map.empty Map.empty safeIndex)
         sheetAnchors <- Array.create sheets.Length { Row = 0; Col = 0 }
         anchorCell <- { Row = 0; Col = 0 }
-        // The steps of the previous workbook cannot be undone into this one.
-        appliedSteps.Clear()
-        undoneSteps.Clear()
-        bookSteps.Clear()
-        usedSheetIds.Clear()
-        for index in 0 .. sheets.Length - 1 do usedSheetIds.Add (sheetIdForIndex index) |> ignore
+        // The new workbook replaces the session's state and undo journal atomically.
+        session.Replace(currentWorkbookSnapshot())
+        // Conversion belongs to the newly installed session and stable sheet
+        // ID, never to the replaced workbook's committed sheet order.
+        convertInPlace safeIndex
+        model <- sheets.[safeIndex]
+        formulaSheetsConverted <- not (sheets |> Array.exists isDeferredSheet)
+        // Browser imports carry cached formula values, including deferred sheets.
+        session.RebaseCalculation()
         // (The subscribers of OnSheetsChange are told of the new workbook's sheets.)
         notifiedSheetList <- ""
         resetScroll ()
@@ -7495,11 +6482,10 @@ type Spreadsheet(container: Element) =
         // graph is built a moment later (or at the first edit, when that comes
         // first); the formulas of a sheet that is not converted are read off
         // the file, and the sheet stays as it is.
-        calculatedWorkbook <- Some (currentWorkbookSnapshot())
         let generation = engineGeneration
         setTimeoutMs (fun () ->
-            if not disposed && incrementalRecalculation && generation = engineGeneration && recalcEngine.IsNone then
-                ensureRecalcEngine () |> ignore) 250 |> ignore
+            if not disposed && session.IncrementalRecalculation && generation = engineGeneration
+               && session.RecalcStats.Formulas < 0 then ensureRecalcEngine ()) 250 |> ignore
         // The first edit converts the sheets its formulas reach: the rows of
         // the sheets that have formulas are read from the file right after
         // the workbook is shown, a sheet at a time, so that the edit does not
@@ -7548,8 +6534,7 @@ type Spreadsheet(container: Element) =
     /// Switch incremental recalculation off (every edit recalculates the
     /// whole workbook, as before 0.1.7) or on again. It is on by default.
     member _.SetIncrementalRecalculation(enabled: bool) =
-        incrementalRecalculation <- enabled
-        if not enabled then recalcEngine <- None
+        session.SetIncrementalRecalculation(enabled)
 
     /// What the last recalculation was: { Kind: "incremental" | "full" |
     /// "none", Reason (why it was a full one), ChangedCells, ReachedFormulas,
@@ -7559,15 +6544,16 @@ type Spreadsheet(container: Element) =
     /// (in the dependency graph, -1 before it is built) }. For hosts and checks that want to see that an edit
     /// recalculated what it changed.
     member _.GetRecalcStats() : obj =
+        let info = session.RecalcStats
         createObj [
-            "Kind" ==> lastRecalculation
-            "Reason" ==> (if lastRecalculation = "full" then lastFullReason else "")
-            "ChangedCells" ==> lastRecalcStats.ChangedCells
-            "ReachedFormulas" ==> lastRecalcStats.ReachedFormulas
-            "EvaluatedFormulas" ==> lastRecalcStats.EvaluatedFormulas
-            "Evaluations" ==> lastRecalcStats.Evaluations
+            "Kind" ==> info.Kind
+            "Reason" ==> info.Reason
+            "ChangedCells" ==> info.Stats.ChangedCells
+            "ReachedFormulas" ==> info.Stats.ReachedFormulas
+            "EvaluatedFormulas" ==> info.Stats.EvaluatedFormulas
+            "Evaluations" ==> info.Stats.Evaluations
             "ComparedCells" ==> SpreadsheetRecalc.comparedCells
-            "Formulas" ==> (match recalcEngine with Some engine -> SpreadsheetRecalc.formulaCount engine | None -> -1)
+            "Formulas" ==> info.Formulas
         ]
 
     /// Install a workbook imported from XLSX (`XlsxImporter.importWorkbook`
@@ -7594,24 +6580,39 @@ type Spreadsheet(container: Element) =
         // A workbook that was just opened is the saved one.
         this.MarkSaved()
 
-    /// Open an XLSX file: the sheet the file was saved on is shown (its
-    /// `activeTab`; the first visible sheet when that one is hidden - see
-    /// GetActiveSheetIndex); the other sheets are converted to models as they are needed
-    /// (see IsSheetLoaded). `data` is an ArrayBuffer, Uint8Array or Blob. The promise
-    /// rejects when the file cannot be read; the current workbook is then
-    /// left untouched.
-    member this.ImportXlsx(data: obj): JS.Promise<unit> =
+    /// Parse before mutating the current workbook. A false result means a
+    /// newer open, edit, or disposed shell vetoed installation at commit time.
+    member private this.ImportXlsxCore(data: obj, canInstall: unit -> bool) : JS.Promise<bool> =
+        observeRevision ()
+        let epoch, serial = session.Epoch, session.ChangeSerial
         reportRejection
             ((ownBytesOf data).``then``(fun (bytes: byte[]) ->
                 (loadReaderWorkbook data None).``then``(fun readerWorkbook ->
-                    // The sheet the file was saved on is shown (the first visible one when that one is hidden).
                     let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbookLazy (fun _ -> false) readerWorkbook
                     let saved = readerWorkbook.Preserved.ActiveTab
-                    this.InstallImportedWorkbook(imported, (if saved >= 0 && saved < imported.Sheets.Length && imported.Sheets.[saved].Visible then saved else -1))
-                    // (For an export of the workbook as it was opened: see ExportXlsx.)
-                    observeRevision ()
-                    importedPackage <- Some (bytes, revision, activeSheetIndex))) |> unbox<JS.Promise<unit>>)
+                    let active =
+                        if saved >= 0 && saved < imported.Sheets.Length && imported.Sheets.[saved].Visible then saved
+                        else imported.Sheets |> Array.tryFindIndex (fun sheet -> sheet.Visible) |> Option.defaultValue 0
+                    // Validate the active sheet before the commit guard (which may
+                    // commit an in-progress cell edit) touches the old workbook.
+                    resolveSheet imported.Sheets.[active].Model |> ignore
+                    if disposed || session.Epoch <> epoch || session.ChangeSerial <> serial || not (canInstall ()) then false
+                    else
+                        this.InstallImportedWorkbook(imported, active)
+                        observeRevision ()
+                        importedPackage <- Some (bytes, session.Revision, activeSheetIndex)
+                        true)) |> unbox<JS.Promise<bool>>)
             (reportError "ImportXlsx")
+
+    /// Open an XLSX file, leaving the previous workbook untouched if parsing
+    /// fails. A rejected file leaves its previous revision and undo history.
+    member this.ImportXlsx(data: obj): JS.Promise<unit> =
+        this.ImportXlsxCore(data, fun () -> true).``then``(fun _ -> ())
+
+    /// Open only if `canInstall` still holds after asynchronous parsing.
+    /// Resolves false without touching the workbook when installation is vetoed.
+    member this.ImportXlsxIfCurrent(data: obj, canInstall: System.Func<bool>): JS.Promise<bool> =
+        this.ImportXlsxCore(data, canInstall.Invoke)
 
     /// Whether every sheet is shown as its file says (zoom, grid lines,
     /// headers, formulas, zeros: what an export writes besides the content),
@@ -7713,23 +6714,26 @@ type Spreadsheet(container: Element) =
     member this.ExportXlsx() : JS.Promise<byte[]> =
         observeRevision ()
         match importedPackage with
-        | Some (bytes, openedAt, shown) when revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
+        | Some (bytes, openedAt, shown) when session.Revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
             resolvedCopy bytes
         | Some (bytes, _, _) ->
             // Sheets nothing was changed in go back as the parts they were
             // read from: their bytes, and the styles and shared strings they
             // index, are taken from the file that was opened.
+            let sourceAtExport = xlsxSource
+            let iterationAtExport = workbook |> Option.bind (fun wb -> wb.Iteration)
+            let keptAtExport =
+                match sourceAtExport with
+                | Some opened -> opened.Workbook.Preserved.Parts @ opened.Workbook.Preserved.SourceParts
+                | None -> []
             let input = this.XlsxExportInput()
             let write (source: obj) (parts: (string * byte[]) list) =
                 let out =
                     Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOutWith parts input
-                    |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration (workbook |> Option.bind (fun wb -> wb.Iteration))
+                    |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration iterationAtExport
                 // (A part that goes back as it was read - a sheet, and what the reader kept of the
                 // file: charts, pivot caches, media - is the file's compressed entry, not deflated again.)
-                let kept =
-                    match xlsxSource with
-                    | Some opened -> opened.Workbook.Preserved.Parts @ opened.Workbook.Preserved.SourceParts
-                    | None -> []
+                let kept = keptAtExport
                 (if isNull source then XlsxWriter.writeWorkbookPackage out else XlsxWriter.writeWorkbookPackageReusing source (parts @ kept) out)
                 |> packageBytes
             let wanted = try Rbt.Spreadsheet.XlsxBridge.Export.verbatimPartsWanted input with _ -> []
@@ -7789,6 +6793,59 @@ type Spreadsheet(container: Element) =
             Host.drawingToObj drawing rect.X rect.Y rect.Width rect.Height)
         |> List.toArray
 
+    /// Capture the workbook, sheet and selection for a chart insertion dialog.
+    /// Passing this to InsertChart rejects a stale dialog instead of placing a
+    /// chart on a different sheet or from another selection.
+    member this.GetChartSelectionSnapshot() : obj =
+        observeRevision ()
+        if readOnly then null
+        else createObj [
+            "epoch" ==> session.Epoch
+            "serial" ==> session.ChangeSerial
+            "sheetIndex" ==> activeSheetIndex
+            "selection" ==> this.GetSelectionRef() ]
+
+    /// Insert a classic chart from a contiguous bounded range. Columns are
+    /// series; firstRowHeaders / firstColumnCategories explicitly say which
+    /// cells are labels. Pie requires exactly one remaining value column.
+    /// Returns its drawing id; the anchor and chart part are one undo step.
+    member this.InsertChart(range: obj, options: obj, snapshot: obj) : int =
+        let memberName = "InsertChart"
+        if readOnly then Host.hostFail memberName "the sheet is read-only"
+        observeRevision ()
+        if not (Host.isNullish snapshot) then
+            if not (Host.isJsObject snapshot) then Host.hostFail memberName "the selection snapshot is invalid"
+            if Host.getKey snapshot "epoch" <> box session.Epoch
+               || Host.getKey snapshot "serial" <> box session.ChangeSerial
+               || Host.getKey snapshot "sheetIndex" <> box activeSheetIndex
+               || Host.getKey snapshot "selection" <> box (this.GetSelectionRef()) then
+                Host.hostFail memberName "the workbook, sheet or selection changed; reopen the chart dialog"
+        let area = Host.rangeArg memberName range
+        if not (Host.isJsObject options) then Host.hostFail memberName "options must be { type, title, firstRowHeaders, firstColumnCategories }"
+        for key in Host.keysOf options do
+            if not (List.contains key [ "type"; "title"; "firstRowHeaders"; "firstColumnCategories" ]) then
+                Host.hostFail memberName (sprintf "unknown option \"%s\"" key)
+        let chartKind =
+            match Host.stringArg memberName "options.type" (Host.getKey options "type") with
+            | "column" -> SpreadsheetChartAuthoring.Column
+            | "bar" -> SpreadsheetChartAuthoring.Bar
+            | "line" -> SpreadsheetChartAuthoring.Line
+            | "pie" -> SpreadsheetChartAuthoring.Pie
+            | other -> Host.hostFail memberName (sprintf "unknown chart type \"%s\"" other)
+        let title = Host.optionalArg (Host.stringArg memberName "options.title") (Host.getKey options "title") |> Option.defaultValue ""
+        let headers = Host.boolArg memberName "options.firstRowHeaders" (Host.getKey options "firstRowHeaders")
+        let categories = Host.boolArg memberName "options.firstColumnCategories" (Host.getKey options "firstColumnCategories")
+        let reserved =
+            match xlsxSource, model.SourceSheet with
+            | Some source, Some origin when origin.Book = source.Id ->
+                (List.item origin.Sheet source.Workbook.Sheets).Extras.DrawingRelationships
+                |> List.map (fun (relId, _, _, _) -> relId)
+            | _ -> []
+        let result = executeDrawing memberName "Insert chart" (Rbt.Spreadsheet.Session.InsertChart (area, chartKind, title, headers, categories, reserved))
+        let id = result.Id.Value
+        render ()
+        id
+
     /// Put a picture on the active sheet, in front of its other objects, with
     /// its top-left corner at a cell (one undo step), and return its id.
     /// `source`: the image file's bytes (Uint8Array or ArrayBuffer) or a data
@@ -7811,8 +6868,7 @@ type Spreadsheet(container: Element) =
         let cell = Host.cellArg memberName "anchorCell" model anchorCell
         let width, height = pictureSizeArg memberName size (float info.Width) (float info.Height)
         let name = Host.optionalArg (Host.stringArg memberName "name") name |> Option.filter (fun text -> text.Trim() <> "")
-        let id = SheetOps.nextDrawingId model
-        changeDrawings "Insert picture" (SheetOps.insertPicture id info bytes cell width height name) |> ignore
+        let id = (executeDrawing memberName "Insert picture" (Rbt.Spreadsheet.Session.InsertPicture (bytes, cell, width, height, name))).Id.Value
         render()
         id
 
@@ -7852,11 +6908,9 @@ type Spreadsheet(container: Element) =
     /// is no picture with the id.
     member _.DeletePicture(id: obj) : unit =
         let drawing = pictureArg "DeletePicture" id
-        match SheetOps.deletePicture drawing.Id model with
-        | Result.Error message -> Host.hostFail "DeletePicture" message
-        | Ok changed ->
-            if selectedPicture = Some drawing.Id then selectedPicture <- None
-            if changeDrawings "Delete picture" (fun _ -> changed) then render()
+        let result = executeDrawing "DeletePicture" "Delete picture" (Rbt.Spreadsheet.Session.DeletePicture drawing.Id)
+        if selectedPicture = Some drawing.Id then selectedPicture <- None
+        if result.Changed then render()
 
     /// Set the alternative text of a picture (its description; "" removes
     /// it) and, when given, its name, as one undo step.
@@ -7865,9 +6919,7 @@ type Spreadsheet(container: Element) =
         let drawing = pictureArg memberName id
         let description = Host.stringArg memberName "the description" description
         let name = Host.optionalArg (Host.stringArg memberName "name") name
-        match SheetOps.describePicture drawing.Id name (Some description) model with
-        | Result.Error message -> Host.hostFail memberName message
-        | Ok changed -> if changeDrawings "Picture text" (fun _ -> changed) then render()
+        if (executeDrawing memberName "Picture text" (Rbt.Spreadsheet.Session.DescribePicture (drawing.Id, name, Some description))).Changed then render()
 
     /// The id of the picture that is selected on the active sheet, or null.
     /// A click on a picture selects it (not in read-only mode): it gets a
@@ -7962,8 +7014,8 @@ type Spreadsheet(container: Element) =
                 "height" ==> pxToPt rect.Height
                 "mergedRows" ==> mergedRows
                 "mergedCols" ==> mergedCols
-                "rowHeight" ==> pxToPt (Map.tryFind addr.Row model.RowHeights |> Option.defaultValue 20.0)
-                "columnWidth" ==> pxToPt (Map.tryFind addr.Col model.ColumnWidths |> Option.defaultValue 64.0)
+                "rowHeight" ==> pxToPt (Map.tryFind addr.Row model.RowHeights |> Option.defaultValue model.DefaultRowHeight)
+                "columnWidth" ==> pxToPt (Map.tryFind addr.Col model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth)
                 "wrapText" ==> format.WrapText
                 "hAlign" ==> (format.HorizontalAlign |> Option.defaultValue "general")
                 "vAlign" ==> (format.VerticalAlign |> Option.defaultValue "bottom")
@@ -8588,6 +7640,10 @@ type Spreadsheet(container: Element) =
     /// the entry is dropped and a notice says why. True when there was
     /// nothing to commit.
     member _.CommitEdit() : bool = finishEditing true
+    /// Commit without dropping an entry rejected by a stop validation rule.
+    /// False leaves the edit buffer visible for correction and does not save.
+    member _.TryCommitEdit() : bool = finishEditingWith true true
+
 
     /// Drop the entry in progress, as Escape does.
     member _.CancelEdit() : unit = finishEditing false |> ignore
@@ -8607,6 +7663,64 @@ type Spreadsheet(container: Element) =
             | Some layer -> setValue layer.EditInput text
             | None -> ()
             notifyEditState ()
+            updateFormulaHelp ()
+    /// A snapshot of the active entry and its caret for an external insert
+    /// chooser. A later insert rejects changed text, selection or workbook.
+    member _.GetEditSnapshot() : obj =
+        if disposed || readOnly then null else
+        let active = activeCellAddress()
+        let text, start, finish =
+            match model.EditingCell, layers with
+            | Some _, Some layer ->
+                model.EditBuffer,
+                unbox<int> (getProp layer.EditInput "selectionStart"),
+                unbox<int> (getProp layer.EditInput "selectionEnd")
+            | Some _, None -> model.EditBuffer, model.EditBuffer.Length, model.EditBuffer.Length
+            | None, _ ->
+                let initial = if Map.containsKey active model.Spill then "" else SpreadsheetInput.editTextFor model.Date1904 (getCell active model)
+                initial, initial.Length, initial.Length
+        createObj [ "Text" ==> text; "Start" ==> start; "End" ==> finish
+                    "Row" ==> active.Row; "Col" ==> active.Col; "Sheet" ==> activeSheetIndex
+                    "Epoch" ==> session.Epoch; "Serial" ==> session.ChangeSerial ]
+
+    /// Insert into an unchanged active edit without committing it. False
+    /// means the chooser was stale; no pending input or cell is discarded.
+    member _.InsertFunctionAt(name: string, snapshot: obj) : bool =
+        match findFunctionHelp name with
+        | None -> false
+        | Some info when disposed || readOnly || isNull snapshot -> false
+        | Some info ->
+            let active = activeCellAddress()
+            let expected = unbox<string> (getProp snapshot "Text")
+            let first = unbox<int> (getProp snapshot "Start")
+            let last = unbox<int> (getProp snapshot "End")
+            let current =
+                match model.EditingCell with
+                | Some _ -> model.EditBuffer
+                | None -> if Map.containsKey active model.Spill then "" else SpreadsheetInput.editTextFor model.Date1904 (getCell active model)
+            if unbox<int> (getProp snapshot "Epoch") <> session.Epoch ||
+               unbox<int> (getProp snapshot "Serial") <> session.ChangeSerial ||
+               unbox<int> (getProp snapshot "Sheet") <> activeSheetIndex ||
+               unbox<int> (getProp snapshot "Row") <> active.Row ||
+               unbox<int> (getProp snapshot "Col") <> active.Col ||
+               first < 0 || last < first || last > current.Length || current <> expected then false
+            else
+                if model.EditingCell.IsNone then startEditing active.Row active.Col
+                let prefix = if current.StartsWith("=") then "" else "="
+                let inserted = info.Name + "()"
+                let value = prefix + current.Substring(0, first) + inserted + current.Substring(last)
+                model <- { model with EditBuffer = value }
+                match layers with
+                | Some layer ->
+                    setValue layer.EditInput value
+                    focus layer.EditInput
+                    let position = prefix.Length + first + inserted.Length - 1
+                    setProp layer.EditInput "selectionStart" (box position)
+                    setProp layer.EditInput "selectionEnd" (box position)
+                | None -> ()
+                notifyEditState ()
+                updateFormulaHelp ()
+                true
 
     /// Call `callback` when an entry starts, when its text changes and when
     /// it ends (committed or cancelled), with
@@ -8619,9 +7733,9 @@ type Spreadsheet(container: Element) =
         editStateListeners.Add listener
         System.Action(fun () -> editStateListeners.Remove listener |> ignore)
 
-    /// Whether Undo() / Redo() have a step to take on the active sheet.
-    member _.CanUndo() : bool = not model.History.Past.IsEmpty
-    member _.CanRedo() : bool = not model.History.Future.IsEmpty
+    /// Whether the workbook session has a step to undo or redo.
+    member _.CanUndo() : bool = session.CanUndo
+    member _.CanRedo() : bool = session.CanRedo
 
     /// The active cell { Row, Col } (0-based): the cell of the selection that
     /// typing goes to, where the selection was started.
@@ -8681,40 +7795,32 @@ type Spreadsheet(container: Element) =
     /// IncreaseDecimals). Alignment: "alignLeft" | "alignCenter" |
     /// "alignRight" | "alignJustify" | "alignGeneral" (back to the default),
     /// "alignTop" | "alignMiddle" | "alignBottom". Throws on any other command.
-    member this.ApplyFormat(formatType: string) =
-        let active = activeFormat ()
-        let toggle (description: string) (isOn: CellFormat -> bool) (set: bool -> CellFormat -> CellFormat) =
-            let on = not (isOn active)
-            formatSelection description (fun format -> if isOn format = on then format else set on format)
-        let horizontal (description: string) (align: string option) =
-            formatSelection description (fun format -> if format.HorizontalAlign = align then format else { format with HorizontalAlign = align })
-        let vertical (description: string) (align: string) =
-            formatSelection description (fun format -> if format.VerticalAlign = Some align then format else { format with VerticalAlign = Some align })
-        let changed =
+    member _.ApplyFormat(formatType: string) =
+        let command, description =
             match formatType with
-            | "bold" -> toggle "Bold" (fun format -> format.Bold) (fun on format -> { format with Bold = on })
-            | "italic" -> toggle "Italic" (fun format -> format.Italic) (fun on format -> { format with Italic = on })
-            | "underline" -> toggle "Underline" (fun format -> format.Underline) (fun on format -> if on then { format with Underline = true } else { format with Underline = false; UnderlineDouble = false })
-            | "doubleUnderline" -> toggle "Double underline" (fun format -> format.UnderlineDouble) (fun on format -> if on then { format with Underline = true; UnderlineDouble = true } else { format with UnderlineDouble = false })
-            | "strikethrough" -> toggle "Strikethrough" (fun format -> format.Strikethrough) (fun on format -> { format with Strikethrough = on })
-            | "wrap" -> toggle "Wrap text" (fun format -> format.WrapText) (fun on format -> { format with WrapText = on })
-            | "shrinkToFit" -> toggle "Shrink to fit" (fun format -> format.ShrinkToFit) (fun on format -> { format with ShrinkToFit = on })
-            | "fontIncrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (min 409 (defaultArg format.FontSize 11 + 2)) })
-            | "fontDecrease" -> formatSelection "Font size" (fun format -> { format with FontSize = Some (max 8 (defaultArg format.FontSize 11 - 2)) })
-            | "indentIncrease" -> formatSelection "Increase indent" (fun format -> if format.Indent >= 250 then format else { format with Indent = format.Indent + 1 })
-            | "indentDecrease" -> formatSelection "Decrease indent" (fun format -> if format.Indent <= 0 then format else { format with Indent = format.Indent - 1 })
-            | "decimalIncrease" -> this.IncreaseDecimals(); false
-            | "decimalDecrease" -> this.DecreaseDecimals(); false
-            | "alignLeft" -> horizontal "Align left" (Some "left")
-            | "alignCenter" -> horizontal "Align center" (Some "center")
-            | "alignRight" -> horizontal "Align right" (Some "right")
-            | "alignJustify" -> horizontal "Justify" (Some "justify")
-            | "alignGeneral" -> horizontal "General alignment" None
-            | "alignTop" -> vertical "Align top" "top"
-            | "alignMiddle" -> vertical "Align middle" "middle"
-            | "alignBottom" -> vertical "Align bottom" "bottom"
+            | "bold" -> Rbt.Spreadsheet.Session.ToggleBold, "Bold"
+            | "italic" -> Rbt.Spreadsheet.Session.ToggleItalic, "Italic"
+            | "underline" -> Rbt.Spreadsheet.Session.ToggleUnderline, "Underline"
+            | "doubleUnderline" -> Rbt.Spreadsheet.Session.ToggleDoubleUnderline, "Double underline"
+            | "strikethrough" -> Rbt.Spreadsheet.Session.ToggleStrikethrough, "Strikethrough"
+            | "wrap" -> Rbt.Spreadsheet.Session.ToggleWrapText, "Wrap text"
+            | "shrinkToFit" -> Rbt.Spreadsheet.Session.ToggleShrinkToFit, "Shrink to fit"
+            | "fontIncrease" -> Rbt.Spreadsheet.Session.ChangeFontSize 2, "Font size"
+            | "fontDecrease" -> Rbt.Spreadsheet.Session.ChangeFontSize -2, "Font size"
+            | "indentIncrease" -> Rbt.Spreadsheet.Session.ChangeIndent 1, "Increase indent"
+            | "indentDecrease" -> Rbt.Spreadsheet.Session.ChangeIndent -1, "Decrease indent"
+            | "decimalIncrease" -> Rbt.Spreadsheet.Session.ChangeDecimals 1, "Increase decimals"
+            | "decimalDecrease" -> Rbt.Spreadsheet.Session.ChangeDecimals -1, "Decrease decimals"
+            | "alignLeft" -> Rbt.Spreadsheet.Session.HorizontalAlign (Some "left"), "Align left"
+            | "alignCenter" -> Rbt.Spreadsheet.Session.HorizontalAlign (Some "center"), "Align center"
+            | "alignRight" -> Rbt.Spreadsheet.Session.HorizontalAlign (Some "right"), "Align right"
+            | "alignJustify" -> Rbt.Spreadsheet.Session.HorizontalAlign (Some "justify"), "Justify"
+            | "alignGeneral" -> Rbt.Spreadsheet.Session.HorizontalAlign None, "General alignment"
+            | "alignTop" -> Rbt.Spreadsheet.Session.VerticalAlign (Some "top"), "Align top"
+            | "alignMiddle" -> Rbt.Spreadsheet.Session.VerticalAlign (Some "middle"), "Align middle"
+            | "alignBottom" -> Rbt.Spreadsheet.Session.VerticalAlign (Some "bottom"), "Align bottom"
             | other -> Host.hostFail "ApplyFormat" (sprintf "unknown command \"%s\"" (if isNull other then "null" else other))
-        if changed then render()
+        if executeFormatting description (selectionBounds()) command then render()
 
     /// Change the format of every cell of the selection (one undo step):
     /// `format` is a `format` object as GetCell gives it, read as a patch -
@@ -8784,7 +7890,7 @@ type Spreadsheet(container: Element) =
         match code |> Option.bind SheetOps.numberFormatProblem with
         | Some problem -> Host.hostFail "SetNumberFormat" problem
         | None -> ()
-        if formatSelection "Number format" (fun format -> if format.NumberFormat = code then format else { format with NumberFormat = code }) then render()
+        if executeFormatting "Number format" (selectionBounds()) (Rbt.Spreadsheet.Session.NumberFormat code) then render()
 
     /// One decimal place more for the numbers of the selection (one undo
     /// step): every cell that holds a number gets its own number format with
@@ -8792,26 +7898,12 @@ type Spreadsheet(container: Element) =
     /// cell in the General format starts from the decimals its value shows
     /// (12.5 -> "0.00"). Dates, times, fractions and text are left alone.
     member _.IncreaseDecimals() =
-        let step (addr: CellAddress) (format: CellFormat) =
-            match getCell addr model with
-            | Some data ->
-                match SheetOps.changeDecimals 1 format.NumberFormat data.Value with
-                | Some code -> { format with NumberFormat = Some code }
-                | None -> format
-            | None -> format
-        if formatSelectionAt "Increase decimals" (fun _ addr format -> step addr format) then render()
+        if executeFormatting "Increase decimals" (selectionBounds()) (Rbt.Spreadsheet.Session.ChangeDecimals 1) then render()
 
     /// One decimal place fewer (see IncreaseDecimals); a number without
     /// decimals stays as it is.
     member _.DecreaseDecimals() =
-        let step (addr: CellAddress) (format: CellFormat) =
-            match getCell addr model with
-            | Some data ->
-                match SheetOps.changeDecimals -1 format.NumberFormat data.Value with
-                | Some code -> { format with NumberFormat = Some code }
-                | None -> format
-            | None -> format
-        if formatSelectionAt "Decrease decimals" (fun _ addr format -> step addr format) then render()
+        if executeFormatting "Decrease decimals" (selectionBounds()) (Rbt.Spreadsheet.Session.ChangeDecimals -1) then render()
 
     /// The format of a cell, for a format painter: the `format` object of the
     /// first cell of `a1` ("B2", or a range: its top-left cell), as GetCell
@@ -8832,11 +7924,7 @@ type Spreadsheet(container: Element) =
         let range = Host.rangeArg "ApplyFormatTo" a1
         let wanted = Host.formatOfObj "ApplyFormatTo" "format" format
         if range.From.Row >= model.RowCount || range.From.Col >= model.ColCount then Host.hostFail "ApplyFormatTo" (sprintf "%s is outside the sheet" (SheetOps.rangeText range))
-        let paint (existing: CellFormat) =
-            // (What the cell shows because of other things - a filter button, a comment marker - stays.)
-            { wanted with FilterButton = existing.FilterButton; HasComment = existing.HasComment; HasListDropdown = existing.HasListDropdown
-                          DataBar = existing.DataBar; IconSet = existing.IconSet }
-        if formatBlockAt "Paint format" (range.From.Row, range.From.Col, range.To.Row, range.To.Col) (fun _ _ existing -> paint existing) then render()
+        if executeFormatting "Paint format" (range.From.Row, range.From.Col, range.To.Row, range.To.Col) (Rbt.Spreadsheet.Session.PaintFormat wanted) then render()
 
     /// Clear the formats of the selection, or of the range `a1` when given
     /// (one undo step): font, colours, alignment, number format and borders
@@ -8885,29 +7973,16 @@ type Spreadsheet(container: Element) =
     /// or "none" to clear the sides named. `color`: "#RRGGBB".
     member _.ApplyBorder(side: string, style: string, color: string) =
         let color = if System.String.IsNullOrEmpty color then "#000000" else color
-        if formatSelectionAt "Border" (fun block addr format -> borderFormatInBlock block side style color addr.Row addr.Col format) then render()
+        if executeFormatting "Border" (selectionBounds()) (Rbt.Spreadsheet.Session.Border (side, style, color)) then render()
 
     /// Merge cells in a range (one undo step).
     member _.MergeCells(startRow: int, startCol: int, endRow: int, endCol: int) =
-        let before = model.MergedCells
-        model <- addMergedCell startRow startCol endRow endCol model
-        let after = model.MergedCells
-        if not (obj.ReferenceEquals(before, after)) then
-            pushValueNeutral { Undo = (fun m -> { m with MergedCells = before })
-                               Redo = (fun m -> { m with MergedCells = after })
-                               Description = "Merge cells" }
+        executeFormatting "Merge cells" (startRow, startCol, endRow, endCol) Rbt.Spreadsheet.Session.MergeCells |> ignore
         render()
 
     /// Unmerge cells at address (one undo step).
     member _.UnmergeCells(row: int, col: int) =
-        let addr = { Row = row; Col = col }
-        let before = model.MergedCells
-        model <- removeMergedCell addr model
-        let after = model.MergedCells
-        if before.Length <> after.Length then
-            pushValueNeutral { Undo = (fun m -> { m with MergedCells = before })
-                               Redo = (fun m -> { m with MergedCells = after })
-                               Description = "Unmerge cells" }
+        executeFormatting "Unmerge cells" (selectionBounds()) (Rbt.Spreadsheet.Session.UnmergeCells { Row = row; Col = col }) |> ignore
         render()
 
     /// The hyperlink on a cell of the active sheet, or null:
@@ -9103,7 +8178,8 @@ type Spreadsheet(container: Element) =
     member _.SetWorkbookContext(wb: Workbook) =
         invalidateCalcEngine()
         workbook <- Some wb
-        calculatedWorkbook <- Some (currentWorkbookSnapshot())
+        session.UpdateView(currentWorkbookSnapshot())
+        session.RebaseCalculation()
         render()  // Re-render to apply table styles
 
     /// Get workbook
@@ -9422,16 +8498,13 @@ type Spreadsheet(container: Element) =
             let replaced =
                 match changed with
                 | Some cellData ->
-                    let old = getCell addr model
+                    // The shared session snapshots the pre-edit cell.
                     let cellData =
                         match cellData.Value with
                         | CellValue.Formula (formula, _) -> { cellData with Value = CellValue.Formula (formula, evaluateFormula formula model workbook) }
                         | _ -> cellData
                     recalculateSingleCellEdit addr cellData
-                    let after = getCell addr model
-                    model <- pushCommand { Undo = restoreCellOptions [ addr, old ]
-                                           Redo = restoreCellOptions [ addr, after ]
-                                           Description = "Replace" } model
+                    model <- pushCommand "Replace" model
                     true
                 | None -> false
             let next = this.StepSearch(search, true)
@@ -9475,13 +8548,9 @@ type Spreadsheet(container: Element) =
             if not request.Workbook then
                 let changes = changesOf activeSheetIndex
                 if not changes.IsEmpty then
-                    let oldCells = changes |> List.map (fun (addr, before, _) -> addr, Some before)
                     put activeSheetIndex (changes |> List.map (fun (addr, _, after) -> addr, Some after))
                     recalculateFormulas()
-                    let newCells = changes |> List.map (fun (addr, _, _) -> addr, getCell addr model)
-                    model <- pushCommand { Undo = restoreCellOptions oldCells
-                                           Redo = restoreCellOptions newCells
-                                           Description = "Replace All" } model
+                    model <- pushCommand "Replace All" model
                 render()
                 changes.Length
             else
@@ -9495,14 +8564,12 @@ type Spreadsheet(container: Element) =
                             | found -> yield sheetIdForIndex index, found ]
                 let count = changes |> List.sumBy (fun (_, found) -> found.Length)
                 if count > 0 then
-                    let apply (pick: CellAddress * CellData * CellData -> CellAddress * CellData option) () =
+                    runBookStep "Replace All" (fun () ->
                         for id, found in changes do
                             let index = sheetIndexOfId id
-                            if index >= 0 then put index (found |> List.map pick)
-                        recalculateFormulas()
-                    runBookStep "Replace All"
-                        (apply (fun (addr, _, after) -> addr, Some after))
-                        (apply (fun (addr, before, _) -> addr, Some before))
+                            if index >= 0 then
+                                put index (found |> List.map (fun (addr, _, after) -> addr, Some after))
+                        recalculateFormulas())
                 render()
                 count
 
@@ -9627,23 +8694,15 @@ type Spreadsheet(container: Element) =
             | None -> format
             | Some _ when SheetOps.isVisualRule format.Rule -> Host.hostFail name "a colour scale, data bar or icon set draws by itself and takes no format"
             | Some patch -> { format with Style = SheetOps.ruleStyleOf (Host.ruleFormatPatchOfObj name "changes.format" patch format.Style) }
-        let change (sheet: SpreadsheetModel) =
-            let updated =
-                SheetOps.updateConditionalFormat name id (fun entry ->
-                    { entry with
-                        Ranges = defaultArg ranges entry.Ranges
-                        StopIfTrue = defaultArg stopIfTrue entry.StopIfTrue
-                        Format = format }) sheet
-            match priority with
-            | Some place -> SheetOps.moveConditionalFormat name id place updated
-            | None -> updated
-        if changeConditionalFormats "Edit conditional format" change then render()
+        let formatChange = if (given "rule").IsSome || (given "format").IsSome then Some format else None
+        let result = executeRule name (Rbt.Spreadsheet.Session.UpdateConditionalFormat (id, ranges, stopIfTrue, formatChange, priority))
+        if result.Changed then render()
 
     /// Remove the conditional format with an id from the active sheet (one
     /// undo step). Throws when the sheet has none with that id.
     member _.RemoveConditionalFormat(id: obj) : unit =
         let id = Host.intArg "RemoveConditionalFormat" "id" id
-        if changeConditionalFormats "Remove conditional format" (SheetOps.removeConditionalFormat "RemoveConditionalFormat" id) then render()
+        if (executeRule "RemoveConditionalFormat" (Rbt.Spreadsheet.Session.RemoveConditionalFormat id)).Changed then render()
 
     /// Put the active sheet's conditional formats in a new order of
     /// precedence (one undo step): `ids` lists every rule of the sheet once,
@@ -9653,7 +8712,7 @@ type Spreadsheet(container: Element) =
         let name = "ReorderConditionalFormats"
         if not (Host.isJsArray ids) then Host.hostFail name "ids must be an array of rule ids"
         let ids = unbox<obj array> ids |> Array.map (Host.intArg name "an id") |> Array.toList
-        if changeConditionalFormats "Reorder conditional formats" (SheetOps.reorderConditionalFormats name ids) then render()
+        if (executeRule name (Rbt.Spreadsheet.Session.ReorderConditionalFormats ids)).Changed then render()
 
     /// Take the conditional formats off the active sheet (no argument), or
     /// off the cells of `range` (areas as in AddConditionalFormat): a rule
@@ -9662,18 +8721,16 @@ type Spreadsheet(container: Element) =
     member _.ClearConditionalFormats(range: obj) : int =
         let name = "ClearConditionalFormats"
         let holes = Host.optionalArg (fun value -> SheetOps.parseRanges name (Host.stringArg name "the range" value)) range
-        let before = model.ConditionalFormats
-        if changeConditionalFormats "Clear conditional formats" (SheetOps.clearConditionalFormats holes) then
-            let after = model.ConditionalFormats
-            render()
-            before |> List.filter (fun entry -> not (after |> List.exists (fun kept -> kept.Id = entry.Id && kept.Ranges = entry.Ranges))) |> List.length
-        else 0
+        let result = executeRule name (Rbt.Spreadsheet.Session.ClearConditionalFormats holes)
+        if result.Changed then render()
+        result.Affected
 
     /// Remove the conditional formats from one cell of the active sheet (one
     /// undo step): a rule covering more than the cell keeps the rest of its range.
     member _.RemoveConditionalFormats(row: int, col: int) =
         let addr = { Row = row; Col = col }
-        if changeConditionalFormats "Clear conditional formats" (removeConditionalFormats addr) then render()
+        let result = executeRule "RemoveConditionalFormats" (Rbt.Spreadsheet.Session.ClearConditionalFormats (Some [ { From = addr; To = addr } ]))
+        if result.Changed then render()
 
     // ===== Data validation =====
 
@@ -9734,10 +8791,9 @@ type Spreadsheet(container: Element) =
         let name = "SetValidation"
         let ranges = SheetOps.parseRanges name (Host.stringArg name "the range" (requiredArg name "the range" range))
         let validation = SheetOps.validationOfDescriptionIn model.Date1904 name (Host.validationOfObj name (requiredArg name "the rule" rule))
-        let id = (max lastValidationId (nextValidationId model - 1)) + 1
-        lastValidationId <- id
-        if changeValidations "Data validation" (setValidationRangesWithId id ranges validation) then render()
-        id
+        let result = executeRule name (Rbt.Spreadsheet.Session.SetValidation (ranges, validation))
+        if result.Changed then render()
+        result.Id.Value
 
     /// Take the validations off cells of the active sheet (one undo step):
     /// a validation that covers more cells keeps them, one left with no cell
@@ -9746,12 +8802,9 @@ type Spreadsheet(container: Element) =
     member _.ClearValidation(range: obj) : int =
         let name = "ClearValidation"
         let holes = SheetOps.parseRanges name (Host.stringArg name "the range" (requiredArg name "the range" range))
-        let before = model.Validations
-        if changeValidations "Clear validation" (clearValidationRanges holes) then
-            let after = model.Validations
-            render()
-            before |> List.filter (fun entry -> not (after |> List.exists (fun kept -> kept.Id = entry.Id && kept.Ranges = entry.Ranges))) |> List.length
-        else 0
+        let result = executeRule name (Rbt.Spreadsheet.Session.ClearValidation holes)
+        if result.Changed then render()
+        result.Affected
 
     /// The values the list validation on a cell of the active sheet offers,
     /// in order (a source range is read now), or null when the cell has no
@@ -10173,18 +9226,8 @@ type Spreadsheet(container: Element) =
         match scopeIndex with
         | Some index when index < 0 || index >= sheets.Length -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
         | _ -> ()
-        (match Rbt.Spreadsheet.Workbook.definedNameProblem name with
-         | Some problem -> Host.hostFail memberName problem
-         | None -> ())
-        if name.ToUpperInvariant().StartsWith "_XLNM." then Host.hostFail memberName (sprintf "\"%s\" is a built-in name" name)
-        let wb = ensureWorkbook ()
-        if wb.Tables |> Map.exists (fun known _ -> System.String.Equals(known, name, System.StringComparison.OrdinalIgnoreCase)) then
-            Host.hostFail memberName (sprintf "\"%s\" is the name of a table" name)
-        (match SheetOps.refersToProblem refersTo with
-         | Some problem -> Host.hostFail memberName problem
-         | None -> ())
         let scope = scopeIndex |> Option.map sheetIdForIndex
-        if changeDefinedName "Define name" scope name (Rbt.Spreadsheet.Workbook.setDefinedName scope name refersTo comment) then render()
+        if executeName memberName (Rbt.Spreadsheet.Session.SetDefinedName (scope, name, refersTo, comment)) then render()
 
     /// Delete a defined name: the workbook-level one, or with `scope` (a
     /// sheet index) that sheet's. Formulas that use it show #NAME?. One undo
@@ -10196,17 +9239,8 @@ type Spreadsheet(container: Element) =
         match scopeIndex with
         | Some index when index < 0 || index >= sheets.Length -> Host.hostFail memberName (sprintf "there is no sheet %d (the workbook has %d)" index sheets.Length)
         | _ -> ()
-        if name.ToUpperInvariant().StartsWith "_XLNM." then Host.hostFail memberName (sprintf "\"%s\" is a built-in name" name)
         let scope = scopeIndex |> Option.map sheetIdForIndex
-        let wb = ensureWorkbook ()
-        match Rbt.Spreadsheet.Workbook.deleteDefinedName scope name wb with
-        | None ->
-            Host.hostFail memberName
-                (match scopeIndex with
-                 | Some index -> sprintf "the sheet \"%s\" has no name \"%s\"" sheetNames.[index] name
-                 | None -> sprintf "the workbook has no name \"%s\" (a sheet-level name needs its sheet index)" name)
-        | Some _ ->
-            if changeDefinedName "Delete name" scope name (fun current -> Rbt.Spreadsheet.Workbook.deleteDefinedName scope name current |> Option.defaultValue current) then render()
+        if executeName memberName (Rbt.Spreadsheet.Session.DeleteDefinedName (scope, name)) then render()
 
     /// The workbook's date system: 1900, or 1904 for a workbook opened from a
     /// file that says `date1904` (serial 0 is then 1904-01-01). The serials in
@@ -10247,13 +9281,9 @@ type Spreadsheet(container: Element) =
         let after = if enabled then Some { MaxIterations = count; MaxChange = change } else None
         if before <> after then
             if model.EditingCell.IsSome then finishEditing true |> ignore
-            let put (setting: IterativeCalculation option) (m: SpreadsheetModel) =
-                workbook <- workbook |> Option.map (fun current -> { current with Iteration = setting })
-                invalidateCalcEngine()
-                m
-            put after model |> ignore
+            workbook <- workbook |> Option.map (fun current -> { current with Iteration = after })
             recalculateFromScratch()
-            model <- pushCommand { Undo = put before; Redo = put after; Description = "Iterative calculation" } model
+            model <- pushCommand "Iterative calculation" model
             render()
 
     /// Go to a place, as the name box does: a reference ("B3", "B3:C9",
@@ -10313,40 +9343,91 @@ type Spreadsheet(container: Element) =
         render()
         createObj [ "sheetIndex" ==> sheetIndex; "range" ==> SheetOps.rangeText range ]
 
-    /// Show the built-in conditional formatting dialog for the active cell.
-    /// The dialog offers five kinds of rule (greater than, less than,
-    /// between, equal to, text contains) on one cell; hosts that want the
-    /// other kinds, ranges, priorities and stop-if-true build their own
-    /// dialog on GetConditionalFormats / AddConditionalFormat /
-    /// UpdateConditionalFormat / RemoveConditionalFormat.
-    member _.ShowConditionalFormattingDialog() =
-        showConditionalFormattingDialog()
+    /// Open the shared conditional-rule manager. The dialog is mounted lazily
+    /// on the grid so this public entry point also works without a shell.
+#if FABLE_COMPILER
+    member private this.ManagerPort() : Rbt.Spreadsheet.Managers.SpreadsheetPort = {
+        GetWorkbookEpoch = fun () -> this.GetWorkbookEpoch()
+        GetChangeSerial = fun () -> this.GetChangeSerial()
+        GetActiveSheetIndex = fun () -> this.GetActiveSheetIndex()
+        IsReadOnly = fun () -> this.IsReadOnly()
+        IsEditing = fun () -> this.IsEditing()
+        GetConditionalFormats = fun index -> this.GetConditionalFormats(index)
+        GetSelectionRef = fun () -> this.GetSelectionRef()
+        UpdateConditionalFormat = fun (id, changes) -> this.UpdateConditionalFormat(id, changes)
+        AddConditionalFormat = fun (target, rule, options, fourth, fifth) ->
+            this.AddConditionalFormat(target, rule, options, fourth, fifth)
+        RemoveConditionalFormat = fun id -> this.RemoveConditionalFormat(id)
+        GetDefinedNames = fun () -> this.GetDefinedNames()
+        GetSheetNames = fun () -> this.GetSheetNames()
+        SetDefinedName = fun (name, refersTo, scope, comment) -> this.SetDefinedName(name, refersTo, scope, comment)
+        DeleteDefinedName = fun (name, scope) -> this.DeleteDefinedName(name, scope)
+    }
 
-    /// Show find/replace dialog
-    member _.ShowFindReplaceDialog() =
-        showFindReplaceDialog()
+    member private this.ManagerDialog() =
+        match managerDialog with
+        | Some dialog -> dialog
+        | None ->
+            let dialog = Rbt.FableUI.OfficeUiDialog.createState ()
+            let unmount = Rbt.FableUI.Dom.mount (unbox (getBody())) (Rbt.FableUI.OfficeUiDialog.renderDialog dialog)
+            managerDialog <- Some dialog
+            cleanups.Add(fun () ->
+                Rbt.FableUI.OfficeUiDialog.closeDialog dialog
+                unmount()
+                managerDialog <- None)
+            dialog
+
+    member this.ShowConditionalFormattingDialog() =
+        if not disposed && not (this.IsReadOnly()) && this.TryCommitEdit() then
+            Rbt.Spreadsheet.Managers.openConditionalManager (this.ManagerPort()) (this.ManagerDialog())
+
+    /// Open the workbook/sheet-scoped name manager.
+    member this.ShowDefinedNamesDialog() =
+        if not disposed && not (this.IsReadOnly()) && this.TryCommitEdit() then
+            Rbt.Spreadsheet.Managers.openNameManager (this.ManagerPort()) (this.ManagerDialog())
+#else
+    member _.ShowConditionalFormattingDialog() =
+        invalidOp "The conditional-format dialog requires the browser editor."
+    member _.ShowDefinedNamesDialog() =
+        invalidOp "The name manager requires the browser editor."
+#endif
+
+    /// Open the grid's single find/replace surface (also used by its shell).
+    member _.ShowFindReplaceDialog() = showFindReplaceDialog ()
+    /// Shell command entrypoints use the same search controls and options.
+    member _.FindNextInBar() =
+        showFindReplaceDialog ()
+        findNextAction ()
+
+    member _.ReplaceAllInBar() =
+        showFindReplaceDialog ()
+        findReplaceAllAction ()
+
+    /// Move the grid-owned search controls into a mounted shell.
+    member _.AttachFindReplace(host: Element) =
+        findHost <- Some host
+        if not disposed then appendChild host (ensureFindBar ())
+
+    /// A shell leaves the controls with their grid when that shell unmounts.
+    member _.DetachFindReplace(host: Element) =
+        if findHost |> Option.exists (fun owner -> obj.ReferenceEquals(owner, host)) then
+            closeFindBar ()
+            findHost <- None
+            findBar |> Option.iter (fun bar ->
+                let _ : obj = emitJsExpr (container, bar) "$0.insertBefore($1, $0.firstChild)"
+                ())
+
+    member _.ToggleFindReplace() =
+        if findBar |> Option.exists (fun bar -> getAttribute bar "data-hidden" = "false") then closeFindBar ()
+        else showFindReplaceDialog ()
 
     /// Import CSV data
     member _.ImportCSV(csvText: string, startRow: int, startCol: int) =
-        let oldCells = model.Cells
-        let oldSpill = model.Spill
+        // The session retains a persistent pre-import workbook snapshot.
         model <- importCSV csvText startRow startCol model
         recalculateFormulas()
 
-        // Undo restores the full pre-import cell map (an O(1) reference to the
-        // persistent map) so dependent formulas recalculated by the import are
-        // rolled back too, not just the imported rectangle.
-        let command = {
-            Undo = fun m -> restoreCellMapWithSpill oldCells oldSpill m
-            Redo = fun m ->
-                let sheet = workbook |> Option.map (fun w -> w.ActiveSheet)
-                importCSV csvText startRow startCol m
-                |> recalculateAllFormulas workbook sheet
-                |> spillArrays workbook sheet
-                |> recalculateAllFormulas workbook sheet
-            Description = "Import CSV"
-        }
-        model <- pushCommand command model
+        model <- pushCommand "Import CSV" model
         render()
 
     /// Export spreadsheet to CSV
@@ -10524,6 +9605,23 @@ type Spreadsheet(container: Element) =
     member _.SetAutoFilter(range: obj) : unit =
         let area = SheetOps.autoFilterRange "SetAutoFilter" (Host.rangeArg "SetAutoFilter" (requiredArg "SetAutoFilter" "range" range)) model
         if changeFilter "Set filter" (setAutoFilter (Some area)) then render()
+    /// Set the header range and one column's criteria together as a single
+    /// undoable change. Validate every argument before replacing the old
+    /// AutoFilter, so a rejected criterion cannot leave a new range behind.
+    /// Existing criteria on columns within the new range are retained.
+    member _.SetAutoFilterAndFilter(range: obj, column: obj, criteria: obj) : unit =
+        let name = "SetAutoFilterAndFilter"
+        let area = SheetOps.autoFilterRange name (Host.rangeArg name (requiredArg name "range" range)) model
+        let col = Host.columnArg name "column" model (requiredArg name "column" column)
+        if col < area.From.Col || col > area.To.Col then
+            Host.hostFail name (sprintf "column %s is outside the filter range %s" (columnToLetter col) (SheetOps.rangeText area))
+        let given = requiredArg name "criteria" criteria
+        let wanted = SheetOps.filterOfDescriptionIn model.Date1904 name (Host.filterOfObj name given)
+        let copied = Host.cloneGiven given
+        if changeFilter (sprintf "Filter column %s" (columnToLetter col))
+                (setAutoFilterAndColumnFilter area col wanted) then render()
+        filterGiven.[sprintf "%s|%d" (sheetIdForIndex activeSheetIndex) col] <- (wanted, copied)
+
 
     /// Remove the active sheet's AutoFilter with its column filters; every
     /// row it hid is shown again. One undo step.

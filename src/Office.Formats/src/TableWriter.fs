@@ -158,10 +158,102 @@ let generateCellProperties (props: CellProperties option) : string =
         else
             element "w:tcPr" [] (List.rev children)
 
-/// Generate paragraph for cell (using DocumentWriter logic)
+/// Adapt the earlier table-builder API to the same typed paragraph writer used
+/// by editor package saves. This is a public builder edge, not a second XML writer.
+let private editorRun (run: EditorRun) : WordEditorPackage.EditorRun =
+    let content =
+        if run.IsImage then
+            WordEditorPackage.Picture {
+                Source = run.ImageSrc; Linked = run.ImageLinked
+                Width = run.ImageWidth; Height = run.ImageHeight
+                Alt = run.ImageAlt; Name = run.ImageName; Title = run.ImageTitle
+                Floating = run.ImageFloating; Wrap = run.ImageWrap
+                PositionX = run.ImagePositionX; PositionY = run.ImagePositionY
+                PositionHRelativeFrom = run.ImagePositionHRelativeFrom
+                PositionVRelativeFrom = run.ImagePositionVRelativeFrom
+                PositionHAlign = None; PositionVAlign = None
+                BehindDoc = run.ImageBehindDoc; AllowOverlap = run.ImageAllowOverlap
+                LayoutInCell = run.ImageLayoutInCell
+                DistanceTop = run.ImageDistanceTop; DistanceBottom = run.ImageDistanceBottom
+                DistanceLeft = run.ImageDistanceLeft; DistanceRight = run.ImageDistanceRight
+                RelativeHeight = run.ImageRelativeHeight; Locked = run.ImageLocked
+                SimplePosition = run.ImageSimplePosition
+                SimplePositionX = run.ImageSimplePositionX; SimplePositionY = run.ImageSimplePositionY
+                CropLeft = run.ImageCropLeft; CropTop = run.ImageCropTop
+                CropRight = run.ImageCropRight; CropBottom = run.ImageCropBottom
+                WrapText = None; WrapPolygon = []
+                FlipH = run.ImageFlipH; FlipV = run.ImageFlipV; Opaque = None }
+        else
+            match run.EquationXml with
+            | Some xml -> WordEditorPackage.Equation (run.Text, xml)
+            | None -> WordEditorPackage.Text run.Text
+    { Content = content
+      Formatting = {
+        Style = None; StyleInfo = None
+        Bold = run.Bold; Italic = run.Italic; Underline = run.Underline
+        UnderlineStyle = None; UnderlineColor = None
+        AllCaps = false; SmallCaps = false; Strike = run.Strike; DoubleStrike = false
+        Hidden = false; Position = 0.0; EmphasisMark = None
+        FontSize = run.FontSize; CharacterSpacing = run.CharacterSpacing
+        FontFamily = run.FontFamily; FontFamilyInherited = None
+        Color = run.Color; Highlight = run.Highlight; VertAlign = run.VertAlign
+        HasExplicit = false; ExplicitBold = None; ExplicitItalic = None
+        ExplicitUnderline = None; ExplicitAllCaps = None; ExplicitSmallCaps = None
+        ExplicitStrike = None; ExplicitDoubleStrike = None; ExplicitHidden = None
+        ExplicitFontSize = None; ExplicitColorAuto = false }
+      Hyperlink = run.Hyperlink; InactiveHyperlink = None
+      CommentId = run.CommentId; CommentText = run.CommentText
+      CommentAuthor = run.CommentAuthor; CommentDate = run.CommentDate
+      NoteId = run.NoteId; NoteType = run.NoteType; NoteText = run.NoteText
+      BookmarkStarts = run.BookmarkStarts; BookmarkEnds = run.BookmarkEnds
+      FieldCode = run.FieldCode; FieldResult = run.FieldResult
+      Revision = None; RenderedPageBreakBefore = run.RenderedPageBreakBefore
+      Checkbox = None; ContentControls = []; SourceRun = None; NoProps = false }
+
+let private editorParagraph (para: EditorParagraph) : WordEditorPackage.EditorParagraph =
+    { Runs = para.Runs |> List.map editorRun |> List.toArray
+      HeadingLevel = None
+      Formatting = {
+        Style = None; StyleInfo = None; Alignment = para.Alignment
+        HasExplicit = false; ExplicitAlignment = None
+        IndentLeft = para.IndentLeft; IndentRight = para.IndentRight
+        FirstLineIndent = para.FirstLineIndent
+        SpacingBefore = para.SpacingBefore; SpacingAfter = para.SpacingAfter
+        LineSpacing = para.LineSpacing; LineSpacingRule = None
+        RightTabPosition = para.RightTabPosition; RightTabLeader = para.RightTabLeader
+        TabStops = []; Rtl = false; ContextualSpacing = None
+        KeepNext = None; KeepLines = None; WidowControl = None
+        PageBreakBefore = false; PageBreakBeforeDerived = false
+        PageBreakAtStart = false; PageBreakAfter = false; ColumnBreakAfter = false
+        RenderedPageBreakBefore = None; BackgroundColor = None
+        ShadingPattern = None; ShadingForeground = None; Borders = None
+        ParagraphBorderBefore = None; ParagraphBorderAfter = None
+        OutlineLevel = None; ExplicitParagraphFormat = false
+        ExplicitIndentLeft = None; ExplicitIndentRight = None; ExplicitFirstLineIndent = None
+        ExplicitSpacingBefore = None; ExplicitSpacingAfter = None; ExplicitLineSpacing = None
+        ExplicitContextualSpacing = None; ExplicitBackgroundColor = None
+        ExplicitShadingPattern = None; ExplicitShadingForeground = None; ExplicitTabs = false
+        HasMarkProperties = false; ExplicitMarkFontSize = None; ParagraphMarkFontSize = None
+        MarkRevision = None; DropCapKind = None; DropCapLines = None; DropCapDistance = None
+        ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
+        ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = [] }
+      List = None; SectionBreak = None; SectionPageSetup = None
+      SectionColumns = None; SectionVerticalAlign = None
+      SectionPageNumberStart = None; SectionPageNumberFormat = None
+      HeaderReferences = []; FooterReferences = []
+      Source = { Origin = None; Xml = None; Copy = false; Same = false }
+      SourceParagraph = None; SpliceOriginal = None; SpliceFrom = None
+      SpliceLeading = true; SpliceTrailing = true; SpliceJoined = [||]
+      SourceIndex = None; SourceUnchanged = false; SourceWhy = None; SourceTextChanges = None }
+
 let generateCellParagraph (para: EditorParagraph) : string =
-    // Import from DocumentWriter
-    DocumentWriter.generateParagraph para
+    let typed = editorParagraph para
+    let context = WordPackageWriterModel.createWriterContext ()
+    let imageScope, _ = WordPackageWriterModel.buildImageScope context 1 [| WordEditorPackage.Paragraph typed |]
+    WordPackageWriterModel.generateParagraphWithHyperlinksAndImagesWithPageSetup
+        context WordPackageWriterModel.defaultPageSetupInfo
+        (WordPackageWriterModel.hyperlinkMap context [| WordEditorPackage.Paragraph typed |])
+        imageScope typed
 
 /// Generate cell XML
 let generateCell (cell: TableCell) : string =

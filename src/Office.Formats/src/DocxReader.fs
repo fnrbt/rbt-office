@@ -6,18 +6,6 @@ open ZipInterop
 open Fable.Core.JsInterop
 open System
 
-let inline private (==>) name value =
-    name, box value
-
-let private objFromFields fields : obj =
-#if FABLE_COMPILER
-    createObj fields
-#else
-    let result = System.Collections.Generic.Dictionary<string, obj>()
-    for name, value in fields do
-        result.[name] <- value
-    box result
-#endif
 
 // DOCX domain model
 type RunProperties = {
@@ -151,6 +139,7 @@ type RunContent =
     | BookmarkStart of BookmarkReference
     | BookmarkEnd of string
     | FieldRef of Field
+    | FieldBoundary of ModelText.FieldBoundary
     | EquationXml of string
     | RenderedPageBreak
     | PageBreak
@@ -162,9 +151,20 @@ type RevisionMark = {
     Date: string option
 }
 
+type ContentControlLayer = {
+    Group: string
+    Id: string option
+    Tag: string option
+    Alias: string option
+    Xml: string option
+}
+
 type Run = {
     Content: RunContent
     Properties: RunProperties
+    /// The enclosing w:hyperlink for field tokens and their result runs.
+    /// Ordinary hyperlinks remain Link content; fields need both identities.
+    HyperlinkContext: Hyperlink option
     /// The bookmarks that start before the run and those that end (or are opened) after it, in the order
     /// of the file (see attachRunMarkers).
     BookmarkStarts: ModelText.BookmarkStart list
@@ -184,6 +184,9 @@ type Run = {
     /// The glyph of a w14:checkbox content control (☐ / ☒): its checked state.
     /// The run is the control's - one character, never text typed beside it.
     Checkbox: bool option
+    /// Inline w:sdt wrappers, outermost first; their original properties and
+    /// distinct source identities survive a model-only save.
+    ContentControls: ContentControlLayer list
     /// The w:r the run was read from, in its part's text (docs/save-architecture.md);
     /// Span.none for a run that is not one (a bookmark, a picture outside a run).
     Source: XmlDsl.Span
@@ -236,6 +239,7 @@ type SectionGeometry = {
     DifferentFirstPage: bool
 }
 
+
 type ParagraphProperties = {
     Style: string option
     ContentControlId: string option
@@ -244,6 +248,8 @@ type ParagraphProperties = {
     /// The w:sdtPr of the block-level content control the paragraph is in,
     /// self-contained (completeOpaqueObjects): its binding, placeholder, kind.
     ContentControlXml: string option
+    ContentControlGroup: string option
+    ContentControlAncestors: ContentControlLayer list
     Alignment: string option  // left, center, right, justify
     IndentLeft: string option
     IndentRight: string option
@@ -270,6 +276,8 @@ type ParagraphProperties = {
     WidowControl: bool option
     ContextualSpacing: bool option
     BackgroundColor: string option
+    ShadingPattern: string option
+    ShadingForeground: string option
     ParagraphRunProperties: RunProperties option
     ParagraphBorders: ParagraphBorders option
     ListInfo: ListInfo option
@@ -353,8 +361,15 @@ type TableRowStyleProperties = {
 type Table = {
     Rows: TableRow list
     StyleId: string option
+    ContentControlId: string option
+    ContentControlTag: string option
+    ContentControlAlias: string option
+    ContentControlXml: string option
+    ContentControlGroup: string option
+    ContentControlAncestors: ContentControlLayer list
     Look: TableLook option
     Alignment: string option
+    Indent: string option
     Properties: TableStyleProperties option
     Borders: CellBorders option
     Width: string option
@@ -823,18 +838,20 @@ module Docx =
         appendXmlTo builder node
         builder.ToString()
 
-    let attr attrName node =
-        Xml.attr attrName node
-        |> Option.orElseWith (fun () -> Xml.attr ("w:" + attrName) node)
-
     let private attrByLocalName localName node =
         match node with
         | XmlDsl.Element(_, attrs, _, _) ->
             attrs
-            |> Map.toList
-            |> List.tryPick (fun (name, value) ->
+            |> Map.tryPick (fun name value ->
                 if Ns.stripNs name = localName then Some value else None)
         | _ -> None
+
+    let attr attrName node =
+        Xml.attr attrName node
+        |> Option.orElseWith (fun () ->
+            Xml.name node
+            |> Option.bind (fun name -> Xml.attr (Ns.withPrefixOf name attrName) node))
+        |> Option.orElseWith (fun () -> attrByLocalName attrName node)
 
     // Property extraction DSL
     let hasProp propName node =
@@ -882,7 +899,6 @@ module Docx =
     let parseSectionGeometry (sectPr: XmlNode) : SectionGeometry option =
         let twips (s: string option) = s |> Option.bind (fun v -> match System.Double.TryParse v with | true, n -> Some (n / 15.0) | _ -> None)
         match Ns.childNs "pgSz" sectPr, Ns.childNs "pgMar" sectPr with
-        | None, None -> None
         | pgSz, pgMar ->
             Some {
                 PageWidth = pgSz |> Option.bind (attr "w") |> twips |> Option.defaultValue 816.0
@@ -1041,6 +1057,8 @@ module Docx =
                 ContentControlTag = None
                 ContentControlAlias = None
                 ContentControlXml = None
+                ContentControlGroup = None
+                ContentControlAncestors = []
                 Alignment = getPropVal "jc" "val" props |> Option.orElse frameAlignment
                 IndentLeft = getPropVal "ind" "left" props
                 IndentRight = getPropVal "ind" "right" props
@@ -1064,6 +1082,8 @@ module Docx =
                 WidowControl = onOff "widowControl" props
                 ContextualSpacing = onOff "contextualSpacing" props
                 BackgroundColor = getPropVal "shd" "fill" props
+                ShadingPattern = getPropVal "shd" "val" props
+                ShadingForeground = getPropVal "shd" "color" props
                 ParagraphRunProperties = wElem "rPr" props |> Option.map (fun _ -> runProps props)
                 ParagraphBorders = paragraphBorders props
                 ListInfo = listInfo
@@ -1096,6 +1116,8 @@ module Docx =
                 ContentControlTag = None
                 ContentControlAlias = None
                 ContentControlXml = None
+                ContentControlGroup = None
+                ContentControlAncestors = []
                 Alignment = None
                 IndentLeft = None
                 IndentRight = None
@@ -1119,6 +1141,8 @@ module Docx =
                 WidowControl = None
                 ContextualSpacing = None
                 BackgroundColor = None
+                ShadingPattern = None
+                ShadingForeground = None
                 ParagraphRunProperties = None
                 ParagraphBorders = None
                 ListInfo = None
@@ -1664,7 +1688,8 @@ module Docx =
                   RevisionId = None
                   RevisionType = None
                   RevisionAuthor = None
-                  RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }
+                  RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None
+                  HyperlinkContext = None; ContentControls = []; Source = XmlDsl.Span.none }
             // (A field of one run is of that run: a save writes it from there while it is as read.)
             let whole () =
                 let field = fieldOf (runs |> List.tryHead |> Option.map runProps |> Option.defaultValue (runProps fldNode)) None (runs |> List.exists marked)
@@ -1717,16 +1742,17 @@ module Docx =
 
     type private RunToken =
         | RunToken of Run
-        /// The properties of the run that begins the field, and that run (its source).
-        | FieldBeginToken of RunProperties * XmlDsl.Span
-        | FieldSeparateToken
-        | FieldEndToken
-        | FieldInstructionToken of string
+        /// Source runs and formatting remain attached to structural field tokens.
+        | FieldBeginToken of Run
+        | FieldSeparateToken of Run
+        | FieldEndToken of Run
+        | FieldInstructionToken of Run
 
     type private ComplexFieldState = {
         Properties: RunProperties
         /// The w:r of the field's begin mark: the source of the field's run (see collapseComplexFieldTokens).
         BeginSource: XmlDsl.Span
+        BeginHyperlink: Hyperlink option
         CodeParts: ResizeArray<string>
         ResultRuns: ResizeArray<Run>
         mutable CollectingResult: bool
@@ -1745,6 +1771,7 @@ module Docx =
         | BookmarkEnd _
         | RenderedPageBreak
         | PageBreak -> ""
+        | FieldBoundary _ -> ""
 
     let private appendRun (output: Run list) (stack: ComplexFieldState list) (run: Run) =
         match stack with
@@ -1789,6 +1816,8 @@ module Docx =
                 InsertedRevision = first |> Option.bind (fun run -> run.InsertedRevision)
                 MoveName = first |> Option.bind (fun run -> run.MoveName)
                 Checkbox = None
+                ContentControls = first |> Option.map (fun run -> run.ContentControls) |> Option.defaultValue []
+                HyperlinkContext = first |> Option.bind (fun run -> run.HyperlinkContext) |> Option.orElse field.BeginHyperlink
                 Source = (match first with Some run -> run.Source | None -> XmlDsl.Span.none)
             }
         let marked = field.ResultRuns |> Seq.exists isMark
@@ -1810,18 +1839,28 @@ module Docx =
             if groups.Count < 2 then whole ()
             else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) false ]
 
-    let private flattenIncompleteField (output: Run list) (stack: ComplexFieldState list) =
-        match stack with
-        | [] -> output, stack
-        | current :: rest ->
-            let mutable currentOutput = output
-            let mutable currentStack = rest
-            for run in current.ResultRuns do
-                let nextOutput, nextStack = appendRun currentOutput currentStack run
-                currentOutput <- nextOutput
-                currentStack <- nextStack
-            let output, rest = currentOutput, currentStack
-            output, rest
+    // An unbalanced paragraph belongs to a field spanning paragraphs. Its
+    // structural tokens must stay in place; collapsing the inner fields or
+    // discarding the unmatched end would change the enclosing field's extent.
+    let private spansParagraph (tokens: RunToken list) =
+        let mutable depth = 0
+        let mutable unmatched = false
+        for token in tokens do
+            match token with
+            | FieldBeginToken _ -> depth <- depth + 1
+            | FieldEndToken _ when depth = 0 -> unmatched <- true
+            | FieldEndToken _ -> depth <- depth - 1
+            | FieldSeparateToken _ | FieldInstructionToken _ when depth = 0 -> unmatched <- true
+            | _ -> ()
+        unmatched || depth <> 0
+
+    let private boundaryRuns (tokens: RunToken list) =
+        tokens |> List.map (function
+            | RunToken run -> run
+            | FieldBeginToken run -> run
+            | FieldInstructionToken run -> run
+            | FieldSeparateToken run -> run
+            | FieldEndToken run -> run)
 
     let private collapseComplexFieldTokens (tokens: RunToken list) =
         let mutable output: Run list = []
@@ -1841,18 +1880,19 @@ module Docx =
                 let newOutput, newStack = appendRun output stack run
                 output <- newOutput
                 stack <- newStack
-            | FieldBeginToken (props, beginSource) ->
-                stack <- { Properties = props; BeginSource = beginSource; CodeParts = ResizeArray<string>(); ResultRuns = ResizeArray<Run>(); CollectingResult = false } :: stack
-            | FieldInstructionToken code ->
-                match stack with
-                | current :: rest when not current.CollectingResult ->
+            | FieldBeginToken run ->
+                stack <- { Properties = run.Properties; BeginSource = run.Source; BeginHyperlink = run.HyperlinkContext
+                           CodeParts = ResizeArray<string>(); ResultRuns = ResizeArray<Run>(); CollectingResult = false } :: stack
+            | FieldInstructionToken run ->
+                match stack, run.Content with
+                | current :: _, FieldBoundary (ModelText.Instruction code) when not current.CollectingResult ->
                     current.CodeParts.Add code
                 | _ -> ()
-            | FieldSeparateToken ->
+            | FieldSeparateToken _ ->
                 match stack with
                 | current :: _ -> current.CollectingResult <- true
                 | [] -> ()
-            | FieldEndToken ->
+            | FieldEndToken _ ->
                 match stack with
                 | current :: rest ->
                     stack <- rest
@@ -1871,13 +1911,13 @@ module Docx =
                         endsAfterField.Clear()
                 | [] -> ()
 
-        while not stack.IsEmpty do
-            let newOutput, newStack = flattenIncompleteField output stack
-            output <- newOutput
-            stack <- newStack
         for ending in endsAfterField do output <- ending :: output
 
         List.rev output
+
+    let private runsFromTokens tokens =
+        if spansParagraph tokens then boundaryRuns tokens
+        else collapseComplexFieldTokens tokens
 
     // The bookmarks that start before a run and end after it are the run's. A
     // run can have several of each (three w:bookmarkStart before a heading's
@@ -1956,6 +1996,7 @@ module Docx =
                     |> Option.bind (attr "id")
         let makeRun content =
             { Content = content
+              HyperlinkContext = None
               Properties = props
               BookmarkStarts = []
               BookmarkEnds = []
@@ -1963,7 +2004,7 @@ module Docx =
               RevisionId = revId
               RevisionType = None
               RevisionAuthor = None
-              RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None
+              RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; ContentControls = []
               Source = (match rNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none) }
 
         let childTokens =
@@ -2018,11 +2059,11 @@ module Docx =
                     | "endnoteReference" -> attr "id" child |> Option.map (fun id -> makeRun (NoteRef { Id = id; NoteType = "endnote" }) |> RunToken)
                     | "fldChar" ->
                         match attr "fldCharType" child with
-                        | Some "begin" -> Some (FieldBeginToken (props, (match rNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)))
-                        | Some "separate" -> Some FieldSeparateToken
-                        | Some "end" -> Some FieldEndToken
+                        | Some "begin" -> Some (FieldBeginToken (makeRun (FieldBoundary ModelText.Begin)))
+                        | Some "separate" -> Some (FieldSeparateToken (makeRun (FieldBoundary ModelText.Separate)))
+                        | Some "end" -> Some (FieldEndToken (makeRun (FieldBoundary ModelText.End)))
                         | _ -> None
-                    | "instrText" -> Xml.text child |> Option.map FieldInstructionToken
+                    | "instrText" -> Xml.text child |> Option.map (fun code -> FieldInstructionToken (makeRun (FieldBoundary (ModelText.Instruction code))))
                     | _ -> None))
 
         if not childTokens.IsEmpty then childTokens
@@ -2041,35 +2082,47 @@ module Docx =
                         | None -> textContent rNode |> Option.map (Text >> makeRun >> RunToken >> List.singleton) |> Option.defaultValue []
 
     let runsFromRun (rNode: XmlNode) : Run list =
-        tokensFromRun rNode |> collapseComplexFieldTokens |> attachRunMarkers
+        tokensFromRun rNode |> runsFromTokens |> attachRunMarkers
 
     let private tokenHasField = function
         | FieldBeginToken _
-        | FieldSeparateToken
-        | FieldEndToken
+        | FieldSeparateToken _
+        | FieldEndToken _
         | FieldInstructionToken _ -> true
-        | RunToken _ -> false
+        | RunToken run -> match run.Content with FieldRef _ -> true | _ -> false
 
     let private hyperlinkRunProps (props: RunProperties) =
         match props.Style with
         | Some _ -> props
         | None -> { props with Style = Some "Hyperlink" }
 
-    let private hyperlinkToken = function
-        | RunToken run -> RunToken { run with Properties = hyperlinkRunProps run.Properties }
-        | FieldBeginToken (props, source) -> FieldBeginToken (hyperlinkRunProps props, source)
-        | token -> token
+    let private hyperlinkToken rId anchorTarget token =
+        let withLink (run: Run) =
+            let props = hyperlinkRunProps run.Properties
+            { run with Properties = props
+                       HyperlinkContext = Some { Text = ""; Target = anchorTarget; RelationshipId = rId; Properties = props } }
+        match token with
+        | RunToken run -> RunToken (withLink run)
+        | FieldBeginToken run -> FieldBeginToken (withLink run)
+        | FieldSeparateToken run -> FieldSeparateToken (withLink run)
+        | FieldEndToken run -> FieldEndToken (withLink run)
+        | FieldInstructionToken run -> FieldInstructionToken (withLink run)
 
     let private tokensFromHyperlink (hlNode: XmlNode) : RunToken list =
         let rId = Xml.attr "r:id" hlNode
         // A link to a bookmark of the document itself (w:anchor): "#name".
         let anchorTarget = attr "anchor" hlNode |> Option.filter (fun name -> name <> "") |> Option.map (fun name -> "#" + name)
-        let tokens = wElems "r" hlNode |> List.collect tokensFromRun
+        let tokens =
+            Xml.children hlNode |> List.collect (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs with
+                | Some "r" -> tokensFromRun child
+                | Some "fldSimple" -> simpleFieldRuns child |> List.map RunToken
+                | _ -> [])
 
         if tokens |> List.exists tokenHasField then
-            tokens |> List.map hyperlinkToken
+            tokens |> List.map (hyperlinkToken rId anchorTarget)
         else
-            let runs = tokens |> collapseComplexFieldTokens |> attachRunMarkers
+            let runs = tokens |> runsFromTokens |> attachRunMarkers
 
             // A link's runs are runs of the link: each with its own text and properties (a part of
             // a link that is bold is bold). A link without text is one run without text.
@@ -2097,7 +2150,8 @@ module Docx =
                     RevisionId = None
                     RevisionType = None
                     RevisionAuthor = None
-                    RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = source
+                    RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None
+                    HyperlinkContext = None; ContentControls = []; Source = source
                 }
             // (Runs that are formatted alike are one run, as they were before each was read on its own: of the
             // w:r of the first, where it is of that one alone. A run that Word's mark of a page it started stands
@@ -2117,7 +2171,7 @@ module Docx =
 
     // Hyperlink extraction
     let hyperlink (hlNode: XmlNode) : Run list =
-        tokensFromHyperlink hlNode |> collapseComplexFieldTokens |> attachRunMarkers
+        tokensFromHyperlink hlNode |> runsFromTokens |> attachRunMarkers
 
     let private hasRenderedPageBreakBeforeText (pNode: XmlNode) =
         let rec loop seenText nodes =
@@ -2142,6 +2196,16 @@ module Docx =
         loop false (Xml.children pNode)
 
     // Paragraph extraction with functional composition
+    let private contentControlProps (sdtNode: XmlNode) : ContentControlLayer =
+        let props = Ns.childNs "sdtPr" sdtNode
+        let group = match sdtNode with XmlDsl.Element (_, _, _, span) -> string span.Start | _ -> ""
+        let endProps = Ns.childNs "sdtEndPr" sdtNode |> Option.map xmlToString |> Option.defaultValue ""
+        { Group = group
+          Id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
+          Tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
+          Alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
+          Xml = props |> Option.map (fun props -> xmlToString props + endProps) }
+
     let private paragraphWithRenderedBreakCounter (renderedBreakCounter: int ref option) (pNode: XmlNode) : Paragraph =
         let renderedPageBreaks = Ns.descendantsNs "lastRenderedPageBreak" pNode
         let hasRenderedPageBreak = not renderedPageBreaks.IsEmpty
@@ -2175,14 +2239,14 @@ module Docx =
                 | Some name when Ns.stripNs name = "fldSimple" ->
                     simpleFieldRuns child |> List.map RunToken
                 | Some name when Ns.stripNs name = "oMath" || Ns.stripNs name = "oMathPara" ->
-                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
+                    [RunToken { Content = EquationXml (xmlToString child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; HyperlinkContext = None; ContentControls = []; Source = XmlDsl.Span.none }]
                 | Some name when Ns.stripNs name = "bookmarkStart" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkStart { Id = id; Name = attr "name" child }; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; HyperlinkContext = None; ContentControls = []; Source = XmlDsl.Span.none })
                     |> Option.toList
                 | Some name when Ns.stripNs name = "bookmarkEnd" ->
                     attr "id" child
-                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none })
+                    |> Option.map (fun id -> RunToken { Content = BookmarkEnd id; Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; HyperlinkContext = None; ContentControls = []; Source = XmlDsl.Span.none })
                     |> Option.toList
                 // Transparent inline wrappers: their runs are ordinary paragraph content.
                 | Some name when (match Ns.stripNs name with "smartTag" | "customXml" | "dir" | "bdo" -> true | _ -> false) ->
@@ -2190,7 +2254,7 @@ module Docx =
                 | Some name when Ns.stripNs name = "AlternateContent" ->
                     if isGraphicAlternateContent child then
                         // A drawing in two forms: kept whole rather than reduced to its fallback.
-                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; Source = XmlDsl.Span.none }]
+                        [RunToken { Content = Image (opaqueObject true child); Properties = runProps child; BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = None; HyperlinkContext = None; ContentControls = []; Source = XmlDsl.Span.none }]
                     else
                         // Take the fallback (plain WordprocessingML/VML) when there is one, else the first choice.
                         match Ns.childNs "Fallback" child |> Option.orElseWith (fun () -> Ns.childNs "Choice" child) with
@@ -2208,51 +2272,60 @@ module Docx =
                     let revisionId = Xml.attr "id" child |> Option.orElse (Xml.attr "w:id" child)
                     let author = Xml.attr "author" child |> Option.orElse (Xml.attr "w:author" child)
                     let date = Xml.attr "date" child |> Option.orElse (Xml.attr "w:date" child)
+                    let revise (run: Run) =
+                        // Nested insertion/deletion keeps both identities.
+                        if revisionType = "insert" && run.RevisionType = Some "delete" then
+                            { run with InsertedRevision = Some { Id = revisionId; Author = author; Date = date } }
+                        elif revisionType = "delete" && run.RevisionType = Some "insert" then
+                            { run with RevisionId = revisionId; RevisionType = Some "delete"
+                                       RevisionAuthor = author; RevisionDate = date
+                                       InsertedRevision = Some { Id = run.RevisionId; Author = run.RevisionAuthor; Date = run.RevisionDate } }
+                        elif run.RevisionType.IsSome then run
+                        else { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date }
                     tokensFromNode child
                     |> List.map (function
-                        // A deletion inside this insertion stays a deletion and remembers
-                        // the insertion it is in. (The outer change used to overwrite the
-                        // inner one, so deleted text of an insertion read as inserted.)
-                        | RunToken run when revisionType = "insert" && run.RevisionType = Some "delete" ->
-                            RunToken { run with InsertedRevision = Some { Id = revisionId; Author = author; Date = date } }
-                        | RunToken run when revisionType = "delete" && run.RevisionType = Some "insert" ->
-                            RunToken { run with
-                                        RevisionId = revisionId; RevisionType = Some "delete"; RevisionAuthor = author; RevisionDate = date
-                                        InsertedRevision = Some { Id = run.RevisionId; Author = run.RevisionAuthor; Date = run.RevisionDate } }
-                        | RunToken run when run.RevisionType.IsSome -> RunToken run
-                        | RunToken run -> RunToken { run with RevisionId = revisionId; RevisionType = Some revisionType; RevisionAuthor = author; RevisionDate = date }
-                        | token -> token)
+                        | RunToken run -> RunToken (revise run)
+                        | FieldBeginToken run -> FieldBeginToken (revise run)
+                        | FieldSeparateToken run -> FieldSeparateToken (revise run)
+                        | FieldEndToken run -> FieldEndToken (revise run)
+                        | FieldInstructionToken run -> FieldInstructionToken (revise run))
                 | Some name when Ns.stripNs name = "sdt" ->
                     // A w14:checkbox content control renders as a real checkbox
                     // glyph from its checked state (the stored glyph is often a
                     // symbol-font char that won't render); other controls just
                     // surface their inner content.
+                    let layer = contentControlProps child
                     let checkbox = Ns.childNs "sdtPr" child |> Option.bind (fun pr -> Ns.descendantsNs "checkbox" pr |> List.tryHead)
-                    match checkbox with
-                    | Some cb ->
-                        let isChecked =
-                            Ns.descendantsNs "checked" cb |> List.tryHead
-                            |> Option.bind (attrByLocalName "val")   // w14:val
-                            |> Option.map (fun v -> v = "1" || v = "true")
-                            |> Option.defaultValue false
-                        let glyph = if isChecked then "☒" else "☐"
-                        // (The glyph is the text of the control's run: a save writes that run as it was.)
-                        let checkboxRunSource =
+                    let tokens =
+                        match checkbox with
+                        | Some cb ->
+                            let isChecked =
+                                Ns.descendantsNs "checked" cb |> List.tryHead
+                                |> Option.bind (attrByLocalName "val")
+                                |> Option.map (fun v -> v = "1" || v = "true")
+                                |> Option.defaultValue false
+                            let glyph = if isChecked then "☒" else "☐"
+                            let checkboxRunSource =
+                                Ns.childNs "sdtContent" child
+                                |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
+                                |> Option.map (function XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
+                                |> Option.defaultValue XmlDsl.Span.none
+                            let checkboxRun = Ns.childNs "sdtContent" child |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
+                            [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = Some isChecked; Source = checkboxRunSource; HyperlinkContext = None; ContentControls = [] }]
+                        | None ->
                             Ns.childNs "sdtContent" child
-                            |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
-                            |> Option.map (function XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
-                            |> Option.defaultValue XmlDsl.Span.none   // ☒ / ☐
-                        // (Formatted as the control's run is.)
-                        let checkboxRun = Ns.childNs "sdtContent" child |> Option.bind (fun content -> Ns.descendantsNs "r" content |> List.tryHead)
-                        [RunToken { Content = Text glyph; Properties = runProps (checkboxRun |> Option.defaultValue child); BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false; RevisionId = None; RevisionType = None; RevisionAuthor = None; RevisionDate = None; InsertedRevision = None; MoveName = None; Checkbox = Some isChecked; Source = checkboxRunSource }]
-                    | None ->
-                        Ns.childNs "sdtContent" child
-                        |> Option.map tokensFromNode
-                        |> Option.defaultValue []
+                            |> Option.map tokensFromNode
+                            |> Option.defaultValue []
+                    tokens |> List.map (function
+                        | RunToken run -> RunToken { run with ContentControls = layer :: run.ContentControls }
+                        | FieldBeginToken run -> FieldBeginToken { run with ContentControls = layer :: run.ContentControls }
+                        | FieldSeparateToken run -> FieldSeparateToken { run with ContentControls = layer :: run.ContentControls }
+                        | FieldEndToken run -> FieldEndToken { run with ContentControls = layer :: run.ContentControls }
+                        | FieldInstructionToken run -> FieldInstructionToken { run with ContentControls = layer :: run.ContentControls })
                 | _ -> [])
 
         // Extract runs and hyperlinks
-        let runs = tokensFromNode pNode |> collapseComplexFieldTokens |> attachRunMarkers |> normalizeTocRuns props
+        let runs = tokensFromNode pNode |> runsFromTokens |> attachRunMarkers |> normalizeTocRuns props
 
         // A tracked paragraph mark: w:ins / w:del among the mark's run properties.
         let markRevision =
@@ -2504,8 +2577,18 @@ module Docx =
         {
             Rows = rows
             StyleId = tblPr |> Option.bind (wElem "tblStyle") |> Option.bind (attr "val")
+            ContentControlId = None
+            ContentControlTag = None
+            ContentControlAlias = None
+            ContentControlXml = None
+            ContentControlGroup = None
+            ContentControlAncestors = []
             Look = tableLook
             Alignment = tblPr |> Option.bind (wElem "jc") |> Option.bind (attr "val")
+            Indent = tblPr |> Option.bind (wElem "tblInd") |> Option.bind (fun node ->
+                match attr "type" node with
+                | None | Some "dxa" -> attr "w" node
+                | _ -> None)
             Properties = tableProperties
             Borders = borders
             Width = tableWidth |> Option.bind (attr "w")
@@ -2518,19 +2601,22 @@ module Docx =
         }
 
     // Main document content extraction
-    let private contentControlProps (sdtNode: XmlNode) =
-        let props = Ns.childNs "sdtPr" sdtNode
-        let id = props |> Option.bind (Ns.childNs "id") |> Option.bind (attr "val")
-        let tag = props |> Option.bind (Ns.childNs "tag") |> Option.bind (attr "val")
-        let alias = props |> Option.bind (Ns.childNs "alias") |> Option.bind (attr "val")
-        // (What the control says of itself: its properties and the formatting of its end mark, w:sdtEndPr.)
-        let endProps = Ns.childNs "sdtEndPr" sdtNode |> Option.map xmlToString |> Option.defaultValue ""
-        id, tag, alias, props |> Option.map (fun props -> xmlToString props + endProps)
-    let private applyContentControl (id, tag, alias, xml) = function
-        // (In a control in a control, the paragraph is the inner one's.)
-        | Para para when para.Properties.ContentControlXml.IsNone ->
-            Para { para with Properties = { para.Properties with ContentControlId = id; ContentControlTag = tag; ContentControlAlias = alias; ContentControlXml = xml } }
-        | item -> item
+    let private applyContentControl (layer: ContentControlLayer) = function
+        | Para para when para.Properties.ContentControlGroup.IsNone ->
+            Para {
+                para with
+                    Properties = {
+                        para.Properties with
+                            ContentControlId = layer.Id; ContentControlTag = layer.Tag; ContentControlAlias = layer.Alias
+                            ContentControlXml = layer.Xml; ContentControlGroup = Some layer.Group
+                    }
+            }
+        | Para para ->
+            Para { para with Properties = { para.Properties with ContentControlAncestors = layer :: para.Properties.ContentControlAncestors } }
+        | Tbl table when table.ContentControlGroup.IsNone ->
+            Tbl { table with ContentControlId = layer.Id; ContentControlTag = layer.Tag; ContentControlAlias = layer.Alias
+                             ContentControlXml = layer.Xml; ContentControlGroup = Some layer.Group }
+        | Tbl table -> Tbl { table with ContentControlAncestors = layer :: table.ContentControlAncestors }
 
     /// The blocks one child element of the body (of a note, a header, a
     /// content control ...) gives: a paragraph, a table, the blocks of a
@@ -2661,6 +2747,8 @@ module Styles =
             ContentControlTag = None
             ContentControlAlias = None
             ContentControlXml = None
+            ContentControlGroup = None
+            ContentControlAncestors = []
             Alignment = Ns.childNs "jc" pPr |> Option.bind (Docx.attr "val")
             IndentLeft = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "left")
             IndentRight = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "right")
@@ -2684,6 +2772,8 @@ module Styles =
             WidowControl = Docx.onOff "widowControl" pPr
             ContextualSpacing = Docx.onOff "contextualSpacing" pPr
             BackgroundColor = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "fill")
+            ShadingPattern = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "val")
+            ShadingForeground = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "color")
             ParagraphRunProperties = Ns.childNs "rPr" pPr |> Option.map (fun _ -> Docx.runProps pPr)
             ParagraphBorders = Docx.paragraphBorders pPr
             ListInfo = listInfo
@@ -3140,9 +3230,23 @@ let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : Docum
     | XmlDsl.Element(_, attrs, _, _) ->
         blocks
         |> mapBlockParagraphs (fun para ->
-            match para.Properties.ContentControlXml with
-            | Some control -> { para with Properties = { para.Properties with ContentControlXml = Some (selfContainedXml attrs control) } }
-            | None -> para)
+            let props = para.Properties
+            { para with
+                Properties = {
+                    props with
+                        ContentControlXml = props.ContentControlXml |> Option.map (selfContainedXml attrs)
+                        ContentControlAncestors = props.ContentControlAncestors |> List.map (fun layer ->
+                            { layer with Xml = layer.Xml |> Option.map (selfContainedXml attrs) })
+                } })
+        |> List.map (function
+            | Tbl table ->
+                Tbl {
+                    table with
+                        ContentControlXml = table.ContentControlXml |> Option.map (selfContainedXml attrs)
+                        ContentControlAncestors = table.ContentControlAncestors |> List.map (fun layer ->
+                            { layer with Xml = layer.Xml |> Option.map (selfContainedXml attrs) })
+                }
+            | block -> block)
         |> mapBlockRuns (fun run ->
             match run.Content with
             | Image ({ Opaque = Some opaque } as image) ->
@@ -3211,15 +3315,18 @@ let qualifyImageRun (partKey: string) (run: Run) : Run =
 
 /// Hyperlink targets live in the relationships of the part the link is in.
 let resolveHyperlinkRun (relMap: Map<string, string>) (run: Run) : Run =
-    match run.Content with
-    | Link link ->
+    let resolve (link: Hyperlink) =
         match link.RelationshipId |> Option.bind (fun rId -> Map.tryFind rId relMap) with
         | Some target ->
             // With a w:anchor as well, the anchor is the fragment of the target.
             let fragment = match link.Target with | Some (anchor: string) when OpcXml.isAnchorTarget anchor && not (target.Contains "#") -> anchor | _ -> ""
-            { run with Content = Link { link with Target = Some (target + fragment) } }
-        | None -> run
-    | _ -> run
+            { link with Target = Some (target + fragment) }
+        | None -> link
+    let content =
+        match run.Content with
+        | Link link -> Link (resolve link)
+        | other -> other
+    { run with Content = content; HyperlinkContext = run.HyperlinkContext |> Option.map resolve }
 
 let private hyperlinkTargets (rels: Relationship list) =
     rels
@@ -5245,6 +5352,7 @@ let extractText (doc: WordDocument) : string =
         | BookmarkStart _ -> ""
         | BookmarkEnd _ -> ""
         | FieldRef field -> field.Part |> Option.orElse field.Result |> Option.defaultValue $"[Field:{field.Code}]"
+        | FieldBoundary _ -> ""
         | EquationXml _ -> "[Equation]"
         | RenderedPageBreak -> ""
         | PageBreak -> "\n"
@@ -5277,7 +5385,7 @@ let paragraphPageBreaks (para: Paragraph) : bool * bool =
     let isBreak (run: Run) = match run.Content with PageBreak -> true | _ -> false
     let isNothing (run: Run) =
         match run.Content with
-        | BookmarkStart _ | BookmarkEnd _ | RenderedPageBreak | Text "" -> true
+        | BookmarkStart _ | BookmarkEnd _ | RenderedPageBreak | FieldBoundary _ | Text "" -> true
         | _ -> false
     let rec leading (runs: Run list) =
         match runs with
@@ -5290,7 +5398,7 @@ let paragraphPageBreaks (para: Paragraph) : bool * bool =
 // Convert DocumentContent to EditorParagraph format for Word editor
 /// Text no style, no document default and no run gives a size is 10 pt in Word
 /// (w:sz's own default, 20 half-points), not the 11 pt of Normal in Word's template.
-let private wordFontSizeToPoints (fontSize: string option) =
+let internal wordFontSizeToPoints (fontSize: string option) =
     match fontSize with
     | Some value ->
         match System.Double.TryParse(value) with
@@ -5301,7 +5409,7 @@ let private wordFontSizeToPoints (fontSize: string option) =
 /// w:position is in half-points and the editor (Paint) takes points. It used to
 /// go through wordFontSizeToPoints, which turned it into px and, worse, turned
 /// "no w:position" into the 11pt font-size default instead of 0.
-let private wordPositionToPoints (position: string option) =
+let internal wordPositionToPoints (position: string option) =
     match position with
     | Some value ->
         match System.Double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with
@@ -5309,7 +5417,7 @@ let private wordPositionToPoints (position: string option) =
         | false, _ -> 0.0
     | None -> 0.0
 
-let private wordCharacterSpacingToCssPixels (spacing: string option) =
+let internal wordCharacterSpacingToCssPixels (spacing: string option) =
     spacing
     |> Option.bind (fun value ->
         match System.Double.TryParse(value) with
@@ -5324,12 +5432,12 @@ let private resolveThemeFont (theme: Theme option) (themeFont: string option) =
     | _, Some false -> Some "Calibri"
     | _ -> None
 
-let private wordFontFamilyToCss (theme: Theme option) (props: RunProperties) =
+let internal wordFontFamilyToCss (theme: Theme option) (props: RunProperties) =
     props.FontFamily
     |> Option.orElseWith (fun () -> resolveThemeFont theme props.ThemeFont)
     |> Option.defaultValue "Calibri"
 
-let private wordColorToCss (color: string option) =
+let internal wordColorToCss (color: string option) =
     match color with
     | Some value when value = "" || value = "auto" -> None
     | Some value when ValueText.Color.isHash value -> Some value
@@ -5337,42 +5445,19 @@ let private wordColorToCss (color: string option) =
     | Some value -> Some ("#" + value.ToUpper())
     | None -> None
 
-let private wordShadingColorToEditor (color: string option) =
+let internal wordShadingColorToEditor (color: string option) =
     match color with
     | Some value when value = "" -> None
     | Some "auto" -> Some "auto"
     | value -> wordColorToCss value
 
-let private wordShadingToEditor (shading: Shading) =
-    objFromFields [
-        "Pattern" ==> shading.Pattern
-        "ForegroundColor" ==> wordShadingColorToEditor shading.Color
-        "BackgroundColor" ==> wordShadingColorToEditor shading.Fill
-    ]
-
-let private directShadingBackgroundColor (shading: Shading) =
+let internal directShadingBackgroundColor (shading: Shading) =
     match shading.Pattern with
     | None
     | Some "clear" -> wordColorToCss shading.Fill
     | _ -> None
 
-let private wordTwipsToPoints (twips: string option) =
-    twips
-    |> Option.bind (fun value ->
-        match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 15.0)
-        | false, _ -> None)
-
-let private wordSpacingTwipsToPoints (twips: string option) =
-    twips
-    |> Option.bind (fun value ->
-        match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 20.0)
-        | false, _ -> None)
-
-let private wordAutoSpacing = 14.0
-
-let private wordLineSpacingToMultiple fontSize (line: string option) (lineRule: string option) =
+let internal wordLineSpacingToMultiple fontSize (line: string option) (lineRule: string option) =
     line
     |> Option.bind (fun value ->
         match System.Double.TryParse(value) with
@@ -5382,53 +5467,7 @@ let private wordLineSpacingToMultiple fontSize (line: string option) (lineRule: 
             | _ -> Some (parsed / 240.0)
         | false, _ -> None)
 
-let private borderColorToCss (border: BorderStyle option) =
-    border
-    |> Option.bind (fun border ->
-        match border.Color with
-        | Some value when value = "" || value = "auto" -> Some "#000000"
-        | value -> wordColorToCss value)
-
-let private borderWidthToPoints (border: BorderStyle option) =
-    border
-    |> Option.bind (fun border -> border.Size)
-    |> Option.bind (fun value ->
-        match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 6.0)
-        | false, _ -> None)
-
-let private borderToEditor (border: BorderStyle option) =
-    border
-    |> Option.map (fun value -> objFromFields [
-        "Style" ==> value.BorderType
-        "Color" ==> borderColorToCss border
-        "Width" ==> borderWidthToPoints border
-    ])
-
-let private paragraphBorderColorToCss (border: ParagraphBorder option) =
-    border
-    |> Option.bind (fun border ->
-        match border.Color with
-        | Some value when value = "" || value = "auto" -> Some "#000000"
-        | value -> wordColorToCss value)
-
-let private paragraphBorderWidthToPoints (border: ParagraphBorder option) =
-    border
-    |> Option.bind (fun border -> border.Width)
-    |> Option.bind (fun value ->
-        match System.Double.TryParse(value) with
-        | true, parsed -> Some (parsed / 6.0)
-        | false, _ -> None)
-
-let private paragraphBorderSpaceToPoints (border: ParagraphBorder option) =
-    border
-    |> Option.bind (fun border -> border.Space)
-    |> Option.bind (fun value ->
-        match System.Double.TryParse(value) with
-        | true, parsed -> Some parsed
-        | false, _ -> None)
-
-let private paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
+let internal paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
     border
     |> Option.bind (fun value ->
         match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
@@ -5451,126 +5490,7 @@ let private paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
                 |> Option.defaultValue 0.0
             Some ((spacePt + widthPt * 2.0) * 96.0 / 72.0))
 
-let private paragraphBorderToEditor (border: ParagraphBorder option) =
-    border
-    |> Option.map (fun value -> objFromFields [
-        "Style" ==> value.Style
-        "Color" ==> paragraphBorderColorToCss border
-        "Width" ==> paragraphBorderWidthToPoints border
-        "Space" ==> paragraphBorderSpaceToPoints border
-    ])
-
-let private paragraphBordersToEditor (borders: ParagraphBorders option) =
-    borders
-    |> Option.map (fun value -> objFromFields [
-        "Top" ==> paragraphBorderToEditor value.Top
-        "Right" ==> paragraphBorderToEditor value.Right
-        "Bottom" ==> paragraphBorderToEditor value.Bottom
-        "Left" ==> paragraphBorderToEditor value.Left
-    ])
-
-let private bordersToEditor (borders: CellBorders option) =
-    borders
-    |> Option.map (fun value -> objFromFields [
-        "Top" ==> borderToEditor value.Top
-        "Right" ==> borderToEditor value.Right
-        "Bottom" ==> borderToEditor value.Bottom
-        "Left" ==> borderToEditor value.Left
-        "InsideH" ==> borderToEditor value.InsideH
-        "InsideV" ==> borderToEditor value.InsideV
-    ])
-
-/// `props` are the effective paragraph properties, `direct` what the paragraph
-/// itself states (its own w:pPr). Next to each effective value the object
-/// carries ExplicitX: the value when the paragraph states it, null when it is
-/// inherited (from a style, the document defaults or the numbering level) or
-/// not set anywhere. The writer writes the explicit ones only, so a save does
-/// not turn inherited or unset formatting into direct formatting.
-let private paragraphLayoutProps fontSize defaultMissingSpacingToZero (borderAdvanceSource: ParagraphBorders option) (direct: ParagraphProperties) (props: ParagraphProperties) =
-    let missingSpacingFallback = if defaultMissingSpacingToZero then Some 0.0 else None
-    let spacingBefore =
-        if props.SpacingBeforeAuto = Some true then Some wordAutoSpacing else wordSpacingTwipsToPoints props.SpacingBefore |> Option.orElse missingSpacingFallback
-    let spacingAfter =
-        if props.SpacingAfterAuto = Some true then Some wordAutoSpacing
-        else wordSpacingTwipsToPoints props.SpacingAfter |> Option.orElse missingSpacingFallback
-    let firstLineIndent =
-        // (Stated together, the hanging indent is the one that counts.)
-        match wordTwipsToPoints props.FirstLineIndent, wordTwipsToPoints props.HangingIndent with
-        | _, Some hanging -> Some -hanging
-        | Some firstLine, None -> Some firstLine
-        | None, None -> None
-    let lineSpacing = wordLineSpacingToMultiple fontSize props.LineSpacing props.LineRule
-    let whenDirect (stated: bool) (value: 'a option) = if stated then value else None
-    [
-        "ExplicitParagraphFormat" ==> true
-        "ExplicitSpacingBefore" ==> whenDirect (direct.SpacingBefore.IsSome || direct.SpacingBeforeAuto.IsSome) spacingBefore
-        "ExplicitSpacingAfter" ==> whenDirect (direct.SpacingAfter.IsSome || direct.SpacingAfterAuto.IsSome) spacingAfter
-        "ExplicitLineSpacing" ==> whenDirect direct.LineSpacing.IsSome lineSpacing
-        "ExplicitIndentLeft" ==> whenDirect direct.IndentLeft.IsSome (wordTwipsToPoints props.IndentLeft)
-        "ExplicitIndentRight" ==> whenDirect direct.IndentRight.IsSome (wordTwipsToPoints props.IndentRight)
-        "ExplicitFirstLineIndent" ==> whenDirect (direct.FirstLineIndent.IsSome || direct.HangingIndent.IsSome) firstLineIndent
-        "ExplicitContextualSpacing" ==> direct.ContextualSpacing
-        "ExplicitBackgroundColor" ==> whenDirect direct.BackgroundColor.IsSome (wordColorToCss props.BackgroundColor)
-        "ExplicitTabs" ==> not direct.TabStops.IsEmpty
-        // The paragraph mark has run properties of its own (w:pPr/w:rPr), and the size it states.
-        "HasMarkProperties" ==> direct.ParagraphRunProperties.IsSome
-        "ExplicitMarkFontSize" ==> (direct.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (fun _ -> wordFontSizeToPoints mark.FontSize)))
-        // w:framePr w:dropCap: (kind, lines, room beside it in points).
-        "DropCapKind" ==> (props.DropCap |> Option.map (fun (kind, _, _) -> kind))
-        "DropCapLines" ==> (props.DropCap |> Option.map (fun (_, lines, _) -> lines))
-        "DropCapDistance" ==> (props.DropCap |> Option.bind (fun (_, _, hSpace) -> wordTwipsToPoints hSpace))
-        "ContentControlId" ==> props.ContentControlId
-        "ContentControlTag" ==> props.ContentControlTag
-        "ContentControlAlias" ==> props.ContentControlAlias
-        "ContentControlXml" ==> props.ContentControlXml
-        "IndentLeft" ==> wordTwipsToPoints props.IndentLeft
-        "IndentRight" ==> wordTwipsToPoints props.IndentRight
-        "FirstLineIndent" ==> firstLineIndent
-        "RightTabPosition" ==> wordTwipsToPoints props.RightTabPosition
-        "RightTabLeader" ==> props.RightTabLeader
-        "TabStops" ==> (props.TabStops
-                        |> List.map (fun (pos, align, leader) ->
-                            objFromFields [ "Position" ==> wordTwipsToPoints (Some pos); "Alignment" ==> align; "Leader" ==> leader ])
-                        |> List.toArray)
-        "Rtl" ==> (props.Rtl |> Option.defaultValue false)
-        "SpacingBefore" ==> spacingBefore
-        "SpacingAfter" ==> spacingAfter
-        "LineSpacing" ==> lineSpacing
-        "LineSpacingRule" ==> props.LineRule
-        "BackgroundColor" ==> wordColorToCss props.BackgroundColor
-        "ParagraphBorders" ==> paragraphBordersToEditor props.ParagraphBorders
-        "ParagraphBorderBefore" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Top))
-        "ParagraphBorderAfter" ==> (borderAdvanceSource |> Option.bind (fun borders -> paragraphBorderAdvanceToLayoutPx borders.Bottom))
-        "RenderedPageBreakBefore" ==> props.RenderedPageBreakBefore
-        "ColumnBreakAfter" ==> props.ColumnBreak
-        "SectionVerticalAlign" ==> props.SectionVerticalAlign
-        // Geometry and columns of the section this paragraph ends (its own w:sectPr).
-        // The native importer has always delivered these; without them a saved
-        // multi-section document lost every section's page size but the last.
-        "SectionPageSetup" ==> (props.SectionGeometry
-                                |> Option.map (fun geometry ->
-                                    objFromFields [
-                                        "PageWidth" ==> geometry.PageWidth
-                                        "PageHeight" ==> geometry.PageHeight
-                                        "MarginLeft" ==> geometry.MarginLeft
-                                        "MarginRight" ==> geometry.MarginRight
-                                        "MarginTop" ==> geometry.MarginTop
-                                        "MarginBottom" ==> geometry.MarginBottom
-                                        "HeaderDistance" ==> geometry.HeaderDistance
-                                        "FooterDistance" ==> geometry.FooterDistance
-                                        "DifferentFirstPage" ==> geometry.DifferentFirstPage
-                                    ]))
-        "SectionColumns" ==> (props.SectionColumns
-                              |> Option.map (fun columns ->
-                                  objFromFields [
-                                      "Count" ==> columns.Count
-                                      "Gap" ==> columns.Gap
-                                      "Separator" ==> columns.Separator
-                                      "Widths" ==> (columns.Widths |> List.map (fun (width, space) -> objFromFields [ "W" ==> width; "S" ==> space ]) |> Array.ofList)
-                                  ]))
-    ]
-
-let private directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
+let internal directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
     props.IndentLeft.IsSome
     || props.IndentRight.IsSome
     || props.FirstLineIndent.IsSome
@@ -5582,7 +5502,7 @@ let private directParagraphFormattingResetsMissingSpacing (props: ParagraphPrope
     || props.ParagraphBorders.IsSome
     || props.ContextualSpacing.IsSome
 
-let private tableStyleParagraphResetsMissingSpacing (props: ParagraphProperties) =
+let internal tableStyleParagraphResetsMissingSpacing (props: ParagraphProperties) =
     props.LineSpacing.IsSome || props.LineRule.IsSome
 
 let private hasDirectParagraphFormatting (props: ParagraphProperties) =
@@ -5620,12 +5540,7 @@ let private hasDirectParagraphFormatting (props: ParagraphProperties) =
 let private isPureEmptyParagraph (para: Paragraph) =
     para.Runs.IsEmpty && not (hasDirectParagraphFormatting para.Properties)
 
-let private referenceObjects (refs: HeaderFooterReference list) =
-    refs
-    |> List.map (fun ref -> objFromFields [ "Kind" ==> ref.Kind; "RelationshipId" ==> ref.RelationshipId ])
-    |> List.toArray
-
-let private emptyRunProperties = {
+let internal emptyRunProperties = {
     Style = None
     Bold = None
     Italic = None
@@ -5685,14 +5600,14 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     VertAlign = props.VertAlign |> Option.orElse baseProps.VertAlign
 }
 
-let private effectiveOnOff value = value |> Option.defaultValue false
-
-let private mergeParagraphProperties baseProps props = {
+let internal mergeParagraphProperties baseProps props = {
     Style = props.Style |> Option.orElse baseProps.Style
     ContentControlId = props.ContentControlId |> Option.orElse baseProps.ContentControlId
     ContentControlTag = props.ContentControlTag |> Option.orElse baseProps.ContentControlTag
     ContentControlAlias = props.ContentControlAlias |> Option.orElse baseProps.ContentControlAlias
     ContentControlXml = props.ContentControlXml |> Option.orElse baseProps.ContentControlXml
+    ContentControlGroup = props.ContentControlGroup
+    ContentControlAncestors = props.ContentControlAncestors
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight
@@ -5718,7 +5633,9 @@ let private mergeParagraphProperties baseProps props = {
     PageBreakBeforeDerived = props.PageBreakBeforeDerived
     WidowControl = props.WidowControl |> Option.orElse baseProps.WidowControl
     ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
-    BackgroundColor = props.BackgroundColor |> Option.orElse baseProps.BackgroundColor
+    BackgroundColor = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.BackgroundColor else baseProps.BackgroundColor
+    ShadingPattern = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.ShadingPattern else baseProps.ShadingPattern
+    ShadingForeground = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.ShadingForeground else baseProps.ShadingForeground
     ParagraphRunProperties =
         match baseProps.ParagraphRunProperties, props.ParagraphRunProperties with
         | Some baseRun, Some run -> Some (mergeRunProperties baseRun run)
@@ -5739,7 +5656,7 @@ let private mergeParagraphProperties baseProps props = {
     DropCap = props.DropCap
 }
 
-let private paragraphPropertiesWithRunProperties runProps props =
+let internal paragraphPropertiesWithRunProperties runProps props =
     match runProps, props with
     | None, value -> value
     | Some runProps, Some props ->
@@ -5750,9 +5667,6 @@ let private paragraphPropertiesWithRunProperties runProps props =
         Some { props with ParagraphRunProperties = paragraphRunProperties }
     | Some runProps, None ->
         Some { Docx.paragraphProps XmlDsl.Empty with ParagraphRunProperties = Some runProps }
-
-let private buildStyleMap (styles: StyleDefinition list) : Map<string, StyleDefinition> =
-    styles |> List.map (fun style -> (style.Id, style)) |> Map.ofList
 
 let private mergeCellBorders (baseBorders: CellBorders option) (borders: CellBorders option) =
     match baseBorders, borders with
@@ -5777,7 +5691,7 @@ let private mergeTableStyleProperties (baseProps: TableStyleProperties) (props: 
     PaddingLeft = props.PaddingLeft |> Option.orElse baseProps.PaddingLeft
 }
 
-let private mergeCellProperties (baseProps: TableCellProperties option) (props: TableCellProperties option) =
+let internal mergeCellProperties (baseProps: TableCellProperties option) (props: TableCellProperties option) =
     match baseProps, props with
     | None, value -> value
     | value, None -> value
@@ -5806,7 +5720,7 @@ let private mergeTableRowStyleProperties (baseProps: TableRowStyleProperties opt
             CanSplit = value.CanSplit |> Option.orElse baseValue.CanSplit
         }
 
-let private resolveTableStyle (styleMap: Map<string, StyleDefinition>) styleId : StyleDefinition option =
+let internal resolveTableStyle (styleMap: Map<string, StyleDefinition>) styleId : StyleDefinition option =
     let rec resolve visited id =
         if Set.contains id visited then None
         else
@@ -5887,7 +5801,7 @@ let private resolveStyleUncached (styleMap: Map<string, StyleDefinition>) styleI
 
     styleId |> Option.map (resolve Set.empty) |> Option.defaultValue (emptyRunProperties, None)
 
-let private resolveStyle (styleMap: Map<string, StyleDefinition>) (styleId: string option) : RunProperties * ParagraphProperties option =
+let internal resolveStyle (styleMap: Map<string, StyleDefinition>) (styleId: string option) : RunProperties * ParagraphProperties option =
     match styleId with
     | None -> (emptyRunProperties, None)
     | Some id ->
@@ -5913,7 +5827,7 @@ let private defaultParagraphStyleId (styleMap: Map<string, StyleDefinition>) =
         defaultParagraphStyleKnown <- found
         found
 
-let private resolvedParagraphProperties (styleMap: Map<string, StyleDefinition>) (props: ParagraphProperties) =
+let internal resolvedParagraphProperties (styleMap: Map<string, StyleDefinition>) (props: ParagraphProperties) =
     let _, docDefaults = resolveStyle styleMap (Some Styles.defaultStyleId)
     let styleId = props.Style |> Option.orElseWith (fun () -> defaultParagraphStyleId styleMap)
     let _, basePara = resolveStyle styleMap styleId
@@ -5925,10 +5839,7 @@ let private resolvedParagraphProperties (styleMap: Map<string, StyleDefinition>)
         | None, None -> None
     basePara |> Option.map (fun baseValue -> mergeParagraphProperties baseValue props) |> Option.defaultValue props
 
-let private effectiveListInfo (props: ParagraphProperties) =
-    props.ListInfo |> Option.filter (fun info -> info.ListId <> "0")
-
-let private resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (runProps: RunProperties) =
+let internal resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (runProps: RunProperties) =
     let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
     let styleId = paraProps.Style |> Option.orElseWith (fun () -> defaultParagraphStyleId styleMap)
     let baseRun, _ = resolveStyle styleMap styleId
@@ -5940,7 +5851,7 @@ let private resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (para
     else
         merged
 
-let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
+let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
     let fallbackRunProps =
         if isPureEmptyParagraph para then
             let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
@@ -5949,78 +5860,7 @@ let private paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effe
             resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
     wordFontSizeToPoints fallbackRunProps.FontSize
 
-// Word numbers footnotes with arabic (the sequential id) and endnotes with
-// lowercase roman numerals by default.
-let private toLowerRoman (n: int) =
-    let table = [ 1000, "m"; 900, "cm"; 500, "d"; 400, "cd"; 100, "c"; 90, "xc"; 50, "l"; 40, "xl"; 10, "x"; 9, "ix"; 5, "v"; 4, "iv"; 1, "i" ]
-    let rec build rem acc =
-        match table |> List.tryFind (fun (v, _) -> rem >= v) with
-        | Some (v, s) -> build (rem - v) (acc + s)
-        | None -> acc
-    if n <= 0 then string n else build n ""
-
-let private noteMark (noteType: string) (id: string) =
-    if noteType = "endnote" then
-        match System.Int32.TryParse id with
-        | true, n -> toLowerRoman n
-        | _ -> id
-    else id
-
-/// What was set at run level, next to the effective values the run object
-/// carries: null = inherited from the styles, true/false (or a size) = set.
-/// The editor needs the difference to let a run switch a style's formatting
-/// off, and the writer to leave inherited formatting out of the file.
-///
-/// "Run level" is the run's own w:rPr plus the paragraph's w:pPr/w:rPr, which
-/// resolvedRunProperties applies to the paragraph's runs (it is also how a table
-/// style's run formatting reaches the cell text): neither comes from a named
-/// style the editor could resolve again, so both are direct formatting to it.
-let private explicitRunFields (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (run: Run) =
-    let props =
-        match run.Content with
-        | Link link -> link.Properties
-        | _ -> run.Properties
-    let mark = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
-    let effective = lazy (resolvedRunProperties styleMap paraProps props)
-    let onOff (pick: RunProperties -> bool option) =
-        match pick props with
-        | Some value -> Some value
-        | None when (pick mark).IsSome -> Some (effectiveOnOff (pick effective.Value))
-        | None -> None
-    [
-        "HasExplicit" ==> true
-        "ExplicitBold" ==> onOff (fun p -> p.Bold)
-        "ExplicitItalic" ==> onOff (fun p -> p.Italic)
-        "ExplicitUnderline" ==> onOff (fun p -> p.Underline)
-        "ExplicitAllCaps" ==> onOff (fun p -> p.AllCaps)
-        "ExplicitSmallCaps" ==> onOff (fun p -> p.SmallCaps)
-        "ExplicitStrike" ==> onOff (fun p -> p.Strike)
-        "ExplicitDoubleStrike" ==> onOff (fun p -> p.DoubleStrike)
-        "ExplicitHidden" ==> onOff (fun p -> p.Hidden)
-        "ExplicitFontSize" ==>
-            (if props.FontSize.IsSome then Some (wordFontSizeToPoints props.FontSize)
-             elif mark.FontSize.IsSome then Some (wordFontSizeToPoints effective.Value.FontSize)
-             else None)
-        // w:color w:val="auto" on the run: no colour of its own, but it switches a
-        // style's colour (a table style's, say) off.
-        "ExplicitColorAuto" ==> ((props.Color |> Option.orElse mark.Color) = Some "auto")
-    ]
-
-/// The paragraph properties its styles give without the paragraph's direct
-/// keepNext / keepLines (only resolved again when it has any).
-/// A run's bookmarks as the editor's package holds them: BookmarkStarts, [{ Id, Name, EndsHere }], the
-/// bookmarks that start before it; BookmarkEnds, what ends after it - [{ Id }] a bookmark's end, [{ Id, Name,
-/// EndsHere, Opens: true }] a bookmark opened after it. (Not there when the run has none.)
-let bookmarkFields (starts: ModelText.BookmarkStart list) (ends: ModelText.BookmarkEnd list) : (string * obj) list =
-    let startFields (start: ModelText.BookmarkStart) = [ "Id" ==> start.Id; "Name" ==> start.Name; "EndsHere" ==> start.EndsHere ]
-    let endObject (ending: ModelText.BookmarkEnd) =
-        match ending with
-        | ModelText.Ends id -> objFromFields [ "Id" ==> id ]
-        | ModelText.Opens start -> objFromFields (startFields start @ [ "Opens" ==> true ])
-    [ "BookmarkStarts" ==> (if starts.IsEmpty then None else Some (starts |> List.map (startFields >> objFromFields) |> List.toArray))
-      "BookmarkEnds" ==> (if ends.IsEmpty then None else Some (ends |> List.map endObject |> List.toArray)) ]
-
-let private styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
+let internal styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
     else resolvedParagraphProperties styleMap { para.Properties with KeepNext = None; KeepLines = None }
 
@@ -6061,1166 +5901,3 @@ let editorImageSource (images: Map<string, string>) (img: ImageData) : string =
 /// (Of the editor's display: the writer does not put it into the file.)
 let commentMarkDisplayColor = "#7c3aed"
 
-/// The formatting of the run of a reference mark (a comment's, a note's): what
-/// its own w:rPr and its styles give, as for a run of text - the mark made
-/// bold, or given a size, is that when the document is read again.
-let private referenceMarkFormat (styleMap: Map<string, StyleDefinition>) (theme: Theme option) (paraProps: ParagraphProperties) (run: Run) =
-    let props = resolvedRunProperties styleMap paraProps run.Properties
-    [ "Style" ==> run.Properties.Style
-      "Bold" ==> effectiveOnOff props.Bold
-      "Italic" ==> effectiveOnOff props.Italic
-      "Underline" ==> effectiveOnOff props.Underline
-      "UnderlineStyle" ==> props.UnderlineStyle
-      "UnderlineColor" ==> props.UnderlineColor
-      "AllCaps" ==> effectiveOnOff props.AllCaps
-      "SmallCaps" ==> effectiveOnOff props.SmallCaps
-      "Strike" ==> effectiveOnOff props.Strike
-      "DoubleStrike" ==> effectiveOnOff props.DoubleStrike
-      "Hidden" ==> effectiveOnOff props.Hidden
-      "FontSize" ==> wordFontSizeToPoints props.FontSize
-      "FontFamily" ==> wordFontFamilyToCss theme props
-      "Highlight" ==> props.Highlight
-      "IsImage" ==> false ]
-    @ explicitRunFields styleMap paraProps run
-
-let rec private toEditorParagraphsOfStyleMap (styleMap: Map<string, StyleDefinition>) (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
-    let _, documentDefaultParagraphProperties = resolveStyle styleMap (Some Styles.defaultStyleId)
-    let documentDefaultMissingSpacingToZero =
-        documentDefaultParagraphProperties |> Option.exists tableStyleParagraphResetsMissingSpacing
-    content
-    |> List.choose (fun item ->
-        match item with
-        | Para para ->
-            let effectiveParaProps = resolvedParagraphProperties styleMap para.Properties
-            let paragraphFontSize =
-                let fallback = paragraphMarkFontSize styleMap effectiveParaProps para
-                let mutable maxSize = fallback
-                for run in para.Runs do
-                    match run.Content with
-                    | Text _
-                    | Link _
-                    | FieldRef _ ->
-                        let runProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
-                        maxSize <- max maxSize (wordFontSizeToPoints runProps.FontSize)
-                    | _ -> ()
-                maxSize
-            // (Only a page break of its own: a paragraph that ends a section is followed by a new page
-            // when the section after it starts on one, which that section's properties say.)
-            // (One it starts with is a break before it: see paragraphPageBreaks.)
-            let pageBreakAtStart, pageBreakAfter = paragraphPageBreaks para
-            let bookmarkRunProps (run: Run) =
-                explicitRunFields styleMap effectiveParaProps run @ [
-                    "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
-                    // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
-                    "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                ] @ bookmarkFields run.BookmarkStarts run.BookmarkEnds
-
-            // Convert Run to EditorRun format
-            let editorRuns =
-                para.Runs
-                |> List.choose (fun run ->
-                    let effectiveRunProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
-                    match run.Content with
-                    | Text text ->
-                        // Text run
-                        Some (objFromFields ([
-                            "Text" ==> text
-                            "Style" ==> run.Properties.Style
-                            "Bold" ==> effectiveOnOff effectiveRunProps.Bold
-                            "Italic" ==> effectiveOnOff effectiveRunProps.Italic
-                            "Underline" ==> effectiveOnOff effectiveRunProps.Underline
-                            "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
-                            "UnderlineColor" ==> effectiveRunProps.UnderlineColor
-                            "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
-                            "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
-                            "Strike" ==> effectiveOnOff effectiveRunProps.Strike
-                            "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
-                            "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                            "Position" ==> wordPositionToPoints effectiveRunProps.Position
-                            "EmphasisMark" ==> effectiveRunProps.EmphasisMark
-                            "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                            "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
-                            "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
-                            "Color" ==> wordColorToCss effectiveRunProps.Color
-                            "Highlight" ==> effectiveRunProps.Highlight
-                            "VertAlign" ==> effectiveRunProps.VertAlign
-                            "IsImage" ==> false
-                            "RevisionId" ==> run.RevisionId
-                            "RevisionType" ==> run.RevisionType
-                            "RevisionAuthor" ==> run.RevisionAuthor
-                            "RevisionDate" ==> run.RevisionDate
-                            "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
-                            "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
-                            "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
-                            "RevisionMoveName" ==> run.MoveName
-                            "Checkbox" ==> run.Checkbox
-                        ] @ bookmarkRunProps run))
-                    | Image img ->
-                        // Image run - resolve relationship ID to data URL
-                        let imageSrc = editorImageSource images img
-                        Some (objFromFields [
-                            "IsImage" ==> true
-                            "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                            "ImageSrc" ==> imageSrc
-                            "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
-                            "ImageWidth" ==> img.Width
-                            "ImageHeight" ==> img.Height
-                            "ImageAlt" ==> img.Description
-                            "ImageName" ==> img.Name
-                            "ImageTitle" ==> img.Title
-                            "ImageFloating" ==> img.Floating
-                            "ImageWrap" ==> img.Wrap
-                            "ImagePositionX" ==> img.PositionX
-                            "ImagePositionY" ==> img.PositionY
-                            "ImagePositionHRelativeFrom" ==> img.PositionHRelativeFrom
-                            "ImagePositionVRelativeFrom" ==> img.PositionVRelativeFrom
-                            "ImageBehindDoc" ==> img.BehindDoc
-                            "ImageAllowOverlap" ==> img.AllowOverlap
-                            "ImageLayoutInCell" ==> img.LayoutInCell
-                            "ImageDistanceTop" ==> img.DistanceTop
-                            "ImageDistanceBottom" ==> img.DistanceBottom
-                            "ImageDistanceLeft" ==> img.DistanceLeft
-                            "ImageDistanceRight" ==> img.DistanceRight
-                            "ImageRelativeHeight" ==> img.RelativeHeight
-                            "ImageLocked" ==> img.Locked
-                            "ImageSimplePosition" ==> img.SimplePosition
-                            "ImageSimplePositionX" ==> img.SimplePositionX
-                            "ImageSimplePositionY" ==> img.SimplePositionY
-                            "ImageCropLeft" ==> img.CropLeft
-                            "ImageCropTop" ==> img.CropTop
-                            "ImageCropRight" ==> img.CropRight
-                            "ImageCropBottom" ==> img.CropBottom
-                            "ImageFlipH" ==> img.FlipH
-                            "ImageFlipV" ==> img.FlipV
-                            "ImagePositionHAlign" ==> img.PositionHAlign
-                            "ImagePositionVAlign" ==> img.PositionVAlign
-                            "ImageWrapText" ==> img.WrapText
-                            "ImageWrapPolygon" ==> (if img.WrapPolygon.IsEmpty then null else box (img.WrapPolygon |> List.collect (fun (x, y) -> [ x; y ]) |> List.toArray))
-                            "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
-                            "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
-                            "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
-                        ])
-                    | Link link ->
-                        // Hyperlink as text run with link property
-                        Some (objFromFields ([
-                            "Text" ==> link.Text
-                            "Style" ==> link.Properties.Style
-                            "Bold" ==> effectiveOnOff effectiveRunProps.Bold
-                            "Italic" ==> effectiveOnOff effectiveRunProps.Italic
-                            "Underline" ==> effectiveOnOff effectiveRunProps.Underline
-                            "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
-                            "UnderlineColor" ==> effectiveRunProps.UnderlineColor
-                            "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
-                            "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
-                            "Strike" ==> effectiveOnOff effectiveRunProps.Strike
-                            "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
-                            "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                            "Position" ==> wordPositionToPoints effectiveRunProps.Position
-                            "EmphasisMark" ==> effectiveRunProps.EmphasisMark
-                            "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                            "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
-                            "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
-                            "Color" ==> wordColorToCss effectiveRunProps.Color
-                            "Highlight" ==> effectiveRunProps.Highlight
-                            "VertAlign" ==> effectiveRunProps.VertAlign
-                            "IsImage" ==> false
-                            "Hyperlink" ==> (link.Target |> Option.filter isActiveHyperlinkTarget)
-                            "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
-                        ] @ bookmarkRunProps run))
-                        | CommentReference id ->
-                            Some (objFromFields ([
-                                "Text" ==> (sprintf "[Comment %s]" id)
-                                "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
-                                "VertAlign" ==> effectiveRunProps.VertAlign
-                                "CommentId" ==> Some id
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
-                        | NoteRef note ->
-                            // Render the reference as its superscript mark number
-                            // (Word writes note ids sequentially) in the normal
-                            // text colour, matching the native/PDF path.
-                            Some (objFromFields ([
-                                "Text" ==> noteMark note.NoteType note.Id
-                                "Color" ==> wordColorToCss effectiveRunProps.Color
-                                "VertAlign" ==> (effectiveRunProps.VertAlign |> Option.orElse (Some "superscript"))
-                                "NoteId" ==> Some note.Id
-                                "NoteType" ==> Some note.NoteType
-                                "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
-                        | BookmarkStart bookmark ->
-                            Some (objFromFields ([
-                                "Text" ==> ""
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "IsImage" ==> false
-                            ] @ bookmarkFields [ { Id = bookmark.Id; Name = bookmark.Name |> Option.defaultValue ""; EndsHere = false } ] []))
-                        | BookmarkEnd id ->
-                            Some (objFromFields ([
-                                "Text" ==> ""
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "IsImage" ==> false
-                            ] @ bookmarkFields [] [ ModelText.Ends id ]))
-                        | FieldRef field ->
-                            Some (objFromFields ([
-                                "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
-                                "Style" ==> run.Properties.Style
-                                "Bold" ==> effectiveOnOff effectiveRunProps.Bold
-                                "Italic" ==> effectiveOnOff effectiveRunProps.Italic
-                                "Underline" ==> effectiveOnOff effectiveRunProps.Underline
-                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
-                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
-                                "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
-                                "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
-                                "Strike" ==> effectiveOnOff effectiveRunProps.Strike
-                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
-                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
-                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
-                                "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveRunProps.CharacterSpacing |> Option.defaultValue 0.0)
-                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
-                                "Color" ==> wordColorToCss effectiveRunProps.Color
-                                "Highlight" ==> effectiveRunProps.Highlight
-                                "VertAlign" ==> effectiveRunProps.VertAlign
-                                "IsImage" ==> false
-                                "FieldCode" ==> field.Code
-                                "FieldResult" ==> field.Result
-                                "RevisionId" ==> run.RevisionId
-                                "RevisionType" ==> run.RevisionType
-                                "RevisionAuthor" ==> run.RevisionAuthor
-                                "RevisionDate" ==> run.RevisionDate
-                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
-                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
-                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
-                                "RevisionMoveName" ==> run.MoveName
-                                "Checkbox" ==> run.Checkbox
-                            ] @ bookmarkRunProps run))
-                        | EquationXml xml ->
-                            Some (objFromFields [
-                                "Text" ==> "[Equation]"
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Cambria Math"
-                                "IsImage" ==> false
-                                "IsEquation" ==> true
-                                "EquationXml" ==> xml
-                            ])
-                        | RenderedPageBreak -> None
-                        | PageBreak -> None
-                )
-                |> List.toArray
-
-            // Create EditorParagraph
-            let listStyle, listLevel =
-                match effectiveListInfo effectiveParaProps with
-                | Some info ->
-                    let style =
-                        match info.NumberFormat with
-                        | Some "bullet" -> "bullet"
-                        | _ -> "numbered"
-                    (style, info.Level + 1)
-                | None -> ("none", 0)
-
-            let itemType, headingLevel =
-                match effectiveParaProps.Style with
-                | Some style when (ValueText.StyleName.headingSuffix style).IsSome ->
-                    let suffix = (ValueText.StyleName.headingSuffix style).Value
-                    match System.Int32.TryParse(suffix) with
-                    | true, level -> ("Heading", max 1 (min 3 level))
-                    | false, _ -> ("Heading", 1)
-                | _ -> ("Paragraph", 0)
-
-            let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
-
-            let defaultMissingSpacingToZero =
-                documentDefaultMissingSpacingToZero
-                || directParagraphFormattingResetsMissingSpacing para.Properties
-
-            Some (objFromFields ([
-                "Type" ==> itemType
-                "HeadingLevel" ==> headingLevel
-                "Runs" ==> editorRuns
-                "SourceAt" ==> (if XmlDsl.Span.isKnown para.Source then Some para.Source.Start else None)
-                "Style" ==> effectiveParaProps.Style
-                // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
-                // its style says without them (the editor infers style definitions from it).
-                "KeepNext" ==> para.Properties.KeepNext
-                "KeepLines" ==> para.Properties.KeepLines
-                "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
-                "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
-                "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
-                "PageBreakBefore" ==> (if pageBreakAtStart then Some true else effectiveParaProps.PageBreakBefore)
-                // The break is the style's, or the reader's own (see PageBreakBeforeDerived): not the paragraph's.
-                "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
-                // (A w:br w:type="page" the paragraph starts with, saved as that.)
-                "PageBreakAtStart" ==> pageBreakAtStart
-                "StyleWidowControl" ==> effectiveParaProps.WidowControl
-                "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
-                "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")
-                "HasExplicit" ==> true
-                "ExplicitAlignment" ==> para.Properties.Alignment
-                "ListStyle" ==> listStyle
-                "ListLevel" ==> listLevel
-                "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
-                // (The paragraph itself refers to its numbering - it does not have it from its style.)
-                "ListDirect" ==> para.Properties.ListInfo.IsSome
-                "OutlineLevel" ==> (para.Properties.OutlineLevel |> Option.bind (fun value -> match System.Int32.TryParse value with | true, level -> Some level | false, _ -> None))
-                "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
-                "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
-                "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))
-                "PageBreakAfter" ==> pageBreakAfter
-                "SectionBreak" ==> effectiveParaProps.SectionBreak
-                "SectionPageNumberStart" ==> effectiveParaProps.SectionPageNumberStart
-                "SectionPageNumberFormat" ==> effectiveParaProps.SectionPageNumberFormat
-                "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
-                "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
-                "ParagraphMarkFontSize" ==> paragraphFontSize
-                "MarkRevisionType" ==> (para.MarkRevision |> Option.map fst)
-                "MarkRevisionId" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Id))
-                "MarkRevisionAuthor" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Author))
-                "MarkRevisionDate" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Date))
-            ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps))
-        | Tbl table ->
-            // Convert table to editor format
-            let convertCellParagraph defaultMissingSpacingToZero (para: Paragraph) : obj =
-                let effectiveParaProps = resolvedParagraphProperties styleMap para.Properties
-                let pageBreakAfter =
-                    para.Runs
-                    |> List.exists (fun run -> match run.Content with | PageBreak -> true | _ -> false)
-                let bookmarkRunProps (run: Run) =
-                    explicitRunFields styleMap effectiveParaProps run @ [
-                        "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
-                        // (The w:r it was read from, of every kind of run: docs/save-architecture.md.)
-                        "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                    ] @ bookmarkFields run.BookmarkStarts run.BookmarkEnds
-
-                let editorRuns =
-                    para.Runs
-                    |> List.choose (fun run ->
-                        let effectiveRunProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
-                        match run.Content with
-                        | Text text ->
-                            Some (objFromFields ([
-                                "Text" ==> text
-                                "Style" ==> run.Properties.Style
-                                "Bold" ==> effectiveOnOff effectiveRunProps.Bold
-                                "Italic" ==> effectiveOnOff effectiveRunProps.Italic
-                                "Underline" ==> effectiveOnOff effectiveRunProps.Underline
-                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
-                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
-                                "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
-                                "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
-                                "Strike" ==> effectiveOnOff effectiveRunProps.Strike
-                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
-                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
-                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
-                                "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
-                                "Color" ==> wordColorToCss effectiveRunProps.Color
-                                "Highlight" ==> effectiveRunProps.Highlight
-                                "VertAlign" ==> effectiveRunProps.VertAlign
-                                "IsImage" ==> false
-                                "RevisionId" ==> run.RevisionId
-                                "RevisionType" ==> run.RevisionType
-                                "RevisionAuthor" ==> run.RevisionAuthor
-                                "RevisionDate" ==> run.RevisionDate
-                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
-                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
-                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
-                                "RevisionMoveName" ==> run.MoveName
-                                "Checkbox" ==> run.Checkbox
-                            ] @ bookmarkRunProps run))
-                        | Image img ->
-                            let imageSrc = editorImageSource images img
-                            Some (objFromFields [
-                                "IsImage" ==> true
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                                "ImageSrc" ==> imageSrc
-                                "ImageLinked" ==> (img.Linked || isExternalImageSource imageSrc)
-                                "ImageWidth" ==> img.Width
-                                "ImageHeight" ==> img.Height
-                                "ImageAlt" ==> img.Description
-                                "ImageName" ==> img.Name
-                                "ImageTitle" ==> img.Title
-                                "ImageFloating" ==> img.Floating
-                                "ImageWrap" ==> img.Wrap
-                                "ImagePositionX" ==> img.PositionX
-                                "ImagePositionY" ==> img.PositionY
-                                "ImagePositionHRelativeFrom" ==> img.PositionHRelativeFrom
-                                "ImagePositionVRelativeFrom" ==> img.PositionVRelativeFrom
-                                "ImageBehindDoc" ==> img.BehindDoc
-                                "ImageAllowOverlap" ==> img.AllowOverlap
-                                "ImageLayoutInCell" ==> img.LayoutInCell
-                                "ImageDistanceTop" ==> img.DistanceTop
-                                "ImageDistanceBottom" ==> img.DistanceBottom
-                                "ImageDistanceLeft" ==> img.DistanceLeft
-                                "ImageDistanceRight" ==> img.DistanceRight
-                                "ImageRelativeHeight" ==> img.RelativeHeight
-                                "ImageLocked" ==> img.Locked
-                                "ImageSimplePosition" ==> img.SimplePosition
-                                "ImageSimplePositionX" ==> img.SimplePositionX
-                                "ImageSimplePositionY" ==> img.SimplePositionY
-                                "ImageCropLeft" ==> img.CropLeft
-                                "ImageCropTop" ==> img.CropTop
-                                "ImageCropRight" ==> img.CropRight
-                                "ImageCropBottom" ==> img.CropBottom
-                                "ImageFlipH" ==> img.FlipH
-                                "ImageFlipV" ==> img.FlipV
-                                "ImagePositionHAlign" ==> img.PositionHAlign
-                                "ImagePositionVAlign" ==> img.PositionVAlign
-                                "ImageWrapText" ==> img.WrapText
-                                "ImageWrapPolygon" ==> (if img.WrapPolygon.IsEmpty then null else box (img.WrapPolygon |> List.collect (fun (x, y) -> [ x; y ]) |> List.toArray))
-                                "OpaqueXml" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Xml))
-                                "OpaqueKind" ==> (img.Opaque |> Option.map (fun opaque -> opaque.Kind))
-                                "OpaqueParagraphLevel" ==> (img.Opaque |> Option.map (fun opaque -> opaque.ParagraphLevel))
-                            ])
-                        | Link link ->
-                            let effectiveLinkProps = resolvedRunProperties styleMap effectiveParaProps link.Properties
-                            Some (objFromFields ([
-                                "Text" ==> link.Text
-                                "Style" ==> link.Properties.Style
-                                "Bold" ==> effectiveOnOff effectiveLinkProps.Bold
-                                "Italic" ==> effectiveOnOff effectiveLinkProps.Italic
-                                "Underline" ==> effectiveOnOff effectiveLinkProps.Underline
-                                "UnderlineStyle" ==> effectiveLinkProps.UnderlineStyle
-                                "UnderlineColor" ==> effectiveLinkProps.UnderlineColor
-                                "AllCaps" ==> effectiveOnOff effectiveLinkProps.AllCaps
-                                "SmallCaps" ==> effectiveOnOff effectiveLinkProps.SmallCaps
-                                "Strike" ==> effectiveOnOff effectiveLinkProps.Strike
-                                "DoubleStrike" ==> effectiveOnOff effectiveLinkProps.DoubleStrike
-                                "Hidden" ==> effectiveOnOff effectiveLinkProps.Hidden
-                                "Position" ==> wordPositionToPoints effectiveLinkProps.Position
-                                "EmphasisMark" ==> effectiveLinkProps.EmphasisMark
-                                "FontSize" ==> wordFontSizeToPoints effectiveLinkProps.FontSize
-                                "CharacterSpacing" ==> (wordCharacterSpacingToCssPixels effectiveLinkProps.CharacterSpacing |> Option.defaultValue 0.0)
-                                "FontFamily" ==> wordFontFamilyToCss theme effectiveLinkProps
-                                "Color" ==> wordColorToCss effectiveLinkProps.Color
-                                "Highlight" ==> effectiveLinkProps.Highlight
-                                "VertAlign" ==> effectiveLinkProps.VertAlign
-                                "IsImage" ==> false
-                                "Hyperlink" ==> (link.Target |> Option.filter isActiveHyperlinkTarget)
-                                "InactiveHyperlink" ==> (link.Target |> Option.filter (fun target -> not (isActiveHyperlinkTarget target)))
-                            ] @ bookmarkRunProps run))
-                        | CommentReference id ->
-                            Some (objFromFields ([
-                                "Text" ==> (sprintf "[Comment %s]" id)
-                                "Color" ==> (wordColorToCss effectiveRunProps.Color |> Option.orElse (Some commentMarkDisplayColor))
-                                "VertAlign" ==> effectiveRunProps.VertAlign
-                                "CommentId" ==> Some id
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
-                        | NoteRef note ->
-                            // Render the reference as its superscript mark number
-                            // (Word writes note ids sequentially) in the normal
-                            // text colour, matching the native/PDF path.
-                            Some (objFromFields ([
-                                "Text" ==> noteMark note.NoteType note.Id
-                                "Color" ==> wordColorToCss effectiveRunProps.Color
-                                "VertAlign" ==> (effectiveRunProps.VertAlign |> Option.orElse (Some "superscript"))
-                                "NoteId" ==> Some note.Id
-                                "NoteType" ==> Some note.NoteType
-                                "NoteText" ==> (noteBodies |> Map.tryFind (note.NoteType, note.Id))
-                                "SourceRun" ==> (if XmlDsl.Span.isKnown run.Source then Some run.Source.Start else None)
-                            ] @ referenceMarkFormat styleMap theme effectiveParaProps run))
-                        | BookmarkStart bookmark ->
-                            Some (objFromFields ([
-                                "Text" ==> ""
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "IsImage" ==> false
-                            ] @ bookmarkFields [ { Id = bookmark.Id; Name = bookmark.Name |> Option.defaultValue ""; EndsHere = false } ] []))
-                        | BookmarkEnd id ->
-                            Some (objFromFields ([
-                                "Text" ==> ""
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Calibri"
-                                "IsImage" ==> false
-                            ] @ bookmarkFields [] [ ModelText.Ends id ]))
-                        | FieldRef field ->
-                            Some (objFromFields ([
-                                "Text" ==> (field.Part |> Option.orElse field.Result |> Option.defaultValue (sprintf "[Field:%s]" field.Code))
-                                "Style" ==> run.Properties.Style
-                                "Bold" ==> effectiveOnOff effectiveRunProps.Bold
-                                "Italic" ==> effectiveOnOff effectiveRunProps.Italic
-                                "Underline" ==> effectiveOnOff effectiveRunProps.Underline
-                                "UnderlineStyle" ==> effectiveRunProps.UnderlineStyle
-                                "UnderlineColor" ==> effectiveRunProps.UnderlineColor
-                                "AllCaps" ==> effectiveOnOff effectiveRunProps.AllCaps
-                                "SmallCaps" ==> effectiveOnOff effectiveRunProps.SmallCaps
-                                "Strike" ==> effectiveOnOff effectiveRunProps.Strike
-                                "DoubleStrike" ==> effectiveOnOff effectiveRunProps.DoubleStrike
-                                "Hidden" ==> effectiveOnOff effectiveRunProps.Hidden
-                                "Position" ==> wordPositionToPoints effectiveRunProps.Position
-                                "EmphasisMark" ==> effectiveRunProps.EmphasisMark
-                                "FontSize" ==> wordFontSizeToPoints effectiveRunProps.FontSize
-                                "FontFamily" ==> wordFontFamilyToCss theme effectiveRunProps
-                                "Color" ==> wordColorToCss effectiveRunProps.Color
-                                "Highlight" ==> effectiveRunProps.Highlight
-                                "VertAlign" ==> effectiveRunProps.VertAlign
-                                "IsImage" ==> false
-                                "FieldCode" ==> field.Code
-                                "FieldResult" ==> field.Result
-                                "RevisionId" ==> run.RevisionId
-                                "RevisionType" ==> run.RevisionType
-                                "RevisionAuthor" ==> run.RevisionAuthor
-                                "RevisionDate" ==> run.RevisionDate
-                                "InsertedRevisionId" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Id))
-                                "InsertedRevisionAuthor" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Author))
-                                "InsertedRevisionDate" ==> (run.InsertedRevision |> Option.bind (fun mark -> mark.Date))
-                                "RevisionMoveName" ==> run.MoveName
-                                "Checkbox" ==> run.Checkbox
-                            ] @ bookmarkRunProps run))
-                        | EquationXml xml ->
-                            Some (objFromFields [
-                                "Text" ==> "[Equation]"
-                                "Bold" ==> false
-                                "Italic" ==> false
-                                "Underline" ==> false
-                                "AllCaps" ==> false
-                                "SmallCaps" ==> false
-                                "Strike" ==> false
-                                "FontSize" ==> 11.0
-                                "FontFamily" ==> "Cambria Math"
-                                "IsImage" ==> false
-                                "IsEquation" ==> true
-                                "EquationXml" ==> xml
-                            ])
-                        | RenderedPageBreak -> None
-                        | PageBreak -> None
-                    )
-                    |> List.toArray
-
-                let paragraphFontSize =
-                    let fallbackRunProps = resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
-                    let fallback = wordFontSizeToPoints fallbackRunProps.FontSize
-                    para.Runs
-                    |> List.choose (fun run ->
-                        match run.Content with
-                        | Text _
-                        | Link _
-                        | FieldRef _ ->
-                            let runProps = resolvedRunProperties styleMap effectiveParaProps run.Properties
-                            Some (wordFontSizeToPoints runProps.FontSize)
-                        | _ -> None)
-                    |> function
-                        | [] -> fallback
-                        | sizes -> List.max sizes
-
-                let layoutParaProps = { effectiveParaProps with ParagraphBorders = para.Properties.ParagraphBorders }
-
-                objFromFields ([
-                    "Runs" ==> editorRuns
-                    "SourceAt" ==> (if XmlDsl.Span.isKnown para.Source then Some para.Source.Start else None)
-                    "Style" ==> effectiveParaProps.Style
-                    // Direct keepNext / keepLines are the paragraph's own; StyleKeepX is what
-                    // its style says without them (the editor infers style definitions from it).
-                    "KeepNext" ==> para.Properties.KeepNext
-                    "KeepLines" ==> para.Properties.KeepLines
-                    "StyleKeepNext" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepNext
-                    "StyleKeepLines" ==> (styleKeepProperties styleMap para effectiveParaProps).KeepLines
-                    "StylePageBreakBefore" ==> effectiveParaProps.PageBreakBefore
-                    "PageBreakBefore" ==> effectiveParaProps.PageBreakBefore
-                    "PageBreakBeforeDerived" ==> (effectiveParaProps.PageBreakBefore = Some true && (para.Properties.PageBreakBefore <> Some true || para.Properties.PageBreakBeforeDerived))
-                    "StyleWidowControl" ==> effectiveParaProps.WidowControl
-                    "StyleContextualSpacing" ==> effectiveParaProps.ContextualSpacing
-                    "Alignment" ==> (effectiveParaProps.Alignment |> Option.defaultValue "left")
-                    "HasExplicit" ==> true
-                    "ExplicitAlignment" ==> para.Properties.Alignment
-                    "ListStyle" ==>
-                        (match effectiveListInfo effectiveParaProps with
-                         | Some info -> match info.NumberFormat with | Some "bullet" -> "bullet" | _ -> "numbered"
-                         | None -> "none")
-                    "ListLevel" ==>
-                        (match effectiveListInfo effectiveParaProps with
-                         | Some info -> info.Level + 1
-                         | None -> 0)
-                    "ListId" ==> (effectiveParaProps.ListInfo |> Option.map (fun info -> info.ListId))
-                    // (The paragraph itself refers to its numbering - it does not have it from its style.)
-                    "ListDirect" ==> para.Properties.ListInfo.IsSome
-                    "OutlineLevel" ==> (para.Properties.OutlineLevel |> Option.bind (fun value -> match System.Int32.TryParse value with | true, level -> Some level | false, _ -> None))
-                    "ListNumberFormat" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.NumberFormat))
-                    "ListLevelText" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.LevelText))
-                    "ListStart" ==> (effectiveListInfo effectiveParaProps |> Option.bind (fun info -> info.Start))
-                    "PageBreakAfter" ==> pageBreakAfter
-                    "SectionBreak" ==> effectiveParaProps.SectionBreak
-                    "SectionPageNumberStart" ==> effectiveParaProps.SectionPageNumberStart
-                    "SectionPageNumberFormat" ==> effectiveParaProps.SectionPageNumberFormat
-                    "HeaderReferences" ==> referenceObjects effectiveParaProps.HeaderReferences
-                    "FooterReferences" ==> referenceObjects effectiveParaProps.FooterReferences
-                    "ParagraphMarkFontSize" ==> paragraphFontSize
-                    "MarkRevisionType" ==> (para.MarkRevision |> Option.map fst)
-                    "MarkRevisionId" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Id))
-                    "MarkRevisionAuthor" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Author))
-                    "MarkRevisionDate" ==> (para.MarkRevision |> Option.bind (fun (_, mark) -> mark.Date))
-                ] @ paragraphLayoutProps paragraphFontSize defaultMissingSpacingToZero effectiveParaProps.ParagraphBorders para.Properties layoutParaProps)
-
-            let tableStyle = resolveTableStyle styleMap table.StyleId
-            let tableStyleProperties = tableStyle |> Option.bind (fun style -> style.TableProperties)
-            let tableBorders =
-                table.Borders
-                |> Option.orElseWith (fun () -> table.Properties |> Option.bind (fun props -> props.Borders))
-                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Borders))
-            let rowCount = table.Rows.Length
-            let cellSpan (cell: TableCell) = cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1 |> max 1
-            let columnCount = table.Rows |> List.map (fun row -> row.Cells |> List.sumBy cellSpan) |> function | [] -> 0 | counts -> List.max counts
-
-            let conditionalFlags rowIndex columnIndex span =
-                let look = table.Look
-                let enabled selector = look |> Option.map selector |> Option.defaultValue false
-                {| IsFirstRow = rowIndex = 0 && enabled (fun look -> look.FirstRow)
-                   IsLastRow = rowIndex = rowCount - 1 && enabled (fun look -> look.LastRow)
-                   IsFirstColumn = columnIndex = 0 && enabled (fun look -> look.FirstColumn)
-                   IsLastColumn = columnIndex + span >= columnCount && enabled (fun look -> look.LastColumn)
-                   HorizontalBanding = enabled (fun look -> look.HorizontalBanding)
-                   VerticalBanding = enabled (fun look -> look.VerticalBanding) |}
-
-            let conditionalCellStyleProperties rowIndex columnIndex span =
-                let flags = conditionalFlags rowIndex columnIndex span
-                let horizontalBand =
-                    if flags.HorizontalBanding then
-                        if rowIndex % 2 = 0 then tableStyle |> Option.bind (fun style -> style.Band1HorizontalTableCellProperties)
-                        else tableStyle |> Option.bind (fun style -> style.Band2HorizontalTableCellProperties)
-                    else None
-                let verticalBand =
-                    if flags.VerticalBanding then
-                        if columnIndex % 2 = 0 then tableStyle |> Option.bind (fun style -> style.Band1VerticalTableCellProperties)
-                        else tableStyle |> Option.bind (fun style -> style.Band2VerticalTableCellProperties)
-                    else None
-                None
-                |> mergeCellProperties horizontalBand
-                |> mergeCellProperties verticalBand
-                |> mergeCellProperties (if flags.IsFirstColumn then tableStyle |> Option.bind (fun style -> style.FirstColumnTableCellProperties) else None)
-                |> mergeCellProperties (if flags.IsLastColumn then tableStyle |> Option.bind (fun style -> style.LastColumnTableCellProperties) else None)
-                |> mergeCellProperties (if flags.IsFirstRow then tableStyle |> Option.bind (fun style -> style.FirstRowTableCellProperties) else None)
-                |> mergeCellProperties (if flags.IsLastRow then tableStyle |> Option.bind (fun style -> style.LastRowTableCellProperties) else None)
-
-            let applyTableCellStyle rowIndex columnIndex span (cell: TableCell) =
-                { cell with Properties = mergeCellProperties (conditionalCellStyleProperties rowIndex columnIndex span) cell.Properties }
-
-            let conditionalRowStyleProperties rowIndex =
-                let flags = conditionalFlags rowIndex 0 columnCount
-                if flags.IsFirstRow then tableStyle |> Option.bind (fun style -> style.FirstRowTableRowProperties) else None
-
-            let conditionalParagraphStyleProperties rowIndex =
-                let flags = conditionalFlags rowIndex 0 columnCount
-                if flags.IsFirstRow then tableStyle |> Option.bind (fun style -> style.FirstRowParagraphProperties) else None
-
-            let tableParagraphStyleProperties rowIndex =
-                let baseProperties =
-                    tableStyle
-                    |> Option.bind (fun style -> style.ParagraphProperties)
-                    |> paragraphPropertiesWithRunProperties (tableStyle |> Option.bind (fun style -> style.RunProperties))
-                let conditionalProperties = conditionalParagraphStyleProperties rowIndex
-                match baseProperties, conditionalProperties with
-                | Some baseValue, Some conditionalValue -> Some (mergeParagraphProperties baseValue conditionalValue)
-                | Some value, None
-                | None, Some value -> Some value
-                | None, None -> None
-
-            let intOption value =
-                value |> Option.bind (fun (value: string) -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None)
-
-            let convertCell rowIndex (cell: TableCell) : obj =
-                let paragraphStyle = tableParagraphStyleProperties rowIndex
-                let defaultMissingSpacingToZero =
-                    paragraphStyle |> Option.exists tableStyleParagraphResetsMissingSpacing
-                let cellParagraphs =
-                    cell.Paragraphs
-                    |> List.map (fun para ->
-                        match paragraphStyle with
-                        | Some styleProps ->
-                            let properties = mergeParagraphProperties styleProps para.Properties
-                            let properties =
-                                if para.Properties.Style.IsNone && styleProps.Style.IsNone then
-                                    { properties with Style = Some Styles.defaultStyleId }
-                                else
-                                    properties
-                            { para with Properties = properties }
-                        | None -> para)
-                    |> List.map (convertCellParagraph defaultMissingSpacingToZero)
-                    |> List.toArray
-                let nestedTables =
-                    cell.NestedTables
-                    |> List.choose (fun nested ->
-                        toEditorParagraphsOfStyleMap styleMap theme [Tbl nested] images noteBodies
-                        |> Array.tryHead)
-                    |> List.toArray
-
-                let backgroundColor =
-                    cell.Properties
-                    |> Option.bind (fun props -> props.Shading)
-                    |> Option.bind directShadingBackgroundColor
-
-                let shading =
-                    cell.Properties
-                    |> Option.bind (fun props -> props.Shading)
-                    |> Option.map wordShadingToEditor
-
-                let width =
-                    cell.Properties
-                    |> Option.bind (fun props -> props.Width)
-                    |> Option.bind (fun width -> match System.Int32.TryParse(width) with | true, value -> Some value | false, _ -> None)
-
-                let border =
-                    cell.Properties
-                    |> Option.bind (fun props -> props.Borders)
-                    |> Option.bind (fun borders -> borders.Top |> Option.orElse borders.Left |> Option.orElse borders.Bottom |> Option.orElse borders.Right)
-
-                let verticalAlignment =
-                    cell.Properties
-                    |> Option.bind (fun props -> props.VerticalAlignment)
-
-                objFromFields [
-                    "Paragraphs" ==> cellParagraphs
-                    "NestedTables" ==> nestedTables
-                    "NestedTableAnchors" ==> (cell.NestedTableAnchors |> List.toArray)
-                    "ColSpan" ==> (cell.Properties |> Option.bind (fun props -> props.ColSpan) |> Option.defaultValue 1)
-                    "BackgroundColor" ==> backgroundColor
-                    "Shading" ==> shading
-                    "Width" ==> width
-                    "WidthType" ==> (cell.Properties |> Option.bind (fun props -> props.WidthType))
-                    "PreferredWidth" ==> width
-                    "PreferredWidthType" ==> (cell.Properties |> Option.bind (fun props -> props.WidthType))
-                    "BorderColor" ==> borderColorToCss border
-                    "BorderWidth" ==> borderWidthToPoints border
-                    "Borders" ==> (cell.Properties |> Option.bind (fun props -> bordersToEditor props.Borders))
-                    "VerticalAlignment" ==> verticalAlignment
-                    "VerticalMerge" ==> (cell.Properties |> Option.bind (fun props -> props.VerticalMerge))
-                    "PaddingTop" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingTop) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
-                    "PaddingRight" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingRight) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
-                    "PaddingBottom" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingBottom) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
-                    "PaddingLeft" ==> (cell.Properties |> Option.bind (fun props -> props.PaddingLeft) |> Option.bind (fun value -> match System.Int32.TryParse(value) with | true, parsed -> Some parsed | false, _ -> None))
-                    "SourceAt" ==> (if XmlDsl.Span.isKnown cell.Source then Some cell.Source.Start else None)
-                ]
-
-            let convertRow rowIndex (row: TableRow) : obj =
-                let rowStyle = conditionalRowStyleProperties rowIndex
-                let mutable columnIndex = 0
-                let cells =
-                    row.Cells
-                    |> List.map (fun cell ->
-                        let span = cellSpan cell
-                        let styledCell = applyTableCellStyle rowIndex columnIndex span cell
-                        columnIndex <- columnIndex + span
-                        convertCell rowIndex styledCell)
-                    |> List.toArray
-
-                objFromFields [
-                    "Cells" ==> cells
-                    "IsHeader" ==> (row.IsHeader || (rowStyle |> Option.bind (fun props -> props.IsHeader) |> Option.defaultValue false))
-                    "Height" ==> row.Height
-                    "HeightRule" ==> row.HeightRule
-                    "CanSplit" ==> (row.CanSplit |> Option.orElseWith (fun () -> rowStyle |> Option.bind (fun props -> props.CanSplit)))
-                    "CellSpacing" ==> intOption row.CellSpacing
-                    "PaddingTop" ==> intOption row.PaddingTop
-                    "PaddingRight" ==> intOption row.PaddingRight
-                    "PaddingBottom" ==> intOption row.PaddingBottom
-                    "PaddingLeft" ==> intOption row.PaddingLeft
-                    "SourceAt" ==> (if XmlDsl.Span.isKnown row.Source then Some row.Source.Start else None)
-                ]
-
-            let rows =
-                table.Rows
-                |> List.mapi convertRow
-                |> List.toArray
-
-            let tableBackgroundColor =
-                table.Properties
-                |> Option.bind (fun props -> props.Shading)
-                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
-                |> Option.bind directShadingBackgroundColor
-
-            let tableShading =
-                table.Properties
-                |> Option.bind (fun props -> props.Shading)
-                |> Option.orElseWith (fun () -> tableStyleProperties |> Option.bind (fun props -> props.Shading))
-                |> Option.map wordShadingToEditor
-
-            Some (objFromFields [
-                "Type" ==> "Table"
-                "Rows" ==> rows
-                // The table style and which of its conditional formats apply. Its
-                // formatting is resolved into the cells above; the reference is kept so
-                // a saved table still has its style.
-                "TableStyleId" ==> table.StyleId
-                "TableLook" ==> (table.Look
-                                 |> Option.map (fun look ->
-                                     objFromFields [
-                                         "FirstRow" ==> look.FirstRow
-                                         "LastRow" ==> look.LastRow
-                                         "FirstColumn" ==> look.FirstColumn
-                                         "LastColumn" ==> look.LastColumn
-                                         "HorizontalBanding" ==> look.HorizontalBanding
-                                         "VerticalBanding" ==> look.VerticalBanding ]))
-                "PreferredWidth" ==> table.Width
-                "PreferredWidthType" ==> table.WidthType
-                "TableAlignment" ==> table.Alignment
-                "BackgroundColor" ==> tableBackgroundColor
-                "Shading" ==> tableShading
-                "CellSpacing" ==> intOption table.CellSpacing
-                "PaddingTop" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingTop) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingTop)))
-                "PaddingRight" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingRight) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingRight)))
-                "PaddingBottom" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingBottom) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingBottom)))
-                "PaddingLeft" ==> intOption (table.Properties |> Option.bind (fun props -> props.PaddingLeft) |> Option.orElseWith (fun () -> tableStyle |> Option.bind (fun style -> style.TableProperties) |> Option.bind (fun props -> props.PaddingLeft)))
-                "LayoutMode" ==> table.LayoutMode
-                "GridColumns" ==> (table.GridColumns |> List.toArray)
-                "Floating" ==> table.Floating
-                "FloatingXml" ==> table.FloatingXml
-                "Borders" ==> bordersToEditor tableBorders
-            ])
-    )
-    |> List.toArray
-
-let private toEditorParagraphsInternal (theme: Theme option) (styles: StyleDefinition list) (content: DocumentContent list) (images: Map<string, string>) (noteBodies: Map<string * string, string>) : obj array =
-    toEditorParagraphsOfStyleMap (buildStyleMap styles) theme content images noteBodies
-
-/// What gives the items of a document the lists its numbering part defines.
-let private numberingApplier (numberingDefinitions: NumberingDefinition list) : obj array -> obj array =
-    let isMissing (value: obj) = isNull value || isNull (box value)
-    let optionalStringValue (value: obj) =
-        if isMissing value then None
-        else
-            match value with
-            | :? (string option) as value -> value |> Option.bind (function null | "" -> None | text -> Some text)
-            | :? string as value ->
-                match value with
-                | null | "" -> None
-                | text -> Some text
-            | _ ->
-                match unbox<string> value with
-                | null | "" -> None
-                | text -> Some text
-    let optionalIntValue (value: obj) =
-        if isMissing value then None
-        else
-            match value with
-            | :? (int option) as value -> value
-            | :? int as value -> Some value
-            | _ -> Some (unbox<int> value)
-    let intValue fallback (value: obj) =
-        optionalIntValue value |> Option.defaultValue fallback
-    let stringValue fallback (value: obj) = optionalStringValue value |> Option.defaultValue fallback
-    let getProp (item: obj) name : obj =
-#if FABLE_COMPILER
-        item?(name)
-#else
-        match item with
-        | :? System.Collections.Generic.IDictionary<string, obj> as fields ->
-            match fields.TryGetValue name with
-            | true, value -> value
-            | false, _ -> null
-        | _ -> null
-#endif
-    let setProp (item: obj) name value =
-#if FABLE_COMPILER
-        item?(name) <- value
-#else
-        match item with
-        | :? System.Collections.Generic.IDictionary<string, obj> as fields -> fields.[name] <- box value
-        | _ -> ()
-#endif
-
-    let numberingMap =
-        numberingDefinitions
-        |> List.map (fun def -> ((def.NumId, def.Level), def))
-        |> Map.ofList
-    let styleNumberingMap =
-        numberingDefinitions
-        |> List.choose (fun def -> def.ParagraphStyle |> Option.map (fun styleId -> (styleId, def)))
-        |> Map.ofList
-    // All the levels of each list (one array per list, the same object for every paragraph of
-    // it): an editor that moves a paragraph to another level has that level's number, text,
-    // indents and the look of its number without reading the file again.
-    let levelsOfList =
-        numberingDefinitions
-        |> List.groupBy (fun def -> def.NumId)
-        |> List.map (fun (numId, levels) ->
-            numId,
-            box (levels
-                 |> List.sortBy (fun def -> def.Level)
-                 |> List.map (fun def ->
-                     objFromFields [
-                         "Level" ==> def.Level + 1
-                         "NumberFormat" ==> def.NumberFormat
-                         "LevelText" ==> def.LevelText
-                         "Start" ==> def.Start
-                         "IndentLeft" ==> wordTwipsToPoints def.IndentLeft
-                         "FirstLineIndent" ==>
-                             (match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
-                              | Some firstLine, _ -> Some firstLine
-                              | None, Some hanging -> Some -hanging
-                              | None, None -> None)
-                         "Suffix" ==> def.Suffix
-                         "Justification" ==> def.Justification
-                         "Legal" ==> def.Legal
-                         "Restart" ==> def.Restart
-                         "MarkFont" ==> def.MarkFont
-                         "MarkBold" ==> def.MarkBold
-                         "MarkItalic" ==> def.MarkItalic
-                         "MarkColor" ==> (def.MarkColor |> Option.filter (fun value -> value <> "auto") |> wordColorToCss)
-                         "MarkSize" ==> (def.MarkSize |> Option.map (fun size -> wordFontSizeToPoints (Some size)))
-                     ])
-                 |> List.toArray))
-        |> Map.ofList
-
-    let applyToParagraph (item: obj) =
-        let listId = optionalStringValue (getProp item "ListId")
-        let listLevel = intValue 0 (getProp item "ListLevel")
-        let styleId = optionalStringValue (getProp item "Style")
-        let listDefinition =
-            match listId with
-            | Some id -> Map.tryFind (id, max 0 (listLevel - 1)) numberingMap
-            | None -> styleId |> Option.bind (fun id -> Map.tryFind id styleNumberingMap)
-        match listDefinition with
-        | Some def when def.NumberFormat = "bullet" ->
-            setProp item "ListId" def.NumId
-            setProp item "ListLevel" (def.Level + 1)
-            setProp item "ListStyle" "bullet"
-            setProp item "ListNumberFormat" def.NumberFormat
-            setProp item "ListLevelText" def.LevelText
-            setProp item "ListStart" def.Start
-        | Some def ->
-            setProp item "ListId" def.NumId
-            setProp item "ListLevel" (def.Level + 1)
-            setProp item "ListStyle" "numbered"
-            setProp item "ListNumberFormat" def.NumberFormat
-            setProp item "ListLevelText" def.LevelText
-            setProp item "ListStart" def.Start
-        | None -> ()
-        match listDefinition with
-        | Some def ->
-            match Map.tryFind def.NumId levelsOfList with
-            | Some levels -> setProp item "ListLevels" levels
-            | None -> ()
-            // The level's own indents: where an indent the paragraph does not state
-            // comes from, and what the writer puts back into the numbering definition.
-            setProp item "HasListLevelIndents" true
-            setProp item "ListLevelIndentLeft" (wordTwipsToPoints def.IndentLeft)
-            setProp item "ListLevelFirstLineIndent"
-                (match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
-                 | Some firstLine, _ -> Some firstLine
-                 | None, Some hanging -> Some -hanging
-                 | None, None -> None)
-            // An indent the paragraph states itself counts first; then the level's, when the
-            // paragraph itself refers to the numbering (w:pPr/w:numPr: the level's paragraph
-            // properties are applied over the paragraph style's); then the style's. A paragraph
-            // numbered through its style has the style's indent where the style states one, the
-            // level's where it does not. (The level's used to lose to the style's always: a
-            // "List Paragraph" bullet stood at the style's 0.5 in whatever its level said.)
-            let ownNumbering = listId.IsSome && Map.containsKey (listId.Value, max 0 (listLevel - 1)) numberingMap && (match getProp item "ListDirect" with | :? bool as direct -> direct | _ -> false)
-            let levelOver (explicitName: string) = ownNumbering && isMissing (getProp item explicitName)
-            if isMissing (getProp item "IndentLeft") || (levelOver "ExplicitIndentLeft" && def.IndentLeft.IsSome) then setProp item "IndentLeft" (wordTwipsToPoints def.IndentLeft)
-            if isMissing (getProp item "FirstLineIndent") || (levelOver "ExplicitFirstLineIndent" && (def.FirstLineIndent.IsSome || def.HangingIndent.IsSome)) then
-                let firstLineIndent =
-                    match wordTwipsToPoints def.FirstLineIndent, wordTwipsToPoints def.HangingIndent with
-                    | Some firstLine, _ -> Some firstLine
-                    | None, Some hanging -> Some -hanging
-                    | None, None -> None
-                setProp item "FirstLineIndent" firstLineIndent
-            if isMissing (getProp item "RightTabPosition") then setProp item "RightTabPosition" (wordTwipsToPoints def.RightTabPosition)
-        | None -> ()
-        item
-
-    let rec apply item =
-        let itemType = getProp item "Type" |> stringValue "Paragraph"
-        if itemType = "Table" then
-            let rows = getProp item "Rows" |> unbox<obj array>
-            for row in rows do
-                let cells = getProp row "Cells" |> unbox<obj array>
-                for cell in cells do
-                    let paragraphs = getProp cell "Paragraphs" |> unbox<obj array>
-                    for para in paragraphs do
-                        applyToParagraph para |> ignore
-            item
-        else
-            applyToParagraph item
-
-    fun (items: obj array) -> items |> Array.map apply
-
-let private applyNumberingDefinitions (numberingDefinitions: NumberingDefinition list) (items: obj array) =
-    numberingApplier numberingDefinitions items
-
-let toEditorParagraphs (content: DocumentContent list) (images: Map<string, string>) : obj array =
-    toEditorParagraphsInternal None [] content images Map.empty
-
-let toEditorParagraphsWithStyles (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    toEditorParagraphsInternal None styles content images Map.empty
-
-let toEditorParagraphsWithStylesAndTheme (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    toEditorParagraphsInternal theme styles content images Map.empty
-
-let toEditorParagraphsWithStylesAndNumbering (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) : obj array =
-    toEditorParagraphsInternal None styles content images Map.empty
-    |> applyNumberingDefinitions numberingDefinitions
-
-let private noteBodyMap (footnotes: Note list) (endnotes: Note list) : Map<string * string, string> =
-    (footnotes |> List.map (fun note -> ("footnote", note.Id), Notes.plainText note))
-    @ (endnotes |> List.map (fun note -> ("endnote", note.Id), Notes.plainText note))
-    |> Map.ofList
-
-let toEditorParagraphsWithStylesThemeAndNumbering (theme: Theme option) (content: DocumentContent list) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list) : obj array =
-    toEditorParagraphsInternal theme styles content images (noteBodyMap footnotes endnotes)
-    |> applyNumberingDefinitions numberingDefinitions
-
-/// What toEditorParagraphsWithStylesThemeAndNumbering makes of blocks, for a
-/// document whose blocks come in steps: the styles, the lists and the notes
-/// are looked at once, and each step gives its blocks and their pictures.
-let editorParagraphConverter (theme: Theme option) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (footnotes: Note list) (endnotes: Note list)
-        : DocumentContent list -> Map<string, string> -> obj array =
-    let styleMap = buildStyleMap styles
-    let noteBodies = noteBodyMap footnotes endnotes
-    let applyNumbering = numberingApplier numberingDefinitions
-    fun content images -> toEditorParagraphsOfStyleMap styleMap theme content images noteBodies |> applyNumbering
-
-let toEditorHeaderFooters (items: HeaderFooter list) (images: Map<string, string>) : obj array =
-    items
-    |> List.map (fun item ->
-        objFromFields [
-            "Type" ==> item.Type
-            "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphs item.Blocks images
-        ])
-    |> List.toArray
-
-let toEditorHeaderFootersWithStyles (items: HeaderFooter list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    items
-    |> List.map (fun item ->
-        objFromFields [
-            "Type" ==> item.Type
-            "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphsWithStyles item.Blocks images styles
-        ])
-    |> List.toArray
-
-let toEditorHeaderFootersWithStylesAndTheme (theme: Theme option) (items: HeaderFooter list) (images: Map<string, string>) (styles: StyleDefinition list) : obj array =
-    items
-    |> List.map (fun item ->
-        objFromFields [
-            "Type" ==> item.Type
-            "RelationshipId" ==> item.RelationshipId
-            "Paragraphs" ==> toEditorParagraphsWithStylesAndTheme theme item.Blocks images styles
-        ])
-    |> List.toArray
-
-let toEditorPageSetup (doc: WordDocument) : obj =
-    match doc.PageSetup with
-    | None -> objFromFields []
-    | Some setup ->
-        objFromFields [
-            "PageWidth" ==> setup.PageWidth
-            "PageHeight" ==> setup.PageHeight
-            "MarginLeft" ==> setup.MarginLeft
-            "MarginRight" ==> setup.MarginRight
-            "MarginTop" ==> setup.MarginTop
-            "MarginBottom" ==> setup.MarginBottom
-            "HeaderDistance" ==> setup.HeaderDistance
-            "FooterDistance" ==> setup.FooterDistance
-            "DifferentFirstPage" ==> setup.DifferentFirstPage
-            "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
-            "DefaultTabStop" ==> setup.DefaultTabStop
-            "ColumnCount" ==> (setup.Columns |> Option.map (fun c -> c.Count) |> Option.defaultValue 1)
-            "ColumnSpace" ==> (setup.Columns |> Option.map (fun c -> c.Gap) |> Option.defaultValue 0.0)
-            "ColumnSeparator" ==> (setup.Columns |> Option.map (fun c -> c.Separator) |> Option.defaultValue false)
-            "ColumnWidths" ==> (setup.Columns |> Option.map (fun c -> c.Widths |> List.map (fun (w, s) -> objFromFields [ "W" ==> w; "S" ==> s ]) |> Array.ofList) |> Option.defaultValue [||])
-            "SectionStart" ==> setup.SectionStart
-            "HeaderReferences" ==> referenceObjects setup.HeaderReferences
-            "FooterReferences" ==> referenceObjects setup.FooterReferences
-            "PageNumberStart" ==> setup.PageNumberStart
-            "PageNumberFormat" ==> setup.PageNumberFormat
-            "VerticalAlign" ==> setup.VerticalAlign
-        ]
-
-/// Footnote / endnote bodies as editor blocks (paragraphs with runs, tables),
-/// one object per note: Id, Kind (w:type of a separator note), HasMark /
-/// MarkStyle (the automatic reference mark), Text (the plain text the reference
-/// run carries as NoteText) and Blocks.
-let toEditorNotes (theme: Theme option) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (notes: Note list) : obj array =
-    notes
-    |> List.map (fun note ->
-        objFromFields [
-            "Id" ==> note.Id
-            "Kind" ==> note.Kind
-            "HasMark" ==> note.HasMark
-            "MarkStyle" ==> note.MarkStyle
-            "Text" ==> Notes.plainText note
-            "Blocks" ==> (toEditorParagraphsInternal theme styles note.Blocks images Map.empty |> applyNumberingDefinitions numberingDefinitions)
-        ])
-    |> List.toArray
-
-/// Comment bodies as editor blocks: Id, Author, Date, Initials, Text, Blocks.
-let toEditorComments (theme: Theme option) (images: Map<string, string>) (styles: StyleDefinition list) (numberingDefinitions: NumberingDefinition list) (comments: Comment list) : obj array =
-    comments
-    |> List.map (fun comment ->
-        objFromFields [
-            "Id" ==> comment.Id
-            "Author" ==> comment.Author
-            "Date" ==> comment.Date
-            "Initials" ==> comment.Initials
-            "Text" ==> comment.Text
-            "Blocks" ==> (toEditorParagraphsInternal theme styles comment.Blocks images Map.empty |> applyNumberingDefinitions numberingDefinitions)
-        ])
-    |> List.toArray
-
-/// The kept parts of the package for the editor package object ("Preserved").
-/// Part data is a byte array (a Uint8Array in the browser); the object is
-/// handed back to DocumentWriter.writeFromEditorPackage unchanged.
-let toEditorPreserved (preserved: PackagePreservation) : obj =
-    let relationship (rel: PreservedRelationship) =
-        objFromFields [ "Id" ==> rel.Id; "Type" ==> rel.Type; "Target" ==> rel.Target; "External" ==> rel.External ]
-    let relationships (rels: PreservedRelationship list) = rels |> List.map relationship |> List.toArray
-    objFromFields [
-        "Parts" ==> (preserved.Parts |> List.map (fun part -> objFromFields [ "Path" ==> part.Path; "Data" ==> part.Data ]) |> List.toArray)
-        "RootRelationships" ==> relationships preserved.RootRelationships
-        "DocumentRelationshipId" ==> preserved.DocumentRelationshipId
-        "PartRelationships" ==> (preserved.PartRelationships
-                                 |> Map.toList
-                                 |> List.map (fun (key, rels) -> objFromFields [ "Part" ==> key; "Relationships" ==> relationships rels ])
-                                 |> List.toArray)
-        "Defaults" ==> (preserved.Defaults |> List.map (fun (extension, contentType) -> objFromFields [ "Extension" ==> extension; "ContentType" ==> contentType ]) |> List.toArray)
-        "Overrides" ==> (preserved.Overrides |> List.map (fun (partName, contentType) -> objFromFields [ "PartName" ==> partName; "ContentType" ==> contentType ]) |> List.toArray)
-        "MainContentType" ==> preserved.MainContentType
-        "StylesXml" ==> preserved.StylesXml
-        "SourceXml" ==> (preserved.SourceXml |> Map.toList |> List.map (fun (key, text) -> objFromFields [ "Part" ==> key; "Xml" ==> text ]) |> List.toArray)
-        "SourceRelationships" ==> (preserved.SourceRelationships
-                                   |> Map.toList
-                                   |> List.map (fun (key, rels) -> objFromFields [ "Part" ==> key; "Relationships" ==> relationships rels ])
-                                   |> List.toArray)
-        "SourceParts" ==> (preserved.SourceParts |> List.map (fun part -> objFromFields [ "Path" ==> part.Path; "Data" ==> part.Data ]) |> List.toArray)
-        "BodyContentChunks" ==> (preserved.BodyContentChunks |> List.toArray)
-        "BodyChunkCount" ==> preserved.BodyChunkCount
-        "PartPaths" ==> (preserved.PartPaths |> Map.toList |> List.map (fun (key, path) -> objFromFields [ "Part" ==> key; "Path" ==> path ]) |> List.toArray)
-        "OriginalText" ==> (preserved.OriginalText |> Map.toList |> List.map (fun (path, text) -> objFromFields [ "Path" ==> path; "Text" ==> text ]) |> List.toArray)
-        "SettingsXml" ==> preserved.SettingsXml
-    ]

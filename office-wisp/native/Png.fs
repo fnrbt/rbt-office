@@ -1,5 +1,5 @@
 /// Encode a Framebuffer to PNG bytes
-module Rbt.Widgets.PngEncode
+module Rbt.OfficeNative.Png
 
 open Rbt.Renderer
 

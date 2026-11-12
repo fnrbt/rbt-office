@@ -38,6 +38,10 @@ try {
     const openedText = Word.getText(editor);
     check('the lines: the nested table between the two paragraphs of its cell', opened, ['before the table', 'outerleft', 'inner11', 'inner12', 'inner21', 'inner22', 'belownested', 'outerright', 'after the table']);
     check('getText has the nested table\'s text, in document order', openedText.replace(/\s+/g, ' ').trim(), 'before the table outerleft inner11 inner12 inner21 inner22 belownested outerright after the table');
+    check('body word count includes nested table cells', Word.getWordCounts(editor).BodyWords, 13);
+    const nestedStart = line('inner11').BlockId, nestedEnd = line('inner22').BlockId;
+    Word.setSelection(editor, nestedEnd, 7, nestedStart, 0);
+    check('reverse selection crosses nested table cells', Word.getWordCounts(editor).SelectedWords, 4);
     const target = line('inner11');
     const steps = {};
     window.step = (name) => { try { steps[name](); } catch (e) { fail(e); } };

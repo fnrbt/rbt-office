@@ -5,6 +5,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="Dom.fs" />
     <Compile Include="NumberText.fs" />
     <Compile Include="TableStyles.fs" />
     <Compile Include="Model.fs" />
@@ -17,6 +18,8 @@
     <Compile Include="Recalc.fs" />
     <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="SheetOps.fs" />
+    <Compile Include="ChartAuthoring.fs" />
+    <Compile Include="Session.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Charts.fs" />
     <Compile Include="Slicers.fs" />
@@ -27,16 +30,17 @@
     <Compile Include="Tabs.fs" />
     <Compile Include="HostShapes.fs" />
     <Compile Include="PrintHeaderFooter.fs" />
+    <Compile Include="Managers.fs" />
     <Compile Include="Pagination.fs" />
     <Compile Include="Spreadsheet.fs" />
     <Compile Include="SpreadsheetVba.fs" />
-    <Compile Include="Toolbar.fs" />
     <Compile Include="SpreadsheetUi.fs" />
+    <Compile Include="Toolbar.fs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../Grid/Rbt.Grid.fsproj" />
     <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../FableUI/Rbt.FableUI.fsproj" />
     <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />
     <PackageReference Include="Rbt.Vb" Version="$(RbtVbPackageVersion)" />
   </ItemGroup>

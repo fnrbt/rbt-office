@@ -4,10 +4,11 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
+    <!-- Native packages need this runtime assembly; shared libraries retain SDK/FSI compatibility. -->
+    <FSharpCoreImplicitPackageVersion>10.1.401</FSharpCoreImplicitPackageVersion>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../office-wisp/KeyMap.fs" />
-    <Compile Include="WordRender.fs" />
     <Compile Include="EditorHost.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
@@ -15,7 +16,7 @@
     <PackageReference Include="Rbt.Wisp" Version="$(RbtWispPackageVersion)" />
     <ProjectReference Include="../office-wisp/Rbt.OfficeWisp.fsproj" />
     <ProjectReference Include="../src/Word/Rbt.Word.fsproj" />
-    <ProjectReference Include="../src/Word.Import/Rbt.WordImport.fsproj" />
+    <ProjectReference Include="../office-wisp/word-render/Rbt.WordNative.fsproj" />
     <ProjectReference Include="../src/Office.Formats/Rbt.OfficeFormat.fsproj" />
     <ProjectReference Include="../src/OfficeUi/Rbt.OfficeUi.fsproj" />
     <PackageReference Include="Rbt.Renderer" Version="$(RbtRendererPackageVersion)" />

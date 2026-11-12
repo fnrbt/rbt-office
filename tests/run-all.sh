@@ -42,9 +42,10 @@ core_projects=(
     src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj
 )
 native_projects=(
-    word-native/Rbt.WordWidgets.fsproj
+    word-wisp/Rbt.WordWisp.fsproj
     spreadsheet-wisp/Rbt.SpreadsheetWisp.fsproj
-    spreadsheet-native/Rbt.SpreadsheetWidgets.fsproj
+    tools/pdf-runner/PdfRunner.fsproj
+    tools/spreadsheet-pdf-runner/SpreadsheetPdfRunner.fsproj
 )
 
 # Pin the complete formats inventory. Globbing would silently omit a deleted
@@ -58,7 +59,7 @@ formats_suites=(
 )
 word_suites=(
     textbuffer editing layout incremental-layout faces-relayout font-set pdf
-    import-smoke commands nested-table-split xml-scan header-footer
+    import-smoke package-io commands nested-table-split xml-scan header-footer
     table-merge-split table-columns anchored-objects drawing-order text-boxes
     group-shapes roundtrip-layout table-break-borders sections table-insert
     wrap-band list-levels drop-caps default-tab-stop note-layout
@@ -92,6 +93,7 @@ core_fixtures=(
 native_fixtures=(
     tests/word/native-painter/document.xml
     tests/word/native-painter/expected.json
+    tests/test-documents-excel/synthetic-drawing-extras.xlsx
 )
 
 required=()
@@ -104,7 +106,13 @@ if [ "$profile" = core ]; then
     required+=("${core_fixtures[@]}")
 else
     projects=("${native_projects[@]}")
-    required=(tests/word/native-painter.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/widgets-editorhost.fsx "${native_fixtures[@]}")
+    required=(tests/word/native-painter.fsx tests/word/wisp-editorhost.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/native-import.fsx tests/native-pdf.fsx "${native_fixtures[@]}")
+    for tool in pdftotext pdfimages; do
+        if ! command -v "$tool" >/dev/null; then
+            echo "MISSING NATIVE PDF TOOL: $tool (install Poppler utilities)" >&2
+            exit 1
+        fi
+    done
 fi
 
 for f in "${required[@]}"; do
@@ -184,13 +192,15 @@ if [ "$profile" = core ]; then
     echo "--- xml-text-ratchet ---"
     bash tests/xml-text-ratchet.sh || failed=1
 else
-    if [ ! -f word-native/bin/Debug/net10.0/NotoSans-Regular.ttf ]; then
-        echo "MISSING NATIVE PAINTER FONT: word-native/bin/Debug/net10.0/NotoSans-Regular.ttf" >&2
+    if [ ! -f office-wisp/word-render/bin/Debug/net10.0/NotoSans-Regular.ttf ]; then
+        echo "MISSING NATIVE PAINTER FONT: office-wisp/word-render/bin/Debug/net10.0/NotoSans-Regular.ttf" >&2
         exit 1
     fi
     run_suite "word-native-painter" "tests/word/native-painter.fsx"
+    run_suite "word-wisp-editorhost" "tests/word/wisp-editorhost.fsx"
     run_suite "spreadsheet-wisp-editorhost" "tests/spreadsheet/wisp-editorhost.fsx"
-    run_suite "spreadsheet-widgets-editorhost" "tests/spreadsheet/widgets-editorhost.fsx"
+    run_suite "spreadsheet-native-import" "tests/spreadsheet/native-import.fsx"
+    run_suite "native-pdf" "tests/native-pdf.fsx"
     echo "--- spreadsheet-wisp-executable ---"
     dotnet spreadsheet-wisp/bin/Debug/net10.0/Rbt.SpreadsheetWisp.dll --selftest || failed=1
 fi

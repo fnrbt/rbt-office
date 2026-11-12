@@ -15,17 +15,17 @@
 #   status   exit 0 if the VM session is Active, non-zero otherwise
 #
 # Config (env, with defaults):
-#   WORD_VM                 ssh alias for the VM            (default: wordvm)
+#   WORD_VM                 ssh alias for the VM            (default: winvm)
 #   WORD_VM_RDP_HOST        RDP host/IP   (default: resolved from `ssh -G $WORD_VM`)
-#   WORD_VM_RDP_USER        RDP username                    (default: worduser)
+#   WORD_VM_RDP_USER        RDP username                    (default: olivia)
 #   WORD_VM_RDP_PASSWORD    RDP password                    (default: pass)
 #   WORD_VM_RDP_DISPLAY     Xvfb display for the client     (default: :99)
 #   WORD_VM_RDP_GEOMETRY    screen geometry                 (default: 1280x800)
 #   WORD_VM_RDP_WIGGLE_SECS seconds between mouse wiggles   (default: 30)
 set -uo pipefail
 
-vm=${WORD_VM:-wordvm}
-rdp_user=${WORD_VM_RDP_USER:-worduser}
+vm=${WORD_VM:-winvm}
+rdp_user=${WORD_VM_RDP_USER:-olivia}
 rdp_pass=${WORD_VM_RDP_PASSWORD:-pass}
 display=${WORD_VM_RDP_DISPLAY:-:99}
 geometry=${WORD_VM_RDP_GEOMETRY:-1280x800}

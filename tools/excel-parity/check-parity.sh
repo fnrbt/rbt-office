@@ -10,7 +10,7 @@
 # breach.
 #
 # Skips silently when no TSVs / reference PDFs are present — useful when
-# wordvm is unavailable on the CI runner.
+# winvm is unavailable on the CI runner.
 set -uo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -61,7 +61,7 @@ else
 fi
 
 # 2. Print-PDF MAE thresholds. Only run for fixtures with a saved Excel
-#    reference; --reuse-excel skips the wordvm extraction.
+#    reference; --reuse-excel skips the winvm extraction.
 PDF_REF_DIR=artifacts/pdf-compare-excel
 if [[ -d "$PDF_REF_DIR" ]]; then
   echo "[2/3] Print-PDF MAE thresholds"

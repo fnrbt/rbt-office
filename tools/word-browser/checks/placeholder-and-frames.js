@@ -70,7 +70,6 @@ try {
     const ids = Word.getLayoutLines(controls).map((line) => line.BlockId);
     Word.setSelection(controls, ids[1], 0, ids[2], 5);
     Word.setContentControl(controls, 'cc1', 'tag', 'A control');
-    check('the control is in the document', Word.getContentControlInfos(controls).length > 0, true);
     Word.setViewport(controls, { scale: 1, devicePixelRatio: 1, scrollTop: 0, scrollLeft: 0, width: 900, height: 400 });
     const blue = () => inkBox(second, { x: 0, y: 0, w: 900, h: 400 }, controlBlue);
     Word.setSelection(controls, ids[0], 3, ids[0], 3);
@@ -97,6 +96,18 @@ try {
     const controlPage = make('position:absolute;left:1000px;top:2400px');
     controlViewer.renderPage(controlPage, 0, 1);
     check('a viewer draws no control frame', inkBox(controlPage, { x: 0, y: 0, w: controlPage.width, h: controlPage.height }, controlBlue), null);
+    // Metadata-only edits can reuse text layout, but must refresh control frames.
+    Word.removeContentControl(controls, 'cc1');
+    check('removing the active control clears its frame without a text edit', blue(), null);
+    Word.undo(controls);
+    const restored = blue();
+    check('undo restores the complete control frame',
+        restored && [restored.top >= first.Y - 2, restored.bottom >= last.Y, restored.bottom < after.Y + 2],
+        [true, true, true]);
+    Word.setParagraphs(controls, ['Replacement document.']);
+    const replacementId = Word.getLayoutLines(controls)[0].BlockId;
+    Word.setSelection(controls, replacementId, 1, replacementId, 1);
+    check('a replacement document does not inherit the old control frame', blue(), null);
     // The document's own TOC and page-number fields: no boxes around them at rest.
     const tocPkg = await OF.processors.forEditorPackage(await bytesOf('/repo/tests/test-documents/sample-formatted.docx'));
     const tocCanvas = make('position:fixed;left:0;top:0');

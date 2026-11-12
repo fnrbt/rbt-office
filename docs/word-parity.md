@@ -9,14 +9,15 @@ Current goal: iteratively improve RedBat Word render/layout parity against Micro
   - Browser canvas measurement/render bridge: `src/Word/Renderer.fs`
   - Browser API exports include `getLayoutSegments`, `importFromDocxPackage`, `exportDocumentPackage`: `src/Word/Word.fs`
   - Shell/host bridge and PDF export hook: `src/Word/WordShell.fs`, `src/Word/WordHost.fs`
-- Native path: `word-native/`
-  - Native layout settings and renderer integration: `word-native/WordEditor.fs`
-  - Uses `../widgets`.
+- Native path: `word-wisp/`
+  - Shared renderer-only adapter: `office-wisp/word-render/WordRender.fs`
+  - Canonical layout settings: `src/Word/Layout.fs`; fonts/images: `office-wisp/native/`
+  - Wisp chrome uses `office-wisp/OfficeShell.fs`; the Widgets host is retired.
 - Print/PDF path: `src/Word.Pdf/`
   - PDF layout/paint conversion: `src/Word.Pdf/Pdf.fs`
 - DOCX read/write path: `src/Office.Formats/`
   - DOCX reader: `src/Office.Formats/src/DocxReader.fs`
-  - DOCX writer: `src/Office.Formats/src/DocumentWriter.fs`
+  - DOCX writer: `src/Office.Formats/src/WordPackageWriterModel.fs`, `WordPackageWriterSplice.fs`, `WordPackageWriterAssembly.fs`
   - Focused DOCX creation helper: `src/Office.Formats/src/DocumentBuilder.fs`
 
 ## Fixtures
@@ -60,7 +61,7 @@ For each identified bug, prefer this stricter loop:
 
 ## Current Machine State
 
-- `ssh wordvm hostname` works and returns `DESKTOP-OP2QS0N`.
+- Use `winvm` for Office automation. `ssh winvm "hostname && whoami"` returns `DESKTOP-NNIBN4S` and `desktop-nnibn4s\olivia`.
 - Word automation should live in checked-in `.vbs` files and be invoked with `cscript`; avoid one-off giant SSH/PowerShell command lines.
 - The Linux wrappers default to `WORD_VM_RUN_MODE=task`, which copies the checked-in VBS to the VM and runs it through an interactive-user scheduled task. This mode is verified with `tests/test-documents-features/test-formatting.docx`.
 - `WORD_VM_RUN_MODE=direct` runs `cscript` directly over SSH. Direct SSH copied files to the VM, but Windows blocked `CreateObject` in the SSH-launched VBS process with `Permission denied` here, so keep task mode as the default unless the VM setup changes.
@@ -74,7 +75,8 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/extract-word-layout.vbs` extracts Microsoft Word paragraph/line geometry to TSV, including table row/column context and Word point positions.
 - `docs/word-vba-layout-api.md` tracks the Microsoft Word VBA layout-query API surface and which parts our browser API mirrors.
 - `tools/word-parity/print-word-pdf.vbs` opens a DOCX in Word and writes a PDF.
-- `tools/word-parity/run-word-vbs-on-vm.sh` copies a VBS script and DOCX to `wordvm`, runs `cscript`, and copies the output back.
+- `tools/word-parity/run-word-vbs-on-vm.sh` copies a VBS script and DOCX to `winvm`, runs `cscript`, and copies the output back.
+- `tools/word-parity/open-all.vbs` retains aggregate `opened.tsv` and adds escaped `opened-detail.tsv`: exact body/story/table/control text, XML bindings, field types/codes/results, TOC counts, hyperlink targets, drawing structure and pagination. It opens read-only with macros/link updates disabled and `OpenAndRepair=False`, closes its documents and quits its own application without process-name kills. A document window is required: Word 16.0.19127 returns `E_FAIL` for `Shape.Type` when `Documents.Open` uses `Visible=False`; the focused original/model probe passes with `Visible=True`. Word exposes no authoritative repair-result property, so repair status is explicitly unknown.
 - `tools/word-parity/run-word-vbs-task.ps1` runs the copied VBS through Windows Task Scheduler with an interactive-user token.
 - `tools/word-parity/word-layout-tsv.sh` wraps the layout extractor.
 - `tools/word-parity/word-print-pdf.sh` wraps the PDF generator.
@@ -82,7 +84,7 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/capture-browser-docx.mjs` captures a browser canvas PNG and optional layout JSON for a DOCX. Set `OFFICE_ROOT=/path/to/worktree` to capture from an old commit.
 - `tools/word-parity/compare-word-browser-layouts.mjs` runs Word TSV extraction plus browser line capture for one or more DOCX files/directories, then writes per-document layout diffs and a ranked summary.
 - `tools/word-parity/compare-vba-layout-results.mjs` runs Word TSV extraction plus browser `getRangeInformation`/`computeRangeStatistics` calls for matched line ranges. Use it to verify that our VBA-style layout query results match Microsoft Word separately from rendered screenshot comparison.
-- `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `wordvm` into `artifacts/fonts/windows`.
+- `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `winvm` into `artifacts/fonts/windows`.
 - `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
 - `window.rbWordRunner.getVbaLayoutLines()`, `getRangeInformation(...)`, `getSelectionInformation()`, `getRangeBounds(...)`, and `computeRangeStatistics(...)` expose VBA-style layout probes on our browser path.
 - `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.

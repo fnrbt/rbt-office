@@ -191,11 +191,10 @@ checks['component-host-api'] = async () => {
         // Dispose with a dialog open: nodes and document listeners all go.
         grid.OnChange((change) => changes.push(change));
         grid.ShowFindReplaceDialog();
-        check('listeners are on the document while mounted', tracker.live.size >= 3, true);
-        check('the dialog is in the page', !!document.getElementById('find-replace-dialog'), true);
+        check('the grid owns its find bar, without a global dialog', [sized.querySelectorAll('.sheet-find-bar').length, !!document.getElementById('find-replace-dialog')], [1, false]);
         grid.Dispose();
         check('dispose removes every document listener', [...tracker.live.values()], []);
-        check('dispose removes the grid and its dialogs', [sized.children.length, !!document.getElementById('find-replace-dialog'), document.querySelectorAll('.spreadsheet-container').length], [0, false, 0]);
+        check('dispose removes the grid and its find bar', [sized.children.length, document.querySelectorAll('.sheet-find-bar').length, document.querySelectorAll('.spreadsheet-container').length], [0, 0, 0]);
         grid.SetCell(0, 0, 'after dispose');
         check('no events after dispose', changes.length, 0);
         document.dispatchEvent(new MouseEvent('mousemove', { clientX: 5, clientY: 5 }));
@@ -1248,6 +1247,9 @@ checks['grid-clipboard'] = async () => {
         grid.SelectRange(15, 0, 16, 2);
         clipboard('paste', { 'text/plain': '9' });
         check('a single value fills the selection', [await valueAt(grid, 15, 0), await valueAt(grid, 16, 2), await valueAt(grid, 17, 0)], ['9', '9', '']);
+        check('a newline-only external cell clears the selected values',
+            [grid.PasteText('\n', ''), await valueAt(grid, 15, 0), await valueAt(grid, 16, 2)],
+            [true, '', '']);
         check('PasteText does the same for a host', [(grid.SelectCell(20, 0), grid.PasteText('a\tb', '')), await valueAt(grid, 20, 1)], [true, 'b']);
 
         // Cut: on the clipboard, and gone from the sheet in one step.
@@ -1438,6 +1440,57 @@ checks['grid-clipboard-deleted-source'] = async () => {
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     finally {
         if (ownClipboard) Object.defineProperty(navigator, 'clipboard', ownClipboard); else delete navigator.clipboard;
+        close();
+    }
+    return lines;
+};
+
+checks['grid-clipboard-session-lifecycle'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const original = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    try {
+        const { createEmpty } = await import('/spreadsheet/Model.js');
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        grid.InstallWorkbook([createEmpty(20, 10), createEmpty(20, 10)], ['Source', 'Target'], 0, undefined);
+        grid.SetCell(0, 0, '6'); grid.SetCell(0, 1, '=Source!$A$1*2');
+        grid.MarkSaved();
+        grid.SetCell(0, 3, '9'); grid.Undo();
+        const saved = grid.GetRevision();
+        grid.SelectCell(0, 1); await grid.Copy();
+        check('copy retains saved revision and redo', [grid.GetRevision(), grid.IsModified(), grid.CanRedo()], [saved, false, true]);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { readText: async () => '' } });
+        grid.SwitchSheet(1); grid.SelectCell(0, 1);
+        check('an empty system read retains the internal rich fallback',
+            [await grid.Paste(), grid.GetCell(0, 1).formula, grid.GetCell(0, 1).value],
+            [true, '=Source!$A$1*2', 12]);
+        grid.Undo(); grid.SwitchSheet(0);
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+        grid.RenameSheet(0, 'Renamed Source');
+        grid.SwitchSheet(1); grid.SelectCell(1, 1);
+        check('copied formula follows source rename', [await grid.Paste(), grid.GetCell(1, 1).formula, grid.GetCell(1, 1).value],
+            [true, "='Renamed Source'!$A$1*2", 12]);
+        grid.Undo(); grid.SwitchSheet(0); grid.Undo();
+        grid.SwitchSheet(1); grid.SelectCell(1, 1);
+        check('copied formula follows rename undo', [await grid.Paste(), grid.GetCell(1, 1).formula, grid.GetCell(1, 1).value],
+            [true, '=Source!$A$1*2', 12]);
+        grid.SwitchSheet(0); grid.Redo(); grid.SwitchSheet(1); grid.SelectCell(3, 3);
+        check('copied formula follows rename redo', [await grid.Paste(), grid.GetCell(3, 3).formula, grid.GetCell(3, 3).value],
+            [true, "='Renamed Source'!$A$1*2", 12]);
+        let completeRead;
+        Object.defineProperty(navigator, 'clipboard', { configurable: true, value: {
+            readText: () => new Promise((resolve) => { completeRead = resolve; }),
+        } });
+        const pending = grid.Paste();
+        grid.InstallWorkbook([createEmpty(20, 10)], ['Replacement'], 0, undefined);
+        grid.MarkSaved();
+        completeRead('999');
+        check('late clipboard read cannot edit a replacement workbook',
+            [await pending, grid.GetCell(0, 0).value, grid.IsModified(), grid.CanUndo()],
+            [false, null, false, false]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally {
+        if (original) Object.defineProperty(navigator, 'clipboard', original); else delete navigator.clipboard;
         close();
     }
     return lines;

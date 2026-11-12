@@ -9,8 +9,8 @@ Copies the VBS script and DOCX to the Windows Word VM, runs the script with
 cscript, and copies the output file back to the requested local path.
 
 Defaults:
-  WORD_VM=wordvm
-  WORD_VM_DIR='C:/Users/worduser/RedBatWordParity'
+  WORD_VM=winvm
+  WORD_VM_DIR='C:/Users/olivia/RedBatWordParity'
   WORD_VM_RUN_MODE=task
 USAGE
   exit 2
@@ -32,8 +32,8 @@ if [[ ! -f "$input_docx" ]]; then
   exit 2
 fi
 
-vm=${WORD_VM:-wordvm}
-vm_dir=${WORD_VM_DIR:-C:/Users/worduser/RedBatWordParity}
+vm=${WORD_VM:-winvm}
+vm_dir=${WORD_VM_DIR:-C:/Users/olivia/RedBatWordParity}
 run_mode=${WORD_VM_RUN_MODE:-task}
 
 # Optional RDP keepalive (disabled by default; needs xfreerdp3 + Xvfb, which are

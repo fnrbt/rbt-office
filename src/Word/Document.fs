@@ -151,19 +151,33 @@ type SourceOrigin =
     | ReadAt of int
     | LikeAt of int
 
+type ContentControlLayer = TextBuffer.ContentControlLayer
+
 type BlockMetadata = {
     Style: string option
     ContentControlId: string option
     ContentControlTag: string option
     ContentControlAlias: string option
-    /// The w:sdtPr the file has for the control (its binding, placeholder, kind):
-    /// written again while the control's id, tag and alias are what it says.
+    /// Original properties and end properties of the innermost block control,
+    /// including unknown XML and data bindings, retained across edits.
     ContentControlXml: string option
+    /// Identity of that control in the source; distinct adjacent controls can
+    /// have identical properties. Ancestors are ordered outermost first.
+    ContentControlGroup: string option
+    ContentControlAncestors: ContentControlLayer list
     /// The w:p the paragraph is of (see SourceOrigin).
     Origin: SourceOrigin option
     ListStyle: ListStyle
     ListLevel: int  // 0 = not in list, 1-9 = nesting level
     ListId: string option
+    /// Save-time start overrides (level 1–9, value) for a physical instance.
+    ListStartOverrides: (int * int) list
+    /// Source numbering instance to clone when this newly authored instance is saved.
+    ListSourceId: string option
+    /// Start override on the authored instance's current level.
+    ListRestart: bool
+    /// The marker format/text of this cloned level was explicitly changed.
+    ListFormatEdited: bool
     ListNumberFormat: string option
     ListLevelText: string option
     ListStart: int option
@@ -189,6 +203,10 @@ type BlockMetadata = {
     KeepNext: bool option
     KeepLines: bool option
     BackgroundColor: string option
+    ParagraphShadingPattern: string option
+    ParagraphShadingForeground: string option
+    ExplicitParagraphShadingPattern: string option
+    ExplicitParagraphShadingForeground: string option
     ParagraphBorders: ParagraphBorders option
     ParagraphBorderBefore: float option
     ParagraphBorderAfter: float option
@@ -288,10 +306,16 @@ let defaultMetadata = {
     ContentControlTag = None
     ContentControlAlias = None
     ContentControlXml = None
+    ContentControlGroup = None
+    ContentControlAncestors = []
     Origin = None
     ListStyle = NoList
     ListLevel = 0
     ListId = None
+    ListStartOverrides = []
+    ListSourceId = None
+    ListRestart = false
+    ListFormatEdited = false
     ListNumberFormat = None
     ListLevelText = None
     ListStart = None
@@ -314,6 +338,10 @@ let defaultMetadata = {
     KeepNext = None
     KeepLines = None
     BackgroundColor = None
+    ParagraphShadingPattern = None
+    ParagraphShadingForeground = None
+    ExplicitParagraphShadingPattern = None
+    ExplicitParagraphShadingForeground = None
     ParagraphBorders = None
     ParagraphBorderBefore = None
     ParagraphBorderAfter = None
@@ -338,6 +366,21 @@ let defaultMetadata = {
     MarkRevision = None
     DropCap = None
 }
+
+/// Advance the list counters exactly as layout does, without formatting a marker.
+let advanceListCounters (metadata: BlockMetadata) (counters: Map<string * int, int>) =
+    if metadata.ListStyle <> Numbered then counters
+    else
+        let level = max 1 metadata.ListLevel
+        let id = metadata.ListId |> Option.defaultValue ""
+        let key = id, level
+        let value = counters |> Map.tryFind key |> Option.map ((+) 1) |> Option.defaultValue (metadata.ListStart |> Option.defaultValue 1)
+        let mutable updated = counters |> Map.add key value
+        for child in level + 1 .. 9 do
+            let restart = metadata.ListLevels |> List.tryFind (fun definition -> definition.Level = child) |> Option.bind (fun definition -> definition.Restart)
+            let resets = match restart with Some 0 -> false | Some after -> level <= after | None -> true
+            if resets then updated <- updated |> Map.remove (id, child)
+        updated
 
 /// One segment of a vector path. Coordinates are in the path's own coordinate
 /// space (see ShapeGeometry); the painter scales them to the shape's box.
@@ -386,6 +429,8 @@ and TableBlock = {
     Rows: TableRow list
     PreferredWidth: TableWidth option
     Alignment: string option
+    /// Table indent in canvas pixels.
+    Indent: float option
     LayoutMode: TableLayoutMode option
     GridColumns: TableWidth list
     Borders: TableBorders option
@@ -403,6 +448,13 @@ and TableBlock = {
     /// switched on (w:tblLook). The style's formatting is already resolved into
     /// the cells; the reference is kept for the file.
     StyleId: string option
+    ContentControlId: string option
+    ContentControlTag: string option
+    ContentControlAlias: string option
+    /// The bound control's original properties and end properties.
+    ContentControlXml: string option
+    ContentControlGroup: string option
+    ContentControlAncestors: ContentControlLayer list
     Look: TableLook option
 }
 
@@ -417,6 +469,9 @@ and TableLook = {
 
 and TextBoxBlock = {
     Id: BlockId
+    /// The source drawing's identity and kind, separate from the editor block ID.
+    SourceShapeId: string option
+    SourceShapeKind: string option
     Content: ParagraphBlock list
     X: float option
     Y: float option
@@ -574,6 +629,8 @@ and TableVerticalMerge =
 /// A text box as the editor makes it: a white rectangle with a grey outline.
 let defaultTextBox : TextBoxBlock = {
     Id = ""
+    SourceShapeId = None
+    SourceShapeKind = None
     Content = []
     X = None
     Y = None
@@ -780,27 +837,58 @@ type CommentBody = {
 type PackageData = {
     Notes: NoteBody list
     Comments: CommentBody list
+    /// Theme used to resolve imported styles and retained for package export.
+    Theme: DocxReader.Theme option
     /// The parts of the opened package the editor does not model (theme,
     /// settings, document properties, custom XML, chart / diagram / embedded
     /// object parts, the original styles part, ...), exactly as the reader
-    /// delivered them; null for a document made from scratch. The editor never
-    /// looks inside: it is handed back to the writer on save.
-    Preserved: obj
+    /// delivered them. None for a document made from scratch.
+    Preserved: WordEditorPackage.PreservedPackage option
     /// The style catalog as imported. A style that still equals its entry here
     /// was not changed in the editor, and its original definition is kept.
     ImportedStyles: NamedStyle list
-    /// The document as it was imported (a boxed Document; null for one made
-    /// from scratch). A block, a header or a note that still exports as it
-    /// did then was not changed, and is written back as it is in the file.
-    Imported: obj
+    /// Mutable only while a progressive import extends its original baseline.
+    Imported: ImportedDocument option
 }
+
+and Document = {
+    Blocks: Block list
+    Selection: Selection option
+    PageSetup: PageSetup
+    Styles: NamedStyle list
+    Headers: ParagraphBlock list
+    Footers: ParagraphBlock list
+    HeaderParts: HeaderFooterPart list
+    FooterParts: HeaderFooterPart list
+    Package: PackageData
+}
+
+and ImportedDocument = {
+    mutable Document: Document
+}
+
+/// Whether two snapshots contain the same document, independently of the caret.
+let sameContent (left: Document) (right: Document) =
+    obj.ReferenceEquals(left, right)
+    || ((obj.ReferenceEquals(left.Blocks, right.Blocks) || left.Blocks = right.Blocks)
+        && left.PageSetup = right.PageSetup
+        && (obj.ReferenceEquals(left.Styles, right.Styles) || left.Styles = right.Styles)
+        && (obj.ReferenceEquals(left.Headers, right.Headers) || left.Headers = right.Headers)
+        && (obj.ReferenceEquals(left.Footers, right.Footers) || left.Footers = right.Footers)
+        && (obj.ReferenceEquals(left.HeaderParts, right.HeaderParts) || left.HeaderParts = right.HeaderParts)
+        && (obj.ReferenceEquals(left.FooterParts, right.FooterParts) || left.FooterParts = right.FooterParts)
+        && (obj.ReferenceEquals(left.Package.Notes, right.Package.Notes) || left.Package.Notes = right.Package.Notes)
+        && (obj.ReferenceEquals(left.Package.Comments, right.Package.Comments) || left.Package.Comments = right.Package.Comments)
+        && left.Package.Theme = right.Package.Theme
+        && obj.ReferenceEquals(left.Package.Preserved, right.Package.Preserved))
 
 let emptyPackageData = {
     Notes = []
     Comments = []
-    Preserved = null
+    Theme = None
+    Preserved = None
     ImportedStyles = []
-    Imported = null
+    Imported = None
 }
 
 let defaultPageSetup = {
@@ -838,17 +926,6 @@ let endsSection (metadata: BlockMetadata) =
 let inheritSectionReferences (previous: (string * string) list) (own: (string * string) list) : (string * string) list =
     own @ (previous |> List.filter (fun (kind, _) -> not (own |> List.exists (fun (ownKind, _) -> ownKind = kind))))
 
-type Document = {
-    Blocks: Block list
-    Selection: Selection option
-    PageSetup: PageSetup
-    Styles: NamedStyle list
-    Headers: ParagraphBlock list
-    Footers: ParagraphBlock list
-    HeaderParts: HeaderFooterPart list
-    FooterParts: HeaderFooterPart list
-    Package: PackageData
-}
 
 /// The paragraphs of a cell in document order: its own, and those of the
 /// tables in it at the places NestedTableAnchors gives (as the layout puts
@@ -939,17 +1016,38 @@ let rec mapParagraphsOfBlocks (mapper: ParagraphBlock -> ParagraphBlock) (blocks
 /// A copy of a block list in which every block has an id of its own:
 /// paragraphs (those in table cells, nested tables and text boxes too),
 /// tables with the tables in their cells, and text boxes. `newId kind` gives
-/// an id no block has ("paragraph" | "table" | "box").
+/// an id no block has ("paragraph" | "table" | "box" | "control").
 let copyBlocksWithNewIds (newId: string -> BlockId) (blocks: Block list) : Block list =
+    let groups = Dictionary<string, string>()
+    let remap group =
+        group |> Option.map (fun group ->
+            match groups.TryGetValue group with
+            | true, found -> found
+            | _ ->
+                let fresh = newId "control"
+                groups.[group] <- fresh
+                fresh)
+    let ancestors layers =
+        layers |> List.map (fun layer ->
+            { layer with Group = remap (Some layer.Group) |> Option.get })
     let rec copyTable (table: TableBlock) : TableBlock =
         { table with
             Id = newId "table"
+            ContentControlGroup = remap table.ContentControlGroup
+            ContentControlAncestors = ancestors table.ContentControlAncestors
             Rows =
                 table.Rows
                 |> List.map (fun row ->
                     { row with Cells = row.Cells |> List.map (fun cell -> { cell with NestedTables = cell.NestedTables |> List.map copyTable }) }) }
     blocks
-    |> mapParagraphsOfBlocks (fun para -> { para with Id = newId "paragraph" })
+    |> mapParagraphsOfBlocks (fun para ->
+        { para with
+            Id = newId "paragraph"
+            Metadata = {
+                para.Metadata with
+                    ContentControlGroup = remap para.Metadata.ContentControlGroup
+                    ContentControlAncestors = ancestors para.Metadata.ContentControlAncestors
+            } })
     |> List.map (function
         | Table table -> Table (copyTable table)
         | TextBox textBox -> TextBox { textBox with Id = newId "box" }
@@ -1550,17 +1648,109 @@ let bookmarkInfos (doc: Document) =
             EndOffset = blockInfos |> List.map (fun info -> info.EndOffset) |> List.max
         })
 
+type private ContentControlRange = {
+    Info: ContentControlInfo
+    First: ParagraphBlock
+    mutable Last: ParagraphBlock
+}
+
+/// Visit physical control membership in document order without constructing
+/// panel entries for paint queries or membership sets for panel queries.
+let private iterContentControlParagraphs visit (doc: Document) =
+    let continuations = Dictionary<string, struct (int * string)>()
+    let mutable position = 0
+    let add key id tag alias para =
+        // Replacing the middle of a control splits its physical XML wrapper,
+        // even when the remaining paragraphs retain the original group ID.
+        let physicalKey =
+            match continuations.TryGetValue key with
+            | true, struct (previous, physicalKey) when previous >= position - 1 -> physicalKey
+            | _ -> key + "@" + string position
+        continuations.[key] <- struct (position, physicalKey)
+        visit physicalKey id tag alias para
+    let addLayer (layer: ContentControlLayer) para =
+        match layer.Id with
+        | Some id -> add ("group:" + layer.Group) id layer.Tag layer.Alias para
+        | None -> ()
+    let addOwn group prefix blockId id tag alias para =
+        match id with
+        | None -> () // An ID-less binding is not an editable control in the panel.
+        | Some controlId ->
+            let key =
+                match group with
+                | Some group -> "group:" + group
+                | None -> prefix + blockId
+            add key controlId tag alias para
+    let addParagraph notifyParent (para: ParagraphBlock) =
+        position <- position + 1
+        notifyParent para
+        let metadata = para.Metadata
+        for layer in metadata.ContentControlAncestors do addLayer layer para
+        addOwn metadata.ContentControlGroup "paragraph:" para.Id
+            metadata.ContentControlId metadata.ContentControlTag metadata.ContentControlAlias para
+    let rec addTable (table: TableBlock) (notifyParent: ParagraphBlock -> unit) =
+        let addTableLayers para =
+            notifyParent para
+            for layer in table.ContentControlAncestors do addLayer layer para
+            addOwn table.ContentControlGroup "table:" table.Id
+                table.ContentControlId table.ContentControlTag table.ContentControlAlias para
+        for row in table.Rows do
+            for cell in row.Cells do
+                if cell.NestedTables.IsEmpty then
+                    for para in cell.Content do addParagraph addTableLayers para
+                else
+                    let content = List.toArray cell.Content
+                    let anchors = List.toArray cell.NestedTableAnchors
+                    let nested =
+                        cell.NestedTables
+                        |> List.mapi (fun index inner ->
+                            let at = if index < anchors.Length then anchors.[index] else content.Length
+                            inner, max 0 (min content.Length at))
+                        |> List.sortBy snd
+                    let mutable pending = nested
+                    for position in 0 .. content.Length do
+                        while not pending.IsEmpty && snd pending.Head = position do
+                            addTable (fst pending.Head) addTableLayers
+                            pending <- pending.Tail
+                        if position < content.Length then
+                            addParagraph addTableLayers content.[position]
+    for block in doc.Blocks do
+        match block with
+        | Paragraph para | Heading (_, para) -> addParagraph ignore para
+        | Table table -> addTable table ignore
+        | TextBox box -> box.Content |> List.iter (addParagraph ignore)
+
+let private contentControlRanges (doc: Document) =
+    let ranges = ResizeArray<ContentControlRange>()
+    let grouped = Dictionary<string, ContentControlRange>()
+    iterContentControlParagraphs (fun key id tag alias para ->
+        match grouped.TryGetValue key with
+        | true, found -> found.Last <- para
+        | _ ->
+            let resolvedTag = tag |> Option.defaultValue "content-control"
+            let resolvedAlias = alias |> Option.defaultValue (tag |> Option.defaultValue id)
+            let found = {
+                Info = { Id = id; Tag = resolvedTag; Alias = resolvedAlias; BlockId = para.Id }
+                First = para; Last = para }
+            ranges.Add found
+            grouped.[key] <- found) doc
+    List.ofSeq ranges
+
 let contentControlInfos (doc: Document) =
-    editableParagraphsInOrder doc
-    |> List.choose (fun para ->
-        para.Metadata.ContentControlId
-        |> Option.map (fun controlId -> {
-            Id = controlId
-            Tag = para.Metadata.ContentControlTag |> Option.defaultValue "content-control"
-            Alias = para.Metadata.ContentControlAlias |> Option.defaultValue (para.Metadata.ContentControlTag |> Option.defaultValue controlId)
-            BlockId = para.Id
-        }))
-    |> List.distinctBy (fun info -> info.Id, info.BlockId)
+    contentControlRanges doc |> List.map (fun range -> range.Info)
+
+/// Paragraph membership of physical controls, including enclosing controls
+/// and table controls absent from the cell paragraph's own metadata.
+let contentControlMemberships (doc: Document) =
+    let memberships = Dictionary<BlockId, HashSet<string>>()
+    iterContentControlParagraphs (fun key _ _ _ para ->
+        match memberships.TryGetValue para.Id with
+        | true, members -> members.Add key |> ignore
+        | _ ->
+            let members = HashSet<string>()
+            members.Add key |> ignore
+            memberships.[para.Id] <- members) doc
+    memberships
 
 let commentInfos (doc: Document) =
     let infos = ResizeArray<CommentInfo>()
@@ -1599,17 +1789,14 @@ let selectBookmark bookmarkId doc =
             } }
 
 let selectContentControl controlId doc =
-    match contentControlInfos doc |> List.tryFind (fun info -> info.Id = controlId || info.Tag = controlId) with
+    match contentControlRanges doc |> List.tryFind (fun range -> range.Info.Id = controlId || range.Info.Tag = controlId) with
     | None -> doc
-    | Some info ->
-        match findParagraph doc info.BlockId with
-        | None -> doc
-        | Some para ->
-            { doc with
-                Selection = Some {
-                    Anchor = { BlockId = para.Id; Offset = 0 }
-                    Focus = { BlockId = para.Id; Offset = TextBuffer.length para.Buffer }
-                } }
+    | Some range ->
+        { doc with
+            Selection = Some {
+                Anchor = { BlockId = range.First.Id; Offset = 0 }
+                Focus = { BlockId = range.Last.Id; Offset = TextBuffer.length range.Last.Buffer }
+            } }
 
 /// The ids of the bookmarks of a document that have this id or this name.
 let private bookmarkIdsNamed (bookmarkId: string) (doc: Document) : Set<string> =
@@ -1654,23 +1841,51 @@ let renameBookmark bookmarkId bookmarkName doc =
                 | Image run -> Image run)
         replaceParagraph currentDoc para.Id { para with Buffer = { para.Buffer with Runs = newRuns } })
 
+let private matchesContentControl controlId id tag = id = Some controlId || tag = Some controlId
+let private mapContentControlTables controlId update (doc: Document) =
+    let matches (table: TableBlock) =
+        matchesContentControl controlId table.ContentControlId table.ContentControlTag ||
+        (table.ContentControlAncestors |> List.exists (fun layer -> matchesContentControl controlId layer.Id layer.Tag))
+    if doc.Blocks |> List.exists (function Table table -> matches table | _ -> false) then
+        { doc with
+            Blocks = doc.Blocks |> List.map (function
+                | Table table when matches table -> Table (update table)
+                | block -> block) }
+    else doc
+
 let removeContentControl controlId doc =
-    (doc, contentControlInfos doc)
-    ||> List.fold (fun currentDoc info ->
-        if info.Id = controlId || info.Tag = controlId then
-            match findParagraph currentDoc info.BlockId with
-            | None -> currentDoc
-            | Some para ->
-                replaceParagraph currentDoc para.Id {
-                    para with
-                        Metadata = {
-                            para.Metadata with
-                                ContentControlId = None
-                                ContentControlTag = None
-                                ContentControlAlias = None
-                        }
-                }
-        else currentDoc)
+    let remove (layer: ContentControlLayer) = not (matchesContentControl controlId layer.Id layer.Tag)
+    (doc, editableParagraphsInOrder doc)
+    ||> List.fold (fun currentDoc para ->
+        let m = para.Metadata
+        let inner = matchesContentControl controlId m.ContentControlId m.ContentControlTag
+        if not inner && List.forall remove m.ContentControlAncestors then currentDoc
+        else
+            let ancestors = m.ContentControlAncestors |> List.filter remove
+            let changed =
+                if inner then
+                    match List.rev ancestors with
+                    | closest :: outer ->
+                        { m with ContentControlId = closest.Id; ContentControlTag = closest.Tag; ContentControlAlias = closest.Alias
+                                 ContentControlXml = closest.Xml; ContentControlGroup = Some closest.Group
+                                 ContentControlAncestors = List.rev outer }
+                    | [] ->
+                        { m with ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
+                                 ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = [] }
+                else { m with ContentControlAncestors = ancestors }
+            replaceParagraph currentDoc para.Id { para with Metadata = changed })
+    |> mapContentControlTables controlId (fun table ->
+        let ancestors = table.ContentControlAncestors |> List.filter remove
+        if matchesContentControl controlId table.ContentControlId table.ContentControlTag then
+            match List.rev ancestors with
+            | closest :: outer ->
+                { table with ContentControlId = closest.Id; ContentControlTag = closest.Tag; ContentControlAlias = closest.Alias
+                             ContentControlXml = closest.Xml; ContentControlGroup = Some closest.Group
+                             ContentControlAncestors = List.rev outer }
+            | [] ->
+                { table with ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
+                             ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = [] }
+        else { table with ContentControlAncestors = ancestors })
 
 let updateContentControl controlId newControlId tag alias doc =
     let normalize fallback (value: string) =
@@ -1678,23 +1893,28 @@ let updateContentControl controlId newControlId tag alias doc =
     let newControlId = normalize controlId newControlId
     let tag = normalize "content-control" tag
     let alias = normalize tag alias
-
-    (doc, contentControlInfos doc)
-    ||> List.fold (fun currentDoc info ->
-        if info.Id = controlId || info.Tag = controlId then
-            match findParagraph currentDoc info.BlockId with
-            | None -> currentDoc
-            | Some para ->
-                replaceParagraph currentDoc para.Id {
-                    para with
-                        Metadata = {
-                            para.Metadata with
-                                ContentControlId = Some newControlId
-                                ContentControlTag = Some tag
-                                ContentControlAlias = Some alias
-                        }
-                }
-        else currentDoc)
+    let update (layer: ContentControlLayer) =
+        if matchesContentControl controlId layer.Id layer.Tag then
+            { layer with Id = Some newControlId; Tag = Some tag; Alias = Some alias }
+        else layer
+    (doc, editableParagraphsInOrder doc)
+    ||> List.fold (fun currentDoc para ->
+        let m = para.Metadata
+        let inner = matchesContentControl controlId m.ContentControlId m.ContentControlTag
+        if not inner && not (m.ContentControlAncestors |> List.exists (fun layer -> matchesContentControl controlId layer.Id layer.Tag)) then currentDoc
+        else
+            let changed =
+                { m with ContentControlId = if inner then Some newControlId else m.ContentControlId
+                         ContentControlTag = if inner then Some tag else m.ContentControlTag
+                         ContentControlAlias = if inner then Some alias else m.ContentControlAlias
+                         ContentControlAncestors = m.ContentControlAncestors |> List.map update }
+            replaceParagraph currentDoc para.Id { para with Metadata = changed })
+    |> mapContentControlTables controlId (fun table ->
+        let inner = matchesContentControl controlId table.ContentControlId table.ContentControlTag
+        { table with ContentControlId = if inner then Some newControlId else table.ContentControlId
+                     ContentControlTag = if inner then Some tag else table.ContentControlTag
+                     ContentControlAlias = if inner then Some alias else table.ContentControlAlias
+                     ContentControlAncestors = table.ContentControlAncestors |> List.map update })
 
 let private emptyTableCell () =
     {
@@ -2722,7 +2942,8 @@ let private cellLike (span: int option) (cell: TableCell) : TableCell =
                     SectionVerticalAlign = None
                     SectionBreak = None; SectionColumns = None; SectionPageSetup = None; SectionPageNumberStart = None; SectionPageNumberFormat = None
                     HeaderReferences = []; FooterReferences = []
-                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None; ContentControlXml = None
+                    ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
+                    ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = []
                     Origin = likeOrigin first.Metadata.Origin } }
         | [] -> { Id = nextBlockId (); Buffer = TextBuffer.empty; Metadata = defaultMetadata }
     { cell with
@@ -3039,6 +3260,7 @@ let private newTable rows columns (doc: Document) : TableBlock =
         Rows = [ for _ in 1 .. rowCount -> { Cells = [ for _ in 1 .. columnCount -> emptyTableCell () ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; GridBefore = 0; GridAfter = 0; WidthBefore = None; WidthAfter = None; BordersOverride = None; Origin = None } ]
         PreferredWidth = None
         Alignment = None
+        Indent = None
         LayoutMode = None
         GridColumns = []
         // A table that was just inserted is seen: single thin borders around
@@ -3055,6 +3277,12 @@ let private newTable rows columns (doc: Document) : TableBlock =
         Floating = false
         FloatingXml = None
         StyleId = defaultTableStyleId
+        ContentControlId = None
+        ContentControlTag = None
+        ContentControlAlias = None
+        ContentControlXml = None
+        ContentControlGroup = None
+        ContentControlAncestors = []
         Look = None
     }
     table
@@ -3746,6 +3974,27 @@ let setCurrentTextBoxStyle x y width height fillColor borderColor borderWidth do
                                     BorderWidth = if borderWidth > 0.0 then Some borderWidth else None }
                     | block -> block) }
 
+/// Change the table and its current row together in one document update.
+let updateSelectedTableProperties (change: TableBlock -> int -> TableBlock) doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, rowIndex, _) -> updateTable doc tableId (fun table -> change table rowIndex)
+
+/// Change only the requested properties of the cell at the caret.
+let updateSelectedTableCell (change: TableCell -> TableCell) doc =
+    match currentTableCell doc with
+    | None -> doc
+    | Some (tableId, rowIndex, colIndex) ->
+        updateTable doc tableId (fun table ->
+            { table with
+                Rows =
+                    table.Rows |> List.mapi (fun r row ->
+                        if r <> rowIndex then row
+                        else
+                            { row with
+                                Cells =
+                                    row.Cells |> List.mapi (fun c cell -> if c = colIndex then change cell else cell) }) })
+
 let setSelectedTableCellStyleWithShading backgroundColor shading width borderColor borderWidth verticalAlignment paddingTop paddingRight paddingBottom paddingLeft doc =
     match currentTableCell doc with
     | None -> doc
@@ -3852,6 +4101,13 @@ let private mapSelectedMetadata (update: BlockMetadata -> BlockMetadata) doc =
     mapSelectedParagraphs (fun para ->
         let metadata = update para.Metadata
         if metadata = para.Metadata then para else { para with Metadata = metadata }) doc
+/// Apply only the requested paragraph metadata as one document edit.
+let updateSelectedParagraphMetadata update doc =
+    mapSelectedMetadata update doc
+
+/// Paragraphs targeted by paragraph-level formatting.
+let paragraphFormattingTargets doc =
+    selectedParagraphIds doc |> List.choose (findParagraph doc)
 
 let private selectedParagraphs doc =
     selectedParagraphIds doc |> List.choose (findParagraph doc)
@@ -3917,10 +4173,22 @@ let private positionAcrossBoundary forward doc paragraphId =
     neighbourParagraph forward doc paragraphId
     |> Option.map (fun para -> { BlockId = para.Id; Offset = if forward then 0 else TextBuffer.length para.Buffer })
 
+let private collapseCharacterSelection forward (selection: Selection) doc =
+    let first, last =
+        if selection.Anchor.BlockId = selection.Focus.BlockId then
+            if selection.Anchor.Offset <= selection.Focus.Offset then selection.Anchor, selection.Focus
+            else selection.Focus, selection.Anchor
+        else
+            let first, last, _ = getNormalizedRange selection doc
+            first, last
+    let position = if forward then last else first
+    { doc with Selection = Some { Anchor = position; Focus = position } }
+
 /// Move cursor left
 let moveCursorLeft doc =
     match doc.Selection with
     | None -> doc
+    | Some sel when not sel.IsCollapsed -> collapseCharacterSelection false sel doc
     | Some sel when sel.Focus.Offset = 0 ->
         // Start of the paragraph: continue at the end of the previous one
         match positionAcrossBoundary false doc sel.Focus.BlockId with
@@ -3941,6 +4209,7 @@ let moveCursorLeft doc =
 let moveCursorRight doc =
     match doc.Selection with
     | None -> doc
+    | Some sel when not sel.IsCollapsed -> collapseCharacterSelection true sel doc
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
         | None -> doc
@@ -4173,7 +4442,7 @@ let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBl
                 mapEditableParagraphsUntil finished formatParagraph doc)
 
 /// Apply formatting to selection; the formatter also gets the paragraph.
-let private applyFormattingToSelectionInParagraph (formatFn: ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) doc =
+let applyFormattingToSelectionInParagraph (formatFn: ParagraphBlock -> int -> int -> TextBuffer.TextBuffer -> TextBuffer.TextBuffer) doc =
     match selectionFormatter doc with
     | Some format -> format (fun () -> false) formatFn
     | None -> doc
@@ -4442,6 +4711,7 @@ let setContentControl controlId tag alias doc =
         | Some sel ->
             let (_, _, ids) = getNormalizedRange sel doc
             ids
+    let group = if blockIds.IsEmpty then None else Some (nextBlockId ())
     (doc, blockIds)
     ||> List.fold (fun currentDoc blockId ->
         match findParagraph currentDoc blockId with
@@ -4454,6 +4724,7 @@ let setContentControl controlId tag alias doc =
                             ContentControlId = Some controlId
                             ContentControlTag = Some tag
                             ContentControlAlias = Some alias
+                            ContentControlGroup = group
                     }
             })
 
@@ -5050,6 +5321,8 @@ let private withPastedFormatting (pasted: BlockMetadata) (target: BlockMetadata)
         ContentControlTag = target.ContentControlTag
         ContentControlAlias = target.ContentControlAlias
         ContentControlXml = target.ContentControlXml
+        ContentControlGroup = target.ContentControlGroup
+        ContentControlAncestors = target.ContentControlAncestors
         SectionBreak = target.SectionBreak
         SectionColumns = target.SectionColumns
         SectionPageNumberStart = target.SectionPageNumberStart
@@ -5376,7 +5649,7 @@ let private htmlTextStyle (tag: string) (attributes: (string * string) list) (st
             let first = value.Split(',').[0].Trim().Trim('"', '\'').Trim()
             match first.ToLowerInvariant() with
             | "" | "serif" | "sans-serif" | "monospace" | "cursive" | "fantasy" | "system-ui" | "inherit" | "initial" -> ()
-            | _ -> style <- { style with FontFamily = Some first }
+            | _ -> style <- { style with FontFamily = Some first; Explicit = style.Explicit ||| TextBuffer.ExplicitFormat.FontFamily }
         | "color" ->
             match htmlColor value with
             | Some color -> style <- { style with Color = Some color }
@@ -5637,6 +5910,185 @@ let withListLevel (level: int) (metadata: BlockMetadata) : BlockMetadata =
             IndentLeft = indent ParagraphExplicit.IndentLeft metadata.IndentLeft (previous |> Option.bind fst) definition.IndentLeft
             FirstLineIndent = indent ParagraphExplicit.FirstLineIndent metadata.FirstLineIndent (previous |> Option.bind snd) definition.FirstLineIndent }
 
+/// Partial list formatting and numbering operation from the shell dialog.
+type ListDialogChange = {
+    Kind: ListStyle option
+    Marker: string option
+    Level: int option
+    Sequence: string
+    Start: int
+}
+
+/// Allocate distinct unused numeric ids (including ids in preserved XML).
+let private applyListDialogCore (allocateId: unit -> string) (change: ListDialogChange) doc =
+    let marker (m: BlockMetadata) =
+        match m.ListStyle with
+        | Bullet -> m.ListLevelText |> Option.defaultValue "•"
+        | Numbered -> m.ListNumberFormat |> Option.defaultValue "decimal"
+        | NoList -> ""
+    let changesMarker (m: BlockMetadata) =
+        let kind = change.Kind |> Option.defaultValue m.ListStyle
+        kind <> m.ListStyle || (kind <> NoList && (change.Marker |> Option.exists (fun value -> value <> marker m)))
+    // A DOCX numbering instance owns its counter. Split the affected suffix
+    // into physical instances with counter snapshots, so the selected marker
+    // can change without renumbering any unselected item (including parents
+    // referenced by a later nested item).
+    let targets = selectedParagraphs doc
+    let selectedIds = HashSet<BlockId>(targets |> List.map (fun p -> p.Id))
+    let changedIds =
+        targets |> List.filter (fun p -> p.Metadata.ListStyle = Numbered && changesMarker p.Metadata)
+        |> List.map (fun p -> p.Metadata.ListId) |> Set.ofList
+    let segmented =
+        if changedIds.IsEmpty then doc
+        else
+            let story =
+                match targets with
+                | first :: _ ->
+                    match textBoxOfParagraph doc first.Id with
+                    | Some box -> box.Content
+                    | None -> bodyParagraphsInOrder doc
+                | [] -> []
+            let mutable counters = Map.empty
+            let mutable active = Set.empty
+            let replacements = Dictionary<BlockId, BlockMetadata>()
+            for paragraph in story do
+                let m = paragraph.Metadata
+                counters <- advanceListCounters m counters
+                if m.ListStyle = Numbered && Set.contains m.ListId changedIds then
+                    if selectedIds.Contains paragraph.Id && changesMarker m then active <- Set.add m.ListId active
+                    if Set.contains m.ListId active then
+                        let key = m.ListId |> Option.defaultValue ""
+                        let snapshots =
+                            [ for level in 1 .. 9 do
+                                match counters |> Map.tryFind (key, level) with
+                                | Some value -> yield level, value
+                                | None -> () ]
+                        let levels =
+                            m.ListLevels |> List.map (fun definition ->
+                                match snapshots |> List.tryFind (fun (level, _) -> level = definition.Level) with
+                                | Some (_, value) -> { definition with Start = Some value }
+                                | None -> definition)
+                        let start = snapshots |> List.tryFind (fun (level, _) -> level = m.ListLevel) |> Option.map snd
+                        replacements.[paragraph.Id] <-
+                            { m with ListId = Some (allocateId ()); ListSourceId = m.ListSourceId |> Option.orElse m.ListId
+                                     ListRestart = true; ListStart = start; ListStartOverrides = snapshots; ListLevels = levels }
+            mapEditableParagraphs (fun paragraph ->
+                match replacements.TryGetValue paragraph.Id with
+                | true, metadata -> { paragraph with Metadata = metadata }
+                | _ -> paragraph) doc
+    let ids = System.Collections.Generic.Dictionary<ListStyle * string option, string>()
+    let update (m: BlockMetadata) =
+        let kind = change.Kind |> Option.defaultValue m.ListStyle
+        if kind = NoList then
+            if m.ListStyle = NoList then m
+            else { m with ListStyle = NoList; ListLevel = 0; ListId = Some "0"; ListSourceId = None; ListRestart = false; ListFormatEdited = false; ListStartOverrides = [] }
+        else
+            let changed = kind <> m.ListStyle || (change.Marker |> Option.exists (fun value -> value <> marker m))
+            let baseMeta =
+                if not changed then m
+                else
+                    let key = m.ListStyle, (if m.ListStyle = NoList then None else m.ListId)
+                    let id =
+                        match ids.TryGetValue key with
+                        | true, id -> id
+                        | _ -> let id = allocateId () in ids.[key] <- id; id
+                    let source = if m.ListStyle = NoList then None else m.ListSourceId |> Option.orElse m.ListId
+                    let chosen = change.Marker |> Option.defaultValue (if kind = Bullet then "•" else "decimal")
+                    let numberFormat = if kind = Bullet then "bullet" else chosen
+                    let template = if kind = Bullet then Some chosen elif m.ListStyle = Numbered then m.ListLevelText else None
+                    { m with ListStyle = kind; ListLevel = max 1 m.ListLevel; ListId = Some id
+                             ListSourceId = source; ListRestart = (if m.ListStyle = NoList then false else m.ListRestart); ListFormatEdited = true
+                             ListStart = if m.ListStyle = NoList then None else m.ListStart
+                             ListStartOverrides = if m.ListStyle = NoList then [] else m.ListStartOverrides
+                             ListLevels = if m.ListStyle = NoList then [] else m.ListLevels
+                             ListLevelIndents = if m.ListStyle = NoList then None else m.ListLevelIndents
+                             ListNumberFormat = Some numberFormat
+                             ListLevelText = template }
+            let moved =
+                match change.Level with
+                | Some level when level <> baseMeta.ListLevel ->
+                    let result = withListLevel level baseMeta
+                    if changed then
+                        { result with ListStyle = baseMeta.ListStyle; ListNumberFormat = baseMeta.ListNumberFormat
+                                      ListLevelText = if kind = Bullet then Some (change.Marker |> Option.defaultValue "•") elif m.ListStyle = Numbered && result.ListStyle = Numbered then result.ListLevelText else None }
+                    else result
+                | _ -> baseMeta
+            if not changed then moved
+            else
+                let levels =
+                    moved.ListLevels |> List.map (fun definition ->
+                        if definition.Level <> moved.ListLevel then definition
+                        else
+                            { definition with
+                                NumberFormat = moved.ListNumberFormat |> Option.defaultValue "decimal"
+                                LevelText = moved.ListLevelText
+                                MarkFont = if kind = Bullet then None else definition.MarkFont })
+                { moved with ListLevels = levels }
+    let formatted = mapSelectedMetadata update segmented
+    if change.Sequence = "keep" then Ok formatted
+    else
+        let targets = selectedParagraphs formatted
+        match targets with
+        | [] -> Error "Select a numbered list first."
+        | first :: _ when first.Metadata.ListStyle <> Numbered || (targets |> List.exists (fun p -> p.Metadata.ListStyle = NoList || p.Metadata.ListId <> first.Metadata.ListId)) ->
+            Error "Restart or continue requires one numbered list."
+        | first :: _ ->
+            let story = match textBoxOfParagraph formatted first.Id with Some box -> box.Content | None -> bodyParagraphsInOrder formatted
+            match story |> List.tryFindIndex (fun p -> p.Id = first.Id) with
+            | None -> Error "The selected list is not in an editable story."
+            | Some index ->
+                let tail = story |> List.skip index |> List.takeWhile (fun p -> p.Metadata.ListStyle <> NoList && p.Metadata.ListId = first.Metadata.ListId)
+                let tailIds = HashSet<BlockId>(tail |> List.map (fun p -> p.Id))
+                if targets |> List.exists (fun p -> not (tailIds.Contains p.Id)) then
+                    Error "Restart or continue requires a contiguous list selection."
+                else
+                    let replacement =
+                        if change.Sequence = "restart" then
+                            let m = first.Metadata
+                            Ok { m with ListId = Some (allocateId ()); ListSourceId = m.ListSourceId |> Option.orElse m.ListId; ListRestart = true; ListStart = Some change.Start }
+                        else
+                            match story |> List.take index |> List.rev |> List.tryFind (fun p -> p.Metadata.ListStyle = Numbered && p.Metadata.ListLevel = first.Metadata.ListLevel) with
+                            | None -> Error "There is no preceding numbered list at this level."
+                            | Some prior -> Ok prior.Metadata
+                    match replacement with
+                    | Error message -> Error message
+                    | Ok replacement when change.Sequence = "continue" && replacement.ListId = first.Metadata.ListId -> Ok formatted
+                    | Ok replacement ->
+                        let mapper (p: ParagraphBlock) =
+                            if not (tailIds.Contains p.Id) then p
+                            else
+                                let m = p.Metadata
+                                let result =
+                                    if change.Sequence = "restart" then
+                                        { m with ListId = replacement.ListId; ListSourceId = replacement.ListSourceId
+                                                 ListRestart = m.ListLevel = first.Metadata.ListLevel
+                                                 ListStart = if m.ListLevel = first.Metadata.ListLevel then Some change.Start else m.ListStart
+                                                 ListStartOverrides = if m.ListLevel = first.Metadata.ListLevel then (m.ListLevel, change.Start) :: (m.ListStartOverrides |> List.filter (fun (level, _) -> level <> m.ListLevel)) else m.ListStartOverrides }
+                                    else
+                                        let template = withListLevel m.ListLevel replacement
+                                        { m with ListId = replacement.ListId; ListSourceId = replacement.ListSourceId
+                                                 ListRestart = replacement.ListRestart && m.ListLevel = replacement.ListLevel
+                                                 ListFormatEdited = replacement.ListFormatEdited && m.ListLevel = replacement.ListLevel
+                                                 ListStartOverrides = replacement.ListStartOverrides
+                                                 ListStyle = template.ListStyle; ListLevels = replacement.ListLevels; ListNumberFormat = template.ListNumberFormat
+                                                 ListLevelText = template.ListLevelText; ListStart = template.ListStart }
+                                if result = m then p else { p with Metadata = result }
+                        Ok (mapEditableParagraphs mapper formatted)
+/// Apply sequence and formatting together as one document transaction.
+let applyListDialog (allocateId: unit -> string) (change: ListDialogChange) doc =
+    if change.Sequence = "keep" then applyListDialogCore allocateId change doc
+    elif change.Kind = Some Bullet || change.Kind = Some NoList then Error "Restart or continue requires a numbered list."
+    else
+        let prepare =
+            match change.Kind with
+            | Some Numbered -> applyListDialogCore allocateId { change with Marker = None; Level = None; Sequence = "keep" } doc
+            | _ -> Ok doc
+        prepare
+        |> Result.bind (fun numbered ->
+            applyListDialogCore allocateId { change with Kind = None; Marker = None; Level = None } numbered)
+        |> Result.bind (fun sequenced ->
+            applyListDialogCore allocateId { change with Kind = None; Sequence = "keep" } sequenced)
+
 /// Increase list indentation (Tab) of the selected paragraphs
 let increaseIndent doc =
     mapSelectedMetadata (fun metadata ->
@@ -5726,6 +6178,41 @@ let setCurrentParagraphStyle alignment indentLeft indentRight spacingBefore spac
                 |> flag lineSpacing.IsSome ParagraphExplicit.LineSpacing
                 |> flag firstLineIndent.IsSome ParagraphExplicit.FirstLineIndent
                 |> flag backgroundColor.IsSome ParagraphExplicit.BackgroundColor }) doc
+
+/// Update only the paragraph properties supplied by a dialog. Missing values
+/// leave each selected paragraph's own metadata untouched.
+let setSelectedParagraphStyleChanges alignment indentLeft indentRight spacingBefore spacingAfter lineSpacing firstLineIndent backgroundColor doc =
+    let update metadata =
+        let changed = function Some _ -> true | None -> false
+        let choose value current = value |> Option.defaultValue current
+        let explicit flag value flags =
+            if changed value then
+                match value with
+                | Some (Some _) -> flags ||| flag
+                | Some None -> flags &&& ~~~flag
+                | None -> flags
+            else flags
+        { metadata with
+            Alignment = choose alignment metadata.Alignment
+            ExplicitAlignment = if alignment.IsSome then true else metadata.ExplicitAlignment
+            IndentLeft = choose indentLeft metadata.IndentLeft
+            IndentRight = choose indentRight metadata.IndentRight
+            SpacingBefore = choose spacingBefore metadata.SpacingBefore
+            SpacingAfter = choose spacingAfter metadata.SpacingAfter
+            LineSpacing = choose lineSpacing metadata.LineSpacing
+            LineSpacingRule = if lineSpacing.IsSome then (if lineSpacing.Value.IsSome then Some "auto" else None) else metadata.LineSpacingRule
+            FirstLineIndent = choose firstLineIndent metadata.FirstLineIndent
+            BackgroundColor = choose backgroundColor metadata.BackgroundColor
+            Explicit =
+                metadata.Explicit
+                |> explicit ParagraphExplicit.IndentLeft indentLeft
+                |> explicit ParagraphExplicit.IndentRight indentRight
+                |> explicit ParagraphExplicit.SpacingBefore spacingBefore
+                |> explicit ParagraphExplicit.SpacingAfter spacingAfter
+                |> explicit ParagraphExplicit.LineSpacing lineSpacing
+                |> explicit ParagraphExplicit.FirstLineIndent firstLineIndent
+                |> explicit ParagraphExplicit.BackgroundColor backgroundColor }
+    mapSelectedMetadata update doc
 
 /// Set the line spacing of the selected paragraphs as a multiple of single
 /// spacing (1.0, 1.15, 1.5, 2.0 ...); None goes back to the style's.
@@ -6019,6 +6506,42 @@ let private currentSectionEnd (doc: Document) : ParagraphBlock option option =
                 | Paragraph para
                 | Heading (_, para) when para.Metadata.SectionBreak.IsSome -> Some para
                 | _ -> None))
+
+/// Geometry of the section containing the selection; an unstated geometry
+/// uses the same final-section defaults as layout.
+let currentSectionPageSetup (doc: Document) : SectionPageSetup option =
+    let final = doc.PageSetup
+    let defaults: SectionPageSetup =
+        { PageWidth = final.PageWidth; PageHeight = final.PageHeight
+          MarginLeft = final.MarginLeft; MarginRight = final.MarginRight
+          MarginTop = final.MarginTop; MarginBottom = final.MarginBottom
+          HeaderDistance = final.HeaderDistance; FooterDistance = final.FooterDistance
+          DifferentFirstPage = final.DifferentFirstPage; EvenAndOddHeaders = final.EvenAndOddHeaders }
+    match currentSectionEnd doc with
+    | None -> None
+    | Some (Some para) -> Some (para.Metadata.SectionPageSetup |> Option.defaultValue defaults)
+    | Some None -> Some defaults
+
+let setCurrentSectionPageSetup (geometry: SectionPageSetup) (doc: Document) =
+    match currentSectionEnd doc, currentSectionPageSetup doc with
+    | _, Some old when old = geometry -> doc
+    | Some (Some para), Some _ ->
+        let updated = { para with Metadata = { para.Metadata with SectionPageSetup = Some geometry } }
+        { doc with
+            Blocks = doc.Blocks |> List.map (function
+                | Paragraph p when p.Id = para.Id -> Paragraph updated
+                | Heading (level, p) when p.Id = para.Id -> Heading (level, updated)
+                | block -> block) }
+    | Some None, Some _ ->
+        let old = doc.PageSetup
+        { doc with
+            PageSetup =
+                { old with PageWidth = geometry.PageWidth; PageHeight = geometry.PageHeight
+                           MarginLeft = geometry.MarginLeft; MarginRight = geometry.MarginRight
+                           MarginTop = geometry.MarginTop; MarginBottom = geometry.MarginBottom
+                           HeaderDistance = geometry.HeaderDistance; FooterDistance = geometry.FooterDistance
+                           DifferentFirstPage = geometry.DifferentFirstPage; EvenAndOddHeaders = geometry.EvenAndOddHeaders } }
+    | _ -> doc
 
 /// How the text of a page that is not full stands between the margins in the section the
 /// caret is in (w:vAlign): Some "center", "bottom" or "both" (spread from top to bottom);
