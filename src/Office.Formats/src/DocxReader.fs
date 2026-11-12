@@ -250,6 +250,8 @@ type ParagraphProperties = {
     ContentControlXml: string option
     ContentControlGroup: string option
     ContentControlAncestors: ContentControlLayer list
+    /// Controls around this paragraph inside a cell, retained separately from emitted block controls.
+    EnclosingCellControls: ContentControlLayer list
     Alignment: string option  // left, center, right, justify
     IndentLeft: string option
     IndentRight: string option
@@ -414,6 +416,8 @@ and TableCell = {
     NestedTables: Table list
     // For each nested table, how many cell paragraphs precede it in document order.
     NestedTableAnchors: int list
+    /// Cell-level controls surrounding this cell, outermost first.
+    EnclosingControls: ContentControlLayer list
     Properties: TableCellProperties option
     /// The w:tc in its part (offsets into the part's text).
     Source: XmlDsl.Span
@@ -1059,6 +1063,7 @@ module Docx =
                 ContentControlXml = None
                 ContentControlGroup = None
                 ContentControlAncestors = []
+                EnclosingCellControls = []
                 Alignment = getPropVal "jc" "val" props |> Option.orElse frameAlignment
                 IndentLeft = getPropVal "ind" "left" props
                 IndentRight = getPropVal "ind" "right" props
@@ -1118,6 +1123,7 @@ module Docx =
                 ContentControlXml = None
                 ContentControlGroup = None
                 ContentControlAncestors = []
+                EnclosingCellControls = []
                 Alignment = None
                 IndentLeft = None
                 IndentRight = None
@@ -2430,10 +2436,20 @@ module Docx =
         let mutable paragraphs = []
         let mutable nestedTables = []
         let mutable nestedAnchors = []
-        for child in unwrappedChildren tcNode do
+        let rec childrenIn layers node =
+            Xml.children node |> List.collect (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs with
+                | Some "sdt" ->
+                    Ns.childNs "sdtContent" child
+                    |> Option.map (childrenIn (layers @ [ contentControlProps child ]))
+                    |> Option.defaultValue []
+                | Some "customXml" -> childrenIn layers child
+                | _ -> [ child, layers ])
+        for child, controls in childrenIn [] tcNode do
             match Xml.name child |> Option.map Ns.stripNs with
             | Some "p" ->
-                paragraphs <- paragraph child :: paragraphs
+                let para = paragraph child
+                paragraphs <- (if controls.IsEmpty then para else { para with Properties = { para.Properties with EnclosingCellControls = controls } }) :: paragraphs
                 paragraphCount <- paragraphCount + 1
             | Some "tbl" ->
                 nestedTables <- table child :: nestedTables
@@ -2443,14 +2459,26 @@ module Docx =
             Paragraphs = List.rev paragraphs
             NestedTables = List.rev nestedTables
             NestedTableAnchors = List.rev nestedAnchors
+            EnclosingControls = []
             Properties = tableCellProps tcNode
             Source = (match tcNode with XmlDsl.Element (_, _, _, span) -> span | _ -> XmlDsl.Span.none)
         }
 
     and tableRow (trNode: XmlNode) : TableRow =
-        let cells =
-            unwrappedChildElems "tc" trNode
-            |> List.map tableCell
+        let rec cellsIn layers node =
+            Xml.children node
+            |> List.collect (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs with
+                | Some "tc" ->
+                    let cell = tableCell child
+                    [ if layers.IsEmpty then cell else { cell with EnclosingControls = layers } ]
+                | Some "sdt" ->
+                    Ns.childNs "sdtContent" child
+                    |> Option.map (cellsIn (layers @ [ contentControlProps child ]))
+                    |> Option.defaultValue []
+                | Some "customXml" -> cellsIn layers child
+                | _ -> [])
+        let cells = cellsIn [] trNode
         let height = wElem "trPr" trNode
                      |> Option.bind (wElem "trHeight")
                      |> Option.bind (attr "val")
@@ -2749,6 +2777,7 @@ module Styles =
             ContentControlXml = None
             ContentControlGroup = None
             ContentControlAncestors = []
+            EnclosingCellControls = []
             Alignment = Ns.childNs "jc" pPr |> Option.bind (Docx.attr "val")
             IndentLeft = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "left")
             IndentRight = Ns.childNs "ind" pPr |> Option.bind (Docx.attr "right")
@@ -5637,6 +5666,7 @@ let internal mergeParagraphProperties baseProps props = {
     ContentControlXml = props.ContentControlXml |> Option.orElse baseProps.ContentControlXml
     ContentControlGroup = props.ContentControlGroup
     ContentControlAncestors = props.ContentControlAncestors
+    EnclosingCellControls = props.EnclosingCellControls
     Alignment = props.Alignment |> Option.orElse baseProps.Alignment
     IndentLeft = props.IndentLeft |> Option.orElse baseProps.IndentLeft
     IndentRight = props.IndentRight |> Option.orElse baseProps.IndentRight

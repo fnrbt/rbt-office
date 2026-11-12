@@ -50,7 +50,7 @@ let box id (color: string) (height: string) (behind: bool) (anchor: string) : Bl
 // The body: a picture behind the text; two pictures in front, the higher one first in the text; text boxes
 // between and above them and one behind the text; a picture in a table cell.
 let cell (paragraph: ParagraphBlock) : TableCell =
-    { Content = [ paragraph ]; NestedTables = []; NestedTableAnchors = []; ColSpan = 1; BackgroundColor = None; Shading = None; Width = None; PreferredWidth = None
+    { Content = [ paragraph ]; NestedTables = []; NestedTableAnchors = []; EnclosingControls = []; ColSpan = 1; BackgroundColor = None; Shading = None; Width = None; PreferredWidth = None
       BorderColor = None; BorderWidth = None; Borders = None; VerticalAlignment = None; VerticalMerge = None; PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Origin = None }
 let table : TableBlock =
     { Id = "t"; Rows = [ { Cells = [ cell (withPicture "cell" "cell text" [ "img:cell", false, Some "40" ]) ]; IsHeader = false; Height = None; HeightRule = None; CanSplit = None; CellSpacing = None

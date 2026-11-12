@@ -292,6 +292,7 @@ type ParagraphFormatting = {
     ContentControlXml: string option
     ContentControlGroup: string option
     ContentControlAncestors: ContentControlLayer list
+    EnclosingCellControls: ContentControlLayer list
 }
 
 type ListLevel = {
@@ -470,6 +471,7 @@ and EditorCell = {
     Paragraphs: EditorBlock array
     NestedTables: EditorTable array
     NestedTableAnchors: int array
+    EnclosingControls: ContentControlLayer list
     ColSpan: int
     BackgroundColor: string option
     Shading: Shading option
@@ -1174,6 +1176,7 @@ let private paragraphFormatFields (format: ParagraphFormatting) =
     "ContentControlXml" ==> format.ContentControlXml
     "ContentControlGroup" ==> format.ContentControlGroup
     "ContentControlAncestors" ==> (format.ContentControlAncestors |> List.map controlLayerToObject |> List.toArray)
+    "EnclosingCellControls" ==> (format.EnclosingCellControls |> List.map controlLayerToObject |> List.toArray)
     ] @ inferredStyleFields format.StyleInfo
 
 let private paragraphListFields (value: ParagraphList option) =
@@ -1340,6 +1343,7 @@ and private cellToEditorObject (cell: EditorCell) : obj =
         [ "Paragraphs" ==> (cell.Paragraphs |> Array.map blockToEditorObject)
           "NestedTables" ==> (cell.NestedTables |> Array.map tableToEditorObject)
           "NestedTableAnchors" ==> cell.NestedTableAnchors
+          "EnclosingControls" ==> (cell.EnclosingControls |> List.map controlLayerToObject |> List.toArray)
           "ColSpan" ==> cell.ColSpan
           "BackgroundColor" ==> cell.BackgroundColor
           "Shading" ==> shadingToObject cell.Shading
@@ -1906,7 +1910,8 @@ let private readParagraphFormat value =
       ContentControlAlias = textOf value "ContentControlAlias"
       ContentControlXml = textOf value "ContentControlXml"
       ContentControlGroup = textOf value "ContentControlGroup"
-      ContentControlAncestors = array value "ContentControlAncestors" |> Array.map readControlLayer |> Array.toList }
+      ContentControlAncestors = array value "ContentControlAncestors" |> Array.map readControlLayer |> Array.toList
+      EnclosingCellControls = array value "EnclosingCellControls" |> Array.map readControlLayer |> Array.toList }
 
 let private readParagraphList value =
     let style = textOf value "ListStyle" |> Option.defaultValue "none"
@@ -2133,6 +2138,7 @@ and private readCell value : EditorCell =
     { Paragraphs = array value "Paragraphs" |> Array.map readBlock
       NestedTables = array value "NestedTables" |> Array.map readTable
       NestedTableAnchors = array value "NestedTableAnchors" |> Array.map unbox<int>
+      EnclosingControls = array value "EnclosingControls" |> Array.map readControlLayer |> Array.toList
       ColSpan = intValue value "ColSpan" 1
       BackgroundColor = textOf value "BackgroundColor"
       Shading = readShading value?Shading

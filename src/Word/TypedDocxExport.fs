@@ -637,6 +637,8 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           ContentControlAlias = metadata.ContentControlAlias; ContentControlXml = metadata.ContentControlXml
           ContentControlGroup = metadata.ContentControlGroup
           ContentControlAncestors = metadata.ContentControlAncestors |> List.map (fun layer ->
+              ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : WordEditorPackage.ContentControlLayer))
+          EnclosingCellControls = metadata.EnclosingCellControls |> List.map (fun layer ->
               ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : WordEditorPackage.ContentControlLayer)) }
     let list =
         if metadata.ListStyle = NoList && metadata.ListId <> Some "0" then None
@@ -700,6 +702,8 @@ and private tableToEditor context (table: TableBlock) : WordEditorPackage.Editor
         { Paragraphs = cell.Content |> List.map (paragraphToEditor context.Styles None >> WordEditorPackage.Paragraph) |> List.toArray
           NestedTables = cell.NestedTables |> List.map (tableToEditor context) |> List.toArray
           NestedTableAnchors = List.toArray cell.NestedTableAnchors; ColSpan = cell.ColSpan; BackgroundColor = cell.BackgroundColor
+          EnclosingControls = cell.EnclosingControls |> List.map (fun layer ->
+              ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : WordEditorPackage.ContentControlLayer))
           Shading = shading cell.Shading; Width = cell.Width; PreferredWidth = width cell.PreferredWidth; PreferredWidthType = widthType cell.PreferredWidth
           BorderColor = cell.BorderColor; BorderWidth = cell.BorderWidth; Borders = tableBorders cell.Borders
           VerticalAlignment = cell.VerticalAlignment

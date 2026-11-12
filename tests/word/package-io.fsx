@@ -80,6 +80,75 @@ check "unknown body attribute retained" [ "body" ] (savedBody.Descendants(ns + "
 check "bookmark kept exactly once" [ "Marker" ] (savedBody.Descendants(ns + "bookmarkStart") |> Seq.map (fun el -> el.Attribute(ns + "name").Value) |> Seq.toList)
 check "reopened body retains edit" "body edited" (load saved |> fun value -> paragraphsOfBlocks value.Blocks |> List.head |> fun p -> Rbt.Word.TextBuffer.toString p.Buffer)
 
+// New columns adjacent to bound cells must not become part of the control.
+let boundCellTable =
+    "<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w=\"1000\"/><w:gridCol w:w=\"1000\"/></w:tblGrid>"
+    + "<w:tr><w:tc>" + paragraph "left" + "</w:tc>"
+    + "<w:sdt><w:sdtPr><w:id w:val=\"29\"/><w:dataBinding w:xpath=\"/invoice/price\" w:storeItemID=\"{8B049945-9DFE-4726-9DE9-CF5691E53858}\"/><w:text/></w:sdtPr>"
+    + "<w:sdtContent><w:tc>" + paragraph "price" + "</w:tc></w:sdtContent></w:sdt></w:tr></w:tbl>"
+let boundCellDoc =
+    originals |> Map.add "word/document.xml" (wrap "document" ("<w:body>" + boundCellTable + "</w:body>"))
+    |> packageBytes |> load
+let boundCellParagraph = boundCellDoc.Blocks |> List.pick (function Table table -> Some table.Rows.Head.Cells.[1].Content.Head | _ -> None)
+for name, insert in [ "before", insertTableColumnBeforeSelection; "after", insertTableColumnAfterSelection ] do
+    let result = boundCellDoc |> setCursor boundCellParagraph.Id 0 |> insert |> write false |> parts
+    let tree = XDocument.Parse result.["word/document.xml"]
+    let row = tree.Descendants(ns + "tr") |> Seq.head
+    let control = row.Element(ns + "sdt")
+    check ("bound cell " + name + ": one cell remains in control") 1 (control.Element(ns + "sdtContent").Elements(ns + "tc") |> Seq.length)
+    check ("bound cell " + name + ": original binding preserved") "/invoice/price" (control.Descendants(ns + "dataBinding") |> Seq.head |> fun binding -> binding.Attribute(ns + "xpath").Value)
+    check ("bound cell " + name + ": new cell outside control")
+        (if name = "before" then [ "tc"; "tc"; "sdt" ] else [ "tc"; "sdt"; "tc" ])
+        (row.Elements() |> Seq.map (fun element -> element.Name.LocalName) |> Seq.toList)
+let boundCellCaret = boundCellDoc |> setCursor boundCellParagraph.Id 2
+check "single-line cell control rejects a paragraph break without changing saved content"
+    (boundCellCaret |> write false |> parts) (boundCellCaret |> splitBlock |> write false |> parts)
+let multilineCellDoc =
+    originals
+    |> Map.add "word/document.xml" (wrap "document" ("<w:body>" + boundCellTable.Replace("<w:text/>", "<w:text w:multiLine=\"on\"/>") + "</w:body>"))
+    |> packageBytes |> load
+let multilineCellParagraph = multilineCellDoc.Blocks |> List.pick (function Table table -> Some table.Rows.Head.Cells.[1].Content.Head | _ -> None)
+let multilineSplit = multilineCellDoc |> setCursor multilineCellParagraph.Id 2 |> splitBlock
+check "multiline cell control allows a paragraph break" 2
+    (multilineSplit.Blocks |> List.pick (function Table table -> Some table.Rows.Head.Cells.[1].Content.Length | _ -> None))
+let inlineControlDoc =
+    originals
+    |> Map.add "word/document.xml" (wrap "document" ("<w:body><w:p><w:sdt><w:sdtPr><w:id w:val=\"31\"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:t>hello</w:t></w:r></w:sdtContent></w:sdt></w:p></w:body>"))
+    |> packageBytes |> load
+let inlineParagraph = paragraphsOfBlocks inlineControlDoc.Blocks |> List.head
+let inlineCaret = inlineControlDoc |> setCursor inlineParagraph.Id 2
+check "inline control is not duplicated by a paragraph break"
+    (inlineCaret |> write false |> parts) (inlineCaret |> splitBlock |> write false |> parts)
+let formattedInline =
+    inlineControlDoc |> setCursor inlineParagraph.Id 1 |> selectRange 1 2 |> toggleBold |> write false |> parts
+let formattedInlineXml = XDocument.Parse formattedInline.["word/document.xml"]
+let formattedInlineRuns = formattedInlineXml.Descendants(ns + "sdtContent") |> Seq.head |> fun content -> content.Elements(ns + "r") |> Seq.toList
+check "formatting plain control keeps one run" 1 formattedInlineRuns.Length
+check "formatting part of plain control formats its whole text" "hello"
+    (formattedInlineRuns.Head.Element(ns + "t").Value)
+check "formatting plain control sets bold" true
+    (not (isNull (formattedInlineRuns.Head.Element(ns + "rPr").Element(ns + "b"))))
+let invoiceBytes = File.ReadAllBytes(Path.Combine(__SOURCE_DIRECTORY__, "../test-documents-business/docx4j-invoice-2013.docx"))
+let invoiceDoc = load invoiceBytes
+let pictureParagraph =
+    paragraphsOfBlocks invoiceDoc.Blocks
+    |> List.find (fun para -> para.Metadata.ContentControlXml |> Option.exists (fun xml -> xml.Contains "<w:picture"))
+let invoiceTyped = invoiceDoc |> setCursor pictureParagraph.Id 0 |> insertText "Q"
+let invoiceTypedXml = invoiceTyped |> write false |> parts |> fun values -> XDocument.Parse values.["word/document.xml"]
+let pictureControl =
+    invoiceTypedXml.Descendants(ns + "sdt")
+    |> Seq.find (fun control -> not (isNull (control.Element(ns + "sdtPr").Element(ns + "picture"))))
+check "typing beside picture leaves picture content unchanged" false
+    (pictureControl.Element(ns + "sdtContent").Descendants(ns + "t") |> Seq.exists (fun value -> value.Value.Contains "Q"))
+check "typing beside picture remains visible outside control" true
+    (invoiceTypedXml.Descendants(ns + "t") |> Seq.exists (fun value -> value.Value = "Q" && not (value.Ancestors(ns + "sdt") |> Seq.contains pictureControl)))
+let dateParagraph =
+    paragraphsOfBlocks invoiceDoc.Blocks
+    |> List.find (fun para -> para.Metadata.EnclosingCellControls |> List.exists (fun layer -> layer.Xml |> Option.exists (fun xml -> xml.Contains "<w:date")))
+let dateCaret = invoiceDoc |> setCursor dateParagraph.Id 2
+check "date control rejects paragraph break without changing saved content"
+    (dateCaret |> write false |> parts) (dateCaret |> splitBlock |> write false |> parts)
+
 let editStory kind id document =
     let blocks = storyBody kind id document |> Option.get
     let paragraph = paragraphsOfBlocks blocks |> List.head

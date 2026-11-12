@@ -236,7 +236,7 @@ let private editorParagraph (para: EditorParagraph) : WordEditorPackage.EditorPa
         HasMarkProperties = false; ExplicitMarkFontSize = None; ParagraphMarkFontSize = None
         MarkRevision = None; DropCapKind = None; DropCapLines = None; DropCapDistance = None
         ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
-        ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = [] }
+        ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = []; EnclosingCellControls = [] }
       List = None; SectionBreak = None; SectionPageSetup = None
       SectionColumns = None; SectionVerticalAlign = None
       SectionPageNumberStart = None; SectionPageNumberFormat = None

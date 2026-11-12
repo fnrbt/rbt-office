@@ -184,6 +184,7 @@ let tableCell id text : Doc.TableCell =
     { Content = [para id (ofString text)]
       NestedTables = []
       NestedTableAnchors = []
+      EnclosingControls = []
       ColSpan = 1
       BackgroundColor = None
       Shading = None

@@ -285,6 +285,7 @@ let tableCell content merge : Doc.TableCell =
     { Content = content
       NestedTables = []
       NestedTableAnchors = []
+      EnclosingControls = []
       ColSpan = 1
       BackgroundColor = None
       Shading = None

@@ -7,8 +7,8 @@
 ' type,top-left,bottom-right); CHART(sheet,shape,chart type); SERIES(sheet,
 ' shape,index,formula); NOTE(sheet,address,author,text); THREAD(sheet,address,
 ' author,text); REPLY(sheet,address,index,author,text). Chart sheets use an
-' empty shape name. Unsupported thread APIs emit CAPABILITY_ERROR and a nonzero
-' exit, but other workbook evidence is still captured. Values are Excel
+' empty shape name. Unsupported thread or chart-series APIs emit CAPABILITY_ERROR
+' and a nonzero exit, but other workbook evidence is still captured. Values are Excel
 ' Value2; numbers use Excel's 15-significant-digit scientific formatting, and
 ' errors use ERROR.TYPE. Formula is Excel's invariant Formula property.
 ' For each *.original.xlsx, evidence also includes an *.expected-insert.xlsx
@@ -210,12 +210,25 @@ Sub CaptureThreads(sheet)
 End Sub
 
 Sub CaptureChart(sheetName, shapeName, chart)
-  Dim series, i
+  Dim series, i, formula, number, description, source
   Row Array("CHART", sheetName, shapeName, chart.ChartType)
   i = 0
   For Each series In chart.SeriesCollection
     i = i + 1
-    Row Array("SERIES", sheetName, shapeName, i, series.Formula)
+    On Error Resume Next
+    formula = series.Formula
+    number = Err.Number : description = Err.Description : source = Err.Source
+    Err.Clear
+    On Error GoTo 0
+    If number = 445 Then
+      Row Array("CAPABILITY_ERROR", sheetName, "Series.Formula", number, description, shapeName, i)
+      WScript.StdErr.WriteLine sheetName & "/" & shapeName & ": Series.Formula: " & CleanMessage(description)
+      exitCode = 1
+    ElseIf number <> 0 Then
+      Err.Raise number, source, description
+    Else
+      Row Array("SERIES", sheetName, shapeName, i, formula)
+    End If
   Next
 End Sub
 

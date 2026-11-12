@@ -156,6 +156,16 @@ function preservedParts(name, expect) {
     };
 }
 
+// Mapped rich-text controls store a flat WordprocessingML package (escaped as XML text),
+// rather than the visible text of the control, in their custom XML node.
+const notesBinding = `<?xml version="1.0" standalone="yes"?><?mso-application progid="Word.Document"?>` +
+    `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">` +
+    `<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData>` +
+    `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="${REL}/officeDocument" Target="word/document.xml"/></Relationships>` +
+    `</pkg:xmlData></pkg:part><pkg:part pkg:name="/word/document.xml" pkg:contentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml">` +
+    `<pkg:xmlData><w:document ${W}><w:body>${p('first note')}${p('second note')}${sect}</w:body></w:document></pkg:xmlData></pkg:part></pkg:package>`;
+const xmlText = (value) => value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+
 const docs = [
     {
         name: 'synthetic/units',
@@ -346,31 +356,33 @@ const docs = [
         ],
     },
     {
-        // Content controls inside a paragraph, a text control bound to custom XML and a check box, and one
-        // around two paragraphs. A paragraph that is changed in a way its XML cannot be patched for (bold
-        // over a part of it) is spliced from its source: the controls stay, with their bindings
-        // (docs/save-architecture.md).
+        // Two run-level controls (plain text bound to custom XML and a check box), plus
+        // a mapped rich-text control spanning two paragraphs. A paragraph that is changed
+        // in a way its XML cannot be patched for (bold over a part of it) is spliced from
+        // its source: the controls stay, with their bindings (docs/save-architecture.md).
         name: 'synthetic/inline-controls',
-        root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"',
+        root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml" mc:Ignorable="w14 w15"',
         body: `<w:p><w:r><w:t xml:space="preserve">Name: </w:t></w:r><w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:tag w:val="name"/><w:id w:val="101"/>` +
-            `<w:dataBinding w:xpath="/root[1]/name[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Ann</w:t></w:r><w:r><w:t xml:space="preserve"> Lee</w:t></w:r></w:sdtContent></w:sdt>` +
+            `<w:dataBinding w:xpath="/root[1]/name[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Ann Lee</w:t></w:r></w:sdtContent></w:sdt>` +
             `<w:r><w:t xml:space="preserve"> agrees </w:t></w:r><w:sdt><w:sdtPr><w:id w:val="102"/><w14:checkbox><w14:checked w14:val="1"/><w14:checkedState w14:val="2612" w14:font="MS Gothic"/><w14:uncheckedState w14:val="2610" w14:font="MS Gothic"/></w14:checkbox></w:sdtPr>` +
             `<w:sdtContent><w:r><w:rPr><w:rFonts w:ascii="MS Gothic" w:eastAsia="MS Gothic" w:hAnsi="MS Gothic"/></w:rPr><w:t>\u2612</w:t></w:r></w:sdtContent></w:sdt><w:r><w:t xml:space="preserve"> today.</w:t></w:r></w:p>` + p('second paragraph') +
-            // A block-level control over two paragraphs, bound too.
-            `<w:sdt><w:sdtPr><w:alias w:val="Notes"/><w:id w:val="103"/><w:dataBinding w:xpath="/root[1]/notes[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/></w:sdtPr><w:sdtContent>${p('first note')}${p('second note')}</w:sdtContent></w:sdt>`,
+            // Rich text mappings use w15:dataBinding and flattened WordprocessingML in the data store.
+            `<w:sdt><w:sdtPr><w:alias w:val="Notes"/><w:id w:val="103"/><w15:dataBinding w:xpath="/root[1]/notes[1]" w:storeItemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"/><w:richText/></w:sdtPr><w:sdtContent>${p('first note')}${p('second note')}</w:sdtContent></w:sdt>`,
         rels: `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
         extra: {
-            'customXml/item1.xml': '<root><name>Ann Lee</name><notes>first note</notes></root>',
+            'customXml/item1.xml': `<root><name>Ann Lee</name><notes>${xmlText(notesBinding)}</notes></root>`,
             'customXml/itemProps1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{8A1F3C55-0D2B-4E77-9C1E-5B2A6F0D3E11}"><ds:schemaRefs/></ds:datastoreItem>',
             'customXml/_rels/item1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/></Relationships>',
         },
         types: '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>',
         expect: [
             { readText: 'Name: Ann Lee agrees \u2612 today.' },
+            { same: 'customXml/item1.xml' },
             // Typing into the paragraph keeps both controls, and so does bold over its first word.
             { editKeeps: '<w:dataBinding [^>]*w:xpath="/root\\[1\\]/name\\[1\\]"' }, { editKeeps: '<w14:checked w14:val="1"/>' },
-            { boldKeeps: '<w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:tag w:val="name"/><w:id w:val="101"/><w:dataBinding [^>]*/><w:text/></w:sdtPr><w:sdtContent><w:r><w:rPr><w:b/></w:rPr><w:t>Ann</w:t></w:r><w:r><w:t xml:space="preserve"> Lee</w:t></w:r></w:sdtContent></w:sdt>' },
-            { boldKeeps: '<w14:checkbox><w14:checked w14:val="1"/>' }, { boldKeeps: '<w:alias w:val="Notes"/><w:id w:val="103"/><w:dataBinding ' },
+            { boldKeeps: '<w:dataBinding [^>]*w:xpath="/root\\[1\\]/name\\[1\\]"' },
+            { boldKeeps: '<w14:checkbox><w14:checked w14:val="1"/>' },
+            { boldKeeps: '<w15:dataBinding [^>]*w:xpath="/root\\[1\\]/notes\\[1\\]"' },
         ],
     },
     {

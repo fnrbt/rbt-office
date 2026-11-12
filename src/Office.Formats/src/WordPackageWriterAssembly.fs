@@ -356,9 +356,25 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
             else whole ()
     // The items of a row or of the table in the model's order - each one that was read (where it starts) or a new
     // one (its XML, and where the one it was made like starts) -: the new ones put in among those that were read.
-    // A run of new ones goes before the item that follows it where each was made like that one (a row put in
-    // above it), else after the item before it (in the wrappers of that one), else before the first.
-    let placeNew (entries: Choice<int, string * int option> list) =
+    // Rows remain in their source wrappers. A new cell at the edge of a cell-level
+    // content control belongs outside that control, not in its bound contents.
+    let placeNew (cellLayout: XmlPatch.Layout option) (entries: Choice<int, string * int option> list) =
+        let anchor before at =
+            match cellLayout with
+            | None -> at
+            | Some laid ->
+                let items = layoutItems laid
+                match items |> List.tryFind (fun (item, _) -> item = at) with
+                | None -> at
+                | Some (_, wrappers) ->
+                    wrappers
+                    |> List.tryFind (fun wrapper ->
+                        nodes.ContainsKey wrapper && XmlPatch.localName nodes.[wrapper] = "sdt" &&
+                        (let contained = items |> List.filter (fun (_, chain) -> List.contains wrapper chain)
+                         match (if before then List.tryHead contained else List.tryLast contained) with
+                         | Some (edge, _) -> edge = at
+                         | None -> false))
+                    |> Option.defaultValue at
         let rec walk (previous: int option) (entries: Choice<int, string * int option> list) =
             match entries with
             | [] -> ()
@@ -369,9 +385,9 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
                 let next = match rest with Choice1Of2 at :: _ -> Some at | _ -> None
                 let text = run |> List.map fst |> String.concat ""
                 match previous, next with
-                | None, Some at -> edit nodes.[at] (XmlPatch.InsertBefore text)
-                | Some _, Some at when run |> List.forall (fun (_, like) -> like = Some at) -> edit nodes.[at] (XmlPatch.InsertBefore text)
-                | Some at, _ -> edit nodes.[at] (XmlPatch.InsertAfter text)
+                | None, Some at -> edit nodes.[anchor true at] (XmlPatch.InsertBefore text)
+                | Some _, Some at when run |> List.forall (fun (_, like) -> like = Some at) -> edit nodes.[anchor true at] (XmlPatch.InsertBefore text)
+                | Some at, _ -> edit nodes.[anchor false at] (XmlPatch.InsertAfter text)
                 | None, None -> ()
                 walk previous rest
         walk None entries
@@ -413,7 +429,7 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
                         match nodes.TryGetValue cellAt with
                         | true, node -> edit node (takenOut ctx xml node)
                         | _ -> ()
-                    placeNew
+                    placeNew (Some knownRow.RowChildren)
                         [ for cell in cells do
                             match sourceOfCell cell.SourceCell with
                             | Some (cellAt, false, cellSame) when List.contains cellAt keptCells ->
@@ -425,7 +441,7 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
         | _ ->
             // A row that is new.
             yield Choice2Of2 (generateTableRow ctx.Model hyperlinks images row, (sourceOfRow row.SourceRow |> Option.map (fun (at, _, _) -> at))) ]
-    |> placeNew
+    |> placeNew None
     ctx.Model.ParagraphsInContext <- outerContext
     ctx.Model.CurrentSourceTable <- outerTable
     let edits = XmlPatch.editsAt tableNode [ for KeyValue (_, (node, changes)) in targets -> node, List.ofSeq changes ]

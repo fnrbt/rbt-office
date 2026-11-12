@@ -229,8 +229,17 @@ const INT_ATTRS = {
 };
 
 function rank(order, local) {
-    for (const group of SAME_RANK) if (group.includes(local)) { const idx = group.map((n) => order.indexOf(n)).filter((n) => n >= 0); if (idx.length) return Math.min(...idx); }
-    return order.indexOf(local);
+    let result = order.indexOf(local);
+    if (result < 0) return result;
+    for (const group of SAME_RANK) {
+        if (group.includes(local)) {
+            for (const name of group) {
+                const index = order.indexOf(name);
+                if (index >= 0) result = Math.min(result, index);
+            }
+        }
+    }
+    return result;
 }
 
 function checkXml(part, text, problems) {
@@ -760,9 +769,19 @@ window.roundTrip = async (name, expect) => {
     return { problems, stats, saved, xml, xmlDiff, xmlIdentical, changedParts, pages, partsAsRead, frontFirst };
 };
 
-// A trivial edit, made with real key events by roundtrip.mjs between these two
-// calls: one character typed at the start of the first line of text, then
-// deleted. The document saved after it is laid out as the original.
+function caretFollowsText(editor, text) {
+    const caret = Word.getSelection(editor);
+    if (!caret || !caret.IsCollapsed) return false;
+    return Word.getLayoutLines(editor).some((line) =>
+        line.BlockId === caret.FocusBlockId &&
+        caret.FocusOffset - text.length >= line.StartOffset &&
+        (line.Text ?? '').slice(caret.FocusOffset - text.length - line.StartOffset, caret.FocusOffset - line.StartOffset) === text);
+}
+window.editTyped = (text) => caretFollowsText(window.roundTripState.handle.editor, text);
+window.tenthTyped = () => caretFollowsText(window.tenthState.handle.editor, 'Q');
+
+// Edit and undo through real key events before checking save/reopen equivalence.
+// Backspace is not an inverse when typing beside a picture creates a paragraph.
 window.editOpen = (outsideTables) => {
     const state = window.roundTripState;
     if (!state) return false;
@@ -777,15 +796,13 @@ window.editOpen = (outsideTables) => {
     Word.setSelection(handle.editor, line.BlockId, line.StartOffset, line.BlockId, line.StartOffset);
     Word.getInputElement(handle.editor).focus();
     state.text = Word.getText(handle.editor);
-    state.revision = Word.getRevision(handle.editor);
     return true;
 };
 window.editFinish = async () => {
     const state = window.roundTripState, problems = [];
     try {
         const editor = state.handle.editor;
-        if (Word.getRevision(editor) === state.revision) problems.push('trivial edit: the key events did not reach the editor');
-        if (Word.getText(editor) !== state.text) problems.push('trivial edit: the text is not what it was after typing and deleting a character');
+        if (Word.getText(editor) !== state.text) problems.push('edit undo: the original text was not restored');
         const exported = Word.exportDocumentPackage(editor);
         const bytes = await writePackage(exported, 'trivial edit');
         const reopened = await open(bytes);
@@ -807,7 +824,7 @@ window.editKeptFinish = async (original, expect) => {
     try {
         const editor = state.handle.editor;
         const typed = Word.getText(editor);
-        if (typed.length !== state.text.length + 1) problems.push(`edit: the typed character is not in the text (${JSON.stringify(state.text.slice(0, 80))} -> ${JSON.stringify(typed.slice(0, 80))}, selection ${JSON.stringify(Word.getSelection(editor))})`);
+        if (!caretFollowsText(editor, 'Q')) problems.push('edit: the typed Q is not immediately before the caret');
         const bytes = await writePackage(Word.exportDocumentPackage(editor), 'edit');
         window.passSaves['edit'] = toBase64(bytes);
         const reopened = await open(bytes);
@@ -907,7 +924,7 @@ window.tenthOpen = async (name) => {
         if (selection && selection.FocusBlockId === line.BlockId) ids.push(line.BlockId);
     }
     const chosen = ids.filter((_, index) => index % 10 === 0);
-    window.tenthState = { handle, chosen, before, text: Word.getText(handle.editor) };
+    window.tenthState = { handle, chosen, before };
     Word.getInputElement(handle.editor).focus();
     return chosen.length;
 };
@@ -916,13 +933,12 @@ window.tenthSelect = (index) => {
     Word.setSelection(handle.editor, chosen[index], 0, chosen[index], 0);
 };
 window.tenthFinish = async () => {
-    const { handle, chosen, before, text } = window.tenthState;
+    const { handle, chosen, before } = window.tenthState;
     const problems = [], why = [];
     let confined = 0, rewritten = 0, others = 0;
     try {
         const editor = handle.editor;
         const typed = Word.getText(editor);
-        if (typed.length !== text.length + chosen.length) problems.push(`every tenth paragraph: ${chosen.length} characters typed, the text is ${typed.length - text.length} longer`);
         const layout = layoutOf(editor);
         const bytes = await writePackage(Word.exportDocumentPackage(editor), 'every tenth paragraph');
         window.passSaves['tenth typed'] = toBase64(bytes);
@@ -1255,13 +1271,13 @@ window.keyPassSelect = (index) => {
 };
 window.keyPassAfter = () => { const state = window.keyPassState; if (Word.getRevision(state.handle.editor) !== state.revision) state.edited++; };
 window.keyPassFinish = async () => {
-    const { handle, before, kind, edited } = window.keyPassState;
+    const { handle, chosen, before, kind, edited } = window.keyPassState;
     const result = { problems: [], why: [], edited, kept: 0, model: 0, others: 0 };
     const label = `every tenth paragraph, ${kind}`;
     try {
         // (A paragraph split is one paragraph of the original that is not there any more; paragraphs joined are two.)
         result.restructured = kind.startsWith('joined');
-        if (edited > 0) await passResult(handle, before, label, result, kind.startsWith('joined') ? 2 : 1);
+        if (chosen.length > 0) await passResult(handle, before, label, result, kind.startsWith('joined') ? 2 : 1);
     } catch (e) {
         result.problems.push(`${label} threw: ` + String(e && e.stack || e).split('\n').slice(0, 4).join(' | '));
     }

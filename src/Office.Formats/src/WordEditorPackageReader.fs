@@ -267,7 +267,8 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
           ContentControlId = effective.ContentControlId; ContentControlTag = effective.ContentControlTag
           ContentControlAlias = effective.ContentControlAlias; ContentControlXml = effective.ContentControlXml
           ContentControlGroup = effective.ContentControlGroup
-          ContentControlAncestors = effective.ContentControlAncestors |> List.map controlLayer }
+          ContentControlAncestors = effective.ContentControlAncestors |> List.map controlLayer
+          EnclosingCellControls = effective.EnclosingCellControls |> List.map controlLayer }
     let definition =
         match effective.ListInfo with
         | Some info -> Map.tryFind (info.ListId, max 0 info.Level) numbering
@@ -389,6 +390,7 @@ let converter (document: D.WordDocument) : D.DocumentContent list -> Map<string,
                 let widthType = get (fun p -> p.WidthType)
                 { Paragraphs = paragraphs; NestedTables = value.NestedTables |> List.map table |> List.toArray
                   NestedTableAnchors = List.toArray value.NestedTableAnchors
+                  EnclosingControls = value.EnclosingControls |> List.map controlLayer
                   ColSpan = get (fun p -> p.ColSpan) |> Option.defaultValue 1
                   BackgroundColor = get (fun p -> p.Shading) |> Option.bind D.directShadingBackgroundColor
                   Shading = get (fun p -> p.Shading) |> Option.map shading

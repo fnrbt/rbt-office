@@ -164,6 +164,8 @@ type BlockMetadata = {
     /// Identity of that control in the source; distinct adjacent controls can
     /// have identical properties. Ancestors are ordered outermost first.
     ContentControlGroup: string option
+    /// Source cell-internal controls, for editing constraints rather than wrapper emission.
+    EnclosingCellControls: ContentControlLayer list
     ContentControlAncestors: ContentControlLayer list
     /// The w:p the paragraph is of (see SourceOrigin).
     Origin: SourceOrigin option
@@ -308,6 +310,7 @@ let defaultMetadata = {
     ContentControlXml = None
     ContentControlGroup = None
     ContentControlAncestors = []
+    EnclosingCellControls = []
     Origin = None
     ListStyle = NoList
     ListLevel = 0
@@ -569,6 +572,8 @@ and TableCell = {
     // precede it in document order. Lets layout/paint interleave paragraphs
     // and nested tables instead of hoisting all tables to the cell top.
     NestedTableAnchors: int list
+    /// Cell-level source controls, separate from controls emitted inside paragraphs.
+    EnclosingControls: ContentControlLayer list
     ColSpan: int
     BackgroundColor: string option
     Shading: Shading option
@@ -1927,6 +1932,7 @@ let private emptyTableCell () =
         ]
         NestedTables = []
         NestedTableAnchors = []
+        EnclosingControls = []
         ColSpan = 1
         BackgroundColor = None
         Shading = None
@@ -2172,10 +2178,59 @@ let private withoutParagraphStart (metadata: BlockMetadata) : BlockMetadata =
         { metadata with PageBreakBefore = false; Explicit = metadata.Explicit &&& ~~~ParagraphExplicit.PageBreakRunBefore }
     else metadata
 
+/// Whether source control properties permit an additional paragraph.
+let private controlDisallowsParagraphBreak (xml: string option) =
+    xml
+    |> Option.bind (fun properties ->
+        XmlDsl.tryScan ("<root>" + properties + "</root>") (System.Collections.Generic.HashSet<string>()))
+    |> Option.bind (XmlPatch.child "sdtPr")
+    |> Option.exists (fun properties ->
+        let kind name = XmlPatch.child name properties |> Option.isSome
+        if [ "date"; "picture"; "checkbox"; "comboBox"; "dropDownList"; "equation"; "docPartList"; "docPartObj" ] |> List.exists kind then true
+        else
+            match XmlPatch.child "text" properties with
+            | None -> false
+            | Some text ->
+                XmlPatch.attributes text
+                |> Map.toList
+                |> List.tryPick (fun (name, value) -> if XmlDsl.Ns.stripNs name = "multiLine" then Some value else None)
+                |> Option.exists (fun value -> value = "1" || value = "true" || value = "on")
+                |> not)
+
+let private canSplitControlParagraph (doc: Document) (para: ParagraphBlock) offset =
+    let paragraphControls =
+        para.Metadata.ContentControlXml :: ((para.Metadata.ContentControlAncestors @ para.Metadata.EnclosingCellControls) |> List.map (fun layer -> layer.Xml))
+    let cellControls =
+        tryFindTableCellByParagraph doc para.Id
+        |> Option.bind (fun (tableId, rowIndex, colIndex) ->
+            tryFindTable doc tableId
+            |> Option.bind (fun table -> table.Rows |> List.tryItem rowIndex)
+            |> Option.bind (fun row -> row.Cells |> List.tryItem colIndex))
+        |> Option.map (fun cell -> cell.EnclosingControls |> List.map (fun layer -> layer.Xml))
+        |> Option.defaultValue []
+    let inlineAt side =
+        para.Buffer.Runs
+        |> List.collect (function
+            | TextBuffer.Text run when side run.Start (run.Start + run.Length) -> run.Style.ContentControls |> List.map (fun layer -> layer.Group)
+            | _ -> [])
+        |> Set.ofList
+    let left = inlineAt (fun start _ -> start < offset)
+    let right = inlineAt (fun _ finish -> finish > offset)
+    not (List.exists controlDisallowsParagraphBreak (paragraphControls @ cellControls))
+    && (Set.intersect left right |> Set.isEmpty)
+
+let private controlIsPlainText (xml: string option) =
+    xml
+    |> Option.bind (fun properties -> XmlDsl.tryScan ("<root>" + properties + "</root>") (System.Collections.Generic.HashSet<string>()))
+    |> Option.bind (XmlPatch.child "sdtPr")
+    |> Option.bind (XmlPatch.child "text")
+    |> Option.isSome
+
 /// Split block at cursor, creating two blocks
 let splitBlock doc =
     match doc.Selection with
     | None -> doc
+    | Some sel when findParagraph doc sel.Focus.BlockId |> Option.exists (fun para -> not (canSplitControlParagraph doc para sel.Focus.Offset)) -> doc
     | Some sel ->
         match findBlock doc sel.Focus.BlockId with
         | None ->
@@ -2728,6 +2783,67 @@ let moveCursorToLineEnd doc =
             { doc with Selection = Some newSel }
 
 
+/// Typing at a block picture control belongs in a paragraph beside the control;
+/// the control itself must continue to contain only its picture.
+let private moveTypingOutsidePicture doc =
+    match doc.Selection with
+    | Some sel when sel.IsCollapsed ->
+        match findParagraph doc sel.Focus.BlockId with
+        | Some para ->
+            let isPicture =
+                para.Metadata.ContentControlXml
+                |> Option.bind (fun xml -> XmlDsl.tryScan ("<root>" + xml + "</root>") (System.Collections.Generic.HashSet<string>()))
+                |> Option.bind (XmlPatch.child "sdtPr")
+                |> Option.bind (XmlPatch.child "picture")
+                |> Option.isSome
+            match isPicture, para.Metadata.ContentControlGroup with
+            | true, Some group ->
+                let adjacent =
+                    { withoutParagraphEnd (withoutParagraphStart para.Metadata) with
+                        Origin = None; PageBreakBefore = false; DropCap = None; MarkRevision = None
+                        ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
+                        ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = [] }
+                let metadata =
+                    match List.rev para.Metadata.ContentControlAncestors with
+                    | closest :: outer ->
+                        { adjacent with ContentControlId = closest.Id; ContentControlTag = closest.Tag
+                                        ContentControlAlias = closest.Alias; ContentControlXml = closest.Xml
+                                        ContentControlGroup = Some closest.Group; ContentControlAncestors = List.rev outer }
+                    | [] -> adjacent
+                let newPara = { Id = nextBlockId(); Buffer = TextBuffer.empty; Metadata = metadata }
+                let before = sel.Focus.Offset = 0
+                let inGroup (p: ParagraphBlock) = p.Metadata.ContentControlGroup = Some group
+                let place (content: ParagraphBlock list) =
+                    let positions = content |> List.mapi (fun i p -> i, p) |> List.choose (fun (i, p) -> if inGroup p then Some i else None)
+                    if positions.IsEmpty then None
+                    else
+                        let at = if before then List.head positions else List.last positions + 1
+                        let paragraphs = content |> List.mapi (fun i p -> if i = at then [newPara; p] else [p]) |> List.concat
+                        Some ((if at = content.Length then paragraphs @ [newPara] else paragraphs), at)
+                let updated =
+                    match findBlockIndex doc para.Id with
+                    | Some _ ->
+                        let positions =
+                            doc.Blocks |> List.mapi (fun i block -> i, block) |> List.choose (fun (i, block) ->
+                                match block with Paragraph p | Heading (_, p) when inGroup p -> Some i | _ -> None)
+                        if positions.IsEmpty then None
+                        else
+                            let at = if before then List.head positions else List.last positions + 1
+                            let blocks = doc.Blocks |> List.mapi (fun i block -> if i = at then [Paragraph newPara; block] else [block]) |> List.concat
+                            Some { doc with Blocks = if at = doc.Blocks.Length then blocks @ [Paragraph newPara] else blocks }
+                    | None ->
+                        editContainerOf doc para.Id (fun content anchors ->
+                            place content |> Option.map (fun (content, at) ->
+                                content, anchors |> List.map (fun anchor -> if anchor >= at then anchor + 1 else anchor)))
+                match updated with
+                | Some changed ->
+                    let caret = { BlockId = newPara.Id; Offset = 0 }
+                    { changed with Selection = Some { Anchor = caret; Focus = caret } }
+                | None -> doc
+            | _ -> doc
+        | None -> doc
+    | _ -> doc
+
 /// Insert text at cursor
 let insertText text doc =
     // (Not into the mark of a comment: before it or after it.)
@@ -2737,6 +2853,7 @@ let insertText text doc =
     | Some sel ->
         // Delete selection if not collapsed
         let doc' = if sel.IsCollapsed then doc else deleteSelection doc
+        let doc' = if text = "" then doc' else moveTypingOutsidePicture doc'
 
         // Insert text at cursor (which is now at the selection start after deletion)
         match doc'.Selection with
@@ -2950,6 +3067,7 @@ let private cellLike (span: int option) (cell: TableCell) : TableCell =
         Content = [ paragraph ]
         NestedTables = []
         NestedTableAnchors = []
+        EnclosingControls = []
         VerticalMerge = None
         ColSpan = (match span with Some columns -> columns | None -> cell.ColSpan)
         Origin = likeOrigin cell.Origin }
@@ -4408,6 +4526,35 @@ let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBl
         else
             let selectedBlockIndexes = Dictionary<BlockId, int>(blockCount)
             blockIds |> List.iteri (fun index blockId -> selectedBlockIndexes.[blockId] <- index)
+            // Classify each containing table once, not once per selected cell.
+            let mutable plainCellCache: Dictionary<BlockId, HashSet<BlockId>> option = None
+            let inPlainTextCell paragraphId =
+                match locateBlock doc paragraphId with
+                | ValueSome (struct (_, Table table)) ->
+                    let cache =
+                        match plainCellCache with
+                        | Some cache -> cache
+                        | None ->
+                            let cache = Dictionary<BlockId, HashSet<BlockId>>()
+                            plainCellCache <- Some cache
+                            cache
+                    let paragraphs =
+                        match cache.TryGetValue table.Id with
+                        | true, paragraphs -> paragraphs
+                        | _ ->
+                            let paragraphs = HashSet<BlockId>()
+                            let rec collect (table: TableBlock) =
+                                for row in table.Rows do
+                                    for cell in row.Cells do
+                                        if cell.EnclosingControls |> List.exists (fun layer -> controlIsPlainText layer.Xml) then
+                                            for paragraph in cell.Content do
+                                                paragraphs.Add paragraph.Id |> ignore
+                                        for nested in cell.NestedTables do collect nested
+                            collect table
+                            cache.[table.Id] <- paragraphs
+                            paragraphs
+                    paragraphs.Contains paragraphId
+                | _ -> false
 
             Some (fun finished formatFn ->
                 let formatParagraph (para: ParagraphBlock) =
@@ -4433,7 +4580,27 @@ let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBl
 
                         // Apply formatting
                         if formatLen > 0 then
-                            let newBuffer = formatFn para formatStart formatLen para.Buffer
+                            let selectedGroups =
+                                para.Buffer.Runs |> List.collect (function
+                                    | TextBuffer.Text run when run.Start < formatStart + formatLen && run.Start + run.Length > formatStart ->
+                                        run.Style.ContentControls |> List.choose (fun layer -> if controlIsPlainText layer.Xml then Some layer.Group else None)
+                                    | _ -> []) |> Set.ofList
+                            let mutable first = formatStart
+                            let mutable last = formatStart + formatLen
+                            if not selectedGroups.IsEmpty then
+                                for run in para.Buffer.Runs do
+                                    match run with
+                                    | TextBuffer.Text text when text.Style.ContentControls |> List.exists (fun layer -> Set.contains layer.Group selectedGroups) ->
+                                        first <- min first text.Start
+                                        last <- max last (text.Start + text.Length)
+                                    | _ -> ()
+                            let isWholePlainControl =
+                                (para.Metadata.ContentControlXml :: ((para.Metadata.ContentControlAncestors @ para.Metadata.EnclosingCellControls) |> List.map (fun layer -> layer.Xml))
+                                 |> List.exists controlIsPlainText)
+                                || inPlainTextCell para.Id
+                            let newBuffer =
+                                if isWholePlainControl then formatFn para 0 bufferLen para.Buffer
+                                else formatFn para first (last - first) para.Buffer
                             if sameReference newBuffer para.Buffer then para
                             else { para with Buffer = newBuffer }
                         else
@@ -5323,6 +5490,7 @@ let private withPastedFormatting (pasted: BlockMetadata) (target: BlockMetadata)
         ContentControlXml = target.ContentControlXml
         ContentControlGroup = target.ContentControlGroup
         ContentControlAncestors = target.ContentControlAncestors
+        EnclosingCellControls = target.EnclosingCellControls
         SectionBreak = target.SectionBreak
         SectionColumns = target.SectionColumns
         SectionPageNumberStart = target.SectionPageNumberStart

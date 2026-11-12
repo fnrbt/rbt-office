@@ -3762,6 +3762,7 @@ module API =
         { Content = [paragraphFromText id text]
           NestedTables = []
           NestedTableAnchors = []
+          EnclosingControls = []
           ColSpan = 1
           BackgroundColor = None
           Shading = None

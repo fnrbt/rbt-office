@@ -49,7 +49,7 @@ let paragraph id text : Doc.ParagraphBlock =
     { Id = id; Buffer = ofString text; Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0; SpacingBefore = Some 0.0 } }
 
 let tableCell content : Doc.TableCell =
-    { Content = content; NestedTables = []; NestedTableAnchors = []; ColSpan = 1; BackgroundColor = None; Shading = None; Width = None
+    { Content = content; NestedTables = []; NestedTableAnchors = []; EnclosingControls = []; ColSpan = 1; BackgroundColor = None; Shading = None; Width = None
       PreferredWidth = None; BorderColor = None; BorderWidth = None; Borders = None; VerticalAlignment = None; VerticalMerge = None
       PaddingTop = None; PaddingRight = None; PaddingBottom = None; PaddingLeft = None; Origin = None }
 let tableRow cells : Doc.TableRow =

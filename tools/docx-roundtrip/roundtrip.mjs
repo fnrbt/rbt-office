@@ -251,10 +251,11 @@ async function main() {
             }
             const result = await tab.evaluate(async ([n, expect]) => window.roundTrip(n, expect), [name, expectations.get(name) ?? []]);
             const problems = result.problems;
-            // The trivial edit: one character typed and deleted with real key events.
+            // Undo must restore the document, including any structural effect of typing.
             if (await tab.evaluate('window.editOpen()')) {
                 await tab.keyboard.type('x');
-                await tab.keyboard.press('Backspace');
+                if (!await tab.evaluate('window.editTyped("x")')) problems.push('edit: the typed x is not immediately before the caret');
+                await tab.keyboard.press('Control+z');
                 problems.push(...await tab.evaluate('window.editFinish()'));
             }
             // A real edit: one character typed into a paragraph outside the tables.
@@ -265,7 +266,11 @@ async function main() {
             // A character typed at the start of every tenth paragraph.
             if (!skipTenth) {
                 const count = await tab.evaluate((n) => window.tenthOpen(n), name);
-                for (let i = 0; i < count; i++) { await tab.evaluate((index) => window.tenthSelect(index), i); await tab.keyboard.type('Q'); }
+                for (let i = 0; i < count; i++) {
+                    await tab.evaluate((index) => window.tenthSelect(index), i);
+                    await tab.keyboard.type('Q');
+                    if (!await tab.evaluate('window.tenthTyped()')) problems.push(`every tenth paragraph: typed Q missing at caret after edit ${i}`);
+                }
                 if (count > 0) {
                     const tenth = await tab.evaluate('window.tenthFinish()');
                     problems.push(...tenth.problems);

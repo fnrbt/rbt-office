@@ -113,6 +113,8 @@ let private metadata cache (item: WordEditorPackage.EditorParagraph) =
         ContentControlGroup = f.ContentControlGroup
         ContentControlAncestors = f.ContentControlAncestors |> List.map (fun layer ->
             ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : ContentControlLayer))
+        EnclosingCellControls = f.EnclosingCellControls |> List.map (fun layer ->
+            ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : ContentControlLayer))
         Origin = origin item.Source.Origin; Alignment = alignment f.Alignment
         ExplicitAlignment = f.ExplicitAlignment.IsSome; ListStyle = listStyle
         ListLevel = if listStyle = NoList then 0 else item.List |> Option.map (fun x -> max 1 x.Level) |> Option.defaultValue 1
@@ -302,6 +304,8 @@ and private table cache (item: WordEditorPackage.EditorTable) : TableBlock =
         { Content = paragraphs cache c.Paragraphs
           NestedTables = c.NestedTables |> Array.map (fun t -> let result = table cache t in { result with Rows = WordLayout.Table.distributeVerticalMergeContent result.Rows }) |> Array.toList
           NestedTableAnchors = Array.toList c.NestedTableAnchors; ColSpan = max 1 c.ColSpan
+          EnclosingControls = c.EnclosingControls |> List.map (fun layer ->
+              ({ Group = layer.Group; Id = layer.Id; Tag = layer.Tag; Alias = layer.Alias; Xml = layer.Xml } : ContentControlLayer))
           BackgroundColor = c.BackgroundColor; Shading = Option.map shading c.Shading; Width = c.Width
           PreferredWidth = width c.PreferredWidth c.PreferredWidthType; BorderColor = c.BorderColor; BorderWidth = c.BorderWidth
           Borders = Option.map tableBorders c.Borders; VerticalAlignment = c.VerticalAlignment
