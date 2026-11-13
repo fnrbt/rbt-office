@@ -42,12 +42,18 @@ printf '%s\n' "$*" >> "$TEST_TMP/npm-calls"
 EOF
 chmod +x "$tmp/bin/"* "$tmp/repo/.forge/publish-npm"
 export TEST_TMP="$tmp" PATH="$tmp/bin:$PATH" FORGE_VERSION=1.2.3
-export FORGE_NPM_REGISTRY=https://invalid.example NPM_CONFIG_USERCONFIG="$tmp/npmrc"
-if "$tmp/repo/.forge/publish-npm" --publish "$tmp/bundle" > "$tmp/output" 2>&1; then
-    echo 'gate unexpectedly succeeded' >&2; exit 1
-fi
-[[ -f "$tmp/core-reached" ]] || { cat "$tmp/output" >&2; echo 'gate did not reach the failing core suite' >&2; exit 1; }
-if [[ -f "$tmp/npm-calls" ]]; then
-    case "$(cat "$tmp/npm-calls")" in *publish*) echo 'npm publish was called after a failing suite' >&2; exit 1 ;; esac
-fi
-echo 'failing core regression blocked npm publish'
+export FORGE_NPM_REGISTRY=https://invalid.example NPM_CONFIG_USERCONFIG="$tmp/npmrc" FORGE_ARTIFACT_TMP="$tmp"
+unset FORGE_RELEASE_BUNDLE
+for source in supplied automatic; do
+    rm -f "$tmp/core-reached" "$tmp/npm-calls"
+    args=(--publish)
+    if [[ "$source" == supplied ]]; then args+=("$tmp/bundle"); fi
+    if "$tmp/repo/.forge/publish-npm" "${args[@]}" > "$tmp/output" 2>&1; then
+        echo "$source gate unexpectedly succeeded" >&2; exit 1
+    fi
+    [[ -f "$tmp/core-reached" ]] || { cat "$tmp/output" >&2; echo "$source gate did not reach the failing core suite" >&2; exit 1; }
+    if [[ -f "$tmp/npm-calls" ]]; then
+        case "$(cat "$tmp/npm-calls")" in *publish*) echo "$source published after a failing suite" >&2; exit 1 ;; esac
+    fi
+    echo "$source bundle: failing core regression blocked npm publish"
+done
