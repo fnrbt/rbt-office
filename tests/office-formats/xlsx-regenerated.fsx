@@ -253,6 +253,64 @@ do
     // A row inserted above the note: the element is the file's, in the cell the note is in now.
     let moved, _ = exportWith (M.insertRow 100)
     ok "row inserted: the note is the file's element, one row down" (noteOf "E114" (commentsOf moved) = fileNote.Replace("ref=\"E113\"", "ref=\"E114\"") && commentsOf moved = commentsWas.Replace("ref=\"E113\"", "ref=\"E114\"")) (short (commentsOf moved))
+    let noteShape (xml: string) row col =
+        shapes xml |> List.find (fun shape ->
+            Regex.IsMatch(shape, sprintf "<x:Row>\\s*%d\\s*</x:Row>" row)
+            && Regex.IsMatch(shape, sprintf "<x:Column>\\s*%d\\s*</x:Column>" col))
+    let oldBox = noteShape vmlWas 112 4
+    let newBox = noteShape (text (partsOf moved).[vmlPath]) 113 4
+    let anchorValues (shape: string) =
+        Regex.Match(shape, "<x:Anchor>([\\s\\S]*?)</x:Anchor>").Groups.[1].Value.Split(',')
+        |> Array.map (fun value -> int (value.Trim()))
+    let oldAnchor, newAnchor = anchorValues oldBox, anchorValues newBox
+    ok "row inserted: the original note box and its style survive"
+        (Regex.Match(oldBox, "<v:shape[^>]*>").Value = Regex.Match(newBox, "<v:shape[^>]*>").Value) newBox
+    ok "row inserted: both note box corners follow, including offsets"
+        (newAnchor = (oldAnchor |> Array.mapi (fun i value -> if (i = 2 || i = 6) && value >= 100 then value + 1 else value))) newBox
+    // Insert inside a box while its comment cell stays put. Fixed and
+    // move-only boxes must not grow merely because their grid changed.
+    for mode in [ "fixed"; "move-only" ] do
+        let modifiedBox =
+            let withoutSize = oldBox.Replace("<x:SizeWithCells/>", "")
+            if mode = "fixed" then withoutSize.Replace("<x:MoveWithCells/>", "") else withoutSize
+        let files = before |> Map.add vmlPath (Text.Encoding.UTF8.GetBytes(vmlWas.Replace(oldBox, modifiedBox)))
+        let bytes =
+            use buffer = new MemoryStream()
+            do
+                use archive = new ZipArchive(buffer, ZipArchiveMode.Create, true)
+                for KeyValue(path, data) in files do
+                    use output = (archive.CreateEntry path).Open()
+                    output.Write(data, 0, data.Length)
+            buffer.ToArray()
+        let sourceBook = XlsxReader.loadBytesNative bytes |> Option.get
+        let source = Bridge.Import.importWorkbook sourceBook
+        let models = source.Sheets |> Array.map (fun sheet -> sheet.Model)
+        let beforeModel = models.[index]
+        models.[index] <- beforeModel |> M.insertRow 113 |> M.setRowHeight 113 55.0 |> M.insertRow 114
+        for _ in 1 .. 10 do models.[index] <- M.insertRow 114 models.[index]
+        models.[index] <- models.[index] |> M.setRowHeight 112 70.0 |> M.setColumnWidth 5 180.0
+        let input : Bridge.ExportInput =
+            { Sheets = models; Names = source.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = source.Sheets |> Array.map (fun sheet -> sheet.Visible)
+              ActiveSheetIndex = sourceBook.Preserved.ActiveTab; NameInfo = source.Context.NameInfo; DefinedNames = source.Context.Names
+              Source = Some source.Source; Macros = None }
+        let output = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let box = noteShape (text (partsOf output).[vmlPath]) 112 4
+        let original, actual = anchorValues modifiedBox, anchorValues box
+        let top (model: M.SpreadsheetModel) (anchor: int array) i =
+            ([ 0 .. anchor.[i] - 1 ] |> List.sumBy (fun row -> Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight))
+            + float anchor.[i + 1]
+        let oldTop, oldBottom = top beforeModel original 2, top beforeModel original 6
+        let newTop, newBottom = top models.[index] actual 2, top models.[index] actual 6
+        ok (mode + " note: resizing between insertions preserves physical top and height")
+            (abs (oldTop - newTop) <= 0.51 && abs (oldBottom - newBottom) <= 0.51) box
+        let left (model: M.SpreadsheetModel) (anchor: int array) i =
+            ([ 0 .. anchor.[i] - 1 ] |> List.sumBy (fun col -> Map.tryFind col model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth))
+            + float anchor.[i + 1]
+        let oldLeft, oldRight = left beforeModel original 0, left beforeModel original 4
+        let newLeft, newRight = left models.[index] actual 0, left models.[index] actual 4
+        ok (mode + " note: final column resize preserves physical left and width")
+            (abs (oldLeft - newLeft) <= 0.51 && abs (oldRight - newRight) <= 0.51) box
+        ok (mode + " note: the original box style survives") (Regex.Match(modifiedBox, "<v:shape[^>]*>").Value = Regex.Match(box, "<v:shape[^>]*>").Value) box
     // The note's text changed: that note is written from the sheet, a second note of the file would stay.
     let changed, _ = exportWith (Ops.setComment (addr 112 4) "another text" (Some "BIWS") >> Ops.setComment (addr 401 2) "a note" None)
     let now = commentsOf changed
@@ -352,6 +410,18 @@ do
         (sprintf "%d shared, the file has %d" (count "t=\"shared\"" now) (count "t=\"shared\"" was))
     sameFormulas "column inserted: every formula reads as the sheet has it" saved edited
     inOrder "column inserted: the part's elements are in the schema's order" now
+    let columns = (XlsxReader.loadBytesNative saved |> Option.get).Sheets |> List.item index |> fun sheet -> sheet.Columns
+    let inserted = columns |> List.find (fun column -> column.Index <= 5 && column.MaxIndex >= 5)
+    ok "inserted column: an explicit default width prevents Excel hiding a styled column"
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - edited.DefaultColumnWidth) < 0.01))
+        (sprintf "%A" inserted)
+do
+    let saved, edited = exportWith (M.insertColumn 1 >> M.insertColumn 3 >> M.deleteColumn 1)
+    let columns = (XlsxReader.loadBytesNative saved |> Option.get).Sheets |> List.item index |> fun sheet -> sheet.Columns
+    let inserted = columns |> List.find (fun column -> column.Index <= 3 && column.MaxIndex >= 3)
+    ok "inserted column: its visible default width follows later insertion and deletion"
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - edited.DefaultColumnWidth) < 0.01))
+        (sprintf "%A" inserted)
 
 // ---- a note is a change of the comments part and of its box, not of the sheet's part ------
 do

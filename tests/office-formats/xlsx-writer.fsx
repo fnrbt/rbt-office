@@ -274,6 +274,40 @@ let partText (bytes: byte[]) (name: string) =
         use reader = new System.IO.StreamReader(entry.Open())
         reader.ReadToEnd()
 
+// Formula results are inline strings, not shared strings. Without xml:space,
+// Excel discards a whitespace-only cached result when opening the workbook.
+let whitespaceFormulaCell row formula text : XlsxWriter.XlsxCellOut =
+    { Row = row; Col = 4; Value = XlsxWriter.XlsxFormula (formula, Some (XlsxWriter.XlsxText (text, [])))
+      Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
+let whitespaceSheet =
+    { syntheticSheet with
+        CellSource = XlsxWriter.sheetCells
+            [ whitespaceFormulaCell 22 "CONCATENATE(C13,\" \",D13)" " "
+              whitespaceFormulaCell 24 "\" pre & post \"" " pre & post " ]
+        Tables = []
+        MergedCells = []
+        Extras = XlsxReader.emptySheetExtras }
+let whitespaceBytes =
+    XlsxWriter.writeWorkbookPackageBytes { synthetic with Sheets = [ whitespaceSheet ]; VbaProjectSource = None }
+let whitespaceXml = partText whitespaceBytes "xl/worksheets/sheet1.xml"
+let whitespaceNamespace = System.Xml.Linq.XNamespace.Get "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+let parsedWhitespace =
+    (System.Xml.Linq.XDocument.Parse whitespaceXml).Descendants(whitespaceNamespace + "v")
+    |> Seq.map (fun value -> value.Value)
+    |> Seq.toList
+ok "formula cached text survives whitespace-discarding XML readers"
+   (parsedWhitespace = [ " "; " pre & post " ])
+   (sprintf "%A" parsedWhitespace)
+match XlsxReader.loadBytesNative whitespaceBytes with
+| None -> ok "formula-cached-whitespace-reload" false "reader returned None"
+| Some wb ->
+    let cells = cellMap wb wb.Sheets.Head
+    ok "formula-cached-whitespace-reload"
+       ([ "E23", " "; "E25", " pre & post " ]
+        |> List.forall (fun (address, expected) ->
+            Map.tryFind address cells |> Option.exists (fun cell -> cell.Value = XlsxReader.String expected)))
+       (sprintf "%A" (cells |> Map.toList |> List.map (fun (address, cell) -> address, cell.Value)))
+
 let builtins =
     { synthetic with
         Sheets =

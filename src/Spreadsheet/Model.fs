@@ -1372,6 +1372,10 @@ type StructureMove = {
     At: int
     Count: int
     Version: int
+    /// The edited axis immediately before this edit, held by immutable reference.
+    AxisDefault: float
+    AxisSizes: Map<int, float>
+    AxisHidden: int array
 }
 
 /// The rows of a block that a sort exchanged, as a recalculation needs to know it: in the
@@ -3952,15 +3956,37 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 if ranges = entry.Ranges && rule = validation.Rule && anchor = validation.Anchor then Some entry
                 else Some { entry with Ranges = ranges; Validation = { validation with Rule = rule; Anchor = anchor } })
 
-    // Drawing objects follow their anchor cells. An object whose anchor row
-    // or column is deleted is not deleted with it: it moves to where the
-    // deletion happened. A two-cell anchor grows or shrinks with what is
-    // inserted or deleted between its corners, unless it says "oneCell"
-    // (move, keep the size) or "absolute" (stay).
+    // Drawing markers must also be remapped for "absolute" two-cell
+    // anchors: their physical position stays fixed while the grid changes.
     let drawings =
+        // Build sparse cumulative size corrections only when an absolute
+        // two-cell anchor actually needs reprojection.
+        let fixedMarker =
+            lazy (
+                let defaultSize = if onRows then model.DefaultRowHeight else model.DefaultColumnWidth
+                let sizes = if onRows then model.RowHeights else model.ColumnWidths
+                let hidden = if onRows && not (Map.isEmpty model.Filters) then model.FilterHiddenRows else [||]
+                let oldPrefix = AxisGeometry.prefix defaultSize sizes hidden
+                let newPrefix = AxisGeometry.prefix defaultSize (moveIndexMap sizes) (hidden |> Array.choose moveIndex)
+                fun index offset -> AxisGeometry.locate newPrefix (if onRows then 1048576 else 16384) (oldPrefix index + offset))
         let moveDrawing (drawing: SheetDrawing) =
             let anchor = drawing.Anchor
-            if anchor.Kind = "absolute" || anchor.EditAs = Some "absolute" then drawing
+            if anchor.Kind = "absolute" then drawing
+            elif anchor.EditAs = Some "absolute" then
+                let fromIndex = if onRows then anchor.FromRow else anchor.FromCol
+                let fromOffset = if onRows then anchor.FromOffsetY else anchor.FromOffsetX
+                let newFrom, newFromOffset = fixedMarker.Value fromIndex fromOffset
+                let toIndex = if onRows then anchor.ToRow else anchor.ToCol
+                let toOffset = if onRows then anchor.ToOffsetY else anchor.ToOffsetX
+                let newTo = toIndex |> Option.map (fun index -> fixedMarker.Value index toOffset)
+                let moved =
+                    if onRows then
+                        { anchor with FromRow = newFrom; FromOffsetY = newFromOffset
+                                      ToRow = newTo |> Option.map fst; ToOffsetY = newTo |> Option.map snd |> Option.defaultValue toOffset }
+                    else
+                        { anchor with FromCol = newFrom; FromOffsetX = newFromOffset
+                                      ToCol = newTo |> Option.map fst; ToOffsetX = newTo |> Option.map snd |> Option.defaultValue toOffset }
+                if moved = anchor then drawing else { drawing with Anchor = moved }
             else
                 let fromIndex = if onRows then anchor.FromRow else anchor.FromCol
                 let fromOffset = if onRows then anchor.FromOffsetY else anchor.FromOffsetX
@@ -4098,10 +4124,15 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                         if first = style.First && last = style.Last then style else { style with First = first; Last = last }))
 
     let delta = if isInsert then count else -count
+    let structureMove =
+        { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1
+          AxisDefault = if onRows then model.DefaultRowHeight else model.DefaultColumnWidth
+          AxisSizes = if onRows then model.RowHeights else model.ColumnWidths
+          AxisHidden = if onRows && not (Map.isEmpty model.Filters) then model.FilterHiddenRows else [||] }
     { model with
         StructureVersion = model.StructureVersion + 1
-        StructureMove = Some { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 }
-        StructureLog = { OnRows = onRows; Insert = isInsert; At = at; Count = count; Version = model.StructureVersion + 1 } :: model.StructureLog
+        StructureMove = Some structureMove
+        StructureLog = structureMove :: model.StructureLog
         Hyperlinks = hyperlinks
         KeptRanges = keptRanges
         Pivots = pivots

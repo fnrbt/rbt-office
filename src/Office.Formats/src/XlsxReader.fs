@@ -1039,6 +1039,22 @@ type SheetRows (load: (unit -> Row list) option, known: Row list, quickFormulas:
         | _ -> false
     override this.GetHashCode () = hash (List.length this.Value)
 
+/// A sheet axis at an edit boundary, in pixels.
+type NoteAxisSnapshot = {
+    DefaultSize: float
+    Sizes: Map<int, float>
+    Hidden: int array
+}
+
+/// Axes at import, before each structural edit, and at export.
+type NoteGeometry = {
+    OriginalRows: NoteAxisSnapshot
+    OriginalColumns: NoteAxisSnapshot
+    BeforeMoves: NoteAxisSnapshot array
+    FinalRows: NoteAxisSnapshot
+    FinalColumns: NoteAxisSnapshot
+}
+
 type SheetExtras = {
     Images: SheetImage list
     Objects: SheetObject list
@@ -1151,13 +1167,15 @@ type SheetExtras = {
     /// is taken from the part by row or cell follows them. None: not known
     /// (nothing that names a row or cell is then taken from the part).
     Moves: (bool * bool * int * int) list option
+    /// Original, per-edit and final axes for VML note-box reprojection.
+    NoteAxes: NoteGeometry option
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None }
+      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so

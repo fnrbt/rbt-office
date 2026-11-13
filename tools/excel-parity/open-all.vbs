@@ -4,15 +4,17 @@
 ' Fields in evidence are escaped: backslash, tab, CR and LF become \\, \t, \r, \n.
 ' Records: WORKBOOK(name); SHEET(index,name,type,visible); CELL(sheet,address,
 ' value type,value,formula); TABLE(sheet,name,range); SHAPE(sheet,index,name,
-' type,top-left,bottom-right); CHART(sheet,shape,chart type); SERIES(sheet,
-' shape,index,formula); NOTE(sheet,address,author,text); THREAD(sheet,address,
+' type,top-left,bottom-right,left,top,width,height); shape geometry is in points.
+' CHART(sheet,shape,chart type); SERIES(sheet,shape,index,formula);
+' NOTE(sheet,address,author,text); THREAD(sheet,address,
 ' author,text); REPLY(sheet,address,index,author,text). Chart sheets use an
 ' empty shape name. Unsupported thread or chart-series APIs emit CAPABILITY_ERROR
 ' and a nonzero exit, but other workbook evidence is still captured. Values are Excel
 ' Value2; numbers use Excel's 15-significant-digit scientific formatting, and
 ' errors use ERROR.TYPE. Formula is Excel's invariant Formula property.
 ' For each *.original.xlsx, evidence also includes an *.expected-insert.xlsx
-' snapshot after Excel inserts row 2 and column B in its first worksheet.
+' snapshot after Excel inserts row 2 and column B in its active worksheet,
+' matching the imported sheet targeted by the browser's keep-saves check.
 ' This sidecar has the same records but no corresponding opened.tsv row.
 ' Run in the interactive desktop session; compare each save/edit/insert to original.
 Option Explicit
@@ -102,10 +104,10 @@ Sub CaptureExpectedInsertion(name)
   Set detail = Nothing
   On Error Resume Next
   operation = "insert row 2"
-  wb.Worksheets(1).Rows(2).Insert
+  wb.ActiveSheet.Rows(2).Insert
   If Err.Number = 0 Then
     operation = "insert column B"
-    wb.Worksheets(1).Columns(2).Insert
+    wb.ActiveSheet.Columns(2).Insert
   End If
   number = Err.Number : description = Err.Description
   Err.Clear
@@ -171,7 +173,7 @@ Sub CaptureWorkbook(name, aggregate)
       i = 0
       For Each sh In s.Shapes
         i = i + 1
-        Row Array("SHAPE", s.Name, i, sh.Name, sh.Type, sh.TopLeftCell.Address(False, False), sh.BottomRightCell.Address(False, False))
+        Row Array("SHAPE", s.Name, i, sh.Name, sh.Type, sh.TopLeftCell.Address(False, False), sh.BottomRightCell.Address(False, False), sh.Left, sh.Top, sh.Width, sh.Height)
         If sh.Type = 3 Then ' msoChart
           Set chart = sh.Chart
           CaptureChart s.Name, sh.Name, chart

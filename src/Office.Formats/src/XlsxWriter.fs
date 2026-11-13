@@ -1114,7 +1114,7 @@ let private cachedValueXml (sharedIndex: string -> XlsxRichRun list -> int) valu
 /// (`t="str"`), as Excel does - the shared strings are for texts typed into cells.
 let private formulaResultXml (sharedIndex: string -> XlsxRichRun list -> int) value =
     match value with
-    | XlsxText (text, _) -> "str", "<v>" + escapedCellText text + "</v>"
+    | XlsxText (text, _) -> "str", "<v xml:space=\"preserve\">" + escapedCellText text + "</v>"
     | other -> cachedValueXml sharedIndex other
 
 /// `<f t="dataTable" .../>` of a what-if data table.
@@ -2460,6 +2460,199 @@ let vmlWithCommentBoxes (vml: string) (commentCells: (int * int) list) : string 
                         (first + i) (shapes.Length + i + 1) (col + 1) (max 0 (row - 1)) (col + 3) (row + 3) row col)
                 |> String.concat ""
             Some (XmlPatch.applyPart (fun _ -> []) drawing (removals @ [ XmlPatch.Append (shapeType + added) ]))
+
+/// Move the file's note boxes with structural edits before reconciling them
+/// against the current comments. Keeping each shape also keeps its style and
+/// any client data the editor does not understand.
+let private moveVmlCommentBoxes (vml: string) (moves: (bool * bool * int * int) list) (axes: XlsxReader.NoteGeometry option) : string =
+    match XmlPatch.readPart vml with
+    | None -> vml
+    | Some drawing ->
+        let moveIndex insert at count index =
+            if insert then Some (if index >= at then index + count else index)
+            elif index < at then Some index
+            elif index >= at + count then Some (index - count)
+            else None
+        let moves = List.toArray moves
+        // Each move records the actual axis at that moment, including any
+        // resize, hide or filter change since the preceding move.
+        let geometry =
+            lazy (
+                axes |> Option.bind (fun data ->
+                    if data.BeforeMoves.Length <> moves.Length then None
+                    else
+                        let same (a: XlsxReader.NoteAxisSnapshot) (b: XlsxReader.NoteAxisSnapshot) =
+                            a.DefaultSize = b.DefaultSize && obj.ReferenceEquals(a.Sizes, b.Sizes)
+                            && (obj.ReferenceEquals(a.Hidden, b.Hidden) || (a.Hidden.Length = 0 && b.Hidden.Length = 0))
+                        let axis (snapshot: XlsxReader.NoteAxisSnapshot) =
+                            AxisGeometry.prefix snapshot.DefaultSize snapshot.Sizes snapshot.Hidden
+                        let reuse prior priorPrefix next = if same prior next then priorPrefix else axis next
+                        let mutable rowAxis = data.OriginalRows
+                        let mutable colAxis = data.OriginalColumns
+                        let mutable rowPrefix = axis rowAxis
+                        let mutable colPrefix = axis colAxis
+                        let plans =
+                            moves |> Array.mapi (fun i (onRows, insert, at, count) ->
+                                let snapshot = data.BeforeMoves.[i]
+                                let previousAxis, previous = if onRows then rowAxis, rowPrefix else colAxis, colPrefix
+                                let before = reuse previousAxis previous snapshot
+                                let afterSizes =
+                                    if snapshot.Sizes |> Map.exists (fun key _ -> key >= at) then
+                                        snapshot.Sizes |> Map.fold (fun acc key value ->
+                                            match moveIndex insert at count key with
+                                            | Some moved -> Map.add moved value acc
+                                            | None -> acc) Map.empty
+                                    else snapshot.Sizes
+                                let afterHidden =
+                                    if snapshot.Hidden |> Array.exists (fun key -> key >= at) then
+                                        snapshot.Hidden |> Array.choose (moveIndex insert at count)
+                                    else snapshot.Hidden
+                                let afterAxis = { snapshot with Sizes = afterSizes; Hidden = afterHidden }
+                                let after = reuse snapshot before afterAxis
+                                if onRows then
+                                    rowAxis <- afterAxis
+                                    rowPrefix <- after
+                                else
+                                    colAxis <- afterAxis
+                                    colPrefix <- after
+                                previous, before, after, (if onRows then 1048576 else 16384))
+                        let finalAxis prior priorPrefix next =
+                            if same prior next then None
+                            else Some (priorPrefix, axis next)
+                        Some (plans, finalAxis rowAxis rowPrefix data.FinalRows, finalAxis colAxis colPrefix data.FinalColumns)))
+        let targets =
+            [ for shape in vmlShapes drawing do
+                match noteBoxCell shape with
+                | Some (row, col) when row >= 0 && col >= 0 ->
+                    let find name = XmlPatch.descendantsWhere (fun node -> XmlPatch.localName node = name) shape |> List.tryHead
+                    match find "Row", find "Column" with
+                    | Some rowNode, Some colNode ->
+                        let anchorNode = find "Anchor"
+                        let anchor =
+                            anchorNode |> Option.bind (fun node ->
+                                let parts = (XmlPatch.textOf node).Split(',')
+                                if parts.Length <> 8 then None
+                                else
+                                    let numbers = parts |> Array.map (fun text -> match System.Int32.TryParse (text.Trim()) with true, n -> Some n | _ -> None)
+                                    if numbers |> Array.forall Option.isSome then Some (numbers |> Array.map Option.get) else None)
+                        let enabled name =
+                            find name |> Option.exists (fun node ->
+                                let value = (XmlPatch.textOf node).Trim().ToLowerInvariant()
+                                value <> "false" && value <> "0")
+                        let movable = enabled "MoveWithCells"
+                        let sizeable = enabled "SizeWithCells"
+                        // VML offsets serialize as integers. Keep fractional positions
+                        // through the whole edit log rather than rounding each move.
+                        let offsets =
+                            if movable && sizeable then None
+                            else anchor |> Option.map (fun values -> Array.init 4 (fun i -> float values.[i * 2 + 1]))
+                        let originalAnchor = anchor |> Option.map Array.copy
+                        let mutable cell = Some (row, col)
+                        for moveNumber in 0 .. moves.Length - 1 do
+                            let onRows, insert, at, count = moves.[moveNumber]
+                            cell <-
+                                cell |> Option.bind (fun (r, c) ->
+                                    moveIndex insert at count (if onRows then r else c)
+                                    |> Option.map (fun index -> if onRows then index, c else r, index))
+                            match anchor with
+                            | Some values when not movable || not sizeable ->
+                                match geometry.Value with
+                                | Some (plans, _, _) ->
+                                    let previous, oldPrefix, newPrefix, limit = plans.[moveNumber]
+                                    let first, last = if onRows then 2, 6 else 0, 4
+                                    let offsets = offsets.Value
+                                    let oldFirst = previous values.[first] + offsets.[first / 2]
+                                    let oldLast = previous values.[last] + offsets.[last / 2]
+                                    // Reproject between structural moves too, where the user
+                                    // may have changed dimensions or hidden rows.
+                                    let firstAtEdit =
+                                        if movable then oldPrefix values.[first] + offsets.[first / 2]
+                                        else oldFirst
+                                    let lastAtEdit = if movable then firstAtEdit + oldLast - oldFirst else oldLast
+                                    let startIndex, startOffset = AxisGeometry.locate oldPrefix limit firstAtEdit
+                                    let oldFirst = firstAtEdit
+                                    let oldLast = lastAtEdit
+                                    let newFirst =
+                                        if movable then
+                                            let moved = moveIndex insert at count startIndex
+                                            let index = moved |> Option.defaultValue at
+                                            newPrefix index + (if moved.IsSome then startOffset else 0.0)
+                                        else oldFirst
+                                    let newLast = if movable then newFirst + oldLast - oldFirst else oldLast
+                                    let firstIndex, firstOffset = AxisGeometry.locate newPrefix limit newFirst
+                                    let lastIndex, lastOffset = AxisGeometry.locate newPrefix limit newLast
+                                    values.[first] <- firstIndex
+                                    offsets.[first / 2] <- firstOffset
+                                    values.[last] <- lastIndex
+                                    offsets.[last / 2] <- lastOffset
+                                | None ->
+                                    // Without original dimensions there is no safe physical
+                                    // reprojection; retain the file's markers.
+                                    ()
+                            | Some values ->
+                                let first, last = if onRows then 2, 6 else 0, 4
+                                let old = values.[first]
+                                let firstMoved = moveIndex insert at count old
+                                let moved = firstMoved |> Option.defaultValue at
+                                values.[first] <- moved
+                                if firstMoved.IsNone then values.[first + 1] <- 0
+                                let lastMoved = moveIndex insert at count values.[last]
+                                values.[last] <- max moved (lastMoved |> Option.defaultValue at)
+                                if lastMoved.IsNone then values.[last + 1] <- 0
+                            | _ -> ()
+                        // A dimension change after the last edit (including on
+                        // the other axis) must also preserve fixed box geometry.
+                        match anchor, offsets with
+                        | Some values, Some offsets ->
+                            match geometry.Value with
+                            | Some (_, rows, cols) ->
+                                let finish first last limit change =
+                                    match change with
+                                    | None -> ()
+                                    | Some (previous, current) ->
+                                        let oldFirst = previous values.[first] + offsets.[first / 2]
+                                        let oldLast = previous values.[last] + offsets.[last / 2]
+                                        let newFirst =
+                                            if movable then current values.[first] + offsets.[first / 2]
+                                            else oldFirst
+                                        let newLast = if movable then newFirst + oldLast - oldFirst else oldLast
+                                        let firstIndex, firstOffset = AxisGeometry.locate current limit newFirst
+                                        let lastIndex, lastOffset = AxisGeometry.locate current limit newLast
+                                        values.[first] <- firstIndex
+                                        offsets.[first / 2] <- firstOffset
+                                        values.[last] <- lastIndex
+                                        offsets.[last / 2] <- lastOffset
+                                finish 2 6 1048576 rows
+                                finish 0 4 16384 cols
+                            | None -> ()
+                        | _ -> ()
+                        match anchor, offsets with
+                        | Some values, Some offsets ->
+                            for i in 0 .. 3 do values.[i * 2 + 1] <- int (System.Math.Round offsets.[i])
+                        | _ -> ()
+                        match cell with
+                        | None -> yield shape, [ XmlPatch.Removed ]
+                        | Some (r, c) ->
+                            if r <> row then yield rowNode, [ XmlPatch.SetText (string r) ]
+                            if c <> col then yield colNode, [ XmlPatch.SetText (string c) ]
+                            match anchorNode, anchor with
+                            | Some node, Some values when originalAnchor |> Option.exists (fun original -> original <> values) ->
+                                yield node, [ XmlPatch.SetText (values |> Array.map string |> String.concat ", ") ]
+                            | _ -> ()
+                    | _ -> ()
+                | _ -> () ]
+        if targets.IsEmpty then vml
+        else XmlPatch.applyPart (fun _ -> []) drawing (XmlPatch.editsAt drawing.Node targets)
+
+let private vmlWithMovedCommentBoxes vml moves axes commentCells =
+    let moved =
+        match moves with
+        | Some (_ :: _ as moves) -> moveVmlCommentBoxes vml moves axes
+        | _ -> vml
+    match vmlWithCommentBoxes moved commentCells with
+    | Some xml -> Some xml
+    | None when moved <> vml -> Some moved
+    | None -> None
 
 let private tableXml id (table: XlsxTableOut) =
     let refText = sprintf "%s:%s" (cellRef (table.StartRow - 1) (table.StartCol - 1)) (cellRef (table.EndRow - 1) (table.EndCol - 1))
@@ -4465,7 +4658,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                         if isExternal || not (List.contains id ids) then None
                         else
                             let path = ZipInterop.normalizePath target
-                            partText path |> Option.map (fun vml -> Some path, vmlWithCommentBoxes vml commentCells))
+                            partText path |> Option.map (fun vml -> Some path, vmlWithMovedCommentBoxes vml sheet.Extras.Moves sheet.Extras.NoteAxes commentCells))
             match comments, boxes with
             | Some (commentsPath, commentsXml), Some (vmlPath, vmlXml) ->
                 Some { CommentsPath = commentsPath; CommentsXml = commentsXml; VmlPath = vmlPath; VmlXml = vmlXml; Gone = [] }
@@ -4781,7 +4974,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             match part with
             | Some (path, data) ->
                 let commentCells = sheet.Cells |> List.choose (fun c -> if c.Comment.IsSome then Some (c.Row, c.Col) else None)
-                match vmlWithCommentBoxes (System.Text.Encoding.UTF8.GetString data) commentCells with
+                match vmlWithMovedCommentBoxes (System.Text.Encoding.UTF8.GetString data) sheet.Extras.Moves sheet.Extras.NoteAxes commentCells with
                 | Some xml -> textFiles.Add { Path = path; Content = xml }
                 | None -> ()
             | None -> ()

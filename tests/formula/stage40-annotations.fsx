@@ -159,6 +159,32 @@ eq "describe: alternative text and name" ((Ops.describePicture 8 None (Some "our
 eq "describe: an empty text removes it" ((Ops.describePicture 8 (Some "L") (Some "") (Ops.describePicture 8 None (Some "x") twoPictures |> okOf) |> okOf).Drawings.[2] |> fun d -> d.Name, d.Description) (Some "L", None)
 eq "a two-cell anchor becomes a cell and a size when placed" ((Ops.placePicture 1 (at 1 1) 0.0 0.0 30.0 30.0 { twoPictures with Drawings = twoPictures.Drawings |> List.map (fun d -> if d.Id = 1 then { d with Anchor = { d.Anchor with Kind = "twoCell"; ToRow = Some 9; ToCol = Some 9; EditAs = Some "oneCell" } } else d) } |> okOf).Drawings.[0].Anchor |> fun a -> a.Kind, a.ToRow, a.EditAs) ("oneCell", None, None)
 eq "pictures follow rows and columns, keeping their ids" ((applyStructureEdit (InsertRows (0, 2)) (applyStructureEdit (InsertCols (0, 1)) twoPictures)).Drawings |> List.map (fun d -> d.Id, d.Anchor.FromRow, d.Anchor.FromCol)) [ 1, 4, 2; 7, 2, 1; 8, 7, 6 ]
+let fixedAnchor =
+    { onePicture.Drawings.Head.Anchor with
+        Kind = "twoCell"; FromRow = 4; FromCol = 3
+        FromOffsetY = 5.0; FromOffsetX = 90.0
+        ToRow = Some 7; ToCol = Some 5; ToOffsetY = 35.0; ToOffsetX = 10.0
+        EditAs = Some "absolute" }
+let fixedSheet =
+    { onePicture with
+        DefaultRowHeight = 20.0; DefaultColumnWidth = 80.0
+        RowHeights = Map.ofList [ 0, 40.0; 2, 0.0 ]
+        ColumnWidths = Map.ofList [ 0, 0.0; 2, 140.0 ]
+        Drawings = [ { onePicture.Drawings.Head with Anchor = fixedAnchor } ] }
+let physicalCorners (sheet: SpreadsheetModel) =
+    let a = sheet.Drawings.Head.Anchor
+    let pos sizes defaultSize index offset =
+        ([ 0 .. index - 1 ] |> List.sumBy (fun i -> Map.tryFind i sizes |> Option.defaultValue defaultSize)) + offset
+    pos sheet.RowHeights sheet.DefaultRowHeight a.FromRow a.FromOffsetY,
+    pos sheet.ColumnWidths sheet.DefaultColumnWidth a.FromCol a.FromOffsetX,
+    pos sheet.RowHeights sheet.DefaultRowHeight a.ToRow.Value a.ToOffsetY,
+    pos sheet.ColumnWidths sheet.DefaultColumnWidth a.ToCol.Value a.ToOffsetX
+let expectedCorners = (85.0, 310.0, 175.0, 390.0)
+eq "absolute anchor: original coordinates include hidden and nonuniform cells" (physicalCorners fixedSheet) expectedCorners
+let fixedInserted = fixedSheet |> applyStructureEdit (InsertRows (0, 1)) |> applyStructureEdit (InsertCols (1, 1))
+eq "absolute anchor: inserted cells preserve physical corners" (physicalCorners fixedInserted) expectedCorners
+let fixedDeleted = fixedSheet |> applyStructureEdit (DeleteRows (0, 1)) |> applyStructureEdit (DeleteCols (2, 1))
+eq "absolute anchor: deleting a sized row and column preserves physical corners" (physicalCorners fixedDeleted) expectedCorners
 
 // A note edited without naming an author keeps the author it has.
 do

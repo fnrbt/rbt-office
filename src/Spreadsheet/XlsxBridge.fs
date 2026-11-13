@@ -2091,19 +2091,38 @@ module Export =
                 let moves = List.rev model.StructureLog |> List.filter (fun move -> move.OnRows = onRows)
                 if moves.IsEmpty then patchSizes fileSizes sizesBefore sizesNow pixelsPerUnit defaultPixels
                 else
-                    let moved (index: int) : int option =
-                        moves
-                        |> List.fold (fun (at: int option) move ->
-                            match at with
-                            | None -> None
-                            | Some index ->
-                                if move.Insert then Some (if index >= move.At then index + move.Count else index)
-                                elif index >= move.At + move.Count then Some (index - move.Count)
-                                elif index >= move.At then None
-                                else Some index) (Some index)
+                    let moveIndex (move: StructureMove) index =
+                        if move.Insert then Some (if index >= move.At then index + move.Count else index)
+                        elif index >= move.At + move.Count then Some (index - move.Count)
+                        elif index >= move.At then None
+                        else Some index
+                    let moved index =
+                        moves |> List.fold (fun index move -> index |> Option.bind (moveIndex move)) (Some index)
                     let fileMoved = fileSizes |> List.choose (fun (index, size) -> moved index |> Option.map (fun index -> index, size))
                     let beforeMoved = sizesBefore |> Map.toList |> List.choose (fun (index, size) -> moved index |> Option.map (fun index -> index, size)) |> Map.ofList
-                    patchSizes fileMoved beforeMoved sizesNow pixelsPerUnit defaultPixels
+                    let patched = patchSizes fileMoved beforeMoved sizesNow pixelsPerUnit defaultPixels
+                    if onRows || not (moves |> List.exists (fun move -> move.Insert)) then patched
+                    else
+                        // Excel hides a style-only <col> without a width. New columns
+                        // need the model's default explicitly, even without a size override.
+                        let inserted =
+                            moves |> List.fold (fun columns move ->
+                                let shifted =
+                                    columns |> Set.fold (fun result index ->
+                                        match moveIndex move index with
+                                        | Some index -> Set.add index result
+                                        | None -> result) Set.empty
+                                if move.Insert then
+                                    [ move.At .. min 16383 (move.At + move.Count - 1) ]
+                                    |> List.fold (fun result index -> Set.add index result) shifted
+                                else shifted) Set.empty
+                        let defaultSize = defaultPixels / pixelsPerUnit
+                        let defaults =
+                            inserted |> Set.toList
+                            |> List.choose (fun index ->
+                                if index < 16384 && not (Map.containsKey index sizesNow) then Some (index, defaultSize)
+                                else None)
+                        defaults @ patched
         { fromModel with
             // (The file's sizes are by index: with rows or columns inserted or
             // deleted, each index has the size the model gives it.)
@@ -2187,6 +2206,23 @@ module Export =
                     if commentsSame then extras
                     elif extras.CommentsPart.IsSome && model.Cells |> Map.exists (fun _ data -> data.Comment.IsSome) then { extras with CommentsChanged = true }
                     else { extras with CommentsPart = None }
+                let extras =
+                    if before.StructureVersion = model.StructureVersion || extras.CommentsPart.IsNone
+                       || model.StructureLog.Length <> model.StructureVersion || before.StructureVersion <> 0 then extras
+                    else
+                        let axis size sizes hidden : XlsxReader.NoteAxisSnapshot =
+                            { DefaultSize = size; Sizes = sizes; Hidden = hidden }
+                        let snapshots =
+                            model.StructureLog |> List.rev
+                            |> List.map (fun move -> axis move.AxisDefault move.AxisSizes move.AxisHidden)
+                            |> List.toArray
+                        let rows (m: SpreadsheetModel) =
+                            axis m.DefaultRowHeight m.RowHeights (if Map.isEmpty m.Filters then [||] else m.FilterHiddenRows)
+                        let cols (m: SpreadsheetModel) = axis m.DefaultColumnWidth m.ColumnWidths [||]
+                        let geometry : XlsxReader.NoteGeometry =
+                            { OriginalRows = rows before; OriginalColumns = cols before; BeforeMoves = snapshots
+                              FinalRows = rows model; FinalColumns = cols model }
+                        { extras with NoteAxes = Some geometry }
                 let extras =
                     if not (extras.KeptElements |> List.exists (fun (elementName, _) -> elementName = "legacyDrawingNotes")) then extras
                     else
@@ -3116,7 +3152,11 @@ module Export =
                         let written = withKeptFormulas (sourcedSheet cache dxfIndex sourceDxfs originalXml name (stateOf index model) outSheet readerSheet (filterRowsAsHidden before) (filterRowsAsHidden model))
                         let written =
                             match patchOf outSheet before model with
-                            | Some patch when not patch.Whole -> { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch } }
+                            | Some patch when not patch.Whole ->
+                                let moves =
+                                    if model.StructureLog.Length <> model.StructureVersion then None
+                                    else Some (model.StructureLog |> List.rev |> List.map (fun move -> move.OnRows, move.Insert, move.At, move.Count))
+                                { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch; Moves = moves } }
                             | Some patch -> withSource outSheet before model { written with Extras = { written.Extras with Patch = Some patch } }
                             | None -> withSource outSheet before model written
                         // A pivot whose entire location was deleted has no table
