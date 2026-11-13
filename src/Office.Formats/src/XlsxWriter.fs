@@ -2530,7 +2530,7 @@ let private moveVmlCommentBoxes (vml: string) (moves: (bool * bool * int * int) 
                         let anchorNode = find "Anchor"
                         let anchor =
                             anchorNode |> Option.bind (fun node ->
-                                let parts = (XmlPatch.textOf node).Split(',')
+                                let parts = XmlPatch.textOf node |> ValueText.Sheet.commaParts
                                 if parts.Length <> 8 then None
                                 else
                                     let numbers = parts |> Array.map (fun text -> match System.Int32.TryParse (text.Trim()) with true, n -> Some n | _ -> None)

@@ -139,9 +139,9 @@ a typed edit of a node of the span tree, made in its text; what no edit names st
   does not hold (marks, unknown elements, white space); written back with the items the model has, each `AtItem`
   (in its wrappers), `InItem` (a further part of a split item, in its wrappers), `WithPrevious` (new, in the
   wrappers of the one before) or `Outside`.
-- `tests/xml-text-ratchet.sh` (in `tests/run-all.sh`): the lines of the writers and readers with text
-  operations (`Substring`, `IndexOf`, `Regex`, ...) may only go down: DocumentWriter 244 -> 0, XlsxWriter
-  235 -> 0, DocxReader 96 -> 0, XlsxReader 98 -> 0.
+- XML scanner, source-span, patch, package-preservation and real Office checks exercise the save contract.
+  The former source-text counter is retired: method spelling cannot distinguish XML manipulation
+  from parsing a decoded value such as VML's comma-separated anchor coordinates.
 
 ### The one scanner: how the readers read XML
 

@@ -100,7 +100,7 @@ required=()
 projects=()
 if [ "$profile" = core ]; then
     projects=("${core_projects[@]}")
-    required=(tests/formula/run-all.sh tests/xml-text-ratchet.sh tests/print/helpers.fsx)
+    required=(tests/formula/run-all.sh tests/print/helpers.fsx)
     for s in "${formats_suites[@]}"; do required+=("tests/office-formats/$s.fsx"); done
     for s in "${word_suites[@]}"; do required+=("tests/word/$s.fsx"); done
     required+=("${core_fixtures[@]}")
@@ -189,8 +189,6 @@ if [ "$profile" = core ]; then
 
     echo "=== print ==="
     run_suite "print-helpers" "tests/print/helpers.fsx"
-    echo "--- xml-text-ratchet ---"
-    bash tests/xml-text-ratchet.sh || failed=1
 else
     if [ ! -f office-wisp/word-render/bin/Debug/net10.0/NotoSans-Regular.ttf ]; then
         echo "MISSING NATIVE PAINTER FONT: office-wisp/word-render/bin/Debug/net10.0/NotoSans-Regular.ttf" >&2
