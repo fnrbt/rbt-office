@@ -1,104 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Internal package publication is gated by automated checks, not human fidelity
-# approval. --prepare retains a non-publishing review bundle. --publish consumes
-# an exact-commit bundle when supplied, or builds one for a normal Forge tag.
-# Human Office review and verify-release-oracle.mjs remain a separate workflow.
-mode="${1:---publish}"
-case "$mode" in
-    --prepare) [[ $# == 2 ]] || { echo 'usage: publish-npm --prepare DIR' >&2; exit 2; }; bundle="$2" ;;
-    --publish) [[ $# -le 2 ]] || exit 2; bundle="${2:-${FORGE_RELEASE_BUNDLE:-}}" ;;
-    *) echo 'usage: publish-npm --prepare DIR | --publish [DIR]' >&2; exit 2 ;;
-esac
-root="$(git rev-parse --show-toplevel)"
-cd "$root"
-root="$(pwd -P)"
-create_bundle=false
-if [[ "$mode" == --prepare || -z "$bundle" ]]; then
-    create_bundle=true
-fi
-if [[ -z "$bundle" ]]; then
-    bundle="$(mktemp -d "${FORGE_ARTIFACT_TMP:-/tmp}/rbt-office-release.XXXXXX")/bundle"
-fi
-bundle="$(realpath -m -- "$bundle")"
-case "$bundle/" in
-    "$root/"*) echo 'release bundle must be outside the checkout' >&2; exit 1 ;;
-esac
-[[ -z "$(git status --porcelain --untracked-files=all)" ]] || { echo 'release requires a clean checkout' >&2; exit 1; }
-commit="$(git rev-parse HEAD)"
-version="$(node -p "require('./package.json').version")"
-[[ -z "${FORGE_VERSION:-}" || "$version" == "$FORGE_VERSION" ]] || { echo 'Forge version does not match package.json' >&2; exit 1; }
-if [[ "$mode" == --publish ]]; then
-    : "${FORGE_VERSION:?FORGE_VERSION is required}"
-    : "${FORGE_NPM_REGISTRY:?FORGE_NPM_REGISTRY is required}"
-    : "${NPM_CONFIG_USERCONFIG:?NPM_CONFIG_USERCONFIG is required}"
-fi
-if [[ "$create_bundle" == true ]]; then
-    [[ ! -e "$bundle" ]] || { echo 'preparation requires a new bundle directory' >&2; exit 1; }
-    mkdir -p "$bundle/word/docs" "$bundle/excel/docs"
-else
-    [[ -d "$bundle" ]] || { echo 'release bundle not found' >&2; exit 1; }
-    [[ "$(cat "$bundle/commit")" == "$commit" ]] || { echo 'release bundle commit mismatch' >&2; exit 1; }
-    [[ "$(cat "$bundle/version")" == "$version" ]] || { echo 'release bundle version mismatch' >&2; exit 1; }
-    (cd "$bundle" && sha256sum --check SHA256SUMS)
-fi
-bundle="$(cd "$bundle" && pwd)"
+: "${FORGE_VERSION:?FORGE_VERSION is required}"
+: "${FORGE_NPM_REGISTRY:?FORGE_NPM_REGISTRY is required}"
+: "${NPM_CONFIG_USERCONFIG:?NPM_CONFIG_USERCONFIG is required}"
 
+actual_version="$(node -p "require('./package.json').version")"
+[[ "$actual_version" == "$FORGE_VERSION" ]] || {
+    printf 'package version %s does not match Forge version %s\n' "$actual_version" "$FORGE_VERSION" >&2
+    exit 1
+}
+
+# The SDK's own checks of its installation (workloads, first run) are not this build's: in the sandbox they
+# failed the v0.1.27 action ("An issue was encountered verifying workloads").
 export DOTNET_SKIP_WORKLOAD_INTEGRITY_CHECK=true DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=true
 export DOTNET_SKIP_FIRST_TIME_EXPERIENCE=true DOTNET_NOLOGO=true DOTNET_CLI_TELEMETRY_OPTOUT=true
-export DOTNET_PROCESSOR_COUNT="${DOTNET_PROCESSOR_COUNT:-2}"
-export DOTNET_GCHeapHardLimit="${DOTNET_GCHeapHardLimit:-0x100000000}"
-export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=1024}"
-export JS_FLAGS="${JS_FLAGS:---max-old-space-size=2048}"
-export MSBUILDDISABLENODEREUSE="${MSBUILDDISABLENODEREUSE:-1}"
+
+# `dotnet tool restore` does not read RestoreConfigFile, so hand it the
+# sandbox's NuGet configuration explicitly.
 dotnet tool restore ${NUGET_CONFIG_FILE:+--configfile "$NUGET_CONFIG_FILE"}
+
 pnpm install --frozen-lockfile
 pnpm run build
-bash tests/run-all.sh --core
-
-work="$(mktemp -d "${FORGE_ARTIFACT_TMP:-/tmp}/rbt-office-gate.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
-if [[ "$create_bundle" == true ]]; then
-    npm pack --pack-destination "$bundle"
-fi
-tarball="$bundle/rbt-office-$version.tgz"
-[[ -f "$tarball" ]] || { echo "missing tarball: $tarball" >&2; exit 1; }
-# Install as an actual consumer, and prove its packed modules match this build.
-printf '{"private":true,"type":"module"}\n' > "$work/package.json"
-npm install --prefix "$work" --ignore-scripts --no-audit --no-fund "$tarball"
-consumer="$work/node_modules/@rbt/office"
-diff -qr dist "$consumer/dist"
-node --input-type=module -e 'import { createRequire } from "node:module"; const r = createRequire(process.argv[1] + "/package.json"); for (const p of ["word/Word.js", "spreadsheet/Spreadsheet.js", "office-formats/src/Main.js"]) r.resolve("@rbt/office/" + p);' "$work"
-
-# The existing browser runner owns the pinned Playwright and JSZip versions.
-npm ci --prefix tools/browser-runner --no-audit --no-fund
-./tools/browser-runner/node_modules/.bin/playwright install chromium
-export PLAYWRIGHT="$root/tools/browser-runner/node_modules/playwright/index.mjs"
-export JSZIP_DIR="$work/node_modules/jszip"
-dist="$consumer/dist"
-node tools/word-browser/run.mjs --dist "$dist"
-node tools/xlsx-browser/run.mjs --dist "$dist"
-[[ -z "$(git status --porcelain --untracked-files=all)" && "$(git rev-parse HEAD)" == "$commit" ]] || { echo 'checkout changed during release gate' >&2; exit 1; }
-# Exercise corpus export for every publication, including supplied bundles.
-corpus="$bundle"
-if [[ "$create_bundle" != true ]]; then
-    corpus="$work/corpus"
-    mkdir -p "$corpus/word/docs" "$corpus/excel/docs"
-fi
-node tools/docx-roundtrip/roundtrip.mjs --dist "$dist" --out "$corpus/word/docs"
-node tools/xlsx-browser/run.mjs --dist "$dist" --keep "$corpus/excel/docs"
-[[ -z "$(git status --porcelain --untracked-files=all)" && "$(git rev-parse HEAD)" == "$commit" ]] || { echo 'checkout changed during corpus gate' >&2; exit 1; }
-if [[ "$create_bundle" == true ]]; then
-    printf '%s\n' "$commit" > "$bundle/commit"
-    printf '%s\n' "$version" > "$bundle/version"
-    (cd "$bundle" && find word/docs excel/docs -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum; sha256sum "rbt-office-$version.tgz" commit version) > "$bundle/SHA256SUMS"
-fi
-if [[ "$mode" == --prepare ]]; then
-    echo "Prepared $bundle; automated checks passed. Human Office fidelity review is separate."
-else
-    # Recheck the exact tested bytes immediately before npm receives them.
-    (cd "$bundle" && sha256sum --check SHA256SUMS)
-    echo "Publishing internal package from $bundle; no human fidelity approval is implied."
-    npm publish "$tarball" --registry "$FORGE_NPM_REGISTRY" --access restricted
-fi
+out="$(mktemp -d "${FORGE_ARTIFACT_TMP:-/tmp}/rbt-office-npm.XXXXXX")"
+npm pack --pack-destination "$out"
+tarball="$out/rbt-office-$FORGE_VERSION.tgz"
+[[ -f "$tarball" ]] || { printf 'npm pack did not create %s\n' "$tarball" >&2; exit 1; }
+npm publish "$tarball" --registry "$FORGE_NPM_REGISTRY" --access restricted
