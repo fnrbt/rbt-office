@@ -1,6 +1,6 @@
 {
   "name": "@rbt/office",
-  "version": "0.1.31",
+  "version": "0.1.32",
   "description": "Fable-compiled office libraries for browser applications",
   "type": "module",
   "sideEffects": false,
