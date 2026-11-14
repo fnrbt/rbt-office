@@ -23,7 +23,7 @@ const cellsWith = (page, prop) => g(page, (prop) => [...document.querySelectorAl
   const png = await page.screenshot({ clip: { x: titlePixels.x, y: titlePixels.y, width: titlePixels.w, height: titlePixels.h } });
   const dark = await page.evaluate(async (b64) => { const img = new Image(); img.src = "data:image/png;base64," + b64; await img.decode(); const cv = document.createElement("canvas"); cv.width = img.width; cv.height = img.height; const cx = cv.getContext("2d"); cx.drawImage(img, 0, 0); const d = cx.getImageData(0, 0, cv.width, cv.height).data; let n = 0; for (let i = 0; i < d.length; i += 4) if (d[i] < 100 && d[i + 1] < 100 && d[i + 2] < 100) n++; return n; }, png.toString("base64"));
   check("pixels: the title's text is drawn 150-250 px right of its own cell", dark > 60, dark);
-  check("number formats shown", await g(page, () => [...document.querySelectorAll(".spreadsheet-cell")].some((c) => c.textContent.includes("$ 20,500,000"))));
+  check("number formats shown", await g(page, () => [...document.querySelectorAll(".spreadsheet-cell")].some((c) => /\$\s+20,500,000/.test(c.textContent))));
   check("no edit affordances (filter buttons, resize handles, fill handle)", await g(page, () => [...document.querySelectorAll(".col-filter-btn, .col-resize-handle, .row-resize-handle, .spreadsheet-fill-handle")].every((e) => getComputedStyle(e).display === "none")));
   // typing does nothing; selection and copy work
   const cell = page.locator('.spreadsheet-cell[data-row="6"][data-col="4"]').first();

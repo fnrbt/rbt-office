@@ -66,7 +66,7 @@ const status = (page) => page.locator('[data-testid="office-editor-status"]').in
   // a page far down paints when scrolled to
   await ev(page, () => { const sc = document.querySelector(".rb-file-viewer-stage-scroll"); sc.scrollTop = sc.scrollHeight * 0.9; });
   await page.waitForTimeout(500);
-  const far = await ev(page, () => { const cs = [...document.querySelectorAll(".rb-file-viewer-canvas")]; const i = cs.findIndex((c, k) => k > 400 && c.width >= 800); if (i < 0) return null; const d = cs[i].getContext("2d").getImageData(0, 0, cs[i].width, cs[i].height).data; let n = 0; for (let k = 0; k < d.length; k += 16) if (d[k] < 90) n++; return { i, ink: n }; });
+  const far = await ev(page, () => { const cs = [...document.querySelectorAll(".rb-file-viewer-canvas")]; const i = cs.findIndex((c, k) => k > 300 && c.width >= 800); if (i < 0) return null; const d = cs[i].getContext("2d").getImageData(0, 0, cs[i].width, cs[i].height).data; let n = 0; for (let k = 0; k < d.length; k += 16) if (d[k] < 90) n++; return { i, ink: n }; });
   check("a page near the end paints when scrolled to", far && far.ink > 300, far);
   await page.close();
 }

@@ -5,8 +5,14 @@ await context.addInitScript(listenerProbe);
 const g = (page, fn, arg) => page.evaluate(fn, arg);
 const ready = async (page) => { await page.waitForSelector('[data-testid="sheet-toolbar"]', { timeout: 180000 }); await page.waitForTimeout(300); };
 const status = (page) => page.locator('[data-testid="office-editor-status"]').innerText();
+// The four edges of a cell as the component reports them (GetCellEdges): the style name, "grid" or "-".
+const edges = (page, r, c) => g(page, ([r, c]) => { const e = window.__grids.at(-1).GetCellEdges(r, c); const d = (x) => (x == null ? "-" : x === "grid" ? "grid" : `${x.Style}/${x.Width}/${x.Color}`); return [d(e.Top), d(e.Right), d(e.Bottom), d(e.Left)]; }, [r, c]);
 const formula = (page) => page.locator('[data-testid="sheet-formula"]').inputValue();
-const undoDepth = (page) => g(page, () => { let n = 0; for (let l = window.__grids.at(-1).GetModel().History.Past; l && l.tail != null; l = l.tail) n++; return n; });
+// "One undo step": after the edit, a single Undo gives back exactly what `look` saw before it and Redo the edit again.
+// (Undo lives in the workbook session since 0.1.32; the model's own History is no longer filled.)
+const undoes = (page) => g(page, () => window.__grids.at(-1).Undo());
+const redoes = (page) => g(page, () => window.__grids.at(-1).Redo());
+const oneStep = async (page, look, before) => { const after = JSON.stringify(await look()); await undoes(page); const back = JSON.stringify(await look()); await redoes(page); const again = JSON.stringify(await look()); return { ok: after !== before && back === before && again === after, before, after, back, again }; };
 const boldCount = (page) => g(page, () => (window.__grids.at(-1).GetSelectionHtml().match(/font-weight:\s*bold/g) || []).length);
 
 // ---------- milk-street: formatting, formula bar, clipboard, structure, save ----------
@@ -40,9 +46,11 @@ const boldCount = (page) => g(page, () => (window.__grids.at(-1).GetSelectionHtm
   check("fill applied to 9 cells", (html.match(/background-color:\s*#FEF08A/gi) || []).length === 9, (html.match(/background-color/g) || []).length);
   await page.click('[data-testid="sheet-border"]');
   await page.click('[data-testid="sheet-border-line-medium"]');
-  const depth0 = await undoDepth(page);
+  const lookBorder = async () => [await edges(page, 60, 20), await edges(page, 61, 21), await edges(page, 62, 22)];
+  const beforeBorder = JSON.stringify(await lookBorder());
   await page.click('[data-testid="sheet-border-all"]');
-  check("border on the range is one undo step", (await undoDepth(page)) === depth0 + 1, { depth0, now: await undoDepth(page) });
+  const borderStep = await oneStep(page, lookBorder, beforeBorder);
+  check("border on the range is one undo step", borderStep.ok, borderStep);
   check("border menu closed after applying", (await page.locator('[data-testid="sheet-border-menu"]').count()) === 0);
   await g(page, () => window.__grids[0].SelectCell(0, 0));
   await page.locator('[data-testid="sheet-grid"]').screenshot({ path: `${SHOTS}/sheet-border.png` });

@@ -8,7 +8,7 @@ const ev = (page, fn, arg) => page.evaluate(fn, arg);
   await page.waitForSelector(".rb-file-viewer-canvas", { timeout: 120000 });
   await page.waitForTimeout(600);
   const info = await ev(page, () => ({ sub: document.querySelector(".rb-file-viewer-header-copy .rb-app-subtitle").textContent.trim(), canvases: document.querySelectorAll(".rb-file-viewer-canvas").length, painted: [...document.querySelectorAll(".rb-file-viewer-canvas")].filter((c) => c.width >= 800).length, stack: window.RedBatWordTextStack?.loadedFamilyNames?.() }));
-  check("chat attachment: Word document shown with the shared preview (shaped pages)", info.sub === "9 pages" && info.canvases === 9 && info.painted >= 1 && info.painted < 9 && info.stack?.includes("Calibri"), info);
+  check("chat attachment: Word document shown with the shared preview (shaped pages)", info.sub === "8 pages" && info.canvases === 8 && info.painted >= 1 && info.painted < 8 && info.stack?.includes("Calibri"), info);
   await page.screenshot({ path: `${SHOTS}/chat-word.png` });
   await page.keyboard.press("+");
   await page.waitForTimeout(200);

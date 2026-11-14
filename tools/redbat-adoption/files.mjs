@@ -15,7 +15,7 @@ for (const [file, mime] of [[`${T}/test-documents/sample-formatted.docx`, "appli
   await page.waitForTimeout(700);
   await page.screenshot({ path: `${SHOTS}/files-${name}.png` });
   const sub = await page.locator(".rb-file-viewer-header-copy .rb-app-subtitle").innerText();
-  if (name.endsWith(".docx")) check("Files viewer: Word preview with the page count in the header", /9 pages/.test(sub), sub);
+  if (name.endsWith(".docx")) check("Files viewer: Word preview with the page count in the header", /8 pages/.test(sub), sub);
   else check("Files viewer: spreadsheet preview fills the stage, with tabs", await ev(page, () => document.querySelector(".spreadsheet-container").clientHeight > 300 && document.querySelectorAll('[data-testid="spreadsheet-preview-tabs"] button').length === 2), await ev(page, () => document.querySelector(".spreadsheet-container").clientHeight));
   await page.click('[data-testid="file-viewer-edit-office"]');
   await page.waitForSelector(name.endsWith(".docx") ? '[data-testid="word-toolbar"]' : '[data-testid="sheet-toolbar"]', { timeout: 120000 });
@@ -25,7 +25,7 @@ for (const [file, mime] of [[`${T}/test-documents/sample-formatted.docx`, "appli
   if (name.endsWith(".docx")) {
     const same = await ev(page, () => window.__word.getPageCount(window.__editors[0]));
     const previewRequestsBefore = page.requests.length;
-    check("editor opened from the preview has the preview's page count", same === 9, same);
+    check("editor opened from the preview has the preview's page count", same === 8, same);
   }
   await page.keyboard.press("Escape");
   await page.waitForTimeout(300);

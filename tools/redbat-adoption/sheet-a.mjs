@@ -6,7 +6,11 @@ const g = (page, fn, arg) => page.evaluate(fn, arg);
 const ready = async (page) => { await page.waitForSelector('[data-testid="sheet-toolbar"]', { timeout: 180000 }); await page.waitForTimeout(300); };
 const status = (page) => page.locator('[data-testid="office-editor-status"]').innerText();
 const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
-const undoDepth = (page) => g(page, () => { let n = 0; for (let l = window.__grids.at(-1).GetModel().History.Past; l && l.tail != null; l = l.tail) n++; return n; });
+// "One undo step": after the edit, a single Undo gives back exactly what `look` saw before it and Redo the edit again.
+// (Undo lives in the workbook session since 0.1.32; the model's own History is no longer filled.)
+const undoes = (page) => g(page, () => window.__grids.at(-1).Undo());
+const redoes = (page) => g(page, () => window.__grids.at(-1).Redo());
+const oneStep = async (page, look, before) => { const after = JSON.stringify(await look()); await undoes(page); const back = JSON.stringify(await look()); await redoes(page); const again = JSON.stringify(await look()); return { ok: after !== before && back === before && again === after, before, after, back, again }; };
 // The four edges of a cell as the component reports them (GetCellEdges): the style name, "grid" or "-".
 const edges = (page, r, c) => g(page, ([r, c]) => { const e = window.__grids.at(-1).GetCellEdges(r, c); const d = (x) => (x == null ? "-" : x === "grid" ? "grid" : `${x.Style}/${x.Width}/${x.Color}`); return [d(e.Top), d(e.Right), d(e.Bottom), d(e.Left)]; }, [r, c]);
 const applyBorder = async (page, range, line, side) => {
@@ -130,9 +134,10 @@ let borderShot;
   await page.screenshot({ path: `${SHOTS}/sheet-border-menu.png` });
   await page.keyboard.press("Escape");
   for (let i = 0; i < cases.length; i++) {
-    const d0 = await undoDepth(page);
-    await applyBorder(page, block(i), cases[i][0], cases[i][1]);
-    if (i === 0 || i === 6) check(`${cases[i][1]} border on a 3x3 block is one undo step`, (await undoDepth(page)) === d0 + 1);
+    const b = block(i); const look = async () => [await edges(page, b[0], b[1]), await edges(page, b[0] + 1, b[1] + 1), await edges(page, b[2], b[3])];
+    const before = JSON.stringify(await look());
+    await applyBorder(page, b, cases[i][0], cases[i][1]);
+    if (i === 0 || i === 6) { const step = await oneStep(page, look, before); check(`${cases[i][1]} border on a 3x3 block is one undo step`, step.ok, step); }
   }
   await g(page, ([r, c]) => { const gr = window.__grids[0]; gr.SelectCell(r - 2, c - 1); gr.ScrollToCell(r + 24, c + 7); gr.ScrollToCell(r - 1, c - 3); }, [R0, C0]);
   await page.waitForTimeout(300);
@@ -155,41 +160,57 @@ let borderShot;
   await page.click('[data-testid="sheet-menu-button-insert"]');
   check("the menu says how many", (await sel(page, "sheet-insert-row").innerText()) === "Insert 3 rows above" && (await sel(page, "sheet-delete-column").innerText()) === "Delete 3 columns", await sel(page, "sheet-insert-row").innerText());
   await page.keyboard.press("Escape");
-  let d = await undoDepth(page);
+  const lookRows = async () => [await read(110, 20), await read(113, 20), await read(102, 20), await read(105, 20)];
+  let before = JSON.stringify(await lookRows());
+  await g(page, () => window.__grids[0].SelectRange(102, 20, 104, 22));
   await page.click('[data-testid="sheet-menu-button-insert"]'); await sel(page, "sheet-insert-row").click();
-  check("insert rows: 3 rows for a 3-row selection, one undo step", (await undoDepth(page)) === d + 1, { depth: (await undoDepth(page)) - d });
+  let step = await oneStep(page, lookRows, before);
+  check("insert rows: 3 rows for a 3-row selection, one undo step", step.ok, step);
   let f = await read(113, 20);
   check("insert rows: the formula moved down and its range grew", f.f === "=SUM(U101:U111)" && f.v === "36", f);
   check("insert rows: cells below moved by 3", (await read(105, 20)).v === "3" && (await read(102, 20)).v === "", [await read(105, 20), await read(102, 20)]);
   await sel(page, "sheet-undo").click();
   check("insert rows: one undo restores", (await read(110, 20)).f === "=SUM(U101:U108)" && (await read(102, 20)).v === "3");
   await g(page, () => window.__grids[0].SelectRange(102, 20, 104, 22));
-  d = await undoDepth(page);
+  const lookDel = async () => [await read(110, 20), await read(107, 20), await read(103, 20)];
+  before = JSON.stringify(await lookDel());
+  await g(page, () => window.__grids[0].SelectRange(102, 20, 104, 22));
   await page.click('[data-testid="sheet-menu-button-insert"]'); await sel(page, "sheet-delete-row").click();
+  step = await oneStep(page, lookDel, before);
   f = await read(107, 20);
-  check("delete rows: 3 rows, one undo step, the formula follows", (await undoDepth(page)) === d + 1 && f.f === "=SUM(U101:U105)" && f.v === "24", { depth: (await undoDepth(page)) - d, f });
+  check("delete rows: 3 rows, one undo step, the formula follows", step.ok && f.f === "=SUM(U101:U105)" && f.v === "24", { step, f });
   check("delete rows: other formula keeps both ends", (await read(100, 23)).f === "=U101+U105", await read(100, 23));
   await sel(page, "sheet-undo").click();
   check("delete rows: one undo restores", (await read(110, 20)).f === "=SUM(U101:U108)" && (await read(110, 20)).v === "36" && (await read(103, 20)).v === "4");
   // columns
   await g(page, () => window.__grids[0].SelectRange(100, 21, 100, 22)); // 2 columns between U and X
-  d = await undoDepth(page);
+  const lookCols = async () => [await read(100, 23), await read(100, 25)];
+  before = JSON.stringify(await lookCols());
+  await g(page, () => window.__grids[0].SelectRange(100, 21, 100, 22));
   await page.click('[data-testid="sheet-menu-button-insert"]'); await sel(page, "sheet-insert-column").click();
+  step = await oneStep(page, lookCols, before);
   f = await read(100, 25);
-  check("insert columns: 2 columns, one undo step, the formula moved right and still reads U", (await undoDepth(page)) === d + 1 && f.f === "=U101+U108" && f.v === "9", { depth: (await undoDepth(page)) - d, f });
+  check("insert columns: 2 columns, one undo step, the formula moved right and still reads U", step.ok && f.f === "=U101+U108" && f.v === "9", { step, f });
   await g(page, () => window.__grids[0].SelectRange(100, 18, 100, 19)); // 2 columns left of U
-  d = await undoDepth(page);
+  const lookCols2 = async () => [await read(100, 23), await read(100, 25)];
+  before = JSON.stringify(await lookCols2());
+  await g(page, () => window.__grids[0].SelectRange(100, 18, 100, 19));
   await page.click('[data-testid="sheet-menu-button-insert"]'); await sel(page, "sheet-delete-column").click();
+  step = await oneStep(page, lookCols2, before);
   f = await read(100, 23);
-  check("delete columns: 2 columns, one undo step, references shift left", (await undoDepth(page)) === d + 1 && f.f === "=S101+S108" && f.v === "9", { depth: (await undoDepth(page)) - d, f });
+  check("delete columns: 2 columns, one undo step, references shift left", step.ok && f.f === "=S101+S108" && f.v === "9", { step, f });
   await sel(page, "sheet-undo").click();
   await sel(page, "sheet-undo").click();
   check("column edits undone in two steps", (await read(100, 23)).f === "=U101+U108");
   // over the old 50-row cap
   await g(page, () => window.__grids[0].SelectRange(200, 0, 259, 0));
-  d = await undoDepth(page);
+  await g(page, () => { const gr = window.__grids[0]; gr.EnterText(200, 0, "first"); gr.EnterText(259, 0, "last"); gr.EnterText(260, 0, "after"); });
+  const look60 = async () => [await read(200, 0), await read(259, 0), await read(260, 0)];
+  before = JSON.stringify(await look60());
+  await g(page, () => window.__grids[0].SelectRange(200, 0, 259, 0));
   await page.click('[data-testid="sheet-menu-button-insert"]'); await sel(page, "sheet-delete-row").click();
-  check("60 rows deleted in one step, no cap notice", (await undoDepth(page)) === d + 1 && (await sel(page, "sheet-notice").count()) === 0);
+  step = await oneStep(page, look60, before);
+  check("60 rows deleted in one step, no cap notice", step.ok && (await sel(page, "sheet-notice").count()) === 0, step);
   await sel(page, "sheet-undo").click();
 
   // ---- dirty state follows the component's saved revision

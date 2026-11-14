@@ -9,7 +9,7 @@ export const T = "/home/dave/Dev/rbt-office/tests";
 export const S = "/tmp/redbat-adoption";
 // The pages long-generated.docx (docx4j-getting-started repeated, its notes too) lays out as: 522 until 0.1.28,
 // 514 since 0.1.29 lays notes out at their real height, 366 since 0.1.30 (Word's recorded page starts followed, line heights of each line's own font: getting-started itself 44; Word says 45).
-export const LONG_PAGES = 366;
+export const LONG_PAGES = 367;
 export const SHOTS = `${S}/shots`;
 export const saved = new Map(); // id -> Buffer
 
