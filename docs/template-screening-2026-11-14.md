@@ -48,6 +48,9 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | W7 | Checkbox glyphs (Wingdings/MS Gothic ☐) draw as missing-glyph boxes. | w-tf56090272, docx4j-invoice-2013 | open |
 | W8 | Comment anchors draw on the page as visible "[Comment 1]" boxes. | w-dfe-report | open |
 | W9 | On open the caret goes into the first text box, which shows its outline until you click elsewhere. Word puts the caret at the start of the body. | w-tf16392937, w-tf16392017 | open |
+| W10 | Run character spacing (`w:spacing w:val` in rPr, letter-spacing) isn't drawn: Word spreads "N O R T H W I N D", we draw normal spacing. | ~/Dev/office-hype/docs/designed/annual-review.docx (title band kicker) | open |
+| W11 | A table in a compatibilityMode ≤14 document starts at the margin; Word shifts it left by the first cell's left margin, so cell text lines up with body text. | annual-review.docx (the KPI table; python-docx's default template) | open |
+| W12 | Body text measures wider than Word's: on the same 650px column ours wraps a word earlier (Calibri 10.5pt, line spacing 1.15). | annual-review.docx ("…Ridge Park array a / quarter") | open |
 
 ## Editor UI
 
