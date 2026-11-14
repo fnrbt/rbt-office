@@ -15,6 +15,11 @@ Evidence lives outside the repo, because Microsoft's templates aren't ours to co
 - Scripts used: `~/Dev/office-hype/screening/scripts` (ours.mjs renders ours, vmrun.sh
   batches Word/Excel on winvm) and `~/Dev/office-hype/screening/vm`.
 
+Caution: the Word side of the screening side-by-sides was exported with
+`word.ScreenUpdating = False`, which makes Word's PDF export drop paragraph borders
+(`pBdr`) that Word did read. A border that only shows on our side there is not a
+difference. `tools/word-parity/print-word-pdf.vbs` had the same line until 2026-11-14.
+
 Status column: open / fixed (commit) / not a bug (why). Some examples were matched to
 the report after the fact: if one doesn't show the difference, search the side-by-sides.
 

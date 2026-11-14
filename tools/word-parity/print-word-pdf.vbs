@@ -29,7 +29,8 @@ Dim word, doc
 Set word = CreateObject("Word.Application")
 word.Visible = False
 word.DisplayAlerts = 0
-word.ScreenUpdating = False
+' (Not ScreenUpdating = False: with it, ExportAsFixedFormat drops paragraph
+' borders (pBdr) from the PDF, though Word has read them. Checked 2026-11-14.)
 
 On Error Resume Next
 word.Options.Pagination = True
