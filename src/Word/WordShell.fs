@@ -18,7 +18,7 @@ module Shell =
     let private initialText = "FableUI Word shell proof. Select text or use toolbar commands, then open Format > Paragraph style."
 
     let private shellCss = """
-.rb-word-shell { border: 1px solid var(--office-border); }
+.rb-word-shell { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--office-border); }
 .rb-word-shell .rb-word-titlebar { display: flex; align-items: baseline; gap: 14px; padding: 10px 16px 5px; min-width: 0; }
 .rb-word-shell .rb-word-titlebar-app { color: var(--office-accent); font-weight: 700; white-space: nowrap; }
 .rb-word-shell .rb-word-titlebar-document { color: var(--office-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -35,9 +35,13 @@ module Shell =
 .rb-word-shell .rb-word-tool-input { width: 65px; }
 .rb-word-shell .rb-word-toolbar-separator { align-self: stretch; width: 1px; min-height: 24px; margin: 3px 4px; background: var(--office-border); }
 .rb-word-shell .rb-word-ruler { height: 8px; border-bottom: 1px solid var(--office-border); background: var(--office-desk); }
-.rb-word-shell .rb-word-host { min-width: 0; max-width: 100%; overflow-x: auto; background: var(--office-desk); }
-.rb-word-shell .rb-word-workspace { width: 900px; margin: 18px auto; background: white; box-shadow: 0 1px 7px rgb(0 0 0 / 16%); }
-.rb-word-shell .rb-word-canvas { display: block; }
+/* The document area takes what the shell's height leaves (70% of the window when the page does not give the shell a height). */
+.rb-word-shell .rb-word-host { flex: 1 1 70vh; min-height: 240px; min-width: 0; max-width: 100%; display: flex; flex-direction: column; background: var(--office-desk); }
+/* The workspace scrolls; the canvas is pinned to its visible area and the engine paints the pages under the scroll position (setViewport). */
+.rb-word-shell .rb-word-workspace { position: relative; flex: 1 1 auto; min-height: 0; overflow: auto; background: var(--office-desk); }
+.rb-word-shell .rb-word-pin { position: sticky; top: 0; left: 0; width: 0; height: 0; }
+.rb-word-shell .rb-word-canvas { position: absolute; top: 0; left: 0; display: block; max-width: none; }
+.rb-word-shell .rb-word-spacer { pointer-events: none; }
 .rb-word-shell .rb-word-markup-navigator, .rb-word-shell .rb-word-revision-pane { display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 16px; border-top: 1px solid var(--office-border); background: var(--office-surface); }
 .rb-word-shell .rb-word-markup-navigator-section { flex: 1 1 240px; min-width: 0; }
 .rb-word-shell .rb-word-markup-navigator-title { font-weight: 600; }
@@ -56,7 +60,6 @@ module Shell =
 @media (max-width: 600px) {
   .rb-word-shell .rb-word-titlebar { padding-inline: 10px; }
   .rb-word-shell .rb-word-menu-slot:nth-last-child(-n+2) .rb-word-menu { left: auto; right: 0; }
-  .rb-word-shell .rb-word-workspace { margin: 10px 0; }
 }
 """
 

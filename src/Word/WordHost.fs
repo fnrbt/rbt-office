@@ -297,6 +297,85 @@ module Host =
     })($0, $1)""")>]
     let private decodePackageImages (package: obj) (onDecoded: obj -> unit) : unit = jsNative
 
+    /// Drive the editor's viewport from its scrolling workspace: the canvas is
+    /// pinned to the workspace's visible area, a spacer gives the workspace the
+    /// document's size, and every scroll, resize and change tells the engine
+    /// what is in view (setViewport). The engine's own scroll moves (a change
+    /// with ScrollTop) move the workspace; the caret is kept in view after an
+    /// edit or a keyboard move. Returns { notify(change), dispose() }: the host
+    /// passes it the editor's change notices and disposes it with the editor.
+    [<Emit("""(function (canvas, docSize, setViewport, caretRect) {
+        // (The canvas is mounted before its workspace and the spacer are in the
+        // document: they are found on the next frame.)
+        let scroll = null, spacer = null;
+        const margin = 18;
+        let applied = '', queued = false, follow = false, pointerDown = false, disposed = false;
+        const apply = () => {
+            queued = false;
+            if (disposed || !scroll) return;
+            const w = scroll.clientWidth, h = scroll.clientHeight;
+            if (w <= 0 || h <= 0) return;
+            const size = docSize();
+            const cw = Math.max(w, Math.ceil(size.Width + 2 * margin));
+            let ch = Math.ceil(size.Height + 2 * margin);
+            if (size.LayoutComplete === false) ch = Math.max(ch, Math.ceil(scroll.scrollTop + h));
+            spacer.style.width = cw + 'px';
+            spacer.style.height = ch + 'px';
+            const vp = { scale: 1, devicePixelRatio: window.devicePixelRatio || 1, scrollTop: scroll.scrollTop, scrollLeft: scroll.scrollLeft,
+                         width: w, height: h, originX: (cw - size.Width) / 2, originY: margin };
+            const key = JSON.stringify(vp);
+            if (key !== applied) { applied = key; setViewport(vp); }
+            if (follow && !pointerDown) {
+                follow = false;
+                const caret = caretRect();
+                if (caret && typeof caret.ViewportY === 'number') {
+                    const top = caret.ViewportY, bottom = caret.ViewportY + (caret.ViewportHeight || 0);
+                    if (top < 0) scroll.scrollTop += top - 24;
+                    else if (bottom > h) scroll.scrollTop += bottom - h + 24;
+                }
+            }
+            follow = false;
+        };
+        const queue = () => { if (!queued) { queued = true; requestAnimationFrame(apply); } };
+        const onScroll = () => apply();
+        const down = () => { pointerDown = true; };
+        const up = () => { pointerDown = false; };
+        const observer = new ResizeObserver(queue);
+        const attach = () => {
+            if (disposed) return;
+            scroll = canvas.closest('.rb-word-workspace');
+            spacer = scroll && scroll.querySelector('.rb-word-spacer');
+            if (!scroll || !spacer) { requestAnimationFrame(attach); return; }
+            scroll.addEventListener('scroll', onScroll, { passive: true });
+            scroll.addEventListener('pointerdown', down);
+            window.addEventListener('pointerup', up);
+            observer.observe(scroll);
+            apply();
+        };
+        const notify = (change) => {
+            if (!scroll) return;
+            if (change && typeof change.ScrollTop === 'number') {
+                const size = docSize();
+                const need = Math.ceil(Math.max(size.Height + 2 * margin, change.ScrollTop + scroll.clientHeight));
+                if (need > spacer.offsetHeight) spacer.style.height = need + 'px';
+                scroll.scrollTop = change.ScrollTop;
+            }
+            if (change && (change.DocumentChanged || change.SelectionChanged)) follow = true;
+            queue();
+        };
+        requestAnimationFrame(attach);
+        const dispose = function () {
+            disposed = true;
+            observer.disconnect();
+            if (!scroll) return;
+            scroll.removeEventListener('scroll', onScroll);
+            scroll.removeEventListener('pointerdown', down);
+            window.removeEventListener('pointerup', up);
+        };
+        return { notify, dispose };
+    })($0, $1, $2, $3)""")>]
+    let private attachViewport (canvas: HTMLCanvasElement) (docSize: unit -> obj) (setViewport: obj -> unit) (caretRect: unit -> obj) : obj = jsNative
+
     let private replacePackage host editor package fileName =
         WordApi.importFromDocxPackage editor package
         decodePackageImages package (fun cache ->
@@ -1523,7 +1602,8 @@ module Host =
             @ (Ui.chromeCssVariables |> List.map (fun (name, value) -> style name value))
 
         div hostAttrs [
-            div [ cls "word-workspace"; style "position" "relative" ] [
+            div [ cls "word-workspace"; attr "data-testid" (host.TestPrefix + "-workspace") ] [
+              div [ cls "word-pin" ] [
                 canvas [ cls "word-canvas"
                          attr "data-testid" (host.TestPrefix + "-canvas")
                          attr "width" "900"
@@ -1544,11 +1624,19 @@ module Host =
                              let beforeUnload event =
                                  if WordApi.isModified editor then warnBeforeUnload event
                              addBeforeUnload beforeUnload
+                             let viewport =
+                                 attachViewport canvas
+                                     (fun () -> WordApi.getDocumentSize editor)
+                                     (fun viewport -> WordApi.setViewport editor viewport |> ignore)
+                                     (fun () -> WordApi.getCaretRect editor)
+                             let unsubscribeViewport = WordApi.onChange editor (fun change -> viewport?notify(change) |> ignore)
                              host.Status.Value <- "Editor ready"
                              if shapedTextEnabled () then
                                  host.Status.Value <- "Loading shaped text engine"
                                  installShapedText editor (fun status -> host.Status.Value <- status)
                              fun () ->
+                                 unsubscribeViewport ()
+                                 viewport?dispose() |> ignore
                                  host.OpenGeneration <- host.OpenGeneration + 1
                                  removeBeforeUnload beforeUnload
                                  unsubscribeSelection ()
@@ -1556,6 +1644,8 @@ module Host =
                                  host.Editor <- None
                                  host.Canvas <- None) ] []
                 commentLayer host
+              ]
+              div [ cls "word-spacer" ] []
             ]
 
             showIf (fun () -> host.RevisionInfos.Value.Length > 0) (revisionPane host)
