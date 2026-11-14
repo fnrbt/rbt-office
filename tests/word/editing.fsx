@@ -303,5 +303,25 @@ let deletedBox = checkboxDoc |> caret "x" 1 |> Doc.deleteBackward
 check "checkbox: Backspace after it deletes it, one character" (runsOf deletedBox) [ " Yes", None, Some 200 ]
 
 printfn ""
+// ---- Backspace and Delete do not join paragraphs across a block content control's edge (as Word) ----
+// (A date control round a single paragraph, docx4j-invoice-2013: joined to the empty paragraph above, the
+// control was gone - its binding and date format with it.)
+let inControl group (para: Doc.ParagraphBlock) = { para with Metadata = { para.Metadata with ContentControlGroup = Some group; ContentControlTag = Some "date" } }
+let controlled =
+    docOf [ Doc.Paragraph (paragraph "above" "")
+            Doc.Paragraph (inControl "g1" (paragraph "date" "29 January 2015"))
+            Doc.Paragraph (inControl "g1" (paragraph "date2" "second line"))
+            Doc.Paragraph (paragraph "below" "after") ]
+check "Backspace at the start of a control: nothing joined" (controlled |> caret "date" 0 |> Doc.deleteBackward |> texts) [ ""; "29 January 2015"; "second line"; "after" ]
+check "Backspace inside a control: joined within it" (controlled |> caret "date2" 0 |> Doc.deleteBackward |> texts) [ ""; "29 January 2015second line"; "after" ]
+check "Delete before a control: nothing joined" (controlled |> caret "above" 0 |> Doc.deleteForward |> texts) [ ""; "29 January 2015"; "second line"; "after" ]
+check "Delete at the end of a control: nothing joined" (controlled |> caret "date2" 11 |> Doc.deleteForward |> texts) [ ""; "29 January 2015"; "second line"; "after" ]
+check "Backspace after a control: nothing joined" (controlled |> caret "below" 0 |> Doc.deleteBackward |> texts) [ ""; "29 January 2015"; "second line"; "after" ]
+let inCellControl group (para: Doc.ParagraphBlock) = { para with Metadata = { para.Metadata with EnclosingCellControls = [ { Group = group; Id = None; Tag = Some "date"; Alias = None; Xml = None } ] } }
+let cellPara id text : Doc.ParagraphBlock = paragraph id text
+check "Backspace at the start of a control in a cell: nothing joined"
+    (docOf [ Doc.Paragraph (cellPara "c0" ""); Doc.Paragraph (inCellControl "g2" (cellPara "c1" "29 January 2015")) ] |> caret "c1" 0 |> Doc.deleteBackward |> texts) [ ""; "29 January 2015" ]
+check "Backspace with no control on either side: joined" (docOf [ Doc.Paragraph (paragraph "x" "one"); Doc.Paragraph (paragraph "y" "two") ] |> caret "y" 0 |> Doc.deleteBackward |> texts) [ "onetwo" ]
+
 printfn "Word editing tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

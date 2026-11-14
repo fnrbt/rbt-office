@@ -2302,8 +2302,21 @@ let splitBlock doc =
                 }
                 { doc with Blocks = newBlocks; Selection = Some newSel }
 
-/// Merge block with previous block (for Backspace at start)
-let mergeWithPrevious doc blockId =
+/// Whether two paragraphs are in the same block content controls. Backspace and
+/// Delete do not join paragraphs across a control's edge, as in Word: the one
+/// joined would leave its control, and a control left with nothing in it is
+/// gone with its binding, its date format, its placeholder.
+let sameBlockControls (a: ParagraphBlock) (b: ParagraphBlock) =
+    // (A control inside a table cell is one of the paragraph's EnclosingCellControls.)
+    let groups (p: ParagraphBlock) =
+        p.Metadata.ContentControlGroup,
+        p.Metadata.ContentControlAncestors |> List.map (fun layer -> layer.Group),
+        p.Metadata.EnclosingCellControls |> List.map (fun layer -> layer.Group)
+    groups a = groups b
+
+/// Merge block with previous block (for Backspace at start), when `allowed`
+/// says the two may be joined (the previous one, this one).
+let mergeWithPreviousIf (allowed: ParagraphBlock -> ParagraphBlock -> bool) doc blockId =
     match findBlockIndex doc blockId with
     | None ->
         // A paragraph of a table cell or a text box joins the paragraph
@@ -2315,7 +2328,7 @@ let mergeWithPrevious doc blockId =
             let merged =
                 editContainerOf doc blockId (fun content anchors ->
                     let index = content |> List.findIndex (fun p -> p.Id = blockId)
-                    if index = 0 || List.contains index anchors then None
+                    if index = 0 || List.contains index anchors || not (allowed content.[index - 1] currentPara) then None
                     else
                         let prevPara = content.[index - 1]
                         caret <- Some { BlockId = prevPara.Id; Offset = TextBuffer.length prevPara.Buffer }
@@ -2335,6 +2348,7 @@ let mergeWithPrevious doc blockId =
             match tryGetParagraph currentBlock, tryGetParagraph prevBlock with
             | None, _
             | _, None -> doc
+            | Some currentPara, Some prevPara when not (allowed prevPara currentPara) -> doc
             | Some currentPara, Some prevPara ->
 
             // Merge buffers: previous + current, keeping both sides' runs
@@ -2366,8 +2380,11 @@ let mergeWithPrevious doc blockId =
             }
             { doc with Blocks = newBlocks; Selection = Some newSel }
 
-/// Merge block with next block (for Delete at end)
-let mergeWithNext doc blockId =
+let mergeWithPrevious doc blockId = mergeWithPreviousIf (fun _ _ -> true) doc blockId
+
+/// Merge block with next block (for Delete at end), when `allowed` says the two
+/// may be joined (this one, the next one).
+let mergeWithNextIf (allowed: ParagraphBlock -> ParagraphBlock -> bool) doc blockId =
     match findBlockIndex doc blockId with
     | None ->
         // (As mergeWithPrevious: within the cell or the text box.)
@@ -2376,7 +2393,7 @@ let mergeWithNext doc blockId =
         | Some currentPara ->
             editContainerOf doc blockId (fun content anchors ->
                 let index = content |> List.findIndex (fun p -> p.Id = blockId)
-                if index >= content.Length - 1 || List.contains (index + 1) anchors then None
+                if index >= content.Length - 1 || List.contains (index + 1) anchors || not (allowed currentPara content.[index + 1]) then None
                 else
                     let nextPara = content.[index + 1]
                     let mergedPara = { currentPara with Buffer = TextBuffer.append currentPara.Buffer nextPara.Buffer }
@@ -2392,6 +2409,7 @@ let mergeWithNext doc blockId =
             match tryGetParagraph currentBlock, tryGetParagraph nextBlock with
             | None, _
             | _, None -> doc
+            | Some currentPara, Some nextPara when not (allowed currentPara nextPara) -> doc
             | Some currentPara, Some nextPara ->
 
             // Merge buffers: current + next, keeping both sides' runs
@@ -2417,6 +2435,8 @@ let mergeWithNext doc blockId =
 
             // Keep cursor at current position
             { doc with Blocks = newBlocks }
+
+let mergeWithNext doc blockId = mergeWithNextIf (fun _ _ -> true) doc blockId
 
 /// Delete selected text across blocks
 let deleteSelection doc =
@@ -2707,7 +2727,7 @@ let deleteForward doc =
             let maxOffset = TextBuffer.length para.Buffer
 
             if sel.Focus.Offset >= maxOffset then
-                mergeWithNext doc sel.Focus.BlockId
+                mergeWithNextIf sameBlockControls doc sel.Focus.BlockId
             else
                 let newBuffer = TextBuffer.delete sel.Focus.Offset (forwardStep para.Buffer sel.Focus.Offset) para.Buffer
                 let newPara = { para with Buffer = newBuffer }
@@ -3013,7 +3033,7 @@ let deleteBackward doc =
             replaceParagraph doc para.Id { para with Metadata = { para.Metadata with ListStyle = NoList; ListLevel = 0 } }
         | _ ->
             // At start of block, merge with previous
-            mergeWithPrevious doc sel.Focus.BlockId
+            mergeWithPreviousIf sameBlockControls doc sel.Focus.BlockId
     | Some _ when (markSelectedAtCaret true doc).IsSome -> deleteSelection (markSelectedAtCaret true doc).Value
     | Some sel ->
         match findParagraph doc sel.Focus.BlockId with
@@ -5082,7 +5102,7 @@ let trackDeleteForward author date doc =
             | None ->
                 // Nothing left to delete in this paragraph: Delete at its end joins it with the next one.
                 match findBlockIndex doc para.Id |> Option.bind (fun index -> topLevelParagraphAt doc (index + 1)) with
-                | Some next when sel.Focus.Offset >= TextBuffer.length para.Buffer -> trackDeleteMark author date para next { BlockId = next.Id; Offset = 0 } doc
+                | Some next when sel.Focus.Offset >= TextBuffer.length para.Buffer && sameBlockControls para next -> trackDeleteMark author date para next { BlockId = next.Id; Offset = 0 } doc
                 | _ -> doc
             | Some offset ->
                 let startPos = { sel.Focus with Offset = offset }
@@ -5102,7 +5122,7 @@ let trackDeleteBackward author date doc =
             | None ->
                 // Backspace at the start of a paragraph joins it with the previous one.
                 match findBlockIndex doc para.Id |> Option.bind (fun index -> topLevelParagraphAt doc (index - 1)) with
-                | Some previous when sel.Focus.Offset = 0 -> trackDeleteMark author date previous para { BlockId = previous.Id; Offset = TextBuffer.length previous.Buffer } doc
+                | Some previous when sel.Focus.Offset = 0 && sameBlockControls previous para -> trackDeleteMark author date previous para { BlockId = previous.Id; Offset = TextBuffer.length previous.Buffer } doc
                 | _ -> doc
             | Some offset ->
                 let startPos = { sel.Focus with Offset = offset + 1 - backwardStep para.Buffer (offset + 1) }
