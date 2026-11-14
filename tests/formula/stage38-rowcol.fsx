@@ -85,7 +85,7 @@ eq "fit: the widest cell of a column, what it displays, plus the padding" widths
 eq "fit: in the cell's font (22 px bold)" widths.[1] (ceil (4.0 * 10.0 * 2.0 * 1.1) + 10.0)
 eq "fit: with its indent" widths.[2] (100.0 + 10.0 + 2.0 * Rbt.Spreadsheet.CellText.mdwPx 11.0 * 1.4 |> ceil)
 eq "fit: wrapped text counts with its longest line" widths.[3] 100.0
-eq "fit: a cell merged across columns does not count; turned text is a line high" (Map.containsKey 4 widths, widths.[5]) (false, 24.0)
+eq "fit: a cell merged across columns does not count; turned text is a line high" (Map.containsKey 4 widths, widths.[5]) (false, 30.0)
 eq "fit: a column without text is left alone" (Map.containsKey 6 widths, Map.containsKey 7 widths) (false, false)
 eq "fit: only the columns asked for" (Ops.autoFitColumnWidths measure content (1, 2) |> List.map fst) [ 1; 2 ]
 eq "fit: hidden rows are left out" ((Ops.autoFitColumnWidths measure (content |> Ops.hideAxis true 1 2) (0, 0)) |> List.map snd) [ 50.0 ]
@@ -108,13 +108,14 @@ let tall =
     |> addMergedCell 4 0 4 1 |> addMergedCell 6 0 7 0
     |> Ops.setAxisSize true 5 5 60.0
 let heights = Ops.autoFitRowHeights measure tall (0, 8) |> Map.ofList
+// (A line is as tall as Excel auto-fits a row to it: 20 px for 11 pt, 39 for 22; n lines n of them.)
 eq "fit rows: one line of the default font" heights.[0] 20.0
-eq "fit rows: wrapped text takes the lines it needs at the column's width" heights.[1] (3.0 * 14.0 + 6.0)      // 90 px for the text: "abcd efgh", "ijkl mnop", "qrst"
-eq "fit rows: a larger font" heights.[2] (round (22.0 * 1.3) + 6.0)
-eq "fit rows: line breaks count without wrapping" heights.[3] (3.0 * 14.0 + 6.0)
-eq "fit rows: text wrapped in merged columns has their width" heights.[4] (2.0 * 14.0 + 6.0)                    // 190 px
+eq "fit rows: wrapped text takes the lines it needs at the column's width" heights.[1] (3.0 * 20.0)      // 90 px for the text: "abcd efgh", "ijkl mnop", "qrst"
+eq "fit rows: a larger font" heights.[2] (ceil (22.0 * 96.0 / 72.0 * 1.3))
+eq "fit rows: line breaks count without wrapping" heights.[3] (3.0 * 20.0)
+eq "fit rows: text wrapped in merged columns has their width" heights.[4] (2.0 * 20.0)                    // 190 px
 eq "fit rows: a row without text gets the default; a cell merged across rows does not count" (heights.[5], heights.[6], heights.[8]) (20.0, 20.0, 20.0)
-eq "fit rows: a narrower column, more lines" ((Ops.autoFitRowHeights measure (tall |> Ops.setAxisSize false 0 0 60.0) (1, 1))) [ 1, 5.0 * 14.0 + 6.0 ]
+eq "fit rows: a narrower column, more lines" ((Ops.autoFitRowHeights measure (tall |> Ops.setAxisSize false 0 0 60.0) (1, 1))) [ 1, 5.0 * 20.0 ]
 eq "fit rows: hidden rows stay hidden" (Ops.autoFitRowHeights measure (tall |> Ops.hideAxis true 1 2) (0, 3) |> List.map fst) [ 0; 3 ]
 eq "fit rows: a whole-sheet span looks at the rows that have something" (Ops.autoFitRowHeights measure { tall with RowCount = 1000000 } (0, 999999) |> List.map fst) [ 0; 1; 2; 3; 4; 5 ]
 

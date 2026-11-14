@@ -152,16 +152,53 @@ let private canvasLine (ctx: obj) (x1: float) (y1: float) (x2: float) (y2: float
 [<Emit("(function(text,fontSize,fontName,bold,italic){const c=globalThis.__rbSpreadsheetMeasureCanvas||(globalThis.__rbSpreadsheetMeasureCanvas=document.createElement('canvas'));const ctx=c.getContext('2d');const family=fontName||'Arial';ctx.font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family+', sans-serif';return ctx.measureText(text).width;})($0,$1,$2,$3,$4)")>]
 let private browserTextWidth (text: string) (fontSize: float) (fontName: string) (bold: bool) (italic: bool): float = jsNative
 
-// The width of a cell's text in the grid's own font (Arial at the cell's
-// size). Widths are remembered: the cells of a sheet repeat their texts, and
-// setting a canvas font costs more than measuring with it.
-[<Emit("(function(text,fontSize,bold,italic){const g=globalThis.__rbSpreadsheetCellMeasure||(globalThis.__rbSpreadsheetCellMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px Arial, sans-serif';const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3)")>]
-let private cellTextWidth (text: string) (fontSize: float) (bold: bool) (italic: bool): float = jsNative
+/// The CSS font family a cell's text is drawn in: its own family, else the grid's (Arial).
+/// (A name is all a family can be here: nothing that ends the declaration.)
+let private cellFontFamily (fontName: string option) : string =
+    match fontName with
+    | Some family when family <> "" -> "'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif"
+    | _ -> "Arial, sans-serif"
 
-/// The grid's measure of a cell's text for its look (`Paint.cellLook`): the width it is drawn at
-/// (the grid's font, a pixel for each point of the cell's).
+/// Whether the browser has a font family (its text is not drawn in the next family of the list).
+/// Asked once per family.
+[<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
+let private fontFamilyAvailable (family: string) : bool = jsNative
+
+/// Calibri's x-height in ems (Arial's is 0.5186). Calibri, Excel's default font, is drawn
+/// where it is not at hand in the next family (Arial) as tall as Calibri's letters are (CSS
+/// `font-size-adjust`): 90 % of the size, which gives Calibri's widths within a few percent
+/// too, so a number that fits its cell in Excel fits it here.
+[<Literal>]
+let private calibriAspect = 0.4644
+
+let private isCalibri (fontName: string option) =
+    match fontName with
+    | Some family -> family.Trim().ToLowerInvariant() = "calibri"
+    | None -> false
+
+/// The size a cell's text is drawn at, for one of its size in pixels: smaller for Calibri where
+/// the browser has no Calibri (see `calibriAspect`).
+let private drawnFontScale (fontName: string option) =
+    if isCalibri fontName && not (fontFamilyAvailable "Calibri") then calibriAspect / 0.5186 else 1.0
+
+/// A CSS pixel size, to a hundredth of a pixel ("14.67px").
+let private cssPx (size: float) : string = string (System.Math.Round (size * 100.0) / 100.0) + "px"
+
+// The width of a cell's text as the grid draws it: in the cell's font family
+// (`cellFontFamily`), at its size in pixels. Widths are remembered: the cells
+// of a sheet repeat their texts, and setting a canvas font costs more than
+// measuring with it.
+[<Emit("(function(text,fontSize,family,bold,italic){const g=globalThis.__rbSpreadsheetCellMeasure||(globalThis.__rbSpreadsheetCellMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family;const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3,$4)")>]
+let private cellTextWidthPx (text: string) (fontPx: float) (family: string) (bold: bool) (italic: bool): float = jsNative
+
+/// The width in pixels of a cell's text of a font size in points (11 pt is 14.67 px, as
+/// Excel draws it at 100 %) and family, as the grid draws it.
+let private cellTextWidth (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
+    cellTextWidthPx text (SheetOps.pointsToPx fontPt * drawnFontScale fontName) (cellFontFamily fontName) bold italic
+
+/// The grid's measure of a cell's text for its look (`Paint.cellLook`): the width it is drawn at.
 let private gridTextMeasurer : SpreadsheetLayout.TextMeasurer option =
-    Some (fun (text: string) (fontSize: float) (_: string option) (bold: bool) (italic: bool) -> cellTextWidth text fontSize bold italic)
+    Some (fun (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) -> cellTextWidth text fontPt fontName bold italic)
 
 // ---- PDF in the browser ----------------------------------------------------------------------
 /// The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the bundle dist/spreadsheet-pdf, which shares this
@@ -1201,8 +1238,8 @@ type Spreadsheet(container: Element) as this =
         Height = containerHeight
         HeaderHeight = headerHeight
         RowHeaderWidth = rowHeaderWidth
-        Measurer = Some (fun text fontSize fontName bold italic ->
-            browserTextWidth text fontSize (fontName |> Option.defaultValue "Arial") bold italic)
+        Measurer = Some (fun text fontPt fontName bold italic ->
+            browserTextWidth text (SheetOps.pointsToPx fontPt * drawnFontScale fontName) (fontName |> Option.defaultValue "Arial") bold italic)
     }
 
     let restoreCellOptions (changes: seq<CellAddress * CellData option>) (m: SpreadsheetModel) =
@@ -1456,8 +1493,10 @@ type Spreadsheet(container: Element) as this =
                 // -0.266, lineHeight 1.218). Browser canvas doesn't expose
                 // font metrics portably, so we accept a small drift for
                 // non-Calibri fonts — Excel ships Calibri as the default.
-                let ascent = text.FontSize * 0.952
-                let lineHeight = text.FontSize * 1.218
+                // (The size is in points: 11 pt is drawn 14.67 px tall, as Excel does at 100 %.)
+                let fontPx = SheetOps.pointsToPx text.FontSize * drawnFontScale text.FontName
+                let ascent = fontPx * 0.952
+                let lineHeight = fontPx * 1.218
                 let blockHeight = lineHeight * float text.LineCount
                 let blockTopY =
                     match text.VerticalAlign with
@@ -1476,8 +1515,8 @@ type Spreadsheet(container: Element) as this =
                     let theta =
                         if text.Rotation <= 90 then -(float text.Rotation) * System.Math.PI / 180.0
                         else float (text.Rotation - 90) * System.Math.PI / 180.0
-                    let totalWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
-                    let descent = text.FontSize * 0.266
+                    let totalWidth = browserTextWidth text.Text fontPx fontName text.Bold text.Italic
+                    let descent = fontPx * 0.266
                     let ax0 = text.Rect.X + 4.0
                     let ay0 = text.Rect.Y + text.Rect.Height - 2.0
                     let cosS, sinS = cos theta, sin theta
@@ -1495,11 +1534,11 @@ type Spreadsheet(container: Element) as this =
                         if rightAlign then (text.Rect.X + text.Rect.Width - 2.0) - maxX
                         else (text.Rect.X + 2.0) - minX
                     let shiftY = (text.Rect.Y + text.Rect.Height - 2.0) - maxY
-                    canvasTextRotated ctx text.Text text.FontSize (ax0 + shiftX) (ay0 + shiftY) theta text.Color text.Bold text.Italic fontName
+                    canvasTextRotated ctx text.Text fontPx (ax0 + shiftX) (ay0 + shiftY) theta text.Color text.Bold text.Italic fontName
                 else
-                canvasText ctx text.Text x baseline text.FontSize text.Color text.Bold text.Italic align fontName
+                canvasText ctx text.Text x baseline fontPx text.Color text.Bold text.Italic align fontName
                 if not isRotated && (text.Underline || text.UnderlineDouble || text.Strikethrough) then
-                    let textWidth = browserTextWidth text.Text text.FontSize fontName text.Bold text.Italic
+                    let textWidth = browserTextWidth text.Text fontPx fontName text.Bold text.Italic
                     let startX =
                         match text.Align with
                         | SpreadsheetLayout.AlignCenter -> x - textWidth / 2.0
@@ -1507,12 +1546,12 @@ type Spreadsheet(container: Element) as this =
                         | SpreadsheetLayout.AlignLeft -> x
                     let endX = startX + textWidth
                     if text.Underline || text.UnderlineDouble then
-                        let y = baseline + max 1.0 (text.FontSize * 0.12)
+                        let y = baseline + max 1.0 (fontPx * 0.12)
                         canvasLine ctx startX y endX y text.Color 1.0
                         if text.UnderlineDouble then
                             canvasLine ctx startX (y + 2.0) endX (y + 2.0) text.Color 1.0
                     if text.Strikethrough then
-                        let y = baseline - text.FontSize * 0.30
+                        let y = baseline - fontPx * 0.30
                         canvasLine ctx startX y endX y text.Color 1.0
             canvasRestore ctx
         // Selection overlay: drawn after all cell content so the mint range
@@ -2417,14 +2456,8 @@ type Spreadsheet(container: Element) as this =
             let key : SheetOps.SortKey = { Column = anchor.Col; Descending = not ascending; By = SheetOps.SortByValue; Color = "" }
             sortBlock memberName range [ key ] options description |> ignore
         | None -> ()
-    /// Text widths for auto-fit: in the cell's font, and never less than the
-    /// grid's own measure of the text (which decides whether a number fits).
-    let fitMeasure : SheetOps.TextMeasure =
-        fun text fontSize fontName bold italic ->
-            match fontName with
-            | Some family when family <> "" ->
-                max (browserTextWidth text fontSize ("'" + family.Replace("'", "") + "', Arial") bold italic) (cellTextWidth text fontSize bold italic)
-            | _ -> cellTextWidth text fontSize bold italic
+    /// Text widths for auto-fit: as the grid draws the text (in the cell's font, `cellTextWidth`).
+    let fitMeasure : SheetOps.TextMeasure = cellTextWidth
     /// The rows / columns an argument names: a 0-based number (with `count`,
     /// that many from it on) or an A1 range ("2:5", "B:D", "B2:D9" - its
     /// rows / columns), clipped to the sheet.
@@ -3213,12 +3246,14 @@ type Spreadsheet(container: Element) as this =
                 + (if look.UnderlineDouble then "double" else "")
             add "text-decoration" (lines.TrimEnd())
         match look.FontName with
-        // (A name is all a family can be here: nothing that ends the declaration.)
-        | Some family when family <> "" -> add "font-family" ("'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif")
+        | Some family when family <> "" ->
+            add "font-family" (cellFontFamily look.FontName)
+            if isCalibri look.FontName then add "font-size-adjust" (string calibriAspect)
         | _ -> ()
-        // (The grid's font is a pixel for each point of the cell's: 11 px by default.)
-        let fontPx = look.FontSize
-        if fontPx <> 11.0 then add "font-size" (string fontPx + "px")
+        // The cell's size in points drawn as Excel draws it at 100 %: 96 px to the
+        // inch, so 11 pt (the style sheet's default) is 14.67 px.
+        let fontPx = SheetOps.pointsToPx look.FontSize
+        if look.FontSize <> 11.0 then add "font-size" (cssPx fontPx)
         // Across the cell (the style sheet's default is the left).
         match look.Horizontal with
         | "distributed" | "justify" -> add "text-align" "justify"
@@ -3227,15 +3262,15 @@ type Spreadsheet(container: Element) as this =
             | SpreadsheetLayout.AlignRight -> add "text-align" "right"
             | SpreadsheetLayout.AlignCenter -> add "text-align" "center"
             | SpreadsheetLayout.AlignLeft -> ()
-        // Where the text sits in the height of the cell. One line of text
-        // is centred by the cell's line height (the node's default look);
-        // top and bottom give the line its own height and, for bottom,
-        // push it down. (Bottom, Excel's default, is drawn so only where
-        // the row is taller than a line by more than a few pixels or the
-        // format says so: in a row of about a line's height the centred
-        // line is where the bottom one would be, a pixel or so apart.)
-        // Wrapped text is a column of lines, placed as a block.
-        let lineHeight = System.Math.Round (fontPx * 1.3)
+        // Where the text sits in the height of the cell. A line of text is
+        // as tall as the line of an auto-fitted row of its size (20 px for
+        // 11 pt: `SheetOps.lineHeightPxOfPoints`). Bottom, Excel's default,
+        // puts the last line at the bottom of the cell; top puts the first
+        // a padding below the top; middle (and a row too low for a line)
+        // centres the text by the cell's line height (the node's default
+        // look). Wrapped text is a column of lines, placed as a block, from
+        // edge to edge of the cell (a row auto-fitted to n lines is n lines tall).
+        let lineHeight = SheetOps.lineHeightPxOfPoints look.FontSize
         if look.Wrap then
             // (Its own line breaks are kept.)
             add "white-space" "pre-line"
@@ -3248,12 +3283,17 @@ type Spreadsheet(container: Element) as this =
                  | SpreadsheetPaint.VAlignTop -> "flex-start"
                  | SpreadsheetPaint.VAlignMiddle -> "center"
                  | SpreadsheetPaint.VAlignBottom -> "flex-end")
+            if look.VerticalAlign <> SpreadsheetPaint.VAlignTop then add "padding-top" "0px"
+            add "padding-bottom" "0px"
         else
             match look.VerticalAlign with
             | SpreadsheetPaint.VAlignTop -> add "line-height" (px lineHeight)
-            | SpreadsheetPaint.VAlignBottom when look.Format.VerticalAlign.IsSome || h - 3.0 - lineHeight > 6.0 ->
+            | SpreadsheetPaint.VAlignBottom when h >= lineHeight ->
                 add "line-height" (px lineHeight)
-                add "padding-top" (px (max 3.0 (h - 3.0 - lineHeight)))
+                // (A pixel lower than the line's own box: Excel's baseline is 4 px above the
+                // bottom of a 20 px row, 5 px when the line ends at the edge.)
+                add "padding-top" (px (h - lineHeight + 1.0))
+                add "padding-bottom" "0px"
             | _ -> add "line-height" (px (h - 4.0))
         // An indent pads the edge the text is aligned to.
         if look.IndentRight > 0.0 then add "padding-right" (px (5.0 + look.IndentRight))
@@ -3437,7 +3477,7 @@ type Spreadsheet(container: Element) as this =
         // The text: number-formatted (#### for a number that does not fit), none where a data bar
         // or an icon set hides the value.
         let displayText = look.Text
-        let measureText (text: string) = cellTextWidth text fontPx look.Bold look.Italic
+        let measureText (text: string) = cellTextWidth text look.FontSize look.FontName look.Bold look.Italic
         // Shrink to fit: one line of text wider than its cell is drawn smaller
         // (never larger), down to what fits between the cell's paddings.
         if look.Shrink && displayText <> "" then
@@ -3448,6 +3488,22 @@ type Spreadsheet(container: Element) as this =
         // Turned text: a line through the middle of the cell at the format's
         // angle (stacked text: upright letters one under the other).
         let rotation = if displayText <> "" then look.Rotation else 0
+        // A number is never cut off or run over its neighbours: its text was chosen to fit the
+        // cell by Excel's digit width (`CellText`), and Excel draws it as little as 2 px from the
+        // cell's edges. Where it is wider than the room between the cell's paddings, they give
+        // way; where the grid's font draws it wider than that (a family that is not at hand
+        // drawn in another), it is drawn smaller.
+        let isNumber = match unwrapFormulaValue look.Value with CellValue.Number _ -> true | _ -> false
+        if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone then
+            let indent = look.IndentLeft + look.IndentRight
+            let width = measureText displayText
+            if width > w - 10.0 - indent then
+                add "text-overflow" "clip"
+                if look.IndentRight = 0.0 then add "padding-right" "2px"
+                if look.IndentLeft = 0.0 then add "padding-left" "2px"
+                let room = w - 4.0 - indent
+                if room > 0.0 && width > room then
+                    add "font-size" (cssPx (System.Math.Floor (max 1.0 (fontPx * room / width * 0.98) * 100.0) / 100.0))
         // Centred across the selection: the text is let out of its box over the run of cells it is
         // centred across (`Paint.cellLook`) and centred there, in a box of its own that spans them.
         let across =
@@ -3480,6 +3536,8 @@ type Spreadsheet(container: Element) as this =
                     // ones only while they are there: scrolled away, it is cut at the frozen edge.
                     let last = if col < model.FrozenCols && scrollLeft > 0.5 then min last (model.FrozenCols - 1) else last
                     let first = if col >= model.FrozenCols then max first model.FrozenCols else first
+                    // (Text that only reaches into its cell's padding is drawn whole, not cut short.)
+                    if first = col && last = col then add "text-overflow" "clip"
                     if first <> col || last <> col then
                         let own = SpreadsheetLayout.columnLeft model col
                         let extraLeft = own - SpreadsheetLayout.columnLeft model first
@@ -4618,9 +4676,13 @@ type Spreadsheet(container: Element) as this =
             let y = paneY pane (headerHeight + rowPrefix.[addr.Row])
             let w = colPrefix.[editRight + 1] - colPrefix.[addr.Col]
             let h = rowPrefix.[editBottom + 1] - rowPrefix.[addr.Row]
+            // (Typed in the cell's font, at the size its text is drawn.)
+            let editFormat = match getCell addr model with Some data -> data.Format | None -> defaultFormat
             setCssText layer.EditInput
                 ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px (max 40.0 w) + ";height:" + px (max 18.0 h)
-                 + ";border:2px solid #217346;outline:none;padding:0 3px;margin:0;font-family:Arial, sans-serif;font-size:11px;background:white;box-sizing:border-box;z-index:11")
+                 + ";border:2px solid #217346;outline:none;padding:0 3px;margin:0;font-family:" + cellFontFamily editFormat.FontName
+                 + (if isCalibri editFormat.FontName then ";font-size-adjust:" + string calibriAspect else "")
+                 + ";font-size:" + cssPx (SheetOps.pointsToPx (float (defaultArg editFormat.FontSize 11))) + ";background:white;box-sizing:border-box;z-index:11")
             if getValue layer.EditInput <> model.EditBuffer && not (isActiveElement layer.EditInput) then setValue layer.EditInput model.EditBuffer
         | _ -> hide layer.EditInput
         // The fill handle, at the bottom-right corner of the selection.
@@ -5327,7 +5389,7 @@ type Spreadsheet(container: Element) as this =
             // (A cell has no border of its own: its grid lines - the edge above it and the edge
             // to its left - are an inset shadow, and borders are child elements; see drawCell.)
             (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
-             + "font-family:Arial, sans-serif;font-size:11px;cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
+             + "font-family:Arial, sans-serif;font-size:" + cssPx (SheetOps.pointsToPx 11.0) + ";cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
              + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:30px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
              + "font-weight:normal;font-size:11px;font-family:Arial, sans-serif;color:#444;user-select:none}"

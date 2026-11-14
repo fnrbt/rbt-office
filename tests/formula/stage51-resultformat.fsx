@@ -90,5 +90,11 @@ eq "IRR, RATE" (of' "=IRR(E1:E5)", of' "=RATE(60,-100,5000)") (Some "0%", Some "
 // ---- what does not parse ----------------------------------------------------------
 eq "a formula that does not parse" (of' "=SUM(") None
 
+// What a number shows in a narrow cell, as Excel 2019 shows it (Calibri 11).
+let shown (width: float) (code: string option) (n: float) =
+    Rbt.Spreadsheet.CellText.cellDisplayText None width { defaultFormat with NumberFormat = code } (CellValue.Number n)
+eq "General in a column 5.71 characters wide (39.97 px): 4E+05" (shown (5.7109375 * 7.0) None 400000.0) "4E+05"
+eq "General: 1E+08, 3.142, ####" [ shown 40.0 None 123456789.0; shown 40.0 None 3.14159265358979; shown 33.0 None 400000.0 ] [ "1E+08"; "3.142"; "####" ]
+
 printfn "Stage 51 result-format tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

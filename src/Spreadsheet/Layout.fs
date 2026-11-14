@@ -11,8 +11,8 @@ type Rect = {
     Height: float
 }
 
-/// Measure a piece of text in pixels at a given font size/face. Optional;
-/// when None, the cell painter approximates width as charCount × mdwPx.
+/// Measure a piece of text in pixels at a given font size (points: 11 pt is
+/// 14.67 px) and face. Optional; when None, the cell painter approximates width as charCount × mdwPx.
 /// Set by the native runner (real Rbt.Renderer.Text.measureWidth) and by the
 /// PDF emitter; left None by the Fable web canvas which doesn't have a
 /// portable measurement API at this layer.

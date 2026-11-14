@@ -199,7 +199,7 @@ checks['api-format'] = async () => {
         check('SetFontFamily(null): the default font again', fmt(0, 0).fontFamily, null);
         grid.SetFontSize(16);
         await frame();
-        check('SetFontSize', [fmt(0, 0).fontSize, fmt(1, 1).fontSize, css(0, 0).fontSize], [16, 16, '16px']);
+        check('SetFontSize', [fmt(0, 0).fontSize, fmt(1, 1).fontSize, css(0, 0).fontSize], [16, 16, '21.33px']);
         grid.SetFontSize(null);
         check('SetFontSize(null): the default size', fmt(0, 0).fontSize, null);
         check('SetFontSize refuses a size that is none', [thrown(() => grid.SetFontSize(0)), thrown(() => grid.SetFontSize('big'))].map((m) => /^SetFontSize: /.test(m ?? '')), [true, true]);
@@ -297,10 +297,10 @@ checks['api-format'] = async () => {
         grid.SetShrinkToFit(true);
         await frame();
         const shrunkWidth = (() => { const range = document.createRange(); range.selectNodeContents(node(7, 2)); return range.getBoundingClientRect().width; })();
-        check('SetShrinkToFit: the text is drawn smaller and fits', [fmt(7, 2).shrinkToFit, parseFloat(css(7, 2).fontSize) < 11, shrunkWidth <= node(7, 2).getBoundingClientRect().width], [true, true, true]);
+        check('SetShrinkToFit: the text is drawn smaller and fits', [fmt(7, 2).shrinkToFit, parseFloat(css(7, 2).fontSize) < 14.67, shrunkWidth <= node(7, 2).getBoundingClientRect().width], [true, true, true]);
         grid.ApplyFormat('shrinkToFit');
         await frame();
-        check("ApplyFormat('shrinkToFit') toggles", [fmt(7, 2).shrinkToFit, css(7, 2).fontSize], [false, '11px']);
+        check("ApplyFormat('shrinkToFit') toggles", [fmt(7, 2).shrinkToFit, css(7, 2).fontSize], [false, '14.67px']);
 
         // ---- number formats, decimals ----
         grid.SelectRange(8, 1, 9, 1);
@@ -1131,7 +1131,7 @@ checks['api-view'] = async () => {
             check(`zoom ${zoom}: cells are scaled and placed`, [round(node(0, 0).getBoundingClientRect()), round(node(5, 3).getBoundingClientRect())], [expected(0, 0, zoom), expected(5, 3, zoom)]);
             const header = host.querySelector('.spreadsheet-col-header[data-col="2"]').getBoundingClientRect(), rowHeader = host.querySelector('.spreadsheet-row-header[data-row="4"]').getBoundingClientRect();
             check(`zoom ${zoom}: the headers too`, [near(round(header), [origin()[0] + (50 + 200) * zoom, origin()[1], 100 * zoom, 30 * zoom].map(Math.round)), near(round(rowHeader), [origin()[0], origin()[1] + (30 + 100) * zoom, 50 * zoom, 25 * zoom].map(Math.round))], [true, true]);
-            check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * 11 / 25) < 0.6, true);
+            check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * (11 * 96 / 72) / 25) < 0.6, true);
             check(`zoom ${zoom}: the scroll extent is the zoomed sheet`, [Math.abs(scroller.scrollHeight - (30 + grid.GetModel().RowCount * 25) * zoom) <= 2, Math.abs(scroller.scrollWidth - (50 + grid.GetModel().ColCount * 100) * zoom) <= 2], [true, true]);
             // Hit testing: a click in the middle of where a cell is drawn selects it.
             const target = expected(4, 2, zoom);
@@ -1630,7 +1630,7 @@ checks['api-rowcol'] = async () => {
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
         const size = (row, col) => { const box = node(row, col).getBoundingClientRect(); return [Math.round(box.width), Math.round(box.height)]; };
         const active = () => { const cell = grid.GetActiveCell(); return [cell.Row, cell.Col]; };
-        const textWidth = (text, px = 11, bold = false) => { const context = document.createElement('canvas').getContext('2d'); context.font = `${bold ? 'bold ' : ''}${px}px Arial, sans-serif`; return context.measureText(text).width; };
+        const textWidth = (text, pt = 11, bold = false) => { const context = document.createElement('canvas').getContext('2d'); context.font = `${bold ? 'bold ' : ''}${pt * 96 / 72}px Arial, sans-serif`; return context.measureText(text).width; };
         const changes = [];
         grid.OnChange((change) => changes.push(change));
         grid.SetCell(0, 0, 'a'); grid.SetCell(9, 0, 'z'); changes.splice(0);
@@ -1685,8 +1685,8 @@ checks['api-rowcol'] = async () => {
         grid.AutoFitRows('7:9');
         await frame();
         const wrappedHeight = grid.GetRowHeight(6);
-        check('AutoFitRows: wrapped text gets the lines it takes', [wrappedHeight > 25, (wrappedHeight - 6) % 14, node(6, 1).scrollHeight <= node(6, 1).clientHeight + 1], [true, 0, true]);
-        check('... a large font its line height, a row without text the default', [grid.GetRowHeight(7), grid.GetRowHeight(8)], [Math.round(22 * 1.3) + 6, 20]);
+        check('AutoFitRows: wrapped text gets the lines it takes', [wrappedHeight > 25, wrappedHeight % 20, node(6, 1).scrollHeight <= node(6, 1).clientHeight + 1], [true, 0, true]);
+        check('... a large font its line height, a row without text the default', [grid.GetRowHeight(7), grid.GetRowHeight(8)], [Math.ceil(22 * 96 / 72 * 1.3), 20]);
         grid.SetColumnWidth(1, 300); grid.AutoFitRows(6);
         check('... fewer lines in a wider column', grid.GetRowHeight(6) < wrappedHeight, true);
         grid.Undo(); grid.Undo();
@@ -1703,7 +1703,7 @@ checks['api-rowcol'] = async () => {
         check('... as one undo step', grid.GetColumnWidth(5), 400);
         grid.SetRowHeight(7, 90); await frame();
         doubleClick(handle('row', 7));
-        check('... and on a row header\'s the row', grid.GetRowHeight(7), Math.round(22 * 1.3) + 6);
+        check('... and on a row header\'s the row', grid.GetRowHeight(7), Math.ceil(22 * 96 / 72 * 1.3));
         grid.SetZoom(1.5); await frame();
         doubleClick(handle('col', 5));
         check('at a zoom of 150 % the fitted width is the same (sheet pixels)', [grid.GetColumnWidth(5), Math.abs(node(0, 5).getBoundingClientRect().width - wanted * 1.5) <= 1], [wanted, true]);

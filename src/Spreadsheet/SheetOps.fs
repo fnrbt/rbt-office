@@ -1254,7 +1254,7 @@ let defaultColumnWidthPx = 100.0
 let maxRowHeightPx = 546.0
 [<Literal>]
 let maxColumnWidthPx = 1785.0
-/// The height of a row that holds one line of the default font (11 px):
+/// The height of a row that holds one line of the default font (11 pt):
 /// what auto-fit gives a row with nothing taller in it.
 [<Literal>]
 let autoRowHeightPx = 20.0
@@ -1365,16 +1365,25 @@ let axisRunText (rows: bool) (first: int, last: int) : string =
 
 // --- auto-fit -----------------------------------------------------------------
 
-/// Width of a text in pixels: text, font size (px), font family, bold, italic
-/// (the shape of `Layout.TextMeasurer`).
+/// Width of a text in pixels: text, font size (points), font family, bold,
+/// italic (the shape of `Layout.TextMeasurer`).
 type TextMeasure = string -> float -> string option -> bool -> bool -> float
 
-let private cellFontPx (format: CellFormat) = float (defaultArg format.FontSize 11)
+/// Pixels for a font size in points: 96 px to the inch, 72 pt. Excel at 100 %
+/// draws an 11 pt font 14.67 px tall.
+let pointsToPx (points: float) = points * 96.0 / 72.0
+/// The height of a line of text of a font size (points) as Excel auto-fits a
+/// row to it: 20 px for 11 pt (15 pt, the default row), 21 for 12, 25 for 14,
+/// 28 for 16, 35 for 20, 42 for 24; a row of n lines is n of them (Excel
+/// 2019, Calibri; within a pixel a line elsewhere).
+let lineHeightPxOfPoints (points: float) = Math.Ceiling (pointsToPx points * 1.3 - 1e-9)
+let private cellFontPt (format: CellFormat) = float (defaultArg format.FontSize 11)
 /// The height of a line of a cell's text, as the grid draws it.
-let cellLineHeightPx (format: CellFormat) = Math.Round (cellFontPx format * 1.3)
+let cellLineHeightPx (format: CellFormat) = lineHeightPxOfPoints (cellFontPt format)
 let private cellIndentPx (format: CellFormat) =
-    if format.Indent > 0 then float format.Indent * Rbt.Spreadsheet.CellText.mdwPx (cellFontPx format) * 1.4 else 0.0
-/// A cell's text sits 5 px from its left and right edge, 3 px from top and bottom.
+    if format.Indent > 0 then float format.Indent * Rbt.Spreadsheet.CellText.mdwPx (cellFontPt format) * 1.4 else 0.0
+/// A cell's text sits 5 px from its left and right edge, 3 px from top and
+/// bottom (turned text; a line's height has room above and below it already).
 [<Literal>]
 let private cellPadX = 10.0
 [<Literal>]
@@ -1445,11 +1454,11 @@ let autoFitColumnWidths (measure: TextMeasure) (model: SpreadsheetModel) (first:
                     // cannot be wider than what the column needs already is not measured.)
                     let known = match needed.TryGetValue addr.Col with | true, known -> known | false, _ -> 0.0
                     let extra = cellPadX + cellIndentPx format
-                    if text <> "" && (isTurned format || float text.Length * cellFontPx format * 1.2 + extra > known) then
+                    if text <> "" && (isTurned format || float text.Length * pointsToPx (cellFontPt format) * 1.2 + extra > known) then
                         let width =
                             if isTurned format then cellLineHeightPx format
                             else
-                                let line (part: string) = measure part (cellFontPx format) format.FontName format.Bold format.Italic
+                                let line (part: string) = measure part (cellFontPt format) format.FontName format.Bold format.Italic
                                 if text.IndexOf '\n' >= 0 then text.Replace("\r\n", "\n").Split('\n') |> Array.map line |> Array.max
                                 else line text
                         let width = Math.Ceiling width + extra
@@ -1461,8 +1470,9 @@ let autoFitColumnWidths (measure: TextMeasure) (model: SpreadsheetModel) (first:
 /// The height each row of `first..last` needs: (row, height) for every row
 /// that is not hidden. A row's height is that of its tallest cell - the
 /// lines of its text (one, or as many as wrapped text takes at the width of
-/// its column, or of its merged columns) at the line height of its font,
-/// plus the cell's padding - and at least `autoRowHeightPx`. Cells merged
+/// its column, or of its merged columns) at the line height of its font
+/// (`lineHeightPxOfPoints`; turned text: its length plus the cell's padding) -
+/// and at least `autoRowHeightPx`. Cells merged
 /// across rows do not count. Only the cells that exist are looked at.
 let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: int, last: int) : (int * float) list =
     let first, last = max 0 first, min last (model.RowCount - 1)
@@ -1485,8 +1495,8 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
                     let oneLine = not format.WrapText && not (isTurned format) && (match unwrapFormulaValue data.Value with String _ -> false | _ -> true)
                     let text = if oneLine then "1" else shownText model data
                     if text <> "" then
-                        let fontPx = cellFontPx format
-                        let line (part: string) = measure part fontPx format.FontName format.Bold format.Italic
+                        let fontPt = cellFontPt format
+                        let line (part: string) = measure part fontPt format.FontName format.Bold format.Italic
                         let height =
                             if isTurned format then Math.Ceiling (line text) + cellPadY
                             else
@@ -1497,7 +1507,7 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
                                         for col in addr.Col .. lastCol do width <- width + axisSize false col model
                                         wrappedLineCount line (width - cellPadX - cellIndentPx format) text
                                     else text.Replace("\r\n", "\n").Split('\n').Length
-                                float lines * cellLineHeightPx format + cellPadY
+                                float lines * cellLineHeightPx format
                         match needed.TryGetValue addr.Row with
                         | true, known when known >= height -> ()
                         | _ -> needed.[addr.Row] <- height

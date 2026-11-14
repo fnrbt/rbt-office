@@ -893,7 +893,9 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
     // chars → "0.98026851", matches Excel COM cell.Text). Try the full
     // precision sweep so we surface G9 mid-trim instead of jumping from
     // G10 straight to G8.
-    let usableWidth = max 0.0 (cellWidthPx - 5.0)
+    // (In whole pixels, as Excel draws the column: a width of 5.71 characters is 39.97 px
+    // in the model and 40 on screen, room for "4E+05".)
+    let usableWidth = max 0.0 (System.Math.Round cellWidthPx - 5.0)
     let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
     let mutable result: string voption = ValueNone
@@ -1473,7 +1475,7 @@ let private fitOrOverflow
         && abs (fontPt - 11.0) < 0.01
     let fitInset = if isCalibri11 then 0.0 else 3.0
     let fitWidth = max 0.0 (cellWidth - fitInset)
-    let hashBudget = max 0.0 (cellWidth - 5.0)
+    let hashBudget = max 0.0 (System.Math.Round cellWidth - 5.0)
     // Use the actual font's digit width when we have a measurer — Excel's
     // hash budget rounds to chars-per-MDW where MDW is the digit advance
     // of the cell's font. The nominal `mdwPx fontPt` ignores font family
