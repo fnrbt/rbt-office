@@ -523,6 +523,8 @@ let private isDateOrTimeFormat (code: string) =
         || lower.Contains "d"
         || lower.Contains "m/"
         || lower.Contains "mmm"
+        // ("m" or "mm" alone: the month.)
+        || lower.Trim() = "m" || lower.Trim() = "mm"
         || lower.Contains "h"
         || (lower.Contains "s" && lower.Contains "m")
 
@@ -863,6 +865,9 @@ let private formatExcelDateOpt (date1904: bool) (code: string) (serial: float) :
                     let rounded = (dt.Ticks + ticksPerUnit / 2L) / ticksPerUnit * ticksPerUnit
                     try System.DateTime(rounded) with _ -> dt
         let netFormat = excelToNetFormat code
+        // (A one-letter pattern - Excel's "d", "m", "h" - is a standard format to .NET: "d" is
+        // the short date. "%" makes it the custom one: the day of the month.)
+        let netFormat = if netFormat.Length = 1 then "%" + netFormat else netFormat
         try Some (dtRounded.ToString(netFormat, inv))
         with _ -> Some (dtRounded.ToString("MM/dd/yyyy", inv))
 
@@ -1517,6 +1522,21 @@ let formatNumberWithCodeIn (date1904: bool) (code: string) (n: float) : string =
 /// `formatNumberWithCodeIn` in the 1900 date system.
 let formatNumberWithCode (code: string) (n: float) : string = formatNumberWithCodeIn false code n
 
+/// A text under a number format, as Excel shows it: by the format's fourth section (empty, as in
+/// `;;;`, hides it; `@` stands for the text, `"Note: "@` adds to it; `_(@_)` pads it), or by a
+/// format of one section that has `@`; else as it is.
+let private textUnderFormat (code: string) (text: string) : string =
+    let sections = splitSections code
+    let section =
+        if sections.Length >= 4 then Some sections.[3]
+        elif sections.Length = 1 && code.IndexOf '@' >= 0 then Some code
+        else None
+    match section with
+    | None -> text
+    | Some section ->
+        // (The literals unwrapped before the text goes in: a text's own quotes stay.)
+        (unwrapTextPlaceholderLiterals ((stripExcelWidthPlaceholders section).Replace("@", "\u0001"))).Replace("\u0001", text)
+
 /// Per-cell display text logic, in a workbook's date system (`date1904`). Public so the VBA-style API surface
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied
@@ -1560,7 +1580,10 @@ let cellDisplayTextIn
             if selectedSection.IndexOf("* ") < 0 then fitted
             else expandAccountingFill measure cellWidth selectedSection fitted
         | None -> generalNumberDisplay cellWidth fontPt n
-    | String s -> s
+    | String s ->
+        match format.NumberFormat with
+        | Some code when code.IndexOf ';' >= 0 || code.IndexOf '@' >= 0 -> textUnderFormat code s
+        | _ -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
     | Formula _ -> ""

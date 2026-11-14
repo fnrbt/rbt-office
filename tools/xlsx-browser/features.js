@@ -432,6 +432,51 @@ const LOOK_SHEET = '<sheetFormatPr defaultRowHeight="15"/><sheetData>'
     + '<row r="4"><c r="A4"><v>0.123456789123</v></c><c r="B4"><v>123456789012345678</v></c></row>'
     + `<row r="5">${inlineCell('A5', 'x', 4)}${inlineCell('B5', 'in', 5)}</row>`
     + '</sheetData><conditionalFormatting sqref="A5"><cfRule type="expression" dxfId="0" priority="1"><formula>TRUE</formula></cfRule></conditionalFormatting>';
+// A text in runs draws each run in its look (Excel's "OPEN vs. CLOSED" titles), and an accounting
+// format's fill puts the currency sign at the cell's left edge and the number at its right.
+const RUNS_STYLES = DECL + `<styleSheet xmlns="${NS}"><numFmts count="1"><numFmt numFmtId="164" formatCode="_(&quot;$&quot;* #,##0.00_);_(&quot;$&quot;* \\(#,##0.00\\);_(&quot;$&quot;* &quot;-&quot;??_);_(@_)"/></numFmts>`
+    + '<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>'
+    + '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
+    + '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
+    + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="2">'
+    + '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+    + '</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>';
+const RUNS_SHEET = '<cols><col min="1" max="1" width="40" customWidth="1"/><col min="2" max="2" width="16" customWidth="1"/></cols><sheetData><row r="1">'
+    + '<c r="A1" t="inlineStr"><is><r><rPr><b/><sz val="11"/><color rgb="FF00B0F0"/><rFont val="Calibri"/></rPr><t>OPEN</t></r><r><rPr><sz val="11"/><rFont val="Calibri"/></rPr><t xml:space="preserve"> vs. </t></r>'
+    + '<r><rPr><i/><sz val="14"/><color rgb="FFFFC000"/><rFont val="Calibri"/></rPr><t>CLOSED</t></r></is></c>'
+    + '<c r="B1" s="1"><v>1234.5</v></c></row></sheetData>';
+checks['cell-runs-and-accounting'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx(await excelPackage(RUNS_SHEET, { 'xl/styles.xml': [STYLES_TYPE, STYLES_REL, RUNS_STYLES] }));
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const spans = [...node(0, 0).querySelectorAll('span span')].map((span) => { const css = getComputedStyle(span); return [span.textContent, css.color, Number(css.fontWeight) >= 600, css.fontStyle, Math.round(parseFloat(css.fontSize) * 72 / 96)]; });
+        check('each run of a text in its own look', spans,
+            [['OPEN', 'rgb(0, 176, 240)', true, 'normal', 11], [' vs. ', 'rgb(0, 0, 0)', false, 'normal', 11], ['CLOSED', 'rgb(255, 192, 0)', false, 'italic', 14]]);
+        const cell = node(0, 1).getBoundingClientRect(), [sign, number] = [...node(0, 1).querySelectorAll('span')].map((span) => span.getBoundingClientRect());
+        // SetFontLoader: a family the system lacks (Calibri) is asked of the host when a cell in it is
+        // drawn, and drawn in the face it hands.
+        const response = await fetch('/font?name=calibri.ttf');
+        if (!response.ok) note('SetFontLoader: no calibri.ttf (RB_WORD_FONT_DIR, artifacts/fonts/windows): not checked');
+        else if (document.fonts.check('11px Calibri') && [...document.fonts].length === 0) note('SetFontLoader: the system has Calibri: not checked');
+        else {
+            const data = new Uint8Array(await response.arrayBuffer()), asked = [];
+            grid.SetFontLoader(async (family, bold, italic) => { asked.push([family, bold, italic]); return family === 'Calibri' && !bold && !italic ? data : null; });
+            for (let i = 0; i < 100 && ![...document.fonts].some((face) => face.family.replace(/"/g, '') === 'Calibri' && face.status === 'loaded'); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const context = document.createElement('canvas').getContext('2d'); context.font = `${11 * 96 / 72}px Calibri`;
+            const range = document.createRange(); range.selectNodeContents(node(0, 0).querySelectorAll('span span')[1]);
+            check('SetFontLoader: the faces the cells are drawn in are asked for once each', asked.map((face) => face.join(' ')).sort(), ['Calibri false false', 'Calibri false true', 'Calibri true false']);
+            check('... and Calibri text is drawn in the Calibri handed', Math.abs(range.getBoundingClientRect().width - context.measureText(' vs. ').width) < 1.5, true);
+        }
+        check('accounting: the $ at the cell\'s left, the number at its right', [node(0, 1).textContent.replace(/\s+/g, ' '), sign.left - cell.left <= 8, cell.right - number.right <= 8, number.left - sign.right > 20], [' $1,234.50 ', true, true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
 checks['cell-look-shared'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();
@@ -456,7 +501,8 @@ checks['cell-look-shared'] = async () => {
         grid.SetCell(0, 3, '5'); grid.SetCell(1, 3, '10'); grid.SetCell(2, 3, '1');
         const bar = grid.AddConditionalFormat('D1:D2', { type: 'dataBar', min: { type: 'number', value: 0 }, max: { type: 'number', value: 10 }, color: '#FF0000' });
         await frame();
-        check('a plain data bar is two pixels in from the cell\'s top and bottom', [/linear-gradient/.test(css(0, 3).backgroundImage), css(0, 3).backgroundPositionY, css(0, 3).backgroundSize], [true, '2px', '100% calc(100% - 4px)']);
+        const plainBar = node(0, 3).querySelector('.spreadsheet-cf-bar');
+        check('a data bar without the x14 part (Excel 2007\'s) fades to white, two pixels in from the cell\'s top and bottom', [!!plainBar && /linear-gradient\(to right, .*rgb\(255, 255, 255\)\)/.test(getComputedStyle(plainBar).backgroundImage), !!plainBar && getComputedStyle(plainBar).top, !!plainBar && getComputedStyle(plainBar).bottom], [true, '2px', '2px']);
         grid.RemoveConditionalFormat(bar);
         grid.AddConditionalFormat('D1:D3', ICON_RULE);
         await frame();

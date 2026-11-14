@@ -518,14 +518,14 @@ module Import =
 
     /// A run of rich text. Only what the run turns on is recorded; the rest
     /// follows the cell's own format.
-    let private runOverride (props: XlsxReader.RunProps) : RunOverride =
+    let private runOverride (theme: string array) (props: XlsxReader.RunProps) : RunOverride =
         let onlyTrue value = if value then Some true else None
         { Bold = onlyTrue props.Bold
           Italic = onlyTrue props.Italic
           Underline = onlyTrue props.Underline
           UnderlineDouble = onlyTrue props.UnderlineDouble
           Strikethrough = onlyTrue props.Strikethrough
-          Color = props.Color |> Option.bind hexColor
+          Color = props.Color |> Option.bind (XlsxReader.Xlsx.themeRunColor theme) |> Option.bind hexColor
           FontName = props.FontName
           FontSize = props.FontSize
           VertAlign =
@@ -846,7 +846,7 @@ module Import =
                           Author = c.Author
                           // (One run without a format of its own is a plain text.)
                           Runs =
-                            (let runs = c.Runs |> List.map (fun (text, props) -> text, runOverride props)
+                            (let runs = c.Runs |> List.map (fun (text, props) -> text, runOverride wb.ThemeColors props)
                              if runs |> List.exists (fun (_, run) -> run <> emptyRunOverride) && (runs |> List.map fst |> String.concat "") = c.Text then runs else []) }
         // One CellFormat per style of the workbook, shared by every cell that uses it.
         let styleCache = Collections.Generic.Dictionary<int, CellFormat>()
@@ -921,7 +921,7 @@ module Import =
                                 | XlsxReader.SharedString idx when idx >= 0 && idx < wb.SharedStringRuns.Length -> wb.SharedStringRuns.[idx]
                                 | _ -> []
                         match runs with
-                        | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverride props)) richRuns
+                        | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverride wb.ThemeColors props)) richRuns
                         | _ -> ()
 
         // A note on a cell the sheet data has no element for (a cell without

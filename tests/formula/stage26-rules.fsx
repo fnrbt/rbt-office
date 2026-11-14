@@ -120,8 +120,8 @@ eq "scale-number-stops" (fillAt 0 0 scaleNum, fillAt 2 0 scaleNum, fillAt 4 0 sc
 eq "scale-skips-text"   (fillAt 0 1 (data |> withRules [ rule [ range 0 0 5 1 ] (ColorScale [ lo, "#FF0000"; hi, "#00FF00" ]) defaultFormat 1 ])) None
 
 let bars = data |> withRules [ rule colA (DataBar (lo, hi, "#638EC6")) defaultFormat 1 ]
-eq "databar-max"  (effectOf 4 0 bars |> Option.bind (fun e -> e.DataBar)) (Some (plainDataBar 1.0 "#638EC6"))
-eq "databar-part" (effectOf 0 0 bars |> Option.bind (fun e -> e.DataBar)) (Some (plainDataBar 0.2 "#638EC6"))
+eq "databar-max"  (effectOf 4 0 bars |> Option.bind (fun e -> e.DataBar)) (Some { plainDataBar 1.0 "#638EC6" with Gradient = true })
+eq "databar-part" (effectOf 0 0 bars |> Option.bind (fun e -> e.DataBar)) (Some { plainDataBar 0.2 "#638EC6" with Gradient = true })
 let barsNum = data |> withRules [ rule colA (DataBar (cfvo CfvoNumber (Some "10"), cfvo CfvoNumber (Some "30"), "638EC6")) defaultFormat 1 ]
 eq "databar-bounds" ([ 0; 1; 4 ] |> List.map (fun r -> effectOf r 0 barsNum |> Option.bind (fun e -> e.DataBar) |> Option.map (fun bar -> bar.To))) [ Some 0.0; Some 0.5; Some 1.0 ]
 let icons = data |> withRules [ rule colA (IconSet ("3TrafficLights1", [ cfvo CfvoPercent (Some "0"); cfvo CfvoPercent (Some "33"); cfvo CfvoPercent (Some "67") ], false)) defaultFormat 1 ]
@@ -129,7 +129,7 @@ eq "icons"          ([ 0; 2; 4 ] |> List.map (fun r -> effectOf r 0 icons |> Opt
 let iconsRev = data |> withRules [ rule colA (IconSet ("5Arrows", [ for p in [ "0"; "20"; "40"; "60"; "80" ] -> cfvo CfvoPercent (Some p) ], true)) defaultFormat 1 ]
 eq "icons-5-reverse" ([ 0; 4 ] |> List.map (fun r -> effectOf r 0 iconsRev |> Option.bind (fun e -> e.IconSet) |> Option.map (fun icon -> icon.Index, icon.Count))) [ Some (4, 5); Some (0, 5) ]
 // The painter's format carries the effect.
-eq "format-databar" ((formatAt bars (at 4 0) defaultFormat).DataBar) (Some (plainDataBar 1.0 "#638EC6"))
+eq "format-databar" ((formatAt bars (at 4 0) defaultFormat).DataBar) (Some { plainDataBar 1.0 "#638EC6" with Gradient = true })
 eq "format-fill"    ((formatAt scale2 (at 0 0) defaultFormat).BgColor) (Some "#FF0000")
 eq "format-untouched" (formatAt scale2 (at 0 1) defaultFormat) defaultFormat
 

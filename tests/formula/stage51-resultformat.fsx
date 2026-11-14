@@ -96,5 +96,9 @@ let shown (width: float) (code: string option) (n: float) =
 eq "General in a column 5.71 characters wide (39.97 px): 4E+05" (shown (5.7109375 * 7.0) None 400000.0) "4E+05"
 eq "General: 1E+08, 3.142, ####" [ shown 40.0 None 123456789.0; shown 40.0 None 3.14159265358979; shown 33.0 None 400000.0 ] [ "1E+08"; "3.142"; "####" ]
 
+eq "a date format of one letter: \"d\" is the day, not the short date (attendance calendars)" [ shown 32.0 (Some "d") 44562.0; shown 32.0 (Some "m") 44562.0 ] [ "1"; "1" ]
+let shownText (code: string) (text: string) =
+    Rbt.Spreadsheet.CellText.cellDisplayText None 100.0 { defaultFormat with NumberFormat = Some code } (CellValue.String text)
+eq "a text under a format's text section: ;;; hides it, @ is the text, literals around it" [ shownText ";;;" "Properties"; shownText "0;-0;0;\"Item: \"@" "a\"b"; shownText "0.00" "plain"; shownText "@" "t" ] [ ""; "Item: a\"b"; "plain"; "t" ]
 printfn "Stage 51 result-format tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -68,7 +68,7 @@ let positive = { data with Cells = Map.ofList [ for i, v in List.indexed [ 10.0;
 let positiveBar row = effectAt (createContext evaluateFormulaAt { positive with ConditionalFormats = [ rule [ block 0 0 4 0 ] standard 1 ] }) (at row 0) |> Option.bind (fun e -> e.DataBar)
 eq "all positive: from the edge, measured from zero" ([ 0; 4 ] |> List.map (fun r -> positiveBar r |> Option.map (fun b -> round3 b.From, round3 b.To, b.Axis))) [ Some (0.0, 0.2, None); Some (0.0, 1.0, None) ]
 // The plain data bar is what it was.
-eq "a plain data bar" (barOf (DataBar (cfvo CfvoMin None, cfvo CfvoMax None, "#638EC6")) 4) (Some (plainDataBar 1.0 "#638EC6"))
+eq "a plain data bar" (barOf (DataBar (cfvo CfvoMin None, cfvo CfvoMax None, "#638EC6")) 4) (Some { plainDataBar 1.0 "#638EC6" with Gradient = true })
 
 // ---- icon sets -------------------------------------------------------------------
 let steps = [ cfvo CfvoPercent (Some "0"); cfvo CfvoPercent (Some "33"); cfvo CfvoPercent (Some "67") ]

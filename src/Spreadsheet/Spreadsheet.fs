@@ -164,6 +164,12 @@ let private cellFontFamily (fontName: string option) : string =
 [<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
 let private fontFamilyAvailable (family: string) : bool = jsNative
 
+/// Ask a host's loader for the bytes of a face (`SetFontLoader`) and make them a document font; once
+/// it is loaded, forget the widths measured without it and call `loaded`. A face the loader has not
+/// (null, a failure) is left to the families after it.
+[<Emit("(function(loader,family,bold,italic,loaded){Promise.resolve().then(()=>loader(family,bold,italic)).then((data)=>{if(!data)return;const face=new FontFace(family,data,{weight:bold?'700':'400',style:italic?'italic':'normal'});document.fonts.add(face);return face.load().then(()=>{const g=globalThis.__rbSpreadsheetCellMeasure;if(g){g.widths.clear();g.font='';}const known=globalThis.__rbSpreadsheetFamilies;if(known)known.clear();loaded();});}).catch(()=>{});})($0,$1,$2,$3,$4)")>]
+let private loadFace (loader: obj) (family: string) (bold: bool) (italic: bool) (loaded: unit -> unit) : unit = jsNative
+
 /// Calibri's x-height in ems (Arial's is 0.5186). Calibri, Excel's default font, is drawn
 /// where it is not at hand in the next family (Arial) as tall as Calibri's letters are (CSS
 /// `font-size-adjust`): 90 % of the size, which gives Calibri's widths within a few percent
@@ -1012,6 +1018,12 @@ type Spreadsheet(container: Element) as this =
                     sheetNames
             chartXmlRewrite <- Some rewrite
             rewrite
+    /// The host's loader of faces (`SetFontLoader`), null without one; the faces asked of it
+    /// ("family|bi"), and the families the system had when first drawn (never asked for).
+    let mutable fontLoader : obj = null
+    let wantedFaces = System.Collections.Generic.HashSet<string>()
+    let systemFamilies = System.Collections.Generic.Dictionary<string, bool>()
+    let mutable fontRedrawPending = false
     /// The faces of the PDF export (`SetPdfFonts`): (face name, family, bold, italic, TrueType bytes).
     let mutable pdfFonts : (string * string * bool * bool * byte[]) array = [||]
     /// The faces a host hands (`SetPdfFonts`, `ExportPdf`'s fonts).
@@ -3212,6 +3224,32 @@ type Spreadsheet(container: Element) as this =
     /// its number-formatted text, its table's look and its conditional
     /// formats - is worked out by the painters' rule (`Paint.cellLook`);
     /// this maps it to CSS.
+    /// A face a cell is drawn in, asked of the host's loader (`SetFontLoader`) the first time it is
+    /// drawn, unless the system has its family; once it is loaded every cell is drawn again.
+    and wantFace (family: string option) (bold: bool) (italic: bool) =
+        match family with
+        | Some family when not (isNull fontLoader) && family.Trim() <> "" ->
+            let family = family.Trim()
+            let name = family.ToLowerInvariant()
+            let fromSystem =
+                match systemFamilies.TryGetValue name with
+                | true, known -> known
+                | _ ->
+                    let known = fontFamilyAvailable family
+                    systemFamilies.[name] <- known
+                    known
+            if not fromSystem && wantedFaces.Add (name + "|" + (if bold then "b" else "") + (if italic then "i" else "")) then
+                loadFace fontLoader family bold italic (fun () ->
+                    if not fontRedrawPending && not disposed then
+                        fontRedrawPending <- true
+                        // (The faces of a sheet arrive together: one drawing for them.)
+                        setTimeoutMs (fun () ->
+                            fontRedrawPending <- false
+                            if not disposed then
+                                renderedStyleInputs <- [||]
+                                render ()) 30 |> ignore)
+        | _ -> ()
+
     and drawCell (layer: GridLayers) (node: CellNode) (row: int) (col: int) (x: float) (y: float) (w: float) (h: float) (pane: int)
                  (cellData: CellData option) =
         let cell = node.Element
@@ -3245,6 +3283,7 @@ type Spreadsheet(container: Element) as this =
                 + (if look.Strikethrough then "line-through " else "")
                 + (if look.UnderlineDouble then "double" else "")
             add "text-decoration" (lines.TrimEnd())
+        if not (isNull fontLoader) && look.Text <> "" then wantFace look.FontName look.Bold look.Italic
         match look.FontName with
         | Some family when family <> "" ->
             add "font-family" (cellFontFamily look.FontName)
@@ -3494,11 +3533,20 @@ type Spreadsheet(container: Element) as this =
         // way; where the grid's font draws it wider than that (a family that is not at hand
         // drawn in another), it is drawn smaller.
         let isNumber = match unwrapFormulaValue look.Value with CellValue.Number _ -> true | _ -> false
+        // An accounting format's fill (`_($* #,##0_)`): the currency sign at the cell's left edge and
+        // the number at its right, whatever the font (`CellText` pads the text with spaces for it,
+        // which the browser would run together). (The sign's side, the number's side.)
+        let accounting =
+            match look.Format.NumberFormat with
+            | Some code when isNumber && rotation = 0 && not look.Wrap && code.Contains "* " ->
+                let at = displayText.IndexOf "$ "
+                if at < 0 then None
+                else Some (displayText.Substring(0, at + 1), displayText.Substring(at + 1).TrimStart(' '))
+            | _ -> None
         if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone then
             let indent = look.IndentLeft + look.IndentRight
-            let width = measureText displayText
+            let width = measureText (match accounting with Some (sign, number) -> sign + " " + number | None -> displayText)
             if width > w - 10.0 - indent then
-                add "text-overflow" "clip"
                 if look.IndentRight = 0.0 then add "padding-right" "2px"
                 if look.IndentLeft = 0.0 then add "padding-left" "2px"
                 let room = w - 4.0 - indent
@@ -3536,8 +3584,6 @@ type Spreadsheet(container: Element) as this =
                     // ones only while they are there: scrolled away, it is cut at the frozen edge.
                     let last = if col < model.FrozenCols && scrollLeft > 0.5 then min last (model.FrozenCols - 1) else last
                     let first = if col >= model.FrozenCols then max first model.FrozenCols else first
-                    // (Text that only reaches into its cell's padding is drawn whole, not cut short.)
-                    if first = col && last = col then add "text-overflow" "clip"
                     if first <> col || last <> col then
                         let own = SpreadsheetLayout.columnLeft model col
                         let extraLeft = own - SpreadsheetLayout.columnLeft model first
@@ -3567,13 +3613,60 @@ type Spreadsheet(container: Element) as this =
                                         yield SpreadsheetLayout.columnLeft model (c + 1) - own, topLine
                                     | _ -> () ]
             | _ -> ()
+        // Rich text: a text in runs, each in its own look (`RichRuns`).
+        let runs =
+            if model.RichRuns.IsEmpty || rotation <> 0 then None
+            else
+                match Map.tryFind addr model.RichRuns, unwrapFormulaValue look.Value with
+                | Some runs, CellValue.String text when not runs.IsEmpty && displayText = text && (runs |> List.map fst |> String.concat "") = text -> Some runs
+                | _ -> None
+        if accounting.IsSome && across = 0.0 then
+            add "display" "flex"
+            add "justify-content" "space-between"
+            add "white-space" "pre"
         node.Wide <- wide || across > 0.0
         setCssText cell (css.ToString())
         setAttribute cell "data-row" (string row)
         setAttribute cell "data-col" (string col)
         if bar >= 0 then setAttribute cell "data-cf-bar" (string bar) else removeAttribute cell "data-cf-bar"
         // (This also drops the icon and comment marker of the node's previous cell.)
-        if rotation = 0 && across = 0.0 then setTextContent cell displayText
+        let runSpan (text: string, run: RunOverride) =
+            let span = createElement "span"
+            setTextContent span text
+            let size = run.FontSize |> Option.defaultValue look.FontSize
+            let family = run.FontName |> Option.orElse look.FontName
+            if not (isNull fontLoader) then wantFace family (run.Bold |> Option.defaultValue look.Bold) (run.Italic |> Option.defaultValue look.Italic)
+            let small = run.VertAlign = Some VertAlignSuperscript || run.VertAlign = Some VertAlignSubscript
+            let lines =
+                [ if run.Underline = Some true || run.UnderlineDouble = Some true then "underline"
+                  if run.Strikethrough = Some true then "line-through" ]
+            setCssText span
+                (String.concat ";"
+                    [ (match run.Bold with Some true -> "font-weight:bold" | Some false -> "font-weight:normal" | None -> "")
+                      (match run.Italic with Some true -> "font-style:italic" | Some false -> "font-style:normal" | None -> "")
+                      (if lines.IsEmpty then "" else "text-decoration:" + String.concat " " lines + (if run.UnderlineDouble = Some true then " double" else ""))
+                      (match run.Color with Some color -> "color:" + color | None -> "")
+                      (if run.FontName.IsSome then "font-family:" + cellFontFamily family else "")
+                      (if run.FontName.IsSome && isCalibri family then "font-size-adjust:" + string calibriAspect else "")
+                      (if run.FontSize.IsSome || small then "font-size:" + cssPx (SheetOps.pointsToPx size * (if small then 0.6 else 1.0)) else "")
+                      (match run.VertAlign with Some VertAlignSuperscript -> "vertical-align:super" | Some VertAlignSubscript -> "vertical-align:sub" | _ -> "") ]
+                 |> fun css -> css.Trim(';'))
+            span
+        if rotation = 0 && across = 0.0 then
+            match runs, accounting with
+            | Some runs, _ ->
+                // (In one line box of their own: a wrapped cell lays its content out as a column.)
+                setTextContent cell ""
+                let text = createElement "span"
+                for run in runs do appendChild text (runSpan run)
+                appendChild cell text
+            | None, Some (sign, number) ->
+                setTextContent cell ""
+                for part in [ sign; number ] do
+                    let span = createElement "span"
+                    setTextContent span part
+                    appendChild cell span
+            | None, None -> setTextContent cell displayText
         elif rotation = 0 then
             setTextContent cell ""
             let centred = createElement "span"
@@ -5388,7 +5481,8 @@ type Spreadsheet(container: Element) as this =
         setTextContent sheetStyle
             // (A cell has no border of its own: its grid lines - the edge above it and the edge
             // to its left - are an inset shadow, and borders are child elements; see drawCell.)
-            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;box-sizing:border-box;"
+            // (Text a cell cannot show is cut at its edge, as Excel does: never "…".)
+            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:clip;box-sizing:border-box;"
              + "font-family:Arial, sans-serif;font-size:" + cssPx (SheetOps.pointsToPx 11.0) + ";cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
              + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:30px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
@@ -7375,6 +7469,19 @@ type Spreadsheet(container: Element) as this =
     /// faces for both editors. Without faces a PDF has no text. null clears them.
     member _.SetPdfFonts(fonts: obj) : unit =
         pdfFonts <- pdfFontsArg "SetPdfFonts" fonts
+
+    /// Where the faces cells are drawn in come from: `loader(family, bold, italic)` resolves to the
+    /// TrueType bytes of that face (a Uint8Array / ArrayBuffer), or null when the host has none. The
+    /// grid asks for a face the first time a cell in it is drawn, when the browser has no font of
+    /// that family (Calibri, Georgia, Segoe UI ... on Linux), and draws every cell again once it is
+    /// loaded. Only the faces a workbook shows are fetched. null: no loader.
+    member _.SetFontLoader(loader: obj) : unit =
+        if not (Host.isNullish loader) && Host.jsTypeOf loader <> "function" then
+            Host.hostFail "SetFontLoader" "the loader is a function (family, bold, italic) => Promise<Uint8Array | ArrayBuffer | null>"
+        fontLoader <- (if Host.isNullish loader then null else loader)
+        wantedFaces.Clear()
+        renderedStyleInputs <- [||]
+        render ()
 
     /// The PDF of the sheet on display, of its selection or of the whole workbook, as Excel prints it: each
     /// sheet by its page setup - print area, print titles, scaling or fitting to pages, orientation, paper,

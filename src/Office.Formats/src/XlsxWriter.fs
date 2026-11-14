@@ -2233,7 +2233,8 @@ let private richRunOfReader (props: XlsxReader.RunProps) (text: string) : XlsxRi
       Underline = Some props.Underline
       UnderlineDouble = Some props.UnderlineDouble
       Strikethrough = Some props.Strikethrough
-      Color = props.Color |> Option.map (fun c -> "#" + c.TrimStart('#'))
+      // (A colour of the theme is not written back as such: the run takes the cell's.)
+      Color = props.Color |> Option.filter (fun c -> not (c.StartsWith "theme:")) |> Option.map (fun c -> "#" + c.TrimStart('#'))
       FontName = props.FontName
       FontSize = props.FontSize
       VertAlign =

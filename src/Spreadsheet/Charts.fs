@@ -704,11 +704,17 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
             |> Option.map (fun lines ->
                 match child "spPr" lines |> Option.bind (strokeOf theme) with
                 | Some stroke -> stroke
-                | None -> { Paint = FillColor ("#D9D9D9", 1.0); Width = 1.0; Dash = None })
+                // (Without a line of their own, Excel 2019 draws them black: the files it writes
+                // always give one, as light grey.)
+                | None -> { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None })
           Title = child "title" node |> Option.bind titleText
           TitleStyle = child "title" node |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
           LabelStyle = textPropsOf theme node
-          Line = child "spPr" node |> Option.bind (strokeOf theme)
+          // (An axis without a look of its own is drawn as a black line, as Excel does.)
+          Line =
+            match child "spPr" node with
+            | Some shape -> strokeOf theme shape
+            | None -> Some { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None }
           LabelsShown = valOf "tickLblPos" node <> Some "none"
           CrossesId = valOf "crossAx" node
           OnTicks = valOf "crossBetween" node = Some "midCat"
@@ -1032,19 +1038,25 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                              child "legend" chart
                              |> Option.map (fun legend ->
                                 { Position = valOf "legendPos" legend |> Option.defaultValue "r"; Style = textPropsOf theme legend
-                                  Layout = layoutOf legend; Overlay = isOn (valOf "overlay" legend) false
+                                  // (A legend or a title that does not say is laid over the plot, as Excel 2019 does.)
+                                  Layout = layoutOf legend; Overlay = isOn (valOf "overlay" legend) true
                                   Deleted =
                                     childrenNamed "legendEntry" legend
                                     |> List.choose (fun entry -> if isOn (valOf "delete" entry) false then valOf "idx" entry |> Option.bind number |> Option.map int else None)
                                     |> Set.ofList })
                            Background = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
-                           Border = shape |> Option.bind (strokeOf theme)
+                           // (A chart without a look of its own has Excel's grey frame.)
+                           Border =
+                             match shape with
+                             | Some shape -> strokeOf theme shape
+                             | None -> Some { Paint = FillColor ("#868686", 1.0); Width = 1.0; Dash = None }
                            PlotBackground = child "spPr" area |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                            TextStyle = textPropsOf theme space
-                           RoundedCorners = isOn (valOf "roundedCorners" space) false
+                           // (Rounded unless the file says not: Excel writes `roundedCorners val="0"`.)
+                           RoundedCorners = isOn (valOf "roundedCorners" space) true
                            Date1904 = isOn (valOf "date1904" space) false
                            TitleLayout = child "title" chart |> Option.bind layoutOf
-                           TitleOverlay = child "title" chart |> Option.map (fun title -> isOn (valOf "overlay" title) false) |> Option.defaultValue false
+                           TitleOverlay = child "title" chart |> Option.map (fun title -> isOn (valOf "overlay" title) true) |> Option.defaultValue false
                            PlotLayout = layoutOf area
                            Style =
                              // (`c:style` of the part, or the one its `mc:AlternateContent` falls back to.)
@@ -1838,11 +1850,29 @@ let private layoutChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) 
     | UndrawnPlot layoutId -> layoutUndrawnChartEx layoutId chart width height
     | _ -> layoutPlottedChartEx theme data chart plot width height
 
+/// A smoothed line through points (`c:smooth`): a cubic Bézier curve between each two, its handles a
+/// sixth of the way to the points around them (Catmull-Rom), as Excel draws one.
+let private smoothPath (points: (float * float) list) : string =
+    let p = List.toArray points
+    let n (value: float) = string (Math.Round (value, 2))
+    let sb = System.Text.StringBuilder()
+    sb.Append("M ").Append(n (fst p.[0])).Append(" ").Append(n (snd p.[0])) |> ignore
+    for i in 0 .. p.Length - 2 do
+        let x0, y0 = p.[max 0 (i - 1)]
+        let x1, y1 = p.[i]
+        let x2, y2 = p.[i + 1]
+        let x3, y3 = p.[min (p.Length - 1) (i + 2)]
+        sb.Append(" C ").Append(n (x1 + (x2 - x0) / 6.0)).Append(" ").Append(n (y1 + (y2 - y0) / 6.0))
+          .Append(" ").Append(n (x2 - (x3 - x1) / 6.0)).Append(" ").Append(n (y2 - (y3 - y1) / 6.0))
+          .Append(" ").Append(n x2).Append(" ").Append(n y2) |> ignore
+    sb.ToString()
+
 /// The scene of a chart of the classic kinds.
 let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
     let items = ResizeArray<Primitive>()
     let add (item: Primitive) = items.Add item
-    let textColor (style: TextStyle) = over style chart.TextStyle |> fun merged -> merged.Color |> Option.defaultValue "#595959"
+    // (Text that names no colour is black, as Excel draws it: the charts it writes name theirs.)
+    let textColor (style: TextStyle) = over style chart.TextStyle |> fun merged -> merged.Color |> Option.defaultValue "#000000"
     let textSize (style: TextStyle) (otherwise: float) = px (over style chart.TextStyle |> fun merged -> merged.Size |> Option.defaultValue otherwise)
 
     // ---- the chart's own rectangle ----
@@ -1937,8 +1967,10 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     let mutable top = 6.0
     (match title with
      | Some text ->
-        let size = textSize chart.TitleStyle 14.0
-        let bold = chart.TitleStyle.Bold |> Option.defaultValue false
+        // (A title of its own text that names no size or weight: 10 pt bold, as Excel draws it; one made
+        // from the series, 14 pt.)
+        let size = textSize chart.TitleStyle (if chart.Title.IsSome then 10.0 else 14.0)
+        let bold = chart.TitleStyle.Bold |> Option.orElse chart.TextStyle.Bold |> Option.defaultValue chart.Title.IsSome
         let lines = text.Split('\n')
         let blockHeight = float lines.Length * size * 1.25
         let widest = lines |> Array.fold (fun most line -> max most (calibriWidth size bold line)) 0.0
@@ -2509,7 +2541,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                         // (The series of a stock chart are drawn as lines only where the file gives them one.)
                         (match item.Look.LineColor with
                          | Some color when plot.Kind = LinePlot || (match item.Source.Line with Some { Paint = FillColor _ } -> true | _ -> false) ->
-                            for line in runs do (if line.Length > 1 then add (PPolyline (line, None, 1.0, Some color, item.Look.LineWidth, item.Look.LineDash)))
+                            for line in runs do
+                                if line.Length > 2 && item.Source.Smooth then add (PPath (smoothPath line, None, 1.0, Some color, item.Look.LineWidth))
+                                elif line.Length > 1 then add (PPolyline (line, None, 1.0, Some color, item.Look.LineWidth, item.Look.LineDash))
                          | _ -> ())
                         // Markers: the chart's switch, unless the series says none.
                         let symbol = item.Source.MarkerSymbol |> Option.defaultValue (if plot.Kind = LinePlot && plot.Markers then "circle" else "none")
@@ -2636,7 +2670,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                         let text = if textWidth categorySize text > room && text.Length > 4 then text.Substring(0, max 1 (int (float text.Length * room / textWidth categorySize text) - 1)) + "…" else text
                         add (PText (plotLeft - 6.0, bandStart index + band / 2.0, text, categorySize, categoryColor, "end", false, false, 0.0)))
             else
-                let every = max 1 (int (Math.Ceiling ((widestLabel + 6.0) / band)))
+                // (Excel lets labels come within a pixel of each other before it leaves some out.)
+                let every = max 1 (int (Math.Ceiling ((widestLabel + 1.0) / band)))
                 categories |> Array.iteri (fun index text ->
                     if index % every = 0 then add (PText (pointAt index, plotBottom + baseSize * 0.85, text, categorySize, categoryColor, "middle", false, false, 0.0)))
         for label in pendingLabels do add label
@@ -2863,6 +2898,28 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
             let radius = (if geometry = "flowChartTerminator" then min width height / 2.0 else min width height * (min 50000.0 adjust) / 100000.0)
             [ PRect (x, y, width, height, fillColor, opacity, strokeColor, strokeWidth, radius) ]
         | "triangle" -> [ PPolyline ([ x + width / 2.0, y; x + width, y + height; x, y + height ], (fillColor |> Option.orElse (Some "none")), opacity, strokeColor, strokeWidth, None) ]
+        | "leftBrace" | "rightBrace" ->
+            // A curly brace, opening right ({) or left (}): its curls a twelfth of the shorter side
+            // (adj1 8333), its point half way down (adj2 50000) unless the shape says otherwise. A line,
+            // not an area: Excel draws its outline only.
+            let guide (name: string) (otherwise: float) =
+                props |> Option.bind (path [ "prstGeom"; "avLst" ])
+                |> Option.bind (fun list -> kids list |> List.tryFind (fun gd -> attr "name" gd = Some name))
+                |> Option.bind (attr "fmla")
+                |> Option.bind (fun formula -> if formula.StartsWith "val " then number (formula.Substring 4) else None)
+                |> Option.defaultValue otherwise
+            let curl = min (min width height * guide "adj1" 8333.0 / 100000.0) (height / 4.0)
+            let point = height * guide "adj2" 50000.0 / 100000.0
+            let n (value: float) = string (System.Math.Round (value, 2))
+            let left = geometry = "leftBrace"
+            let outer, inner, mid = (if left then x + width, x, x + width / 2.0 else x, x + width, x + width / 2.0)
+            let top, centre, bottom = y, y + point, y + height
+            let d =
+                "M " + n outer + " " + n top + " Q " + n mid + " " + n top + " " + n mid + " " + n (top + curl)
+                + " L " + n mid + " " + n (centre - curl) + " Q " + n mid + " " + n centre + " " + n inner + " " + n centre
+                + " Q " + n mid + " " + n centre + " " + n mid + " " + n (centre + curl)
+                + " L " + n mid + " " + n (bottom - curl) + " Q " + n mid + " " + n bottom + " " + n outer + " " + n bottom
+            [ PPath (d, None, opacity, (strokeColor |> Option.orElse fillColor), max 0.75 strokeWidth) ]
         | "diamond" | "flowChartDecision" -> [ PPolyline ([ x + width / 2.0, y; x + width, y + height / 2.0; x + width / 2.0, y + height; x, y + height / 2.0 ], (fillColor |> Option.orElse (Some "none")), opacity, strokeColor, strokeWidth, None) ]
         | _ ->
             let adjust = props |> Option.bind (path [ "prstGeom"; "avLst"; "gd" ]) |> Option.bind (attr "fmla") |> Option.bind (fun formula -> if formula.StartsWith "val " then number (formula.Substring 4) else None)

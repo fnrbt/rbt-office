@@ -546,7 +546,8 @@ checks['api-cf'] = async () => {
         check('a colour scale: the lowest and the highest value get the end colours', [fillOf(0, 0), fillOf(4, 0)], [rgb('#F8696B'), rgb('#63BE7B')]);
         grid.RemoveConditionalFormat(scale);
         const bar = grid.AddConditionalFormat('A1:A6', kinds[29][1]); await frame();
-        check('a data bar: 10 and 50 of 0..100', [0, 4].map((row) => /linear-gradient\(to right, rgb\(255, 0, 0\) (\d+)%/.exec(getComputedStyle(node(row, 0)).backgroundImage)?.[1]), ['10', '50']);
+        // (A bar without the x14 part, as Excel 2007 made them, fades to white: drawn by a node of its own.)
+        check('a data bar: 10 and 50 of 0..100, red fading to white', [0, 4].map((row) => [node(row, 0).getAttribute('data-cf-bar'), node(row, 0).querySelector('.spreadsheet-cf-bar')?.getAttribute('data-cf-bar-color')]), [['10', '#FF0000'], ['50', '#FF0000']]);
         grid.RemoveConditionalFormat(bar);
         const icons = grid.AddConditionalFormat('A1:A6', kinds[30][1]); await frame();
         check('an icon set: an icon in every cell with a number, the lowest and the highest differ', [host.querySelectorAll('[data-cf-icon]').length >= 6, node(0, 0).querySelector('[data-cf-icon]')?.getAttribute('data-cf-icon'), node(4, 0).querySelector('[data-cf-icon]')?.getAttribute('data-cf-icon')], [true, '0', '2']);

@@ -328,5 +328,22 @@ ok "a shape linked to a cell shows the cell" (let svg = shapeSvg linkData linked
 ok "... and the text of the file when the cell cannot be read" (has (shapeSvg noData linked) "stale") (shapeSvg noData linked)
 ok "... which a plain field of no link keeps" (has (shapeSvg linkData (shapeOf "" "" (prst "rect") (boxed "<a:fld id=\"{1}\" type=\"TxLink\"><a:t>stale</a:t></a:fld>"))) "stale") ""
 
+// ---- a chart part that says little (as openpyxl writes them): Excel 2019's defaults ----------
+let bareChart =
+    "<chartSpace xmlns=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><chart>"
+    + "<title><tx><rich><a:bodyPr/><a:p><a:pPr><a:defRPr/></a:pPr><a:r><a:t>Fleet total</a:t></a:r></a:p></rich></tx></title><plotArea><lineChart><grouping val=\"standard\"/>"
+    + "<ser><idx val=\"0\"/><order val=\"0\"/><val><numRef><f>Nowhere!$A$1:$D$1</f><numCache><ptCount val=\"4\"/><pt idx=\"0\"><v>1</v></pt><pt idx=\"1\"><v>3</v></pt><pt idx=\"2\"><v>2</v></pt><pt idx=\"3\"><v>4</v></pt></numCache></numRef></val><smooth val=\"1\"/></ser>"
+    + "<axId val=\"10\"/><axId val=\"100\"/></lineChart><catAx><axId val=\"10\"/><delete val=\"0\"/><axPos val=\"b\"/><crossAx val=\"100\"/></catAx>"
+    + "<valAx><axId val=\"100\"/><delete val=\"0\"/><axPos val=\"l\"/><majorGridlines/><crossAx val=\"10\"/></valAx></plotArea><legend><legendPos val=\"t\"/></legend></chart></chartSpace>"
+let bare = Charts.parseChart zooTheme bareChart |> Option.get
+let bareStroke (stroke: Charts.Stroke option) = stroke |> Option.map (fun s -> match s.Paint with Charts.FillColor (color, _) -> color | _ -> "")
+eq "no look of its own: a grey frame with rounded corners, the title and legend over the plot"
+    (bareStroke bare.Border, bare.RoundedCorners, bare.TitleOverlay, bare.Legend |> Option.map (fun legend -> legend.Overlay)) (Some "#868686", true, true, Some true)
+eq "... black grid lines and axis lines" (bare.Axes |> List.map (fun axis -> axis.Kind, bareStroke axis.Line, axis.Gridlines |> Option.map (fun g -> bareStroke (Some g)) |> Option.flatten)) [ "cat", Some "#000000", None; "val", Some "#000000", Some "#000000" ]
+let bareScene = Charts.layoutChart zooTheme noData bare 480.0 288.0
+let titleText = bareScene.Items |> List.tryPick (fun item -> match item with Charts.PText (_, _, "Fleet total", size, _, _, bold, _, _) -> Some (Math.Round size, bold) | _ -> None)
+eq "... its title 10 pt bold" titleText (Some (Math.Round (10.0 * 96.0 / 72.0), true))
+ok "... a smoothed line is a curve" (bareScene.Items |> List.exists (fun item -> match item with Charts.PPath (d, None, _, Some _, _) -> d.Contains " C " | _ -> false)) "no curve"
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

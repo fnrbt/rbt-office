@@ -822,6 +822,30 @@ ok "xstring-escapes-decoded"
     && (cellOf dvWb "C1" |> Option.map (fun c -> c.Value)) = Some (XlsxReader.String "a\nb"))
    (sprintf "%A %A %A" dvWb.SharedStrings.[0] (cellOf dvWb "B1") (cellOf dvWb "C1"))
 
+// A table's filter without the columns whose button is hidden (templates that use a table for its look).
+let tableXml (filter: string) =
+    "<table xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" id=\"1\" name=\"T\" displayName=\"T\" ref=\"B5:D9\">" + filter
+    + "<tableColumns count=\"3\"><tableColumn id=\"1\" name=\"a\"/><tableColumn id=\"2\" name=\"b\"/><tableColumn id=\"3\" name=\"c\"/></tableColumns></table>"
+let filterOf filter = XlsxReader.Xlsx.parseTable (tableXml filter) |> Option.bind (fun t -> t.AutoFilter)
+let buttons = [ filterOf "<autoFilter ref=\"B5:D9\"/>"
+                filterOf "<autoFilter ref=\"B5:D9\"><filterColumn colId=\"0\" hiddenButton=\"1\"/></autoFilter>"
+                filterOf "<autoFilter ref=\"B5:D9\"><filterColumn colId=\"0\" hiddenButton=\"1\"/><filterColumn colId=\"1\" hiddenButton=\"1\"/><filterColumn colId=\"2\" hiddenButton=\"1\"/></autoFilter>"
+                filterOf "" ]
+ok "table filter buttons: all, hidden on the first column, all hidden (no column), no filter"
+   (buttons = [ Some (2, 4); Some (3, 4); Some (2, 1); None ]) (sprintf "%A" buttons)
+
+// A run in a colour of the theme ("OPEN vs. CLOSED" titles): kept as "theme:index[:tint]" and
+// resolved with the workbook's theme.
+let themedRuns =
+    XlsxReader.Xlsx.sharedStrings
+        """<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><r><rPr><b/><color theme="4"/></rPr><t>OPEN</t></r><r><rPr><color theme="1" tint="0.5"/></rPr><t> vs.</t></r></si></sst>"""
+let runColors = themedRuns.[0].Runs |> List.map (fun (_, props) -> props.Color)
+let theme = [| "FFFFFF"; "000000"; "E7E6E6"; "44546A"; "4472C4" |]
+ok "run colours of the theme: kept, then resolved"
+   (runColors = [ Some "theme:4"; Some "theme:1:0.5" ]
+    && (runColors |> List.map (Option.bind (XlsxReader.Xlsx.themeRunColor theme))) = [ Some "4472C4"; Some "808080" ])
+   (sprintf "%A %A" runColors (runColors |> List.map (Option.bind (XlsxReader.Xlsx.themeRunColor theme))))
+
 printfn ""
 printfn "OfficeFormat XLSX reader tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

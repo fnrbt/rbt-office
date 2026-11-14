@@ -437,7 +437,9 @@ let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : Ce
             // the smallest value still shows a bar.
             let lo = if low.Kind = CfvoMin && lo >= 0.0 then 0.0 else lo
             let fraction = if hi - lo < 1e-12 then 1.0 else (n - lo) / (hi - lo)
-            { noEffect with DataBar = Some (plainDataBar (max 0.0 (min 1.0 fraction)) (if color.StartsWith "#" then color else "#" + color)) }
+            // (The bar of Excel 2007, a rule without the x14 part: its colour fading to white, as
+            // Excel 2019 draws it.)
+            { noEffect with DataBar = Some { plainDataBar (max 0.0 (min 1.0 fraction)) (if color.StartsWith "#" then color else "#" + color) with Gradient = true } }
          | _ -> noEffect)
     | DataBarEx (low, high, color, options), Number n ->
         let resolved = thresholdsOf ctx rule [ low; high ]

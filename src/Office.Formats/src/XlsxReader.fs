@@ -54,7 +54,9 @@ type RunProps = {
     /// Renderers emit two parallel strokes when true.
     UnderlineDouble: bool
     Strikethrough: bool
-    Color: string option       // ARGB hex without '#' prefix
+    /// RRGGBB hex without '#'; a colour of the theme as "theme:index[:tint]" (the theme is read
+    /// after the strings: `themeRunColor` resolves it).
+    Color: string option
     FontName: string option
     FontSize: float option     // points
     /// `<scheme val="major|minor"/>` — when present (and no explicit
@@ -578,10 +580,12 @@ type TableDefinition = {
     /// ("", "") for nothing.
     Totals: (string * string) list
     Style: TableStyleInfo option
-    /// (startCol, endCol) span of `<autoFilter ref="…">`, 1-indexed. None when
-    /// the table has no autoFilter child. Excel renders a dropdown button on
-    /// each header cell whose column falls in this range; row coords are
-    /// implicit (header is always row StartRow).
+    /// (startCol, endCol) span of `<autoFilter ref="…">`, 1-indexed, less the
+    /// columns at its ends whose button is hidden (`hiddenButton`; every one
+    /// hidden: endCol = startCol - 1, no column). None when the table has no
+    /// autoFilter child. Excel renders a dropdown button on each header cell
+    /// whose column falls in this range; row coords are implicit (header is
+    /// always row StartRow).
     AutoFilter: (int * int) option
 }
 
@@ -1562,9 +1566,14 @@ module Xlsx =
         let colorHex =
             match sElem "color" rPr with
             | Some node ->
-                Xml.attr "rgb" node
-                |> Option.map (fun raw ->
-                    ValueText.Color.withoutAlpha (raw.TrimStart('#')))
+                match Xml.attr "rgb" node, Xml.attr "theme" node with
+                | Some raw, _ -> Some (ValueText.Color.withoutAlpha (raw.TrimStart('#')))
+                // (A colour of the theme, which is not read yet: "theme:index[:tint]", see RunProps.Color.)
+                | None, Some index when index <> "" ->
+                    match Xml.attr "tint" node with
+                    | Some tint when tint <> "" && tint <> "0" -> Some ("theme:" + index + ":" + tint)
+                    | _ -> Some ("theme:" + index)
+                | _ -> None
             | None -> None
         let fontName =
             sElem "rFont" rPr |> Option.bind (Xml.attr "val")
@@ -1682,9 +1691,16 @@ module Xlsx =
                         | "none" -> underline <- false
                         | _ -> ()
                     | "color" ->
-                        match reader.GetAttribute("rgb") with
-                        | null -> ()
-                        | raw ->
+                        match reader.GetAttribute("rgb"), reader.GetAttribute("theme") with
+                        | null, null -> ()
+                        | null, index when index <> "" ->
+                            // (As `parseRunProps`: "theme:index[:tint]".)
+                            color <-
+                                match reader.GetAttribute("tint") with
+                                | null | "" | "0" -> Some ("theme:" + index)
+                                | tint -> Some ("theme:" + index + ":" + tint)
+                        | null, _ -> ()
+                        | raw, _ ->
                             let trimmed = raw.TrimStart('#')
                             color <- Some (ValueText.Color.withoutAlpha trimmed)
                     | "rFont" ->
@@ -3668,9 +3684,22 @@ module Xlsx =
                                 }))
                     let autoFilter =
                         sElem "autoFilter" doc
-                        |> Option.bind (fun node -> Xml.attr "ref" node)
-                        |> Option.bind parseRange
-                        |> Option.map (fun (_, fc1, _, fc2) -> (fc1, fc2))
+                        |> Option.bind (fun node ->
+                            Xml.attr "ref" node
+                            |> Option.bind parseRange
+                            |> Option.map (fun (_, fc1, _, fc2) ->
+                                // (Without the columns whose button is hidden - `hiddenButton`, as
+                                // templates that use a table for its look have them all - at the
+                                // ends: a filter with every button hidden spans no column.)
+                                let hidden =
+                                    Xml.descendants "filterColumn" node
+                                    |> List.filter (fun child -> Xml.attr "hiddenButton" child |> Option.exists (fun v -> v = "1" || v = "true"))
+                                    |> List.choose (fun child -> Xml.attr "colId" child |> Option.bind tryParseInt)
+                                    |> Set.ofList
+                                let shown = [ fc1 .. fc2 ] |> List.filter (fun col -> not (Set.contains (col - fc1) hidden))
+                                if hidden.IsEmpty then fc1, fc2
+                                elif shown.IsEmpty then fc1, fc1 - 1
+                                else List.head shown, List.last shown))
                     let tableName =
                         Xml.attr "displayName" doc
                         |> Option.orElse (Xml.attr "name" doc)
@@ -3907,6 +3936,22 @@ module Xlsx =
                 |> Option.defaultValue 0.0
             if tint = 0.0 then Some c
             else Some (applyColorTint c tint)
+
+    /// A run's colour (RunProps.Color) as RRGGBB: a colour of the theme ("theme:index[:tint]")
+    /// resolved with the workbook's theme colours; None for one the theme has not.
+    let themeRunColor (themeColors: string array) (color: string) : string option =
+        if not (color.StartsWith "theme:") then Some color
+        else
+            match color.Split(':') with
+            | [| _; index |] | [| _; index; _ |] as parts ->
+                match tryParseInt index with
+                | Some n when n >= 0 && n < themeColors.Length ->
+                    let tint = if parts.Length = 3 then tryParseFloat parts.[2] |> Option.defaultValue 0.0 else 0.0
+                    let baseColor = themeColors.[n].TrimStart('#')
+                    let baseColor = if baseColor.Length = 8 then baseColor.Substring 2 else baseColor
+                    Some (if tint = 0.0 then baseColor else applyColorTint baseColor tint)
+                | _ -> None
+            | _ -> None
 
     // Style parsing. parseFont returns an 9-tuple covering every <font>
     // child plus the scheme hint — callers pick the slots they care
