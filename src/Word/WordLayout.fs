@@ -1492,15 +1492,28 @@ module Table =
             resolved.Add({ rowArray.[rowIndex] with Cells = arrayToList cellRows.[rowIndex] })
         resizeArrayToList resolved
 
-    let outerCellInsets scale (table: TableBlock) =
-        table.Rows
-        |> List.tryPick (fun row ->
-            match positionedCells row with
-            | [] -> None
-            | _ ->
-                let rowPadding = rowCellPaddingDefaults scale table row
-                Some (rowPadding.Left, rowPadding.Right))
-        |> Option.defaultValue (0.0, 0.0)
+    /// How far a table reaches past its indent on the left and right. In a document of
+    /// compatibilityMode 14 or older Word puts the text of the first cell where the
+    /// paragraphs' text is: the table starts that cell's left margin further left (and a
+    /// table as wide as the text reaches as far past it on the right, by the row's margin).
+    /// From mode 15 on the table's edge is at the indent. A centred or right-aligned
+    /// table is placed by its edges in every mode.
+    let outerCellInsets scale (compatibilityMode: int) (table: TableBlock) =
+        let aligned =
+            match table.Alignment with
+            | Some alignment -> (match alignment.ToLowerInvariant() with "center" | "right" | "end" -> true | _ -> false)
+            | None -> false
+        if compatibilityMode >= 15 || aligned then (0.0, 0.0)
+        else
+            table.Rows
+            |> List.tryPick (fun row ->
+                match positionedCells row with
+                | [] -> None
+                | first :: _ ->
+                    let rowPadding = rowCellPaddingDefaults scale table row
+                    let firstPadding = cellPaddingForRow scale table row first.Cell
+                    Some (firstPadding.Left, rowPadding.Right))
+            |> Option.defaultValue (0.0, 0.0)
 
     let rowColumnCount (row: TableRow) =
         let mutable currentColumn = max 0 row.GridBefore

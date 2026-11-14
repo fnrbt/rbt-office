@@ -1379,7 +1379,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
     elif numColumns = 0 then
         ([], currentY + WordLayout.Table.emptyTableAdvance settings.LineHeight)
     else
-        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
+        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableAvailableWidth = max 0.0 (availableWidth - WordLayout.Table.tableIndent tableBlock)
         let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
         let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
@@ -2893,7 +2893,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         let styleContext = WordStyles.styleContext doc
         let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext) + WordLayout.Table.tableIndent tableBlock
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
-        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
+        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight
         let columnWidths = tableColumnWidths tableMaxWidth tableBlock
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths

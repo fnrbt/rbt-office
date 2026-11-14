@@ -34,7 +34,7 @@ let measureRange = Layout.rangeMeasurerFromTextMeasurer measureText
 let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
     let s = doc.PageSetup
     { Width = s.PageWidth; PageHeight = s.PageHeight; FontSize = 16.0; LineHeight = 24.0; PaddingLeft = s.MarginLeft; PaddingTop = s.MarginTop
-      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = s.DefaultTabStop }
+      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = s.DefaultTabStop; CompatibilityMode = s.CompatibilityMode }
 let textOf (para: Doc.ParagraphBlock) = toString para.Buffer
 let paragraphs (doc: Doc.Document) = doc.Blocks |> List.choose Doc.tryGetParagraph
 

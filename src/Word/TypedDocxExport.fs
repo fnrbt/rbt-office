@@ -426,14 +426,14 @@ let private pageSetup (value: PageSetup) : WordEditorPackage.PageSetup =
     { PageWidth = value.PageWidth; PageHeight = value.PageHeight; MarginLeft = value.MarginLeft; MarginRight = value.MarginRight
       MarginTop = value.MarginTop; MarginBottom = value.MarginBottom; HeaderDistance = value.HeaderDistance; FooterDistance = value.FooterDistance
       DifferentFirstPage = value.DifferentFirstPage; EvenAndOddHeaders = value.EvenAndOddHeaders
-      DefaultTabStop = Some value.DefaultTabStop; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
+      DefaultTabStop = Some value.DefaultTabStop; CompatibilityMode = Some value.CompatibilityMode; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
       HeaderReferences = references value.HeaderReferences; FooterReferences = references value.FooterReferences
       PageNumberStart = value.PageNumberStart; PageNumberFormat = value.PageNumberFormat; VerticalAlign = value.VerticalAlign }
 let private sectionSetup (value: SectionPageSetup) : WordEditorPackage.PageSetup =
     { PageWidth = value.PageWidth; PageHeight = value.PageHeight; MarginLeft = value.MarginLeft; MarginRight = value.MarginRight
       MarginTop = value.MarginTop; MarginBottom = value.MarginBottom; HeaderDistance = value.HeaderDistance; FooterDistance = value.FooterDistance
       DifferentFirstPage = value.DifferentFirstPage; EvenAndOddHeaders = value.EvenAndOddHeaders
-      DefaultTabStop = None; Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
+      DefaultTabStop = None; CompatibilityMode = None; Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
       PageNumberStart = None; PageNumberFormat = None; VerticalAlign = None }
 let private paragraphBorders (value: ParagraphBorders option) : WordEditorPackage.Borders option =
     let border (value: ParagraphBorder) : WordEditorPackage.Border =

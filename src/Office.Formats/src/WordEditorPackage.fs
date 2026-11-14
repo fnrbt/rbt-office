@@ -98,6 +98,8 @@ type PageSetup = {
     DifferentFirstPage: bool
     EvenAndOddHeaders: bool
     DefaultTabStop: float option
+    /// See DocxReader.PageSetup.CompatibilityMode.
+    CompatibilityMode: int option
     Columns: SectionColumns option
     SectionStart: string option
     HeaderReferences: HeaderFooterReference list
@@ -1107,6 +1109,7 @@ let private pageSetupToObject (setup: PageSetup option) : obj =
             "DifferentFirstPage" ==> setup.DifferentFirstPage
             "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
             "DefaultTabStop" ==> setup.DefaultTabStop
+            "CompatibilityMode" ==> setup.CompatibilityMode
             "ColumnCount" ==> columns.Count; "ColumnSpace" ==> columns.Gap
             "ColumnSeparator" ==> columns.Separator
             "ColumnWidths" ==> (columns.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> List.toArray)
@@ -1598,6 +1601,7 @@ let private readPageSetup value =
             DifferentFirstPage = boolean value "DifferentFirstPage"
             EvenAndOddHeaders = boolean value "EvenAndOddHeaders"
             DefaultTabStop = number value "DefaultTabStop"
+            CompatibilityMode = integer value "CompatibilityMode"
             Columns = columns
             SectionStart = textOf value "SectionStart"
             HeaderReferences = readRefs value "HeaderReferences"

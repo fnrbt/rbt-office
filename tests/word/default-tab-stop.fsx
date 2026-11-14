@@ -42,7 +42,7 @@ let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
     let s = doc.PageSetup
     { Width = s.PageWidth; PageHeight = s.PageHeight; FontSize = 16.0; LineHeight = 24.0; PaddingLeft = s.MarginLeft; PaddingTop = s.MarginTop
       MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5
-      DefaultTabStop = s.DefaultTabStop }
+      DefaultTabStop = s.DefaultTabStop; CompatibilityMode = s.CompatibilityMode }
 let layoutsOf (doc: Doc.Document) = Layout.layoutDocumentPages (settingsOf doc) measureText measureRange doc |> fst
 
 /// The x of the text after each tab of the first paragraph.

@@ -31,6 +31,9 @@ let private pageSetup (value: WordEditorPackage.PageSetup) : PageSetup =
       HeaderDistance = value.HeaderDistance; FooterDistance = value.FooterDistance
       DifferentFirstPage = value.DifferentFirstPage; EvenAndOddHeaders = value.EvenAndOddHeaders
       DefaultTabStop = value.DefaultTabStop |> Option.filter (fun x -> x > 0.0) |> Option.defaultValue defaultPageSetup.DefaultTabStop
+      // (A document without the setting - or without a settings part - is older than Word 2010:
+      // Word opens it in compatibility mode.)
+      CompatibilityMode = value.CompatibilityMode |> Option.defaultValue 12
       Columns = value.Columns |> Option.filter (fun x -> x.Count >= 2) |> Option.map columns
       SectionStart = value.SectionStart; HeaderReferences = references value.HeaderReferences
       FooterReferences = references value.FooterReferences; PageNumberStart = value.PageNumberStart

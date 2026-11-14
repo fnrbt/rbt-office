@@ -62,7 +62,8 @@ word_suites=(
     import-smoke package-io commands nested-table-split xml-scan header-footer
     table-merge-split table-columns anchored-objects drawing-order text-boxes
     group-shapes roundtrip-layout table-break-borders sections table-insert
-    wrap-band list-levels drop-caps default-tab-stop note-layout
+    wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
+    column-balance
 )
 
 # These are required corpus anchors and all drawing fixtures that the formats

@@ -646,6 +646,9 @@ type PageSetup = {
     /// w:defaultTabStop of the settings part, in pixels: the distance of the
     /// default tab stops (Word's 720 twips when the part says none).
     DefaultTabStop: float option
+    /// The compatibilityMode compatSetting of the settings part (14: Word 2010,
+    /// 15: Word 2013 and later); None when it has none (an older document).
+    CompatibilityMode: int option
     Columns: SectionColumns option
     SectionStart: string option   // body sectPr w:type (e.g. "continuous")
     /// Header / footer references and page number start of the body-level
@@ -4430,7 +4433,17 @@ let private parseDefaultTabStop (xml: string option) =
     |> wordTwipsToPixels
     |> Option.filter (fun width -> width > 0.0)
 
-let private parsePageSetup evenAndOddHeaders defaultTabStop (sectPr: XmlNode option) : PageSetup option =
+/// The compatibilityMode w:compatSetting of the settings part's w:compat.
+let private parseCompatibilityMode (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.bind (fun settings ->
+        Ns.descendantsNs "compatSetting" settings
+        |> List.tryFind (fun node -> Docx.attr "name" node = Some "compatibilityMode"))
+    |> Option.bind (Docx.attr "val")
+    |> Option.bind (fun value -> match System.Int32.TryParse value with | true, mode -> Some mode | _ -> None)
+
+let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode (sectPr: XmlNode option) : PageSetup option =
     sectPr
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
@@ -4448,6 +4461,7 @@ let private parsePageSetup evenAndOddHeaders defaultTabStop (sectPr: XmlNode opt
             DifferentFirstPage = Some (Docx.onOff "titlePg" section |> Option.defaultValue false)
             EvenAndOddHeaders = Some evenAndOddHeaders
             DefaultTabStop = defaultTabStop
+            CompatibilityMode = compatibilityMode
             Columns = columns
             SectionStart = Docx.getPropVal "type" "val" section
             HeaderReferences = Docx.headerFooterReferences "headerReference" section
@@ -4661,6 +4675,8 @@ type private MainPart = {
     EvenAndOddHeaders: bool
     /// See PageSetup.DefaultTabStop.
     DefaultTabStop: float option
+    /// See PageSetup.CompatibilityMode.
+    CompatibilityMode: int option
     Properties: DocumentProperties option
 }
 
@@ -4729,6 +4745,7 @@ let private readMainPart (source: PartSource) : MainPart option =
           NumberingDefinitions = numberingXml |> Option.map Numbering.parseNumbering |> Option.defaultValue []
           EvenAndOddHeaders = parseSettings settingsXml
           DefaultTabStop = parseDefaultTabStop settingsXml
+          CompatibilityMode = parseCompatibilityMode settingsXml
           Properties = propsXml |> Option.map Properties.parseProperties })
 
 /// The headers, the footers, the notes and the comments. `headerRefTypes` /
@@ -4972,7 +4989,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
-            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop
+            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode
 
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
@@ -5246,7 +5263,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
         let finalSetup =
             cursorAndFinal
             |> Option.bind (fun (cursor, (start, node)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some node))
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some node))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
@@ -5279,7 +5296,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     else
                         openSectionAt <- at
                         openSectionSetup <-
-                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some (parseElement cursor at))
+                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some (parseElement cursor at))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -5436,7 +5453,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     // body that has more than one.)
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
-                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop (Some (parseElement cursor firstSectionProperties))
+                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some (parseElement cursor firstSectionProperties))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup
@@ -5979,7 +5996,12 @@ let internal resolveTableStyle (styleMap: Map<string, StyleDefinition>) styleId 
                         Band2VerticalTableCellProperties = mergeConditionalCell (baseStyle |> Option.bind (fun style -> style.Band2VerticalTableCellProperties)) style.Band2VerticalTableCellProperties
                 }
 
-    styleId |> Option.bind (resolve Set.empty)
+    // (A table that names no style has the default table style - Word's "Normal Table", whose
+    // cell margins of 108 twips are those of every table without margins of its own.)
+    styleId
+    |> Option.orElseWith (fun () ->
+        styleMap |> Map.tryPick (fun id style -> if style.StyleType = "table" && style.IsDefault then Some id else None))
+    |> Option.bind (resolve Set.empty)
 
 /// What `resolveStyle` and `defaultParagraphStyleId` found for the style map
 /// in hand, by style id: they are asked for every paragraph and every run of

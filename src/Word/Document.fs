@@ -757,6 +757,12 @@ type PageSetup = {
     /// The distance of the default tab stops, in pixels (w:defaultTabStop of
     /// the settings part; Word's 720 twips, half an inch, when it says none).
     DefaultTabStop: float
+    /// Word's compatibilityMode of the document (settings part, w:compat): 15 for
+    /// Word 2013 and later, 14 for Word 2010, 12 for a document that states none
+    /// (an older one, or one without a settings part - Word opens those in
+    /// compatibility mode). A new document is 12 too: it is saved without a settings
+    /// part, and so Word shows it. Layout differs by it: see LayoutSettings.CompatibilityMode.
+    CompatibilityMode: int
     Columns: SectionColumns option
     SectionStart: string option
     /// Header / footer references (kind, relationship id) of the final section,
@@ -908,6 +914,7 @@ let defaultPageSetup = {
     DifferentFirstPage = false
     EvenAndOddHeaders = false
     DefaultTabStop = 48.0
+    CompatibilityMode = 12
     Columns = None
     SectionStart = None
     HeaderReferences = []

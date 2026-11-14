@@ -460,6 +460,8 @@ type LayoutSettings = {
     LongTrailingSpaceFitSafety: float
     /// The distance of the default tab stops (PageSetup.DefaultTabStop).
     DefaultTabStop: float
+    /// Word's compatibility mode of the document (PageSetup.CompatibilityMode).
+    CompatibilityMode: int
 }
 
 /// Document geometry is independent of the host viewport. Font defaults and
@@ -480,7 +482,8 @@ let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) 
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
       LongTrailingSpaceFitSafety = trailingSpaceFitSafety
-      DefaultTabStop = doc.PageSetup.DefaultTabStop }
+      DefaultTabStop = doc.PageSetup.DefaultTabStop
+      CompatibilityMode = doc.PageSetup.CompatibilityMode }
 
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
@@ -542,6 +545,25 @@ let private moveLayoutToY newY (layout: BlockLayout) =
     { layout with
         Y = layout.Y + delta
         Lines = shiftLinesY delta layout.Lines }
+
+/// A drop cap's frame beside the first line (`first`) of the paragraph after it: how far
+/// down the lines beside it go, and the letter placed in it. The frame is the w:lines
+/// lines high, the letter's line ending where the last of them ends; a letter whose own
+/// line is higher than that and not of an exact height (Word writes an exact one, the
+/// lines' height) makes the frame as high as its line, from the top of the first line -
+/// more lines go beside it (Word 2019, field-notes.docx: a 40 pt letter at 1.15 lines
+/// beside four lines of 10.5 pt text).
+let private dropCapFrame (capPara: ParagraphBlock) (capStyle: ParagraphStyle) (capLayout: BlockLayout) (first: MeasuredLine) (cap: DropCap) =
+    let linesHeight = float cap.Lines * first.Height
+    let exact = (capPara.Metadata.LineSpacingRule |> Option.orElse capStyle.LineSpacingRule) = Some "exact"
+    match capLayout.Lines, List.tryLast capLayout.Lines with
+    | capFirst :: _, Some capLast ->
+        let capHeight = capLast.Y + capLast.Height - capFirst.Y
+        if capHeight > linesHeight + 0.5 && not exact then
+            capHeight, moveLayoutToY (capLayout.Y + first.Y - capFirst.Y) capLayout
+        else
+            linesHeight, moveLayoutToY (capLayout.Y + first.Y + linesHeight - (capLast.Y + capLast.Height)) capLayout
+    | _ -> linesHeight, capLayout
 
 let private paginateBlock settings y blockHeight =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -3921,7 +3943,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
             if nestedTableLayoutDepth >= maxNestedTableLayoutDepth then
                 [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
             else
-                let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale nestedTable
+                let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode nestedTable
                 let nestedAvailableWidth = max 0.0 (cellMaxWidth - WordLayout.Table.tableIndent nestedTable)
                 let nestedTableMaxWidth = nestedAvailableWidth + nestedOuterLeft + nestedOuterRight
                 let nestedColumnWidths = tableColumnWidths nestedTableMaxWidth nestedTable
@@ -4787,7 +4809,7 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
         | ValueNone -> listCountersBeforeTable doc tableBlock
     let measureScope = tableMeasureScopeFrom memo initialCounters tableBlock
     let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
-    let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock |> snd
+    let outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock |> snd
     let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
     let resolvedRows =
@@ -4886,7 +4908,7 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
 let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableY =
     let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
     let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
-    let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
+    let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
     let tableMaxWidth = maxWidth + outerLeft + outerRight
     let columnWidths = tableColumnWidths tableMaxWidth tableBlock
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
@@ -5617,7 +5639,7 @@ let private layoutDocumentPassKept
             if numColumns > 0 then
                 let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
                 let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
-                let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale tableBlock
+                let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
                 let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
                 let columnWidths = tableColumnWidths tableMaxWidth tableBlock
                 let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
@@ -5898,12 +5920,13 @@ let private layoutDocumentPassKept
             let placeWithDropCap (atY: float) (obstacles: FloatingObstacle list) (placed: PlacedFloatingBox list) =
                 let laidOut () = layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstacles placed
                 match capLayoutAt atY with
-                | Some (_, capWidth, cap) when not cap.InMargin && capWidth > 0.0 ->
+                | Some (capLayout, capWidth, cap) when not cap.InMargin && capWidth > 0.0 ->
                     let probe, _, _, _ = laidOut ()
                     match probe.Lines with
                     | first :: _ ->
                         // (Short of its last line's bottom, so that the line after it is clear.)
-                        let obstacle = (0.0, first.Y, capWidth + cap.Distance, float cap.Lines * first.Height - 0.5)
+                        let frameHeight, _ = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first cap
+                        let obstacle = (0.0, first.Y, capWidth + cap.Distance, frameHeight - 0.5)
                         layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters (obstacle :: obstacles) placed
                     | [] -> laidOut ()
                 | _ -> laidOut ()
@@ -6047,12 +6070,7 @@ let private layoutDocumentPassKept
             | first :: _ ->
                 match capLayoutAt layout.Y with
                 | Some (capLayout, capWidth, cap) ->
-                    // (Its line ends where the lines it is as high as end: its
-                    // baseline on theirs, whatever its own line height.)
-                    let capLayout =
-                        match List.tryLast capLayout.Lines with
-                        | Some capLast -> moveLayoutToY (capLayout.Y + first.Y + float cap.Lines * first.Height - (capLast.Y + capLast.Height)) capLayout
-                        | None -> capLayout
+                    let _, capLayout = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first cap
                     addBodyLayout (if cap.InMargin then shiftBlockX (-(capWidth + cap.Distance)) capLayout else capLayout)
                 | None -> ()
             | [] -> ()
@@ -6576,6 +6594,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     // The paragraph placed just above in this column, for spacing collapse:
     // (paragraph, style, effective metadata, spacing after). None at a column top.
     let mutable previousParagraph: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
+    // A drop cap (w:framePr w:dropCap) waiting for the paragraph after it, as in the
+    // single-column pass (see layoutDocumentPassKept).
+    let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
     let advanceColumn () =
         col <- col + 1
         if col >= n then
@@ -6598,11 +6619,12 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage page)
-        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
+        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = pendingDropCap
         CheckHintOffset = hintOffset
     }
     let restoreState (state: PassCheckpoint) =
         hintOffset <- state.CheckHintOffset
+        pendingDropCap <- state.CheckDropCap
         col <- state.CheckCol
         page <- state.CheckPage
         y <- state.CheckY
@@ -6650,7 +6672,15 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
 
     let flowBlock (blockIndex: int) =
         let block = blocks.[blockIndex]
+        let nextIsParagraphWithoutCap () =
+            blockIndex + 1 < blocks.Length
+            && (match tryGetParagraph blocks.[blockIndex + 1] with
+                | Some next -> next.Metadata.DropCap.IsNone
+                | None -> false)
         match tryGetParagraph block with
+        | Some para0 when para0.Metadata.DropCap.IsSome && pendingDropCap.IsNone && nextIsParagraphWithoutCap () ->
+            // A drop cap takes no room of its own: it is placed with the paragraph after it.
+            pendingDropCap <- Some (para0, forBlockInContext styleContext block)
         | Some para0 ->
             // (In columns a mark may be where Word started a column: it starts one here too.)
             let renderedOrdinal = if n <= 1 then para0.Metadata.RenderedPageBreakBefore else None
@@ -6670,6 +6700,16 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             | Some ordinal -> hintOffset <- Some (page - ordinal)
             | None -> ()
             let style = forBlockInContext styleContext block
+            let dropCap = pendingDropCap
+            pendingDropCap <- None
+            // The drop cap's letter, laid out on its own at the column's width (see layoutDocumentPassKept).
+            let capLayoutAt (atY: float) =
+                match dropCap with
+                | None -> None
+                | Some (capPara, capStyle) ->
+                    let capLayout, _, _, _ = layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) atY 0.0 capStyle (effectiveBufferInContext styleContext) capPara counters [] []
+                    let capWidth = capLayout.Lines |> List.fold (fun widest (line: MeasuredLine) -> max widest line.Width) 0.0
+                    Some (capLayout, capWidth, capPara.Metadata.DropCap.Value)
             let mutable keepChecked = false
             let mutable remaining = para0
             // Characters of the paragraph already placed in earlier columns.
@@ -6688,8 +6728,29 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && not (atColumnTop ()) ->
                         collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
                     | _ -> y
+                let laidOut obstacles =
+                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY 0.0 style (effectiveBufferInContext styleContext) remaining counters obstacles []
+                // (The paragraph's first lines go around the drop cap: they stand beside it.)
+                let cap = if isContinuation then None else capLayoutAt layoutY
                 let rawLayout, newCounters, _, _ =
-                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY 0.0 style (effectiveBufferInContext styleContext) remaining counters [] []
+                    let probe = laidOut []
+                    match cap with
+                    | Some (capLayout, capWidth, capFrame) when not capFrame.InMargin && capWidth > 0.0 ->
+                        let probeLayout, _, _, _ = probe
+                        match probeLayout.Lines with
+                        | first :: _ ->
+                            let frameHeight, _ = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first capFrame
+                            laidOut [ (0.0, first.Y, capWidth + capFrame.Distance, frameHeight - 0.5) ]
+                        | [] -> probe
+                    | _ -> probe
+                // The letter, its baseline on that of the last line it is as high as.
+                let addCap () =
+                    match cap, rawLayout.Lines with
+                    | Some (capLayout, capWidth, capFrame), first :: _ ->
+                        let _, capLayout = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first capFrame
+                        let capLayout = if capFrame.InMargin then shiftBlockX (-(capWidth + capFrame.Distance)) capLayout else capLayout
+                        results.Add(shiftBlockX (columnDx col) capLayout)
+                    | _ -> ()
                 let newCounters =
                     if isContinuation then snd (WordLayout.Numbering.markerAndCounters (WordStyles.effectiveMetadata style para0.Metadata) counters)
                     else newCounters
@@ -6725,6 +6786,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         else
                             stillFitting <- false
                 let placeWhole () =
+                    addCap ()
                     results.Add(shiftBlockX (columnDx col) layout)
                     addPageFootnotes (layoutFootnotes layout.Lines)
                     counters <- newCounters
@@ -6740,6 +6802,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     let fitLines = takeLines fitCount layout.Lines
                     match lastFit with
                     | Some lastFit ->
+                        addCap ()
                         results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
                         addPageFootnotes (layoutFootnotes fitLines)
                         // lastFit.EndOffset is in paragraph offsets; the buffer

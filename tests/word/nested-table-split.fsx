@@ -123,7 +123,7 @@ let settings : LayoutSettings =
       MarginBottom = max source.PageSetup.MarginBottom (if hasFooter then source.PageSetup.FooterDistance + 36.0 else source.PageSetup.MarginBottom)
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0 }
+      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12 }
 let mutable editorSplits = 0
 let mutable editorNestedSplits = 0
 for fillers in 20 .. 44 do
