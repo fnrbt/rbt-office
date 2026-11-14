@@ -171,5 +171,20 @@ let single = serializeSelection (SingleCell (0, 0)) tileSource false
 eq "tile-one-cell-fill"  (pasteAnchors (Range (5, 0, 6, 1)) single |> List.length) 4
 
 printfn ""
+// Rows and columns put in are the size of the one before them, as Excel makes them (of the one after at the
+// start); a hidden neighbour's size (0) is not taken; a deletion takes nothing.
+let sized =
+    { createEmpty 20 10 with
+        RowHeights = Map.ofList [ 0, 30.0; 2, 40.0; 5, 0.0 ]
+        ColumnWidths = Map.ofList [ 0, 120.0; 3, 0.0 ] }
+let applied edit = Rbt.Spreadsheet.Model.applyStructureEdit edit sized
+eq "insert rows: height of the row above" (applied (InsertRows (3, 2))).RowHeights (Map.ofList [ 0, 30.0; 2, 40.0; 3, 40.0; 4, 40.0; 7, 0.0 ])
+eq "insert rows at the start: height of the first row" (applied (InsertRows (0, 1))).RowHeights (Map.ofList [ 0, 30.0; 1, 30.0; 3, 40.0; 6, 0.0 ])
+eq "insert rows below a default row: default" (applied (InsertRows (2, 1))).RowHeights (Map.ofList [ 0, 30.0; 3, 40.0; 6, 0.0 ])
+eq "insert rows below a hidden row: shown" (applied (InsertRows (6, 1))).RowHeights (Map.ofList [ 0, 30.0; 2, 40.0; 5, 0.0 ])
+eq "insert columns: width of the column to the left" (applied (InsertCols (1, 1))).ColumnWidths (Map.ofList [ 0, 120.0; 1, 120.0; 4, 0.0 ])
+eq "insert columns right of a hidden one: shown" (applied (InsertCols (4, 2))).ColumnWidths (Map.ofList [ 0, 120.0; 3, 0.0 ])
+eq "delete rows: nothing taken" (applied (DeleteRows (1, 1))).RowHeights (Map.ofList [ 0, 30.0; 1, 40.0; 4, 0.0 ])
+
 printfn "Stage 24 move tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

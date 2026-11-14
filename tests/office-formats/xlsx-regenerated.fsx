@@ -412,15 +412,18 @@ do
     inOrder "column inserted: the part's elements are in the schema's order" now
     let columns = (XlsxReader.loadBytesNative saved |> Option.get).Sheets |> List.item index |> fun sheet -> sheet.Columns
     let inserted = columns |> List.find (fun column -> column.Index <= 5 && column.MaxIndex >= 5)
-    ok "inserted column: an explicit default width prevents Excel hiding a styled column"
-        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - edited.DefaultColumnWidth) < 0.01))
+    // (Its width is the column's to the left, as Excel makes it; written, so Excel does not hide a styled column.)
+    let expected = edited.ColumnWidths |> Map.tryFind 4 |> Option.defaultValue edited.DefaultColumnWidth
+    ok "inserted column: an explicit width (the one to the left's) prevents Excel hiding a styled column"
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - expected) < 0.01))
         (sprintf "%A" inserted)
 do
     let saved, edited = exportWith (M.insertColumn 1 >> M.insertColumn 3 >> M.deleteColumn 1)
     let columns = (XlsxReader.loadBytesNative saved |> Option.get).Sheets |> List.item index |> fun sheet -> sheet.Columns
     let inserted = columns |> List.find (fun column -> column.Index <= 3 && column.MaxIndex >= 3)
-    ok "inserted column: its visible default width follows later insertion and deletion"
-        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - edited.DefaultColumnWidth) < 0.01))
+    let expected = edited.ColumnWidths |> Map.tryFind 2 |> Option.defaultValue edited.DefaultColumnWidth
+    ok "inserted column: its visible width follows later insertion and deletion"
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - expected) < 0.01))
         (sprintf "%A" inserted)
 
 // ---- a note is a change of the comments part and of its box, not of the sheet's part ------

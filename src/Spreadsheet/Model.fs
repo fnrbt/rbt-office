@@ -3785,6 +3785,20 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
     // made from its entries in order: `mapOfOrdered`.)
     let moveAddressMap (items: Map<CellAddress, 'T>) : Map<CellAddress, 'T> = moveOrderedMap moveAddr items
     let moveIndexMap (items: Map<int, 'T>) : Map<int, 'T> = moveIndexKeyed isInsert at count moveIndex items
+    // Rows or columns put in are the size of the one before them (of the one
+    // after, put in at the start), as Excel makes them; a hidden one's size is
+    // not taken (they are put in shown, at the default size).
+    let inserted (sizes: Map<int, float>) =
+        let moved = moveIndexMap sizes
+        if not isInsert then moved
+        else
+            match Map.tryFind (if at > 0 then at - 1 else at) sizes with
+            | Some size when size > 0.0 ->
+                let mutable result = moved
+                for index in at .. at + count - 1 do result <- Map.add index size result
+                result
+            | _ -> moved
+
 
     // The cells (see `moveCellMap`), with their formula index.
     let formulaCells = ResizeArray<CellAddress>()
@@ -3967,7 +3981,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 let sizes = if onRows then model.RowHeights else model.ColumnWidths
                 let hidden = if onRows && not (Map.isEmpty model.Filters) then model.FilterHiddenRows else [||]
                 let oldPrefix = AxisGeometry.prefix defaultSize sizes hidden
-                let newPrefix = AxisGeometry.prefix defaultSize (moveIndexMap sizes) (hidden |> Array.choose moveIndex)
+                let newPrefix = AxisGeometry.prefix defaultSize (inserted sizes) (hidden |> Array.choose moveIndex)
                 fun index offset -> AxisGeometry.locate newPrefix (if onRows then 1048576 else 16384) (oldPrefix index + offset))
         let moveDrawing (drawing: SheetDrawing) =
             let anchor = drawing.Anchor
@@ -4145,8 +4159,8 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         Selection = selection
         RowCount = if onRows then max 1 (model.RowCount + delta) else model.RowCount
         ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
-        RowHeights = if onRows then moveIndexMap model.RowHeights else model.RowHeights
-        ColumnWidths = if onRows then model.ColumnWidths else moveIndexMap model.ColumnWidths
+        RowHeights = if onRows then inserted model.RowHeights else model.RowHeights
+        ColumnWidths = if onRows then model.ColumnWidths else inserted model.ColumnWidths
         Axes =
             (let axes = model.Axes
              if obj.ReferenceEquals(axes, emptySheetAxes) then axes
