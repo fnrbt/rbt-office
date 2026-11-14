@@ -56,6 +56,8 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | W10 | Run character spacing (`w:spacing w:val` in rPr, letter-spacing) isn't drawn: Word spreads "N O R T H W I N D", we draw normal spacing. | ~/Dev/office-hype/docs/designed/annual-review.docx (title band kicker) | open |
 | W11 | A table in a compatibilityMode ≤14 document starts at the margin; Word shifts it left by the first cell's left margin, so cell text lines up with body text. | annual-review.docx (the KPI table; python-docx's default template) | open |
 | W12 | Body text measures wider than Word's: on the same 650px column ours wraps a word earlier (Calibri 10.5pt, line spacing 1.15). | annual-review.docx ("…Ridge Park array a / quarter") | open |
+| W13 | Drop caps (`w:framePr w:dropCap="drop" w:lines="3"`) aren't drawn as drop caps: the letter becomes a separate large paragraph above the text. | ~/Dev/office-hype/docs/designed/field-notes.docx | open |
+| W14 | Section columns (`w:cols w:num="2"`, continuous section) are laid out as one column. | field-notes.docx | open |
 
 ## Editor UI
 
