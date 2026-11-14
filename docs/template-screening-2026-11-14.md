@@ -64,6 +64,7 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | W13 | Drop caps (`w:framePr w:dropCap="drop" w:lines="3"`) aren't drawn as drop caps: the letter becomes a separate large paragraph above the text. | ~/Dev/office-hype/docs/designed/field-notes.docx | open |
 | W14 | Section columns (`w:cols w:num="2"`, continuous section) are laid out as one column. | field-notes.docx | open |
 | W15 | A table whose `tblBorders` set every side (including insideH/insideV) to `nil` still shows thin light lines between cells, visible on a dark shaded header row; Word draws none. | annual-review.docx (sites table header) | open |
+| W16 | (editing) Typing over a selection that starts at the beginning of a paragraph loses the selected text's formatting: "4.8 GW" (Georgia 22pt teal, the paragraph's only run) replaced by typing becomes Normal (Calibri 10.5). Word gives typed text the formatting of the first selected character. | annual-review.docx: select "4.8 GW" in the first KPI cell, type | open |
 
 ## Editor UI
 
