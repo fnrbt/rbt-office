@@ -877,7 +877,11 @@ module Docx =
     // Parse a sectPr's <w:cols> into a SectionColumns (twips/15 = px).
     let parseColumns (sectPr: XmlNode) : SectionColumns option =
         let twips (s: string option) = s |> Option.bind (fun v -> match System.Double.TryParse v with | true, n -> Some (n / 15.0) | _ -> None)
-        Ns.childNs "cols" sectPr
+        // (A sectPr that has more than one w:cols - one written by a template, one by a tool after
+        // it - is laid out by Word with the last.)
+        Xml.children sectPr
+        |> List.filter (fun child -> Xml.name child |> Option.map Ns.stripNs = Some "cols")
+        |> List.tryLast
         |> Option.bind (fun cols ->
             let num = attr "num" cols |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None) |> Option.defaultValue 1
             let space = twips (attr "space" cols) |> Option.defaultValue 36.0
@@ -2945,10 +2949,17 @@ module Styles =
                 Ns.childNs "rPrDefault" defaults
                 |> Option.bind (Ns.childNs "rPr")
                 |> Option.map parseRunPropsFromStyle
+            // (A w:pPrDefault, even an empty one, says the paragraph defaults: what it leaves out is
+            // Word's own - no space before or after a paragraph. Without one Word adds its own
+            // space after; a template's empty w:pPrDefault/ was laid out with it, 8pt too much.)
             let pPr =
                 Ns.childNs "pPrDefault" defaults
-                |> Option.bind (Ns.childNs "pPr")
-                |> Option.map parseParagraphPropsFromStyle
+                |> Option.map (fun pPrDefault ->
+                    let props = Ns.childNs "pPr" pPrDefault |> Option.defaultValue XmlDsl.Empty |> parseParagraphPropsFromStyle
+                    let unstated = props.SpacingAfter.IsNone && props.SpacingAfterAuto.IsNone
+                    { props with
+                        SpacingBefore = (if props.SpacingBefore.IsNone && props.SpacingBeforeAuto.IsNone then Some "0" else props.SpacingBefore)
+                        SpacingAfter = (if unstated then Some "0" else props.SpacingAfter) })
             if rPr.IsNone && pPr.IsNone then None
             else
                 Some {
@@ -3627,10 +3638,129 @@ module Shapes =
 
     // --- DrawingML geometry/fill parsing (a:prstGeom / a:custGeom / a:gradFill) ---
 
+    // --- DrawingML colours (a:srgbClr, a:schemeClr, a:sysClr, a:prstClr) ---
+    // A theme colour cannot be known while the shape is read (the theme is a part
+    // of its own): it is written "theme:<name>;<modifier>:<value>;..." and
+    // resolveColor makes it "#RRGGBB" once the theme is at hand.
+
+    let private colorElementNames = set [ "srgbClr"; "schemeClr"; "sysClr"; "prstClr"; "scrgbClr"; "hslClr" ]
+
+    let private presetColors =
+        Map.ofList [ "white", "FFFFFF"; "black", "000000"; "red", "FF0000"; "green", "008000"; "blue", "0000FF"; "yellow", "FFFF00"
+                     "gray", "808080"; "grey", "808080"; "orange", "FFA500"; "purple", "800080"; "silver", "C0C0C0"; "navy", "000080" ]
+
+    let private hslOf (r: float, g: float, b: float) =
+        let r, g, b = r / 255.0, g / 255.0, b / 255.0
+        let mx = max r (max g b)
+        let mn = min r (min g b)
+        let l = (mx + mn) / 2.0
+        if mx = mn then 0.0, 0.0, l
+        else
+            let d = mx - mn
+            let s = if l > 0.5 then d / (2.0 - mx - mn) else d / (mx + mn)
+            let h =
+                if mx = r then (g - b) / d + (if g < b then 6.0 else 0.0)
+                elif mx = g then (b - r) / d + 2.0
+                else (r - g) / d + 4.0
+            h / 6.0, s, l
+
+    let private rgbOfHsl (h: float, s: float, l: float) =
+        if s = 0.0 then l * 255.0, l * 255.0, l * 255.0
+        else
+            let q = if l < 0.5 then l * (1.0 + s) else l + s - l * s
+            let p = 2.0 * l - q
+            let channel (t: float) =
+                let t = if t < 0.0 then t + 1.0 elif t > 1.0 then t - 1.0 else t
+                if t < 1.0 / 6.0 then p + (q - p) * 6.0 * t
+                elif t < 0.5 then q
+                elif t < 2.0 / 3.0 then p + (q - p) * (2.0 / 3.0 - t) * 6.0
+                else p
+            channel (h + 1.0 / 3.0) * 255.0, channel h * 255.0, channel (h - 1.0 / 3.0) * 255.0
+
+    /// "#RRGGBB" of "RRGGBB" with DrawingML's colour modifiers applied in order
+    /// (lumMod, lumOff, tint, shade; values in 1/1000 of a percent).
+    let private withModifiers (hex: string) (modifiers: (string * float) list) : string option =
+        let hex = hex.TrimStart('#')
+        if hex.Length <> 6 then None
+        else
+            let channel at = System.Convert.ToInt32(hex.Substring(at, 2), 16) |> float
+            let mutable rgb = channel 0, channel 2, channel 4
+            for name, value in modifiers do
+                let amount = value / 100000.0
+                let r, g, b = rgb
+                match name with
+                | "lumMod" -> (let h, s, l = hslOf rgb in rgb <- rgbOfHsl (h, s, min 1.0 (l * amount)))
+                | "lumOff" -> (let h, s, l = hslOf rgb in rgb <- rgbOfHsl (h, s, min 1.0 (max 0.0 (l + amount))))
+                | "tint" -> rgb <- r + (255.0 - r) * (1.0 - amount), g + (255.0 - g) * (1.0 - amount), b + (255.0 - b) * (1.0 - amount)
+                | "shade" -> rgb <- r * amount, g * amount, b * amount
+                | _ -> ()
+            let r, g, b = rgb
+            let byte (v: float) = int (System.Math.Round(max 0.0 (min 255.0 v)))
+            Some (sprintf "#%02X%02X%02X" (byte r) (byte g) (byte b))
+
+    /// The colour of a DrawingML colour element: "#RRGGBB", or "theme:..." for a scheme colour.
+    let private colorOfElement (node: XmlNode) : string option =
+        let modifiers =
+            Xml.children node
+            |> List.choose (fun child ->
+                match Xml.name child |> Option.map Ns.stripNs, Xml.attr "val" child |> Option.bind parseFloat with
+                | Some name, Some value -> Some (name, value)
+                | _ -> None)
+        match Xml.name node |> Option.map Ns.stripNs with
+        | Some "schemeClr" ->
+            Xml.attr "val" node
+            |> Option.map (fun name ->
+                "theme:" + name + (modifiers |> List.map (fun (m, v) -> sprintf ";%s:%g" m v) |> String.concat ""))
+        | Some "srgbClr" -> Xml.attr "val" node |> Option.bind (fun hex -> withModifiers hex modifiers)
+        | Some "sysClr" ->
+            Xml.attr "lastClr" node
+            |> Option.orElse (match Xml.attr "val" node with Some "window" -> Some "FFFFFF" | Some _ -> Some "000000" | None -> None)
+            |> Option.bind (fun hex -> withModifiers hex modifiers)
+        | Some "prstClr" ->
+            Xml.attr "val" node |> Option.bind (fun name -> Map.tryFind name presetColors)
+            |> Option.bind (fun hex -> withModifiers hex modifiers)
+        | _ -> None
+
+    /// The first colour element in a node (a fill, a line, a gradient stop, a style reference).
     let private srgbOf (node: XmlNode) : string option =
-        Ns.descendantsNs "srgbClr" node |> List.tryHead
-        |> Option.bind (Xml.attr "val")
-        |> Option.map ValueText.Color.withHash
+        let rec find (nodes: XmlNode list) =
+            match nodes with
+            | [] -> None
+            | head :: rest ->
+                match Xml.name head |> Option.map Ns.stripNs with
+                | Some name when colorElementNames.Contains name -> colorOfElement head
+                | _ ->
+                    match find (Xml.children head) with
+                    | Some found -> Some found
+                    | None -> find rest
+        find (Xml.children node)
+
+    /// A shape colour as read (see colorOfElement) as "#RRGGBB": a theme colour
+    /// from `colors` (the theme's dk1, lt1, accent1, ...; tx1 / bg1 / tx2 / bg2 are
+    /// dk1 / lt1 / dk2 / lt2). One that cannot be resolved is None.
+    let resolveColor (colors: Map<string, string>) (value: string) : string option =
+        if not (value.StartsWith "theme:") then Some value
+        else
+            let parts = value.Substring(6).Split(';')
+            let name =
+                match parts.[0] with
+                | "tx1" -> "dk1" | "bg1" -> "lt1" | "tx2" -> "dk2" | "bg2" -> "lt2"
+                | "phClr" -> ""
+                | other -> other
+            let modifiers =
+                parts |> Array.skip 1 |> Array.toList
+                |> List.choose (fun part ->
+                    match part.Split(':') with
+                    | [| m; v |] -> parseFloat v |> Option.map (fun v -> m, v)
+                    | _ -> None)
+            let fallback =
+                match name with
+                | "dk1" -> Some "000000" | "lt1" -> Some "FFFFFF" | "dk2" -> Some "44546A" | "lt2" -> Some "E7E6E6"
+                | "accent1" -> Some "4472C4" | "accent2" -> Some "ED7D31" | "accent3" -> Some "A5A5A5" | "accent4" -> Some "FFC000"
+                | "accent5" -> Some "5B9BD5" | "accent6" -> Some "70AD47" | "hlink" -> Some "0563C1" | "folHlink" -> Some "954F72"
+                | _ -> None
+            Map.tryFind name colors |> Option.orElse fallback
+            |> Option.bind (fun hex -> withModifiers hex modifiers)
 
     let private parsePreset (shapeNode: XmlNode) : string option =
         Ns.descendantsNs "prstGeom" shapeNode |> List.tryHead
@@ -3724,6 +3854,8 @@ module Shapes =
     let private vmlBool (value: string option) =
         value |> Option.map (fun text -> let t = text.ToLowerInvariant() in t = "t" || t = "true" || t = "1")
 
+    let private isVmlNode (node: XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> Ns.hasPrefix "v" name | _ -> false
+
     let private parseOneShape (shapeNode: XmlNode) : Shape option =
         let id = Xml.attr "id" shapeNode
         let shapeType = Xml.attr "type" shapeNode
@@ -3793,10 +3925,30 @@ module Shapes =
         let height = height |> Option.orElseWith (fun () -> extOf "ext" "cy")
         let spPr = shapeProperties shapeNode
         let line = spPr |> Option.bind (childNamed "ln")
+        // (A DrawingML shape that states no fill or line of its own has those of the
+        // theme it refers to in wps:style: a:fillRef / a:lnRef with a colour.)
+        let styleReference (name: string) =
+            Ns.descendantsNs "style" shapeNode |> List.tryHead
+            |> Option.bind (Ns.childNs name)
+            |> Option.filter (fun reference -> Xml.attr "idx" reference |> Option.bind parseFloat |> Option.exists (fun idx -> idx > 0.0))
+            |> Option.bind srgbOf
+        let statesOwnFill =
+            spPr |> Option.exists (fun props -> [ "solidFill"; "gradFill"; "pattFill"; "blipFill"; "grpFill"; "noFill" ] |> List.exists (fun name -> (childNamed name props).IsSome))
+        let statesOwnLine =
+            line |> Option.exists (fun ln -> [ "solidFill"; "gradFill"; "pattFill"; "noFill" ] |> List.exists (fun name -> (childNamed name ln).IsSome))
         let fillColor =
-            (Xml.attr "fillcolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlFill shapeNode)
+            (Xml.attr "fillcolor" shapeNode |> normalizeColor)
+            |> Option.orElseWith (fun () -> parseDmlFill shapeNode)
+            |> Option.orElseWith (fun () -> if isVmlNode shapeNode || statesOwnFill then None else styleReference "fillRef")
         let borderColor =
-            (Xml.attr "strokecolor" shapeNode |> normalizeColor) |> Option.orElseWith (fun () -> parseDmlLine shapeNode)
+            (Xml.attr "strokecolor" shapeNode |> normalizeColor)
+            |> Option.orElseWith (fun () -> parseDmlLine shapeNode)
+            |> Option.orElseWith (fun () -> if isVmlNode shapeNode || statesOwnLine then None else styleReference "lnRef")
+        // A shape filled with a picture (spPr > a:blipFill): the picture in its box.
+        let blipFillImage =
+            spPr |> Option.bind (childNamed "blipFill")
+            |> Option.bind (Ns.childNs "blip")
+            |> Option.bind (fun blip -> Xml.attr "r:embed" blip |> Option.orElse (Xml.attr "embed" blip))
         // a:ln@w is EMU (12700 per point); VML strokeweight carries its unit.
         let borderWidth =
             Xml.attr "strokeweight" shapeNode |> strokeWeightFromAttr
@@ -3935,7 +4087,7 @@ module Shapes =
                 |> Option.filter (fun value -> value >= 0.0 && value < 1.0)
             Children = []
             ChildSpace = None
-            ImageRelationshipId = None
+            ImageRelationshipId = blipFillImage
             SourceXml = None
         }
 

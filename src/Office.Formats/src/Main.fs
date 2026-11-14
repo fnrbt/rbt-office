@@ -299,7 +299,7 @@ module Processors =
                             pushItem paragraphs item
                     if not batch.Shapes.IsEmpty then
                         let shaped =
-                            WordEditorPackageReader.shapes convert front.Images (reader ()).ImageOf batch.Shapes
+                            WordEditorPackageReader.shapes front.Theme convert front.Images (reader ()).ImageOf batch.Shapes
                             |> WordEditorPackage.blocksToEditorObjects
                         shapeItems.AddRange shaped
                     if not ((reader ()).IsDone ()) then statePageSetup ((reader ()).OpenSection ())

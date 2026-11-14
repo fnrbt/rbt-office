@@ -476,7 +476,10 @@ let private style theme (value: D.StyleDefinition) : Style =
 let private visibleShape (shape: D.Shape) =
     not shape.Content.IsEmpty || shape.Preset.IsSome || not shape.CustomPath.IsEmpty || not shape.Children.IsEmpty
 
-let shapes (convert: D.DocumentContent list -> Map<string, string> -> EditorBlock array) images imageOf values =
+/// The shapes of a part. `theme`: the document's, for the theme colours of their fills and lines.
+let shapes (theme: D.Theme option) (convert: D.DocumentContent list -> Map<string, string> -> EditorBlock array) images imageOf values =
+    let colors = theme |> Option.map (fun theme -> theme.Colors) |> Option.defaultValue Map.empty
+    let color (value: string option) = value |> Option.bind (D.Shapes.resolveColor colors)
     let rec shape (value: D.Shape) : EditorTextBox =
         { Paragraphs = convert (value.Content |> List.map D.Para) images
           Children = value.Children |> List.map shape |> List.toArray
@@ -488,9 +491,9 @@ let shapes (convert: D.DocumentContent list -> Map<string, string> -> EditorBloc
           PositionHRelativeFrom = value.PositionHRelativeFrom; PositionVRelativeFrom = value.PositionVRelativeFrom
           PositionHAlign = value.PositionHAlign; PositionVAlign = value.PositionVAlign
           Width = defaultArg value.Width 200.0; Height = defaultArg value.Height 100.0
-          FillColor = value.FillColor; BorderColor = value.BorderColor; NoFill = value.NoFill; NoLine = value.NoLine
+          FillColor = color value.FillColor; BorderColor = color value.BorderColor; NoFill = value.NoFill; NoLine = value.NoLine
           BorderWidth = value.BorderWidth; BorderDash = value.LineDash
-          Gradient = value.Gradient |> Option.map (fun gradient -> gradient.Stops |> List.map (fun stop -> stop.Offset, stop.Color)) |> Option.defaultValue []
+          Gradient = value.Gradient |> Option.map (fun gradient -> gradient.Stops |> List.choose (fun stop -> color (Some stop.Color) |> Option.map (fun c -> stop.Offset, c))) |> Option.defaultValue []
           GradientAngle = value.Gradient |> Option.map (fun gradient -> gradient.Angle) |> Option.defaultValue 0.0
           GradientRadial = value.Gradient |> Option.exists (fun gradient -> gradient.Radial)
           Rotation = value.Rotation; FlipH = value.FlipH; FlipV = value.FlipV; Inline = value.Inline; Wrap = value.Wrap
@@ -507,13 +510,13 @@ let shapes (convert: D.DocumentContent list -> Map<string, string> -> EditorBloc
 /// construction or property lookup participates in this conversion.
 let ofDocument (document: D.WordDocument) : EditorPackage =
     let convert = converter document
-    let shapeItems = shapes convert document.Images (fun id -> Map.tryFind id document.Images) document.Shapes
+    let shapeItems = shapes document.Theme convert document.Images (fun id -> Map.tryFind id document.Images) document.Shapes
     let headers (parts: D.HeaderFooter list) =
         parts |> List.map (fun part ->
             let partShapes = part.RelationshipId |> Option.bind (fun id -> Map.tryFind id document.PartShapes) |> Option.defaultValue []
             let imageOf id = Map.tryFind (D.partImageKey (defaultArg part.RelationshipId "") id) document.Images
             { RelationshipId = part.RelationshipId; Kind = part.Type
-              Blocks = Array.append (convert part.Blocks document.Images) (shapes convert document.Images imageOf partShapes)
+              Blocks = Array.append (convert part.Blocks document.Images) (shapes document.Theme convert document.Images imageOf partShapes)
               SourceStoryCounts = [||]; SourceUnchanged = false }) |> List.toArray
     let notes (items: D.Note list) =
         items |> List.map (fun note ->

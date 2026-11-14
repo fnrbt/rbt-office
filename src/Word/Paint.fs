@@ -1057,9 +1057,14 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
         let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
         // (The number stands at the first-line indent, hanging or not.)
         let prefixX = settings.PaddingLeft + layout.Indent + firstLineIndent
-        let prefixText = WordLayout.Numbering.displayMarkerText layout.Prefix
+        let prefixText = WordLayout.Numbering.displayMarkerText (layout.PrefixStyle |> Option.bind (fun style -> style.FontFamily)) layout.Prefix
         let prefixStyle =
-            if prefixText <> layout.Prefix then defaultPaintStyle settings.FontSize fontFamily
+            if prefixText <> layout.Prefix then
+                // (In the document's face - the host has no Wingdings or Symbol -, in the marker's colour.)
+                let plain = defaultPaintStyle settings.FontSize fontFamily
+                match layout.PrefixStyle with
+                | Some style -> { plain with Color = WordLayout.Text.fallbackColor style }
+                | None -> plain
             else
                 layout.PrefixStyle
                 |> Option.map styleFromTextStyle

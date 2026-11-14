@@ -429,8 +429,15 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
             width
     (width * font.Scale) + TextBuffer.characterSpacingAdvance text style
 
+/// How far a word's trailing space may stand past the margin before the word goes to the
+/// next line is the PDF export's (0.25px) when the host measures text with the fonts' own
+/// advances (a text measurer), as Word does: a line Word fills to within a pixel of the margin
+/// then fits here too. The canvas's own measuring is rougher; its lines keep 3.5px.
+let private trailingSpaceFitSafety (ctx: RenderContext) =
+    if ctx.TextMeasurer.IsSome then 0.25 else 3.5
+
 let layoutSettings (ctx: RenderContext) (doc: Document) =
-    documentSettings ctx.FontSize ctx.LineHeight 3.5 doc
+    documentSettings ctx.FontSize ctx.LineHeight (trailingSpaceFitSafety ctx) doc
 
 let measureWithContext ctx text style =
     match ctx.TextMeasurer with
@@ -1593,6 +1600,35 @@ let private shapeFillStyle (ctx: RenderContext) (fill: ShapeFill) (bx, by, bw, b
         g.Stops |> List.iter (fun s -> grad.addColorStop(max 0.0 (min 1.0 s.Offset), s.Color))
         Some (U3.Case2 grad)
 
+[<Emit("$0[$1]")>]
+let private transformPart (_matrix: obj) (_name: string) : float = jsNative
+
+[<Emit("$0.getTransform()")>]
+let private currentTransform (_ctx: CanvasRenderingContext2D) : obj = jsNative
+
+/// A filled area (a cell's shading, a shape's box) with its edges on whole device pixels,
+/// when the canvas is neither turned nor skewed: two areas side by side then share an
+/// edge. Each used to be smoothed on its own at a fractional edge, and the light seam
+/// between them showed as a thin line between the dark cells of a table without borders.
+/// (Thin fills - a line drawn as a fill - are left as they are.)
+let private snappedFill (canvas: CanvasRenderingContext2D) (x: float) (y: float) (width: float) (height: float) : struct (float * float * float * float) =
+    let m = currentTransform canvas
+    if isNull m then struct (x, y, width, height)
+    else
+        let a = transformPart m "a"
+        let b = transformPart m "b"
+        let c = transformPart m "c"
+        let d = transformPart m "d"
+        let e = transformPart m "e"
+        let f = transformPart m "f"
+        if b <> 0.0 || c <> 0.0 || a <= 0.0 || d <= 0.0 || width * a < 2.0 || height * d < 2.0 then struct (x, y, width, height)
+        else
+            let left = (round (a * x + e) - e) / a
+            let right = (round (a * (x + width) + e) - e) / a
+            let top = (round (d * y + f) - f) / d
+            let bottom = (round (d * (y + height) + f) - f) / d
+            struct (left, top, right - left, bottom - top)
+
 let rec private renderPaintCommand (ctx: RenderContext) = function
     | DrawText (text, style, x, baseline, width) ->
         match ctx.TextPathPainter with
@@ -1643,6 +1679,7 @@ let rec private renderPaintCommand (ctx: RenderContext) = function
         drawImageWithCrop ctx src x y width height cropLeft cropTop cropRight cropBottom
     | FillRect (color, x, y, width, height) ->
         ctx.Ctx.fillStyle <- U3.Case1 color
+        let struct (x, y, width, height) = snappedFill ctx.Ctx x y width height
         ctx.Ctx.fillRect(x, y, width, height)
     | StrokeRect (color, lineWidth, x, y, width, height) ->
         ctx.Ctx.strokeStyle <- U3.Case1 color
@@ -2079,7 +2116,7 @@ let private selectionOverlay (ctx: RenderContext) (settings: LayoutSettings) (do
                 match ctx.ControlMemberships with
                 | Some (blocks, members) when obj.ReferenceEquals(blocks, doc.Blocks) -> members
                 | _ ->
-                    let members = contentControlMemberships doc
+                    let members = contentControlFrameMemberships doc
                     ctx.ControlMemberships <- Some (doc.Blocks, members)
                     members
             markupMarkerCommands members settings doc layouts

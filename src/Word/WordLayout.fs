@@ -1000,8 +1000,40 @@ module Numbering =
         | Some family -> { styled with FontFamily = Some family }
         | None -> styled
 
-    let displayMarkerText (marker: string) =
-        marker
+    /// The characters of Wingdings and of Symbol a bullet is commonly made of
+    /// (the private-use code U+F0xx Word writes for them), as the Unicode
+    /// character they look like: a host has no Wingdings or Symbol face, and
+    /// no other face has those codes (they showed as missing-glyph boxes).
+    let private wingdingsCharacters =
+        dict [
+            0x6C, "●"; 0x6D, "❍"; 0x6E, "■"; 0x6F, "□"; 0x70, "◻"; 0x71, "❑"; 0x72, "❒"; 0x73, "⬧"
+            0x74, "⧫"; 0x75, "◆"; 0x76, "❖"; 0x77, "⬥"; 0x78, "⌧"; 0x7A, "⌘"; 0x7B, "❀"; 0x7C, "✿"
+            0x9E, "·"; 0x9F, "•"; 0xA0, "▪"; 0xA1, "○"; 0xA4, "◉"; 0xA5, "◎"; 0xA7, "▪"; 0xA8, "◻"
+            0xAA, "✦"; 0xAB, "★"; 0xAC, "✶"; 0xAD, "✴"; 0xAE, "✹"; 0xAF, "✵"; 0xD8, "➢"; 0xE8, "➔"
+            0xF0, "⇨"; 0xFB, "✗"; 0xFC, "✓"; 0xFD, "☒"; 0xFE, "☑" ]
+    let private symbolCharacters =
+        dict [ 0xB7, "•"; 0xA7, "♣"; 0xA8, "♦"; 0xA9, "♥"; 0xAA, "♠"; 0xB0, "°"; 0x2D, "−"; 0xAE, "→"; 0xDE, "⇒"; 0xE0, "◊" ]
+
+    /// A list marker as it is shown: the private-use codes of Wingdings / Symbol
+    /// (`family`: the marker's face) as the Unicode characters they look like.
+    let displayMarkerText (family: string option) (marker: string) =
+        let table =
+            match family with
+            | Some family when trimmedEqualsIgnoreCase family "symbol" -> Some symbolCharacters
+            | Some family when trimmedEqualsIgnoreCase family "wingdings" -> Some wingdingsCharacters
+            | _ -> None
+        let mapped =
+            match table with
+            | Some table when marker |> Seq.exists (fun c -> int c >= 0xF020 && int c <= 0xF0FF) ->
+                marker
+                |> Seq.map (fun c ->
+                    let code = int c
+                    match table.TryGetValue (code - 0xF000) with
+                    | true, shown when code >= 0xF020 && code <= 0xF0FF -> shown
+                    | _ -> string c)
+                |> String.concat ""
+            | _ -> marker
+        mapped
             .Replace("\uF0B7", "•")
             .Replace("\uF0FC", "✓")
             .Replace("\uF0A7", "▪")
@@ -1115,7 +1147,7 @@ module Numbering =
     /// space after it is a space; nothing, nothing. A number wider than its
     /// hanging indent so pushes the text on instead of running into it.
     let textStart (measureText: string -> TextStyle -> float) (defaultTabStop: float) (metadata: BlockMetadata) (indent: float) (firstLineIndent: float) (marker: string) (markerStyle: TextStyle) =
-        let body = displayMarkerText (markerBody metadata marker)
+        let body = displayMarkerText markerStyle.FontFamily (markerBody metadata marker)
         let bodyWidth = if body = "" then 0.0 else measureText body markerStyle
         let markerEnd =
             match markerJustification metadata with

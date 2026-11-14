@@ -1664,7 +1664,7 @@ type private ContentControlRange = {
 let private iterContentControlParagraphs visit (doc: Document) =
     let continuations = Dictionary<string, struct (int * string)>()
     let mutable position = 0
-    let add key id tag alias para =
+    let add key id tag alias (xml: string option) para =
         // Replacing the middle of a control splits its physical XML wrapper,
         // even when the remaining paragraphs retain the original group ID.
         let physicalKey =
@@ -1672,12 +1672,12 @@ let private iterContentControlParagraphs visit (doc: Document) =
             | true, struct (previous, physicalKey) when previous >= position - 1 -> physicalKey
             | _ -> key + "@" + string position
         continuations.[key] <- struct (position, physicalKey)
-        visit physicalKey id tag alias para
+        visit physicalKey id tag alias xml para
     let addLayer (layer: ContentControlLayer) para =
         match layer.Id with
-        | Some id -> add ("group:" + layer.Group) id layer.Tag layer.Alias para
+        | Some id -> add ("group:" + layer.Group) id layer.Tag layer.Alias layer.Xml para
         | None -> ()
-    let addOwn group prefix blockId id tag alias para =
+    let addOwn group prefix blockId id tag alias xml para =
         match id with
         | None -> () // An ID-less binding is not an editable control in the panel.
         | Some controlId ->
@@ -1685,20 +1685,20 @@ let private iterContentControlParagraphs visit (doc: Document) =
                 match group with
                 | Some group -> "group:" + group
                 | None -> prefix + blockId
-            add key controlId tag alias para
+            add key controlId tag alias xml para
     let addParagraph notifyParent (para: ParagraphBlock) =
         position <- position + 1
         notifyParent para
         let metadata = para.Metadata
         for layer in metadata.ContentControlAncestors do addLayer layer para
         addOwn metadata.ContentControlGroup "paragraph:" para.Id
-            metadata.ContentControlId metadata.ContentControlTag metadata.ContentControlAlias para
+            metadata.ContentControlId metadata.ContentControlTag metadata.ContentControlAlias metadata.ContentControlXml para
     let rec addTable (table: TableBlock) (notifyParent: ParagraphBlock -> unit) =
         let addTableLayers para =
             notifyParent para
             for layer in table.ContentControlAncestors do addLayer layer para
             addOwn table.ContentControlGroup "table:" table.Id
-                table.ContentControlId table.ContentControlTag table.ContentControlAlias para
+                table.ContentControlId table.ContentControlTag table.ContentControlAlias table.ContentControlXml para
         for row in table.Rows do
             for cell in row.Cells do
                 if cell.NestedTables.IsEmpty then
@@ -1728,7 +1728,7 @@ let private iterContentControlParagraphs visit (doc: Document) =
 let private contentControlRanges (doc: Document) =
     let ranges = ResizeArray<ContentControlRange>()
     let grouped = Dictionary<string, ContentControlRange>()
-    iterContentControlParagraphs (fun key id tag alias para ->
+    iterContentControlParagraphs (fun key id tag alias _ para ->
         match grouped.TryGetValue key with
         | true, found -> found.Last <- para
         | _ ->
@@ -1746,9 +1746,10 @@ let contentControlInfos (doc: Document) =
 
 /// Paragraph membership of physical controls, including enclosing controls
 /// and table controls absent from the cell paragraph's own metadata.
-let contentControlMemberships (doc: Document) =
+let private contentControlMembershipsWhere (keep: string option -> bool) (doc: Document) =
     let memberships = Dictionary<BlockId, HashSet<string>>()
-    iterContentControlParagraphs (fun key _ _ _ para ->
+    iterContentControlParagraphs (fun key _ _ _ xml para ->
+      if keep xml then
         match memberships.TryGetValue para.Id with
         | true, members -> members.Add key |> ignore
         | _ ->
@@ -1756,6 +1757,20 @@ let contentControlMemberships (doc: Document) =
             members.Add key |> ignore
             memberships.[para.Id] <- members) doc
     memberships
+
+let contentControlMemberships (doc: Document) = contentControlMembershipsWhere (fun _ -> true) doc
+
+/// A control whose properties say w15:appearance="hidden": Word draws no
+/// frame or title tab around it, even with the caret inside.
+let contentControlAppearanceHidden (xml: string option) =
+    match xml with
+    | Some xml ->
+        System.Text.RegularExpressions.Regex.IsMatch(xml, ":appearance\\s[^>]*?:val\\s*=\\s*[\"']hidden[\"']")
+    | None -> false
+
+/// The controls a frame is drawn around: those not hidden by their appearance.
+let contentControlFrameMemberships (doc: Document) =
+    contentControlMembershipsWhere (contentControlAppearanceHidden >> not) doc
 
 let commentInfos (doc: Document) =
     let infos = ResizeArray<CommentInfo>()

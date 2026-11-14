@@ -53,6 +53,8 @@ let k = 0.45
 let measureText (text: string) (style: TB.TextStyle) = float text.Length * style.FontSize * k
 let measureRange (_: string) (style: TB.TextStyle) (_: int) (length: int) = float length * style.FontSize * k
 let paragraph id (text: string) : ParagraphBlock = { Id = id; Buffer = TB.empty |> TB.insert 0 text; Metadata = defaultMetadata }
+// (The fillers are as high as the document's Normal paragraphs - no space after them: its
+// w:pPrDefault says none - so the scan runs through enough of them to reach the page break.)
 // The table after `fillers` paragraphs and one more with `gap` pixels above it: where on the page it starts.
 let build (fillers: int) (gap: float) =
     let spacer = { paragraph "spacer" "spacer" with Metadata = { defaultMetadata with SpacingBefore = Some gap; Explicit = ParagraphExplicit.SpacingBefore } }
@@ -124,7 +126,7 @@ let settings : LayoutSettings =
       LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0 }
 let mutable editorSplits = 0
 let mutable editorNestedSplits = 0
-for fillers in 20 .. 27 do
+for fillers in 20 .. 44 do
     for step in 0 .. 16 do
         let gap = float step * 2.0
         let doc = build fillers gap
@@ -140,7 +142,7 @@ ok "editor: and where the nested table's rows are on different pages" (editorNes
 
 // ---- the PDF writer's paint commands (its own settings) ------------------------------
 let mutable pdfSplits = 0
-for fillers in 20 .. 32 do
+for fillers in 20 .. 52 do
     for step in 0 .. 8 do
         let gap = float step * 4.0
         let doc = build fillers gap

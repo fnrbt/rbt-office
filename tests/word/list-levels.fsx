@@ -250,5 +250,18 @@ let continuedCaret = caretIn continued 2
 let continuedAgain = Doc.applyListDialog (fun () -> failwith "continue no-op must not allocate") { keep with Sequence = "continue" } continuedCaret |> edited
 check "continuing the same list keeps the document" (obj.ReferenceEquals(continuedAgain, continuedCaret)) true
 
+// A bullet of Wingdings or Symbol (a private-use code, U+F0xx) is shown as the Unicode
+// character it looks like: no host has those faces, and no other face has those codes
+// (a checklist's Wingdings "o", U+F06F, showed as a missing-glyph box).
+let marker = Rbt.Word.WordLayout.Numbering.displayMarkerText
+check "a Wingdings checkbox bullet" (marker (Some "Wingdings") "\uF06F") "□"
+check "a Wingdings arrow bullet" (marker (Some "Wingdings") "\uF0D8") "➢"
+check "a Wingdings checked box" (marker (Some "Wingdings") "\uF0FE") "☑"
+check "a Symbol bullet" (marker (Some "Symbol") "\uF0B7") "•"
+check "Symbol's A8 is a diamond, not Wingdings' square" (marker (Some "Symbol") "\uF0A8") "♦"
+check "the bullets known in any face" (marker None "\uF0A7") "▪"
+check "a marker in another face is left as it is" (marker (Some "Calibri") "\uF06F") "\uF06F"
+check "a number is left as it is" (marker (Some "Wingdings") "1.") "1."
+
 printfn "word list levels: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

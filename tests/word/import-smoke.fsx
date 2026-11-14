@@ -618,5 +618,66 @@ check "real formatted sample retains 17 navigable TOC entries"
     (tocAnchors.Length, tocAnchors |> List.distinct |> List.length)
     (17, 17)
 
+// ---- the colours of shapes: theme colours, the theme's style, a picture fill ---------------
+// A DrawingML shape's colour is often the theme's (a:schemeClr, with lumMod / lumOff / shade),
+// or not stated at all and taken from the theme by wps:style (a:fillRef / a:lnRef). Only
+// a:srgbClr used to be read: such shapes were drawn white with a grey outline - coloured
+// panels and group art of templates vanished on the white page. A shape filled with a
+// picture (a:blipFill) shows the picture.
+do
+    let wps = "xmlns:wps=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\" xmlns:wpg=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\""
+    let shapeXml name (spPr: string) (style: string) =
+        sprintf "<w:r><w:drawing><wp:anchor behindDoc=\"1\" relativeHeight=\"1\" simplePos=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx=\"952500\" cy=\"952500\"/><wp:wrapNone/><wp:docPr id=\"1\" name=\"%s\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingShape\"><wps:wsp %s><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"952500\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom>%s</wps:spPr>%s<wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>" name wps spPr style
+    let themeStyle = "<wps:style><a:lnRef idx=\"2\"><a:schemeClr val=\"accent1\"><a:shade val=\"50000\"/></a:schemeClr></a:lnRef><a:fillRef idx=\"1\"><a:schemeClr val=\"accent1\"/></a:fillRef><a:effectRef idx=\"0\"><a:schemeClr val=\"accent1\"/></a:effectRef><a:fontRef idx=\"minor\"><a:schemeClr val=\"lt1\"/></a:fontRef></wps:style>"
+    let groupXml =
+        sprintf "<w:r><w:drawing><wp:anchor behindDoc=\"1\" relativeHeight=\"2\" simplePos=\"0\" locked=\"0\" layoutInCell=\"1\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>0</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>0</wp:posOffset></wp:positionV><wp:extent cx=\"952500\" cy=\"952500\"/><wp:wrapNone/><wp:docPr id=\"9\" name=\"Group\"/><a:graphic><a:graphicData uri=\"http://schemas.microsoft.com/office/word/2010/wordprocessingGroup\"><wpg:wgp %s><wpg:cNvGrpSpPr/><wpg:grpSpPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"952500\"/><a:chOff x=\"0\" y=\"0\"/><a:chExt cx=\"952500\" cy=\"952500\"/></a:xfrm></wpg:grpSpPr><wps:wsp><wps:cNvSpPr/><wps:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"476250\" cy=\"476250\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom><a:solidFill><a:schemeClr val=\"accent3\"/></a:solidFill><a:ln><a:noFill/></a:ln></wps:spPr><wps:bodyPr/></wps:wsp></wpg:wgp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r>" wps
+    let body =
+        "<w:p>"
+        + shapeXml "Scheme" "<a:solidFill><a:schemeClr val=\"accent1\"><a:lumMod val=\"20000\"/><a:lumOff val=\"80000\"/></a:schemeClr></a:solidFill><a:ln><a:solidFill><a:schemeClr val=\"tx1\"/></a:solidFill></a:ln>" ""
+        + shapeXml "Styled" "" themeStyle
+        + shapeXml "Rgb" "<a:solidFill><a:srgbClr val=\"FF0000\"><a:lumMod val=\"50000\"/></a:srgbClr></a:solidFill><a:ln><a:noFill/></a:ln>" themeStyle
+        + shapeXml "Picture" "<a:blipFill><a:blip r:embed=\"rIdPic\"/><a:stretch><a:fillRect/></a:stretch></a:blipFill><a:ln><a:noFill/></a:ln>" themeStyle
+        + groupXml
+        + "</w:p>"
+    let theme =
+        """<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="T"><a:themeElements><a:clrScheme name="T"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2><a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2><a:accent3><a:srgbClr val="CFD960"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4><a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme></a:themeElements></a:theme>"""
+    let rels =
+        """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdTheme" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="/word/theme/theme7.xml"/><Relationship Id="rIdPic" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/pic.png"/></Relationships>"""
+    let doc = importPackage body [ "word/theme/theme7.xml", theme; "word/_rels/document.xml.rels", rels; "word/media/pic.png", "PNG" ]
+    let shapes = doc.Blocks |> List.choose (function TextBox box -> Some box | _ -> None)
+    let named name = shapes |> List.tryFind (fun box -> box.Name = Some name)
+    let colours name = named name |> Option.map (fun box -> box.FillColor, box.BorderColor)
+    check "a theme colour with lumMod / lumOff (a part found by its relationship)" (colours "Scheme") (Some (Some "#DAE3F3", Some "#000000"))
+    check "no fill or line of its own: the theme's by wps:style" (colours "Styled") (Some (Some "#4472C4", Some "#223962"))
+    check "an RGB colour with a modifier; no line" (colours "Rgb") (Some (Some "#800000", None))
+    check "a picture fill shows the picture" (named "Picture" |> Option.map (fun box -> box.ImageSource |> Option.exists (fun source -> source.StartsWith "data:image/png"))) (Some true)
+    check "a shape of a group in a theme colour"
+        (named "Group" |> Option.map (fun group -> group.Children |> List.map (fun child -> child.FillColor))) (Some [ Some "#CFD960" ])
+
+// ---- the frame of a content control ----------------------------------------------------
+// A control that says w15:appearance="hidden" has no frame or title tab, even with the caret
+// in it (templates' placeholders are such controls: the first one, where the caret is when the
+// document opens, showed its frame).
+do
+    let control id (appearance: string) =
+        sprintf "<w:sdt><w:sdtPr><w:alias w:val=\"A%s\"/><w:id w:val=\"%s\"/>%s</w:sdtPr><w:sdtContent><w:p><w:r><w:t>text %s</w:t></w:r></w:p></w:sdtContent></w:sdt>" id id appearance id
+    let doc =
+        importPackage
+            (control "1" "<w15:appearance xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" w15:val=\"hidden\"/>"
+             + control "2" "" + control "3" "<w15:appearance xmlns:w15=\"http://schemas.microsoft.com/office/word/2012/wordml\" w15:val=\"boundingBox\"/>") []
+    let ids = doc.Blocks |> List.choose (function Paragraph para -> Some para.Id | _ -> None)
+    let framed = contentControlFrameMemberships doc
+    check "every control is a control" ((contentControlMemberships doc).Count) 3
+    check "a frame around the controls that are not hidden" (ids |> List.map framed.ContainsKey) [ false; true; true ]
+
+// ---- a sectPr with two w:cols -------------------------------------------------------------
+// One written by the template, one by a tool after it: Word lays the section out with the
+// last (two columns here). The first was read, and the section had one column.
+do
+    let doc =
+        importPackage
+            """<w:p><w:r><w:t>text</w:t></w:r></w:p><w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="907" w:right="1134" w:bottom="1020" w:left="1134" w:header="720" w:footer="720" w:gutter="0"/><w:cols w:space="720"/><w:cols w:num="2" w:space="567"/></w:sectPr>""" []
+    check "two w:cols: the last one's columns" (doc.PageSetup.Columns |> Option.map (fun columns -> columns.Count, round columns.Gap)) (Some (2, round (567.0 / 15.0)))
+
 printfn "word import smoke: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
