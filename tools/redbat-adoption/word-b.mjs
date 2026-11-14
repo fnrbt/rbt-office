@@ -18,7 +18,8 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
   await open(page, "word-editor", file);
   await ready(page);
   await focusDoc(page);
-  check("no table tools outside a table", (await sel(page, "word-table-tools").count()) === 0);
+  check("table tools disabled outside a table", await sel(page, "word-row-above").isDisabled());
+  const toolbarOutside = await ev(page, () => document.querySelector('[data-testid="word-toolbar"]').offsetHeight);
   await page.keyboard.press("Control+End");
   await page.keyboard.type("after the chart");
   await page.keyboard.press("Enter");
@@ -30,7 +31,8 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
   check("table inserted (3 x 3)", t.length === 1 && t[0].length === 3 && t[0][0].length === 3, t);
   // right after the insert, before anything is typed
   const ctx0 = await ev(page, () => window.__word.getCaretContext(window.__editors[0]));
-  check("the caret is in the new table's first cell and the table tools are shown at once", ctx0.InTable && ctx0.Row === 0 && ctx0.Column === 0 && ctx0.RowCount === 3 && ctx0.ColumnCount === 3 && (await sel(page, "word-table-tools").count()) === 1, ctx0);
+  check("the caret is in the new table's first cell and the table tools are shown at once", ctx0.InTable && ctx0.Row === 0 && ctx0.Column === 0 && ctx0.RowCount === 3 && ctx0.ColumnCount === 3 && (await sel(page, "word-row-above").isEnabled()), ctx0);
+  { const h = await ev(page, () => document.querySelector('[data-testid="word-toolbar"]').offsetHeight); check("the toolbar keeps its height when the caret goes into a table", h === toolbarOutside, { outside: toolbarOutside, inside: h }); }
   check("the table tools say where the caret is", (await sel(page, "word-table-position").getAttribute("title")) === "Row 1 of 3, column 1 of 3", await sel(page, "word-table-position").getAttribute("title"));
   await page.keyboard.type("a1");
   await frame(page);
@@ -96,7 +98,7 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
 
   await page.keyboard.press("Control+Home");
   await frame(page);
-  check("table tools gone when the caret leaves the table", (await sel(page, "word-table-tools").count()) === 0 && !(await ev(page, () => window.__word.getCaretContext(window.__editors[0]).InTable)));
+  check("table tools disabled when the caret leaves the table", (await sel(page, "word-row-above").isDisabled()) && !(await ev(page, () => window.__word.getCaretContext(window.__editors[0]).InTable)));
   // image: insert, click selects it, a handle resizes it, undo restores
   await page.keyboard.press("Control+Home");
   await sel(page, "word-image-input").setInputFiles(`${S}/red.png`);
