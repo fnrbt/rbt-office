@@ -4,7 +4,7 @@
 
 ## Overview
 
-RedBat.Grid now provides a comprehensive set of Excel-like interface components that host applications can compose as needed. This document describes all available toolbars and UI components.
+The spreadsheet component now provides a comprehensive set of Excel-like interface components that host applications can compose as needed. This document describes all available toolbars and UI components.
 
 ## Architecture
 

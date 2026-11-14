@@ -322,17 +322,13 @@ Per-workbook with 10 sheets, 20 tables:
 
 ### Console Test
 
-`test-workbook.fsx` demonstrates:
+The former `test-workbook.fsx` script (removed: it loaded files that no longer exist) demonstrated:
 - Creating multiple sheets
 - Sheet operations (add, rename, delete, reorder)
 - Defining tables
 - Cross-sheet reference parsing
 - Table reference parsing and resolution
 
-Run:
-```bash
-dotnet fsi test-workbook.fsx
-```
 
 ### HTML Demo
 

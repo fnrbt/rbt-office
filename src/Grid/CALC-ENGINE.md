@@ -202,7 +202,7 @@ For 10,000 formulas: ~1-2 MB overhead
 
 ## Test Results
 
-See `test-calc-engine.fsx` for detailed tests of:
+The former `test-calc-engine.fsx` script (removed: it loaded files that no longer exist) tested:
 
 1. ✓ Dependency chain (A1 → A2 → A3 → A4 → A5)
 2. ✓ Dependency tree (B1 → B2, B3 → B4)
