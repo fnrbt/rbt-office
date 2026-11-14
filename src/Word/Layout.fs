@@ -3026,6 +3026,8 @@ type PassRecord = {
     PassNextPageTop: float
     PassNonUniform: bool
     PassBalanced: bool
+    /// Whether an empty last paragraph (the one holding the section break) takes no room.
+    PassCollapsesEnd: bool
     PassInitial: PassCheckpoint
     PassStyles: NamedStyle list
     PassPageSetup: PageSetup
@@ -5307,7 +5309,7 @@ let private changedFootnoteBlocks (record: PassRecord) (doc: Document) =
                 if at < states.Length then last <- max last at
             (if first < states.Length then max 0 (first - 1) else System.Int32.MaxValue), last
 
-let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (settings: LayoutSettings) (columns: SectionColumns option) startPage (startY: float) (pageTop: float) (nextPageTop: float) nonUniform balanced (initial: PassCheckpoint) (doc: Document) =
+let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (settings: LayoutSettings) (columns: SectionColumns option) startPage (startY: float) (pageTop: float) (nextPageTop: float) nonUniform balanced collapsesEnd (initial: PassCheckpoint) (doc: Document) =
     match memo with
     | Some memo when slot <> "" ->
         match memo.MemoPasses.TryGetValue slot with
@@ -5318,6 +5320,7 @@ let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (set
                  && record.PassNextPageTop = nextPageTop
                  && record.PassNonUniform = nonUniform
                  && record.PassBalanced = balanced
+                 && record.PassCollapsesEnd = collapsesEnd
                  && obj.ReferenceEquals(record.PassStyles, doc.Styles)
                  // (Of the package, the footnotes the pass made room for: see changedFootnoteBlocks.)
                  && sameOrEqual record.PassSettings settings
@@ -5469,7 +5472,7 @@ let private layoutDocumentPassKept
         placedFloatingBoxes <- state.CheckPlacedBoxes
         pendingDropCap <- state.CheckDropCap
     let initialState = currentState ()
-    let lastPass = tryPassRecord memo slot settings None 0 settings.PaddingTop 0.0 0.0 false false initialState doc
+    let lastPass = tryPassRecord memo slot settings None 0 settings.PaddingTop 0.0 0.0 false false false initialState doc
 
     let addBodyLayout layout =
         layouts.Add layout
@@ -6211,6 +6214,7 @@ let private layoutDocumentPassKept
                 PassNextPageTop = 0.0
                 PassNonUniform = false
                 PassBalanced = false
+                PassCollapsesEnd = false
                 PassInitial = initialState
                 PassStyles = doc.Styles
                 PassPageSetup = doc.PageSetup
@@ -6497,16 +6501,29 @@ let tableColumnStripSettings (settings: LayoutSettings) (doc: Document) (tableBl
     tableColumnSection settings doc tableBlock
     |> Option.map (fun (sectionSettings, columns) -> columnStripSettings sectionSettings (sectionColumnWidth sectionSettings columns))
 
-let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
+/// The paragraph that holds a section break takes no room when nothing is in it, as in
+/// Word 2019 (compatibility modes 14 and 15): before a continuous break the next section
+/// starts where the text above the paragraph ends, whatever spacing before or after, line
+/// spacing or mark size the paragraph has (its spacing after still collapses with the next
+/// one's spacing before); before a break to a new page it does not go onto a page of its
+/// own or lift a bottom-aligned page. A paragraph with any text, a space or a tab in it
+/// takes its line. (See tests/word/section-end.fsx.)
+let private sectionEndTakesNoRoom (para: ParagraphBlock) =
+    para.Metadata.SectionBreak.IsSome
+    && TextBuffer.length para.Buffer = 0
+    && para.Metadata.ListStyle = NoList
+    && para.Metadata.DropCap.IsNone
+
+let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes
         CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes startPage)
-        CheckPrevious = None; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
+        CheckPrevious = initialPrevious; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
         CheckHintOffset = initialHintOffset
     }
-    let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced initialState doc
+    let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced collapsesEnd initialState doc
     // The last pass over the very same blocks: it stands as a whole.
     let noteFirst, noteLast =
         match lastPass with
@@ -6545,7 +6562,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let balancedHeight =
         if balanced && unchangedPass.IsNone then
             let w = columnWidth 0
-            let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange doc Map.empty [] []
+            // (Without the last paragraph when that takes no room.)
+            let balancedDoc =
+                if collapsesEnd && blocks.Length > 1 then { doc with Blocks = List.truncate (blocks.Length - 1) doc.Blocks } else doc
+            let sub, _ = layoutDocumentWithRangeAndInitial memo { settings with Width = settings.PaddingLeft + w + settings.MarginRight; PageHeight = 100000.0 } measureText measureRange balancedDoc Map.empty [] []
             // The sub-pass adds its own footnote / endnote paragraphs; they are
             // not part of the text being balanced.
             let sub =
@@ -6591,9 +6611,13 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         | Some bh -> startY + bh
         | None -> contentBottomAt page - footnoteReserveOnPage settings footnotesByPage page
     let atColumnTop () = abs (y - columnTop ()) < 0.5
+    // At the start of a section below the text of the one before it (on the page that has that).
+    let continuesPage () = page = startPage && col = 0 && startY > contentTopAt startPage + 0.5
+    let startsLowOnPage () =
+        balancedHeight.IsNone && page = startPage && startY > contentTopAt startPage + 0.5
     // The paragraph placed just above in this column, for spacing collapse:
     // (paragraph, style, effective metadata, spacing after). None at a column top.
-    let mutable previousParagraph: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
+    let mutable previousParagraph: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = initialPrevious
     // A drop cap (w:framePr w:dropCap) waiting for the paragraph after it, as in the
     // single-column pass (see layoutDocumentPassKept).
     let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
@@ -6678,6 +6702,16 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 | Some next -> next.Metadata.DropCap.IsNone
                 | None -> false)
         match tryGetParagraph block with
+        | Some para0 when collapsesEnd && blockIndex = blocks.Length - 1 && pendingDropCap.IsNone && sectionEndTakesNoRoom para0 ->
+            // The empty paragraph that holds the section break: laid out where it stands, but
+            // with no height - a continuous section after it starts at this y.
+            let style = forBlockInContext styleContext block
+            let layout, _, _, _ =
+                layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInContext styleContext) para0 counters [] []
+            results.Add(shiftBlockX (columnDx col) { layout with Height = 0.0 })
+            // (Its spacing after counts in the collapse with the next paragraph's spacing before:
+            // that stands as far below this y as it is larger than this paragraph's.)
+            previousParagraph <- Some (para0, style, layout.Metadata, WordLayout.Paragraph.spacingAfter style layout.Metadata)
         | Some para0 when para0.Metadata.DropCap.IsSome && pendingDropCap.IsNone && nextIsParagraphWithoutCap () ->
             // A drop cap takes no room of its own: it is placed with the paragraph after it.
             pendingDropCap <- Some (para0, forBlockInContext styleContext block)
@@ -6725,7 +6759,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 // column collapses as in the single-column pass.
                 let layoutY =
                     match previousParagraph with
-                    | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && not (atColumnTop ()) ->
+                    // (The first paragraph of a section that goes on on the page collapses with the
+                    // last of the section before it: see initialPrevious.)
+                    | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && (not (atColumnTop ()) || continuesPage ()) ->
                         collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
                     | _ -> y
                 let laidOut obstacles =
@@ -6796,7 +6832,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 if moveKeepGroup then advanceColumn ()
                 elif fitCount = layout.Lines.Length then placeWhole ()
                 elif fitCount = 0 then
-                    if atColumnTop () then placeWhole ()
+                    // (A section that goes on on a page above it starts low on the page: what does
+                    // not fit there goes to the next column - the top of the next page.)
+                    if atColumnTop () && not (startsLowOnPage ()) then placeWhole ()
                     else advanceColumn ()
                 else
                     let fitLines = takeLines fitCount layout.Lines
@@ -7010,6 +7048,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             PassNextPageTop = pageTopOf (startPage + 1)
             PassNonUniform = nonUniform
             PassBalanced = balanced
+            PassCollapsesEnd = collapsesEnd
             PassInitial = initialState
             PassStyles = doc.Styles
             PassPageSetup = doc.PageSetup
@@ -7030,7 +7069,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         record, page, y, footnotesByPage
 
 let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
-    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced initialFootnotes (Some 0)
+    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced false None initialFootnotes (Some 0)
     List.ofArray record.PassResults, page, y, footnotes
 
 /// Absolute geometry of one rendered page. For single-section documents every
@@ -7194,6 +7233,10 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         pageSettings.[page] <- s
     // The header each section shows (its own, or the one of the section before it).
     let mutable shownHeader : (string * string) list = []
+    // The paragraph the last section ended with, for the spacing between it and the first
+    // paragraph of a section that goes on on the same page (adjoining spacing collapses to the
+    // larger of the two, as between paragraphs of a section).
+    let mutable previousAtEnd : (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
     sections
     |> List.iteri (fun i (blocks, columns, geometry, breakType, isFinal) ->
         shownHeader <- inheritSectionReferences shownHeader (if i < headerReferences.Length then headerReferences.[i] else [])
@@ -7250,6 +7293,11 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             | Some (_, _, _, Some "continuous", _) -> true
             | _ -> false
         let balanced = (not isFinal) && secColumns.Count >= 2 && nextContinues
+        let collapsesEnd =
+            not isFinal
+            && (match List.tryLast blocks |> Option.bind tryGetParagraph with
+                | Some para -> sectionEndTakesNoRoom para
+                | None -> false)
         let slot = match memo with Some _ -> "s" + string i | None -> ""
         // The section's own pages are numbered from 0, the first at y = 0: of what stands
         // before the section its pass is given where on its first page it starts and the
@@ -7259,7 +7307,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             match Map.tryFind sectionBase footnotesByPage with
             | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
             | _ -> Map.empty
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced ownFootnotes (if i = 0 then Some 0 else None)
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd (if startedOnNewPage then None else previousAtEnd) ownFootnotes (if i = 0 then Some 0 else None)
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage
@@ -7328,7 +7376,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         // Record the geometry of every page this section used.
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
-        currentYInPage <- ownEndY - ownTopOf ownEndPage)
+        currentYInPage <- ownEndY - ownTopOf ownEndPage
+        previousAtEnd <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckPrevious)
     let maxPage = pageTops.Count - 1
     let bodyLayouts = results.ToArray()
     blockStarts.Add bodyLayouts.Length
