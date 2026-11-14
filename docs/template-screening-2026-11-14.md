@@ -39,6 +39,7 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | S10 | Chart series labels spill outside the chart; pie data labels are missing. | x-tf03783862, x-tf03986584 | open |
 | S11 | Filter buttons show on table headers where Excel hides them (table with `showAutoFilter`/header buttons off). | x-tf03427338 | open |
 | S12 | A General number too wide for its cell shows `4E+...`; Excel shrinks it to `4E+05`. | `=SUM` of salaries in a narrow column | open |
+| S13 | The browser importer drops `ht` on rows without `customHeight`. Excel saves auto-fitted rows that way, so wrapped rows from Excel-saved files open at the default 20px. Fixing it changes what export writes. | any Excel-saved workbook with wrapped text | open |
 
 ## Word
 
@@ -58,6 +59,7 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | W12 | Body text measures wider than Word's: on the same 650px column ours wraps a word earlier (Calibri 10.5pt, line spacing 1.15). | annual-review.docx ("…Ridge Park array a / quarter") | open |
 | W13 | Drop caps (`w:framePr w:dropCap="drop" w:lines="3"`) aren't drawn as drop caps: the letter becomes a separate large paragraph above the text. | ~/Dev/office-hype/docs/designed/field-notes.docx | open |
 | W14 | Section columns (`w:cols w:num="2"`, continuous section) are laid out as one column. | field-notes.docx | open |
+| W15 | A table whose `tblBorders` set every side (including insideH/insideV) to `nil` still shows thin light lines between cells, visible on a dark shaded header row; Word draws none. | annual-review.docx (sites table header) | open |
 
 ## Editor UI
 
