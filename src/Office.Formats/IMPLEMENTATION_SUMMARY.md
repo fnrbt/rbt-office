@@ -430,7 +430,7 @@ The implementation follows F# best practices, leverages Fable's JavaScript inter
 3. Add comprehensive unit tests
 4. Performance optimization for large documents
 5. Documentation expansion with more examples
-6. Integration with RedBat.Word application
+6. Integration with Rbt.Word application
 
 ---
 

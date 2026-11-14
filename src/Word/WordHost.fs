@@ -23,7 +23,7 @@ module Host =
     [<Emit("!new URLSearchParams(window.location.search).has('rbCanvasMeasure') && window.localStorage.getItem('rb.word.canvasMeasure') !== '1'")>]
     let private shapedTextEnabled () : bool = jsNative
 
-    [<Emit("window.RedBatWordTextStack && window.RedBatWordTextStack.install($0).then(function () { $1('Shaped text engine ready') }).catch(function (e) { $1('Shaped text engine failed: ' + ((e && e.message) || e)) })")>]
+    [<Emit("window.RbtWordTextStack && window.RbtWordTextStack.install($0).then(function () { $1('Shaped text engine ready') }).catch(function (e) { $1('Shaped text engine failed: ' + ((e && e.message) || e)) })")>]
     let private installShapedText (_editor: WordApi.Editor) (_setStatus: string -> unit) : unit = jsNative
 
     type Host = {

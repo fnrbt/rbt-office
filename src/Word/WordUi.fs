@@ -841,21 +841,21 @@ module Ui =
     let aboutDialog (version: string) (build: string) : DialogSpec =
         let creditsField = dialogStatus "credits" "Credits" ""
         let creditsLong =
-            "RedBat Word native shell\n" +
+            "rbt-office native shell\n" +
             "  • Composit UI widgets\n" +
             "  • Rbt.Office.Ui spec layer\n" +
             "  • Rbt.Word document model\n\n" +
             "Built on Rbt.Text.Engine, Rbt.OpenType.Core, Bidi, Shaper.Core."
         {
             TestId = "word-dlg-about"
-            Title = "About RedBat Word"
+            Title = "About rbt-office"
             Subtitle = Some "A native, F#-first Word-compatible editor."
             Fields = [
                 dialogSection "Version"
                 dialogStatus "version" "Version" version
                 dialogStatus "build"   "Build"   build
                 dialogSection "Project"
-                dialogStatus "homepage" "Homepage" "https://example.com/redbat-word"
+                dialogStatus "homepage" "Homepage" "https://example.com/rbt-office"
                 dialogStatus "license"  "License"  "MIT"
                 dialogSection "Components"
                 { creditsField with Initial = creditsLong }

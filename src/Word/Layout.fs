@@ -4421,10 +4421,10 @@ let private borderGridStroke priority (stroke: WordLayout.Table.PrintStroke opti
         Width = stroke.Width
         Style = stroke.Style
         Priority = priority
-    }: RedBat.BorderGrid.Stroke))
+    }: Rbt.BorderGrid.Stroke))
 
 let tableCellFragmentBorderCells (cellFragments: TableCellFragmentPlan list) =
-    let result = ResizeArray<RedBat.BorderGrid.Cell>(cellFragments.Length)
+    let result = ResizeArray<Rbt.BorderGrid.Cell>(cellFragments.Length)
     for fragment in cellFragments do
         result.Add({
             Row = fragment.RowIndex
@@ -4441,7 +4441,7 @@ let tableCellFragmentBorderCells (cellFragments: TableCellFragmentPlan list) =
                 Bottom = borderGridStroke 1 fragment.BorderBottom
                 Left = borderGridStroke 1 fragment.BorderLeft
             }
-        }: RedBat.BorderGrid.Cell)
+        }: Rbt.BorderGrid.Cell)
     resizeArrayToList result
 
 /// Vertically merged cells of a table whose rows are being placed (by the

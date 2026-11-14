@@ -1355,7 +1355,7 @@ let private generateNotesPart (rootName: string) (noteElementName: string) (mark
 let private commentElement (generateBody: EditorBlock array -> string) (comment: CommentPart) : string =
     let attrs =
         [ yield ("w:id", comment.Id)
-          yield ("w:author", comment.Author |> Option.defaultValue "RedBat")
+          yield ("w:author", comment.Author |> Option.defaultValue "rbt-office")
           match comment.Date with
           | Some date -> yield ("w:date", date)
           | None -> ()

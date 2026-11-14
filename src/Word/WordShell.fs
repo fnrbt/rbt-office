@@ -961,7 +961,7 @@ module Shell =
 
         div shellAttrs [
             div [ cls "word-titlebar" ] [
-                div [ cls "word-titlebar-app" ] [ text "RedBat Word" ]
+                div [ cls "word-titlebar-app" ] [ text "rbt-office" ]
                 div [ cls "word-titlebar-document"; attr "data-testid" "word-document-title" ] [
                     textR (fun () -> host.FileName.Value + (if host.Dirty.Value then " *" else ""))
                 ]

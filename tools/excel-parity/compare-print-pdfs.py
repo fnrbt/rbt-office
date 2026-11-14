@@ -16,7 +16,7 @@ ROOT = Path(os.environ.get("OFFICE_ROOT", Path.cwd())).resolve()
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Compare Microsoft Excel PDF output with RedBat spreadsheet PDF output."
+        description="Compare Microsoft Excel PDF output with rbt-office spreadsheet PDF output."
     )
     parser.add_argument("xlsx", nargs="+", help="XLSX file(s) to compare")
     parser.add_argument("--out", default="artifacts/pdf-compare-excel", help="output directory")

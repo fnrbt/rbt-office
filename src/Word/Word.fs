@@ -953,7 +953,7 @@ module API =
         editor.Handler.TrackChanges <- enabled
 
     let setTrackChangesOptions (editor: Editor) author date =
-        editor.Handler.TrackChangesAuthor <- if isNull (box author) || author = "" then "RedBat Word" else author
+        editor.Handler.TrackChangesAuthor <- if isNull (box author) || author = "" then "rbt-office" else author
         editor.Handler.TrackChangesDate <- if isNull (box date) then "" else date
 
     /// Measure text with `measureText(text, style)` instead of canvas text.
@@ -1626,7 +1626,7 @@ module API =
                         "BorderLeft" ==> strokeGeometry cell.BorderLeft
                     ])
 
-                for segment in cellFragments |> Layout.tableCellFragmentBorderCells |> RedBat.BorderGrid.resolve do
+                for segment in cellFragments |> Layout.tableCellFragmentBorderCells |> Rbt.BorderGrid.resolve do
                     segments.Add(createObj [
                         "Kind" ==> "table-border-segment"
                         "Table" ==> tableIndex

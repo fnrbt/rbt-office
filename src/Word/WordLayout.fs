@@ -1718,7 +1718,7 @@ module Table =
     let private visibleBorderWidth (border: TableBorder option) =
         match border with
         | Some value ->
-            match RedBat.BorderGrid.styleKey value.Style with
+            match Rbt.BorderGrid.styleKey value.Style with
             | "nil"
             | "none"
             | "hidden" -> 0.0
@@ -1753,7 +1753,7 @@ module Table =
         cell.BorderWidth |> Option.defaultValue 1.0
 
     let private dashStyleForBorderStyle style =
-        match RedBat.BorderGrid.styleKey style with
+        match Rbt.BorderGrid.styleKey style with
         | "dotted" -> 1
         | "dashed"
         | "dashsmallgap" -> 2
@@ -1776,13 +1776,13 @@ module Table =
 
     let printBorderStrokeFromBorder (border: TableBorder option) fallbackColor fallbackWidth =
         match border with
-        | Some value when RedBat.BorderGrid.styleKey value.Style = "nil" || RedBat.BorderGrid.styleKey value.Style = "none" -> None
+        | Some value when Rbt.BorderGrid.styleKey value.Style = "nil" || Rbt.BorderGrid.styleKey value.Style = "none" -> None
         | Some value -> printBorderStrokeWithStyle value.Style (value.Color |> Option.orElse fallbackColor) (value.Width |> Option.orElse fallbackWidth)
         | None -> printBorderStroke fallbackColor fallbackWidth
 
     let private printExplicitBorderStrokeFromBorder (border: TableBorder option) fallbackColor fallbackWidth =
         match border with
-        | Some value when RedBat.BorderGrid.styleKey value.Style = "nil" || RedBat.BorderGrid.styleKey value.Style = "none" -> None
+        | Some value when Rbt.BorderGrid.styleKey value.Style = "nil" || Rbt.BorderGrid.styleKey value.Style = "none" -> None
         | Some value -> printBorderStrokeWithStyle value.Style (value.Color |> Option.orElse fallbackColor) (value.Width |> Option.orElse fallbackWidth)
         | None -> None
 

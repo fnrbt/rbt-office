@@ -1,6 +1,6 @@
 # Excel Features Implementation Status
 
-This document tracks the implementation status of Excel-like features in RedBat.Spreadsheet.
+This document tracks the implementation status of Excel-like features in Rbt.Spreadsheet.
 
 ## ✅ Phase 1: Foundation Features (COMPLETE)
 

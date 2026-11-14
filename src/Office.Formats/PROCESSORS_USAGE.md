@@ -165,9 +165,9 @@ Fully Resolved Properties
 ```
 Parsing Layer              Processing Layer           Application
 ┌────────────┐            ┌────────────────┐         ┌──────────┐
-│ DocxReader │────────────>│ Processors     │────────>│ RedBat   │
-│            │            │                │         │ Word     │
-│ Faithful   │            │ Style          │         │ Editor   │
+│ DocxReader │────────────>│ Processors     │────────>│ Rbt.Word │
+│            │            │                │         │ Editor   │
+│ Faithful   │            │ Style          │         │          │
 │ OOXML      │            │ Resolution     │         └──────────┘
 │ Extraction │            │ Type           │
 └────────────┘            │ Conversion     │

@@ -455,7 +455,7 @@ let private isTabOnlySegment (text: string) =
         allWhitespace
 
 let private dashStyleForTableBorderStyle style =
-    match RedBat.BorderGrid.styleKey style with
+    match Rbt.BorderGrid.styleKey style with
     | "dotted" -> 1
     | "dashed"
     | "dashsmallgap" -> 2
@@ -635,10 +635,10 @@ let private tableFillCommands backgroundColor shading x y width height =
 /// much were drawn as if nothing crossed them.)
 let private borderJoinEpsilon = 0.5
 
-let private segmentIsHorizontal (segment: RedBat.BorderGrid.Segment) =
+let private segmentIsHorizontal (segment: Rbt.BorderGrid.Segment) =
     abs (segment.Y1 - segment.Y2) < borderJoinEpsilon
 
-let private segmentIsVertical (segment: RedBat.BorderGrid.Segment) =
+let private segmentIsVertical (segment: Rbt.BorderGrid.Segment) =
     abs (segment.X1 - segment.X2) < borderJoinEpsilon
 
 let private coversCoordinate value first second =
@@ -646,14 +646,14 @@ let private coversCoordinate value first second =
     && value <= max first second + borderJoinEpsilon
 
 type private TableBorderJoinIndex = {
-    Horizontal: Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>
-    Vertical: Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>
+    Horizontal: Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>
+    Vertical: Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>
 }
 
 let private borderJoinCoordinateKey value =
     int (floor (value / borderJoinEpsilon + 0.5))
 
-let private addBorderJoinSegment (index: Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>) coordinate segment =
+let private addBorderJoinSegment (index: Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>) coordinate segment =
     let key = borderJoinCoordinateKey coordinate
     match index.TryGetValue key with
     | true, values -> values.Add segment
@@ -662,9 +662,9 @@ let private addBorderJoinSegment (index: Dictionary<int, ResizeArray<RedBat.Bord
         values.Add segment
         index.[key] <- values
 
-let private tableBorderJoinIndex (segments: RedBat.BorderGrid.Segment list) =
-    let horizontal = Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>()
-    let vertical = Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>()
+let private tableBorderJoinIndex (segments: Rbt.BorderGrid.Segment list) =
+    let horizontal = Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>()
+    let vertical = Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>()
     for segment in segments do
         if segmentIsHorizontal segment then
             addBorderJoinSegment horizontal segment.Y1 segment
@@ -672,7 +672,7 @@ let private tableBorderJoinIndex (segments: RedBat.BorderGrid.Segment list) =
             addBorderJoinSegment vertical segment.X1 segment
     { Horizontal = horizontal; Vertical = vertical }
 
-let private indexedPerpendicularHalfWidth (segmentsByCoordinate: Dictionary<int, ResizeArray<RedBat.BorderGrid.Segment>>) coordinate covers =
+let private indexedPerpendicularHalfWidth (segmentsByCoordinate: Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>) coordinate covers =
     let key = borderJoinCoordinateKey coordinate
     let mutable maxWidth = 0.0
     for delta in -1 .. 1 do
@@ -690,19 +690,19 @@ let private indexedPerpendicularHalfWidth (segmentsByCoordinate: Dictionary<int,
 /// own line goes on past the end in a segment of its own.
 [<Struct>]
 type private BorderJoin = {
-    Before: RedBat.BorderGrid.Stroke voption
-    After: RedBat.BorderGrid.Stroke voption
+    Before: Rbt.BorderGrid.Stroke voption
+    After: Rbt.BorderGrid.Stroke voption
     Continues: bool
 }
 
 let private noBorderJoin : BorderJoin = { Before = ValueNone; After = ValueNone; Continues = false }
 
-let private widerStroke (current: RedBat.BorderGrid.Stroke voption) (candidate: RedBat.BorderGrid.Stroke) =
+let private widerStroke (current: Rbt.BorderGrid.Stroke voption) (candidate: Rbt.BorderGrid.Stroke) =
     match current with
     | ValueSome known when known.Width >= candidate.Width -> current
     | _ -> ValueSome candidate
 
-let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: RedBat.BorderGrid.Segment) : BorderJoin * BorderJoin =
+let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: Rbt.BorderGrid.Segment) : BorderJoin * BorderJoin =
     let horizontal = segmentIsHorizontal segment
     let vertical = segmentIsVertical segment
     // `along`: the coordinate along the segment's line, `across`: the line's own.
@@ -753,20 +753,20 @@ let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: RedBat.B
 /// the corner, out to the far line of the border on the other side. With
 /// single lines all of this is the old rule: half the crossing border's width.
 let private borderLineCap (join: BorderJoin) (partOffset: float) (atStart: bool) : float =
-    let lines (stroke: RedBat.BorderGrid.Stroke) =
+    let lines (stroke: Rbt.BorderGrid.Stroke) =
         let width = max 0.25 stroke.Width
-        let parts = RedBat.BorderGrid.strokePattern stroke.Style
+        let parts = Rbt.BorderGrid.strokePattern stroke.Style
         let firstOffset, firstWidth = List.head parts
         let lastOffset, lastWidth = List.last parts
         struct (firstOffset * width, max 0.25 (firstWidth * width), lastOffset * width, max 0.25 (lastWidth * width))
     // (At its start a segment lies after the junction: the crossing border's last line is the nearest.)
-    let near (stroke: RedBat.BorderGrid.Stroke) =
+    let near (stroke: Rbt.BorderGrid.Stroke) =
         let struct (firstOffset, firstWidth, lastOffset, lastWidth) = lines stroke
         if atStart then lastWidth / 2.0 - lastOffset else firstOffset + firstWidth / 2.0
-    let far (stroke: RedBat.BorderGrid.Stroke) =
+    let far (stroke: Rbt.BorderGrid.Stroke) =
         let struct (firstOffset, firstWidth, lastOffset, lastWidth) = lines stroke
         if atStart then firstWidth / 2.0 - firstOffset else lastOffset + lastWidth / 2.0
-    let side (own: RedBat.BorderGrid.Stroke voption) (other: RedBat.BorderGrid.Stroke voption) =
+    let side (own: Rbt.BorderGrid.Stroke voption) (other: Rbt.BorderGrid.Stroke voption) =
         match own with
         | ValueSome stroke -> near stroke
         | ValueNone ->
@@ -791,7 +791,7 @@ let private borderLineCap (join: BorderJoin) (partOffset: float) (atStart: bool)
 let private addStrokeTableBorderCommands (commands: ResizeArray<PaintCommand>) color width style x1 y1 x2 y2 (startJoin: BorderJoin) (endJoin: BorderJoin) =
     let width = max 0.25 width
     let dashStyle = dashStyleForTableBorderStyle style
-    for patternOffset, partWidth in RedBat.BorderGrid.strokePattern style do
+    for patternOffset, partWidth in Rbt.BorderGrid.strokePattern style do
         let offset = patternOffset * width
         let partWidth = max 0.25 (partWidth * width)
         let startCap = borderLineCap startJoin patternOffset true
@@ -808,14 +808,14 @@ let private tableFragmentBorderGridStroke priority (stroke: WordLayout.Table.Pri
         Width = stroke.Width
         Style = stroke.Style
         Priority = priority
-    }: RedBat.BorderGrid.Stroke))
+    }: Rbt.BorderGrid.Stroke))
 
 /// The border cells of a row fragment. `topOf` / `bottomOf`: the border a
 /// cell has at its top / bottom edge (its own, or - where a page break parts
 /// the row from its neighbour - the one the neighbour holds, see
 /// tableFragmentPaintCommands).
 let private tableFragmentBorderCellsWith (topOf: TableCellFragmentPlan -> WordLayout.Table.PrintStroke option) (bottomOf: TableCellFragmentPlan -> WordLayout.Table.PrintStroke option) (rowFragments: ResizeArray<TableCellFragmentPlan>) =
-    let result = ResizeArray<RedBat.BorderGrid.Cell>(rowFragments.Count)
+    let result = ResizeArray<Rbt.BorderGrid.Cell>(rowFragments.Count)
     for cell in rowFragments do
         let fragmentStartsAfterRow = cell.FragmentY > cell.RowY + 0.01
         let fragmentEndsBeforeRow = cell.FragmentY + cell.FragmentHeight < cell.RowY + cell.RowHeight - 0.01
@@ -834,7 +834,7 @@ let private tableFragmentBorderCellsWith (topOf: TableCellFragmentPlan -> WordLa
                 Bottom = if fragmentEndsBeforeRow then None else tableFragmentBorderGridStroke 1 (bottomOf cell)
                 Left = tableFragmentBorderGridStroke 1 cell.BorderLeft
             }
-        }: RedBat.BorderGrid.Cell)
+        }: Rbt.BorderGrid.Cell)
     result
 
 /// A row fragment that is painted: where it is, its cells, and whether it is
@@ -932,7 +932,7 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
         match rowCells.TryGetValue rowIndex with
         | true, cells -> cells |> Seq.tryFind (fun cell -> cell.StartColumn <= column && column < cell.StartColumn + cell.ColumnSpan)
         | false, _ -> None
-    let segments = Array.zeroCreate<RedBat.BorderGrid.Segment list> painted.Count
+    let segments = Array.zeroCreate<Rbt.BorderGrid.Segment list> painted.Count
     for index in 0 .. painted.Count - 1 do
         let fragment = painted.[index]
         if fragment.PaintCells.Count = 0 then segments.[index] <- []
@@ -952,7 +952,7 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
                 | Some stroke -> Some stroke
                 | None when not naturalBelow && cell.RowSpan <= 1 -> covering (cell.RowIndex + 1) cell.StartColumn |> Option.bind (fun below -> below.BorderTop)
                 | None -> None
-            segments.[index] <- tableFragmentBorderCellsWith topOf bottomOf fragment.PaintCells |> RedBat.BorderGrid.resolveResizeArray
+            segments.[index] <- tableFragmentBorderCellsWith topOf bottomOf fragment.PaintCells |> Rbt.BorderGrid.resolveResizeArray
 
     // A row's borders are drawn with the row, and meet the borders of the rows next to it on
     // the page: where a line of a compound border ends depends on what crosses it there, and
@@ -1406,7 +1406,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                 Width = stroke.Width
                 Style = stroke.Style
                 Priority = priority
-            }: RedBat.BorderGrid.Stroke))
+            }: Rbt.BorderGrid.Stroke))
 
         // The table's list numbering, built at most once for all its rows.
         let measureScope = lazy (tableMeasureScope None tableBlock)
@@ -1507,7 +1507,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
             for fragmentY, fragmentHeight in rowFragments settings currentY rowHeight do
                 commands.AddRange(tableFillCommands tableBlock.BackgroundColor tableBlock.Shading tableX fragmentY tableWidth fragmentHeight)
 
-            let cellBuffer = ResizeArray<RedBat.BorderGrid.Cell>(row.Cells.Length)
+            let cellBuffer = ResizeArray<Rbt.BorderGrid.Cell>(row.Cells.Length)
             let mutable borderFragmentHeight = rowHeight
             // The lower part of a cell merged from a row above the page break.
             for (resolved, x, width, atRow, remaining) in continuations.ToArray() do
@@ -1535,7 +1535,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                             Bottom = (if together < remaining then None else borderStroke 1 resolved.Borders.Bottom)
                             Left = borderStroke 1 resolved.Borders.Left
                         }
-                    }: RedBat.BorderGrid.Cell)
+                    }: Rbt.BorderGrid.Cell)
             for resolved in row.Cells do
                 let cell = resolved.Cell
                 let x = columnX cellSpacing resolved.StartColumn
@@ -1587,12 +1587,12 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                         Bottom = (if contiguousRows rowIndex resolved.RowSpan < resolved.RowSpan then None else borderStroke 1 (bottomAtBreak openBelow rowIndex resolved))
                         Left = borderStroke 1 resolved.Borders.Left
                     }
-                }: RedBat.BorderGrid.Cell)
+                }: Rbt.BorderGrid.Cell)
                 let together = contiguousRows rowIndex resolved.RowSpan
                 if together < resolved.RowSpan then
                     continuations.Add ((resolved, x, width, rowIndex + together, resolved.RowSpan - together))
 
-            let borderSegments = RedBat.BorderGrid.resolveResizeArray cellBuffer
+            let borderSegments = Rbt.BorderGrid.resolveResizeArray cellBuffer
             let joinIndex = tableBorderJoinIndex borderSegments
             for segment in borderSegments do
                 let startCap, endCap = tableBorderJoinCaps joinIndex segment

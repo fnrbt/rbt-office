@@ -24,12 +24,12 @@ Primary docs:
 ## Implemented Here
 
 - `tools/word-parity/extract-word-layout.vbs` now emits the stable `WdInformation` values listed above plus `ComputeStatistics(wdStatisticLines)` and `ComputeStatistics(wdStatisticPages)` for each emitted line range.
-- `RedBat.Word.API.getLayoutLines` now includes VBA-style fields alongside existing line geometry: page, adjusted page, section, page count, page-relative x/y, text-boundary-relative x/y, first-character line/column, table row/column/max row/max column, content-control and field-code/result flags.
-- `RedBat.Word.API.getVbaLayoutLines` is an explicit alias for the enriched line query.
-- `RedBat.Word.API.getRangeInformation(editor, blockId, startOffset, endOffset)` mirrors the useful `Range.Information` subset for a paragraph range.
-- `RedBat.Word.API.getSelectionInformation(editor)` mirrors `Selection.Information` for the active end of the current selection.
-- `RedBat.Word.API.computeRangeStatistics(editor, blockId, startOffset, endOffset)` returns line/page/paragraph/word/character counts for a single paragraph range.
-- `RedBat.Word.API.getRangeBounds(editor, blockId, startOffset, endOffset)` returns document/page bounds for the range, analogous to the stable document-coordinate part of `Window.GetPoint`.
+- `Rbt.Word.API.getLayoutLines` now includes VBA-style fields alongside existing line geometry: page, adjusted page, section, page count, page-relative x/y, text-boundary-relative x/y, first-character line/column, table row/column/max row/max column, content-control and field-code/result flags.
+- `Rbt.Word.API.getVbaLayoutLines` is an explicit alias for the enriched line query.
+- `Rbt.Word.API.getRangeInformation(editor, blockId, startOffset, endOffset)` mirrors the useful `Range.Information` subset for a paragraph range.
+- `Rbt.Word.API.getSelectionInformation(editor)` mirrors `Selection.Information` for the active end of the current selection.
+- `Rbt.Word.API.computeRangeStatistics(editor, blockId, startOffset, endOffset)` returns line/page/paragraph/word/character counts for a single paragraph range.
+- `Rbt.Word.API.getRangeBounds(editor, blockId, startOffset, endOffset)` returns document/page bounds for the range, analogous to the stable document-coordinate part of `Window.GetPoint`.
 - `tools/word-parity/compare-word-browser-layouts.mjs` carries the added Word/browser fields through `layout-diff.tsv`.
 
 ## Not Yet Modeled

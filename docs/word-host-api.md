@@ -730,7 +730,7 @@ The shell lazily loads packaged `word-pdf/Browser.js` and renders a captured
 whole-document snapshot through the existing Word PDF engine. The build stages
 `word-pdf/ucd.dat` from the resolved Unicode package; custom Fable builds must run
 `dotnet fsi scripts/stage-word-pdf-data.fsx <word-pdf-output>`. Keep that asset next
-to `Browser.js`. The old `window.RedBatWordPdfExport` bridge is no longer used.
+to `Browser.js`. The old window-global PDF exporter bridge is no longer used.
 The user gesture reserves a PDF tab; blocked popups and rendering errors are
 reported, and failed/stale exports close the reserved tab. PDF export does not
 mark DOCX edits saved. Embedded images are decoded by the browser; JPEG bytes

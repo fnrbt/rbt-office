@@ -484,14 +484,14 @@ check "bordered table shared border" (borderedLeft.Right.IsSome, borderedRight.L
 let _, wideFastNextY = tableBorderCommands settings measureText wideFastTable 0.0
 check "wide table border advance" (wideFastNextY > 0.0) true
 let borderGridWideCellCount = 5000
-let borderGridStroke : RedBat.BorderGrid.Stroke =
+let borderGridStroke : Rbt.BorderGrid.Stroke =
     { Color = "#000000"; Width = 1.0; Style = Some "single"; Priority = 1 }
-let borderGridEdges : RedBat.BorderGrid.Edges =
+let borderGridEdges : Rbt.BorderGrid.Edges =
     { Top = Some borderGridStroke
       Right = Some borderGridStroke
       Bottom = Some borderGridStroke
       Left = Some borderGridStroke }
-let borderGridWideCells = ResizeArray<RedBat.BorderGrid.Cell>(borderGridWideCellCount)
+let borderGridWideCells = ResizeArray<Rbt.BorderGrid.Cell>(borderGridWideCellCount)
 for col in 0 .. borderGridWideCellCount - 1 do
     borderGridWideCells.Add
         { Row = 0
@@ -504,7 +504,7 @@ for col in 0 .. borderGridWideCellCount - 1 do
           Height = 18.0
           Edges = borderGridEdges }
 let borderGridWideSw = System.Diagnostics.Stopwatch.StartNew()
-let borderGridWideSegments = RedBat.BorderGrid.resolveResizeArray borderGridWideCells
+let borderGridWideSegments = Rbt.BorderGrid.resolveResizeArray borderGridWideCells
 borderGridWideSw.Stop()
 check "border grid wide row perf"
     (borderGridWideSw.Elapsed.TotalMilliseconds < 250.0

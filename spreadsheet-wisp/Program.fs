@@ -23,7 +23,7 @@ let private appH = 820
 let private existingFile path = if File.Exists path then Some path else None
 
 let private recentFilesPath =
-    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config/redbat-spreadsheet-wisp/recent.txt")
+    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config/rbt-spreadsheet-wisp/recent.txt")
 
 let private loadRecentFiles () =
     if File.Exists recentFilesPath then

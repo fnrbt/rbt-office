@@ -1,6 +1,6 @@
 # Excel Rendering Parity Work
 
-Current goal: iteratively improve RedBat Spreadsheet render/layout parity against Microsoft Excel for real XLSX files and focused generated repros. Mirrors `docs/word-parity.md`.
+Current goal: iteratively improve rbt-office's spreadsheet render/layout parity against Microsoft Excel for real XLSX files and focused generated repros. Mirrors `docs/word-parity.md`.
 
 Active tracker: `docs/excel-parity-tracker.md`. Visual fix history:
 `docs/excel-parity-fixes.html`.
@@ -102,6 +102,6 @@ Excel positions are reported in points relative to the worksheet origin. The com
 ## Next Setup Tasks
 
 - Land an `XlsxWriter` (parallel to `DocumentWriter.fs`) so the create-focused-repros script can emit deterministic XLSX fixtures.
-- Add browser-side `getLayoutCells`, `getRangeInformation`, and `computeRangeStatistics` exports in `RedBat.Spreadsheet.Spreadsheet`/`RedBat.Spreadsheet.API`.
+- Add browser-side `getLayoutCells`, `getRangeInformation`, and `computeRangeStatistics` exports in `Rbt.Spreadsheet.Spreadsheet`/`Rbt.Spreadsheet.API`.
 - Add a native geometry export alongside the native grid widget if we need numeric native cell positions, not just raster snapshots.
 - Resume parity fixes on cell rendering, header geometry, and merged ranges using real-world fixtures and the focused XLSX writer.

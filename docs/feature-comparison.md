@@ -126,12 +126,12 @@ Many of the competitor cells are (prior) knowledge: the research covered deploym
      - the binding of block-level content controls;
      - a bookmark renamed in a spliced paragraph keeps its old name.
    - `docs/docx-editor-parity.md` still says "🔴 regenerates XML". **That row is out of date.**
-14. Real PDF with embedded fonts and our shaper. `src/Word.Pdf` is compiled to JS (`dist/word-pdf`), but the host must install it as `window.RedBatWordPdfExport` (`src/Word/WordHost.fs:171`).
+14. Real PDF with embedded fonts and our shaper. `src/Word.Pdf` is compiled to JS (`dist/word-pdf`), but the host must install it as a window-global PDF exporter (`src/Word/WordHost.fs:171`).
 15. `renderPage` paints any page for a print preview. There is no built-in print command; a host prints the PDF.
 16. VBA/VBScript runs read-only layout queries only (`WordVba.fs`): no document edits, no `.docm` macros (roadmap, Macros).
 17. Mouse events only. There is no `touch*` or `pointer*` listener anywhere in `src/` (grep), so no touch selection handles, pinch zoom or long-press. IME and virtual keyboards go through a hidden textarea (`Input.fs`).
 18. The document is a canvas: there is no accessible text tree and no ARIA live region. The only ARIA is a label on the input proxy (`Input.fs:1889`) and `aria-pressed`/`aria-expanded` on toolbar buttons.
-19. Long documents are laid out in slices (progressive open and layout). The 514-page harness document is part of the redbat gate, and the 600-page perf document takes 30 ms per keystroke in a footnote (roadmap).
+19. Long documents are laid out in slices (progressive open and layout). The 514-page harness document is part of the host's adoption gate, and the 600-page perf document takes 30 ms per keystroke in a footnote (roadmap).
 20. Large host API, about 230 documented functions (`docs/word-host-api.md`), plus a separate small viewer module. It is only a Fable/JS module: no React or Vue wrappers, no events beyond `onChange`, and no i18n.
 
 **Footnotes (competitor cells):**

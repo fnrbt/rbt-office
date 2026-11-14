@@ -15,7 +15,7 @@ The native interactive editor is the system under test:
 - Binary: `tools/spreadsheet-editor/bin/Debug/net10.0/SpreadsheetEditor`
   (build: `dotnet build tools/spreadsheet-editor/SpreadsheetEditor.fsproj`).
   It opens a real X11 window (`Platform.X11Window`) running the full chrome
-  (toolbar, formula bar, grid) over `RedBat.Spreadsheet`.
+  (toolbar, formula bar, grid) over `Rbt.Spreadsheet`.
 - It exposes a **control server** (`widgets/x11-viewer/ControlServer.fs`) over
   named-pipe FIFOs `/tmp/x11viewer-ctl-{pid}` + `-resp`. Frames are
   big-endian `>II` (cmdId, payloadLen). Supported commands:

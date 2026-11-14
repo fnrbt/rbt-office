@@ -1,6 +1,6 @@
 # Word Rendering Parity Work
 
-Current goal: iteratively improve RedBat Word render/layout parity against Microsoft Word for real DOCX files and focused generated repros.
+Current goal: iteratively improve rbt-office's Word editor render/layout parity against Microsoft Word for real DOCX files and focused generated repros.
 
 ## Confirmed Repo Map
 
@@ -85,10 +85,10 @@ For each identified bug, prefer this stricter loop:
 - `tools/word-parity/compare-word-browser-layouts.mjs` runs Word TSV extraction plus browser line capture for one or more DOCX files/directories, then writes per-document layout diffs and a ranked summary.
 - `tools/word-parity/compare-vba-layout-results.mjs` runs Word TSV extraction plus browser `getRangeInformation`/`computeRangeStatistics` calls for matched line ranges. Use it to verify that our VBA-style layout query results match Microsoft Word separately from rendered screenshot comparison.
 - `tools/word-parity/fetch-windows-fonts.sh` copies Calibri, Arial, Times New Roman, and related Windows fonts from `winvm` into `artifacts/fonts/windows`.
-- `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `RedBat.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
+- `tools/browser-runner/` is a standalone Fable/Vite browser harness for the canvas renderer. It loads DOCX files through `Office.Formats`, imports them into `Rbt.Word.API`, exposes `window.rbWordRunner`, and can write segment JSON, line-box JSON, plus canvas screenshots through Playwright.
 - `window.rbWordRunner.getVbaLayoutLines()`, `getRangeInformation(...)`, `getSelectionInformation()`, `getRangeBounds(...)`, and `computeRangeStatistics(...)` expose VBA-style layout probes on our browser path.
-- `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `RedBat.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
-- `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `RedBat.Word.Pdf.toBytes`, and writes the resulting PDF.
+- `tools/native-runner/` is a native DOCX-to-PNG snapshot harness. It loads DOCX bytes with the native `DocxReader`, maps the typed parse tree into `Rbt.Word.Document`, renders `word-native` through `../widgets` + `../renderer`, and writes a PNG.
+- `tools/pdf-runner/` is the project PDF backend harness. It reuses the native typed DOCX import, calls `Rbt.Word.Pdf.toBytes`, and writes the resulting PDF.
 
 Run on the Windows VM from an interactive session:
 

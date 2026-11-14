@@ -234,11 +234,11 @@ excel.resolveCell(wb, cell)           // Resolve shared strings
 
 ---
 
-## Integration with RedBat.Word
+## Integration with Rbt.Word
 
 ### Compatibility: **95%+**
 
-RedBat.Word needs:
+Rbt.Word needs:
 - ✅ Paragraphs with runs
 - ✅ Bold, Italic, Underline
 - ✅ Font sizes
@@ -246,7 +246,7 @@ RedBat.Word needs:
 - ✅ Text content
 - ⚠️ Style cascading (partially - IDs extracted, full resolution available)
 
-**Ready for integration** - All core features needed by RedBat.Word are implemented.
+**Ready for integration** - All core features needed by Rbt.Word are implemented.
 
 ---
 
@@ -341,4 +341,4 @@ If you want to extend further:
 - ✅ DRY with reusable DSLs
 - ✅ Type-safe with discriminated unions
 - ✅ Ready for production use
-- ✅ Compatible with RedBat.Word
+- ✅ Compatible with Rbt.Word

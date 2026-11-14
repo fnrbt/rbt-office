@@ -11,7 +11,7 @@ file back to the requested local path.
 
 Defaults:
   WORD_VM=winvm
-  WORD_VM_DIR='C:/Users/olivia/RedBatExcelParity'
+  WORD_VM_DIR='C:/Users/olivia/RbtExcelParity'
   WORD_VM_RUN_MODE=task
 USAGE
   exit 2
@@ -34,7 +34,7 @@ if [[ ! -f "$input_xlsx" ]]; then
 fi
 
 vm=${WORD_VM:-winvm}
-vm_dir=${WORD_VM_DIR:-C:/Users/olivia/RedBatExcelParity}
+vm_dir=${WORD_VM_DIR:-C:/Users/olivia/RbtExcelParity}
 run_mode=${WORD_VM_RUN_MODE:-task}
 engine=${WORD_VM_ENGINE:-}
 if [[ -z "$engine" ]]; then

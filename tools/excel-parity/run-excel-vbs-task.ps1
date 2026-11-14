@@ -21,7 +21,7 @@ $scriptFull = (Resolve-Path -LiteralPath $ScriptPath).Path
 $inputFull = (Resolve-Path -LiteralPath $InputPath).Path
 $outputFull = [System.IO.Path]::GetFullPath($OutputPath)
 $workDir = Split-Path -Parent $scriptFull
-$taskName = "RedBatExcelParity-" + ([guid]::NewGuid().ToString("N"))
+$taskName = "RbtExcelParity-" + ([guid]::NewGuid().ToString("N"))
 $logPath = [System.IO.Path]::ChangeExtension($outputFull, ".task.log")
 $donePath = [System.IO.Path]::ChangeExtension($outputFull, ".task.done")
 $cmdPath = Join-Path $workDir ($taskName + ".cmd")
@@ -42,7 +42,7 @@ function Stop-InteractiveExcel {
   )
 
   try {
-    $cleanupTaskName = "RedBatExcelParity-KillExcel-" + ([guid]::NewGuid().ToString("N"))
+    $cleanupTaskName = "RbtExcelParity-KillExcel-" + ([guid]::NewGuid().ToString("N"))
     try {
       $cleanupRun = 'cmd.exe /c "' + $cleanupCmd + '"'
       $cleanupStartArgs = New-TaskStartArgs 10

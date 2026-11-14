@@ -17,18 +17,18 @@ tools/excel-parity/run-excel-vbs-on-vm.sh tools/vba/gen-macro-xlsm.vbs "$dummy" 
 
 echo "==> building Office.Formats"
 dotnet build src/Office.Formats/OfficeFormat.fsproj -c Debug >/dev/null
-dotnet build src/Spreadsheet/RedBat.Spreadsheet.fsproj -c Debug >/dev/null
+dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj -c Debug >/dev/null
 
 dll="$repo/src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
-rb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/RedBat.Spreadsheet.dll"
+rb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 vb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
 
 cat > /tmp/validate-real.fsx <<EOF
 #r "$dll"
 #r "$vb"
 #r "$rb"
-open RedBat.Spreadsheet.Model
-module V = RedBat.Spreadsheet.Vba
+open Rbt.Spreadsheet.Model
+module V = Rbt.Spreadsheet.Vba
 let bytes = System.IO.File.ReadAllBytes "$out"
 match VbaProject.extractFromXlsx bytes with
 | None -> eprintfn "FAIL: no vbaProject.bin / no module recovered"; exit 1

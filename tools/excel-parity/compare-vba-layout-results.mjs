@@ -6,7 +6,7 @@ import path from 'node:path';
 // Mirrors tools/word-parity/compare-vba-layout-results.mjs. The browser
 // side currently exposes only a paint snapshot; once the planned
 // getLayoutCells/getRangeInformation/computeRangeStatistics calls land on
-// RedBat.Spreadsheet.API, swap the placeholder browser capture below for a
+// Rbt.Spreadsheet.API, swap the placeholder browser capture below for a
 // real Playwright-driven call analogous to capture-browser-docx.mjs.
 
 const officeRoot = path.resolve(process.env.OFFICE_ROOT ?? process.cwd());

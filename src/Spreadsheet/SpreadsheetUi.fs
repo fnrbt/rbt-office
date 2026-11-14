@@ -1093,21 +1093,21 @@ module Ui =
     let aboutDialog (version: string) (build: string) : DialogSpec =
         let creditsField = dialogStatus "credits" "Credits" ""
         let creditsLong =
-            "RedBat Calc native shell\n" +
+            "rbt-office spreadsheet native shell\n" +
             "  • Composit UI widgets\n" +
             "  • Rbt.Office.Ui spec layer\n" +
             "  • Rbt.Spreadsheet model + layout\n\n" +
             "Built on Rbt.Text.Engine, Rbt.OpenType.Core, Bidi, Shaper.Core."
         {
             TestId = "xl-dlg-about"
-            Title = "About RedBat Calc"
+            Title = "About rbt-office"
             Subtitle = Some "A native, F#-first spreadsheet workbench."
             Fields = [
                 dialogSection "Version"
                 dialogStatus "version" "Version" version
                 dialogStatus "build"   "Build"   build
                 dialogSection "Project"
-                dialogStatus "homepage" "Homepage" "https://example.com/redbat-calc"
+                dialogStatus "homepage" "Homepage" "https://example.com/rbt-office"
                 dialogStatus "license"  "License"  "MIT"
                 dialogSection "Components"
                 { creditsField with Initial = creditsLong }

@@ -142,7 +142,7 @@ Column Header:  [ A  ▼ ]
 
 ## DOM Helpers Added
 
-**File:** `components/RedBat.Grid/Dom.fs` lines 14-22
+**File:** `components/Grid/Dom.fs` lines 14-22
 
 Added JavaScript interop helpers:
 ```fsharp
@@ -258,8 +258,8 @@ spreadsheet.ShowConditionalFormattingDialog();
 
 ## Files Modified
 
-1. `components/RedBat.Grid/Dom.fs` - Added DOM helpers
-2. `components/RedBat.Spreadsheet/Spreadsheet.fs` - Added all UI dialogs
+1. `components/Grid/Dom.fs` - Added DOM helpers
+2. `components/Spreadsheet/Spreadsheet.fs` - Added all UI dialogs
 3. `hosts/mega/frontend/src/lib/spreadsheet/Spreadsheet.js` - Generated (needs recompile)
 
 ---

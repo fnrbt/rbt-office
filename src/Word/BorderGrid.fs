@@ -1,4 +1,4 @@
-namespace RedBat
+namespace Rbt
 
 module BorderGrid =
     open System.Collections.Generic

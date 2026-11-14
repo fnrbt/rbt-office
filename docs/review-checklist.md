@@ -1,8 +1,8 @@
-# Redbat review-harness handoff — @rbt/office 0.1.31
+# Host review-harness handoff — @rbt/office 0.1.31
 
 ## Internal release versus fidelity approval
 
-Publish the automated-tested internal package first so Redbat can adopt it and build this harness. Human fidelity review is **not** a prerequisite for internal publication. The checklist below describes work to do in that harness, not a claim that Office parity is complete.
+Publish the automated-tested internal package first so a host application can adopt it and build this harness. Human fidelity review is **not** a prerequisite for internal publication. The checklist below describes work to do in that harness, not a claim that Office parity is complete.
 
 ## Reference evidence and locations
 
@@ -18,12 +18,12 @@ The completed Office run below belongs to candidate `52d305e2`. Keep that proven
 
 Use copies for manual edits. Do not overwrite the manifest-bound originals or generated outputs.
 
-## Redbat setup and data contract
+## Host setup and data contract
 
-1. After the registry confirms publication, pin `"@rbt/office": "0.1.31"` in Redbat's `mega/frontend/package.json` and run `pnpm install` from its workspace root. Use the existing reader credentials and `@rbt:registry=https://artifacts.cardillion.com/api/packages/npm/41021897/`; do not embed tokens in the harness.
+1. After the registry confirms publication, pin `"@rbt/office": "0.1.31"` in the host's frontend `package.json` and install from its workspace root. Use the existing reader credentials and `@rbt:registry=https://artifacts.cardillion.com/api/packages/npm/41021897/`; do not embed tokens in the harness.
 2. Record the installed version and registry `dist.integrity`. `npm view @rbt/office@0.1.31 version dist.integrity --registry=https://artifacts.cardillion.com/api/packages/npm/41021897/` identifies the actual published artifact. Publication status is established by the registry, not merely by a tag or this document.
-3. Transfer `/home/dave/Dev/rbt-office-releases/redbat-review-0.1.31.zip` to the Redbat workstation, extract it outside the source tree, and select the extracted directory in the harness. Its `SHA256SUMS` binds the reference corpus and tarball; `review-data-sha256.json` binds the included review files. The archive is a portable copy, not an npm dependency and not a public upload.
-4. Use the existing package adapters in `tools/redbat-adoption/harness-keep/office-harness.tsx` as the integration reference. Package imports use `@rbt/office/word/...`, `@rbt/office/spreadsheet/...` and `@rbt/office/office-formats/src/Main.js`; see `docs/word-host-api.md` and `docs/spreadsheet-host-api.md`. The existing regression harness is documented in `tools/redbat-adoption/README.md`; it is not the new human review UI.
+3. Transfer the review bundle `office-review-0.1.31.zip` (in the release directory, `$RBT_OFFICE_RELEASES`) to the host workstation, extract it outside the source tree, and select the extracted directory in the harness. Its `SHA256SUMS` binds the reference corpus and tarball; `review-data-sha256.json` binds the included review files. The archive is a portable copy, not an npm dependency and not a public upload.
+4. Use the host's existing package adapters (its adoption harness's `office-harness.tsx`) as the integration reference. Package imports use `@rbt/office/word/...`, `@rbt/office/spreadsheet/...` and `@rbt/office/office-formats/src/Main.js`; see `docs/word-host-api.md` and `docs/spreadsheet-host-api.md`. The host's existing regression harness is documented in the host's repo; it is not the new human review UI.
 5. Keep the review loop local: file/directory selection, rendering, editing, dialogs, comparisons and downloading results need no HTTP/controller. Loading the application/dependency assets is separate. Backend storage is an optional host hook, not a requirement for basic review.
 
 ### Inputs to load
@@ -51,13 +51,13 @@ The probe escape layer remains inside the parsed JSON strings: decode `\\`, `\t`
 
 - Show a case list grouped by Word/Excel, operation, differing/matching/unavailable status and known capability limits. Keep model-only reconstruction separate from ordinary saves.
 - Show original and candidate side by side, the intended operation, and raw record differences. Offer download/open-in-Office links; COM records are not screenshots. Human Office screenshots/observations can be attached to the case.
-- Allow normal local edits, undo/redo and save/reopen in the package-backed view. Offer the same workflow through Redbat's browser and desktop host adapters; record which host was exercised.
+- Allow normal local edits, undo/redo and save/reopen in the package-backed view. Offer the same workflow through the host's browser and desktop host adapters; record which host was exercised.
 - Load document bytes only for the selected case; do not mount or parse the entire corpus at once. Large comparison files can be indexed during harness import, with raw evidence retained separately.
 - Record a verdict per case: pass, defect, accepted limitation or not verified; include explanation, exact filenames, operation, app/Office versions, reviewer, date and optional screenshots.
 - Export review results as JSON plus attachments. Bind results to the installed package version/integrity and the reference corpus manifest hash separately. Do not overwrite the reference comparison JSON, suppress capability errors or automatically produce a human attestation.
 - A pass requires only intended changes and preserved unrelated content. Opening a file or getting an empty record diff must not auto-approve its visual appearance.
 
-The fixture priorities below are the initial review queue. They are not a request to visually inspect all 2,168 files before Redbat can adopt the internal package.
+The fixture priorities below are the initial review queue. They are not a request to visually inspect all 2,168 files before a host can adopt the internal package.
 
 ## Already completed — do not repeat merely to establish that files open
 
@@ -70,7 +70,7 @@ These establish execution and opening, not complete visual or editing fidelity. 
 ## Settled before review (2026-11-14, after 0.1.32)
 
 These were checked against the files and the code; the bundle's files are from the 0.1.31 candidate, so where a
-fix is named, judge the case on the package that has it (open the original in Redbat's `/office/review` and make
+fix is named, judge the case on the package that has it (open the original in the host's review view and make
 the edit), not on the bundle's output.
 
 - **Comment ranges after bold-at-caret typing (`patched-paragraphs`): a fixture error, not a loss.** The fixture's

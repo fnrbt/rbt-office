@@ -121,7 +121,7 @@ try {
         },
         // The same edit as a host application makes it (--host): the entry typed into the cell's
         // edit box and committed with Enter, with subscribers that read what a toolbar, a formula
-        // bar and a status bar show after every change (redbat's editor does: selection, format,
+        // bar and a status bar show after every change (a host's editor does: selection, format,
         // status, the active cell, view options, filters, outline, undo state). Per edit:
         // [the keystroke's handler, that and the frame after it, the time inside the subscribers].
         async hostEdit(times) {

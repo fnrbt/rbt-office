@@ -10,7 +10,7 @@ cscript, and copies the output file back to the requested local path.
 
 Defaults:
   WORD_VM=winvm
-  WORD_VM_DIR='C:/Users/olivia/RedBatWordParity'
+  WORD_VM_DIR='C:/Users/olivia/RbtWordParity'
   WORD_VM_RUN_MODE=task
 USAGE
   exit 2
@@ -33,7 +33,7 @@ if [[ ! -f "$input_docx" ]]; then
 fi
 
 vm=${WORD_VM:-winvm}
-vm_dir=${WORD_VM_DIR:-C:/Users/olivia/RedBatWordParity}
+vm_dir=${WORD_VM_DIR:-C:/Users/olivia/RbtWordParity}
 run_mode=${WORD_VM_RUN_MODE:-task}
 
 # Optional RDP keepalive (disabled by default; needs xfreerdp3 + Xvfb, which are

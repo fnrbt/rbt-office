@@ -13,7 +13,7 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptFull = (Resolve-Path -LiteralPath $ScriptPath).Path
 $workDir = Split-Path -Parent $scriptFull
-$taskName = "RedBatExcelParity-" + ([guid]::NewGuid().ToString("N"))
+$taskName = "RbtExcelParity-" + ([guid]::NewGuid().ToString("N"))
 $logPath = [System.IO.Path]::ChangeExtension($scriptFull, ".log")
 $donePath = [System.IO.Path]::ChangeExtension($scriptFull, ".done")
 $cmdPath = Join-Path $workDir ($taskName + ".cmd")

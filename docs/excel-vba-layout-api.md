@@ -33,10 +33,10 @@ Primary docs:
 ## Implemented Here
 
 - `tools/excel-parity/extract-excel-layout.vbs` emits the stable Excel-range fields above for every non-empty cell in every visible sheet of an XLSX, plus merge geometry.
-- Planned: `RedBat.Spreadsheet.API.getLayoutCells` to return per-cell geometry alongside text/format/value.
-- Planned: `RedBat.Spreadsheet.API.getRangeInformation(editor, sheetId, sref)` mirroring Excel's `Range`-level layout fields for a single range.
-- Planned: `RedBat.Spreadsheet.API.computeRangeStatistics(editor, sheetId, sref)` returning cell/row/column/word/character counts for a single range.
-- Planned: `RedBat.Spreadsheet.API.getRangeBounds(editor, sheetId, sref)` returning sheet-relative geometry analogous to Word's `getRangeBounds`.
+- Planned: `Rbt.Spreadsheet.API.getLayoutCells` to return per-cell geometry alongside text/format/value.
+- Planned: `Rbt.Spreadsheet.API.getRangeInformation(editor, sheetId, sref)` mirroring Excel's `Range`-level layout fields for a single range.
+- Planned: `Rbt.Spreadsheet.API.computeRangeStatistics(editor, sheetId, sref)` returning cell/row/column/word/character counts for a single range.
+- Planned: `Rbt.Spreadsheet.API.getRangeBounds(editor, sheetId, sref)` returning sheet-relative geometry analogous to Word's `getRangeBounds`.
 - Planned: `tools/excel-parity/compare-vba-layout-results.mjs` to align Excel TSV output and browser results into per-document layout diffs.
 
 ## Not Yet Modeled

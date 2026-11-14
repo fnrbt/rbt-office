@@ -535,7 +535,7 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         DraggingImage = None
         HoveredImage = None
         TrackChanges = false
-        TrackChangesAuthor = "RedBat Word"
+        TrackChangesAuthor = "rbt-office"
         TrackChangesDate = ""
         PointerStartDocument = None
         InputProxy = None

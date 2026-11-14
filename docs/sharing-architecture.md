@@ -297,7 +297,7 @@ The renderer names the dialog and controls, focuses on opening, contains focus, 
 **Formatting/name follow-through:** `Spreadsheet/Managers.fs` owns the browser rule/name workflows behind an editor-specific callback record. It compiles before `Spreadsheet.fs`; the component lazily mounts one shared dialog renderer and exposes the same managers used by shell commands. There is no separate legacy conditional-formatting renderer. The port delegates validated, undoable operations rather than holding a second workbook model. Word's existing `WordHost`/`WordDialogs` path now uses partial character/paragraph transactions with captured selection/revision guards; it is still a browser adapter, not the portable controller proposed below. New Word dialog actions are optional in shared menu specs, so native hosts do not advertise unsupported browser dialogs.
 
 The direction (`docs/continuation-roadmap.md`, *Three ways to run it*):
-1. An embedded widget with no UI (redbat today).
+1. An embedded widget with no UI (the current host today).
 2. The browser with our own UI and no server.
 3. A .NET desktop app.
 
@@ -434,9 +434,9 @@ Note: `FableUI.Reactive` (browser) and `Wisp.Reactive` (.NET) are the same model
 
 ## 3. What a host of each mode has to write today
 
-**Mode 1, embedded with no UI (redbat):**
+**Mode 1, embedded with no UI (the current host):**
 - **Spreadsheet:**
-  - The host calls `createSpreadsheet(container)`. The component builds its own DOM grid, scroll container, edit input and legacy dialogs. Its Ctrl+F dialog even opens over redbat's own (`ui-audit.md`).
+  - The host calls `createSpreadsheet(container)`. The component builds its own DOM grid, scroll container, edit input and legacy dialogs. Its Ctrl+F dialog even opens over the host's own (`ui-audit.md`).
   - The host builds every menu, toolbar, context menu and dialog itself in Solid (`SpreadsheetEditor.tsx`, `SheetDialogs.tsx`) and drives the ~3,600-line JS host API.
 - **Word:**
   - The host gives a canvas and a scroll container, and calls `setViewport` on every scroll or resize.
@@ -444,7 +444,7 @@ Note: `FableUI.Reactive` (browser) and `Wisp.Reactive` (.NET) are the same model
   - It installs ShaperText measurers and painters (`setTextMeasurersForFaces`, `setTextPathPainterFactory`) and decodes images (`setImageCache`).
   - It reads the docx with Office.Formats and calls `importFromDocxPackage`, and exports with `exportDocumentPackage` and `writeFromEditorPackage`.
   - It builds the whole UI.
-- **The cost:** redbat has no command or state source of ours to bind its UI to. Every enabled / checked state is asked of the host API one by one.
+- **The cost:** the host has no command or state source of ours to bind its UI to. Every enabled / checked state is asked of the host API one by one.
 
 **Mode 2, the browser with our UI:**
 - `WordShell.mount` and `createSpreadsheetShell` / `createFormulaBar` exist, but nothing mounts them.
@@ -510,7 +510,7 @@ Smaller ones:
         +---------------------------------------------------------------+
         | Host UI (per platform, thin)                                  |
         |  browser: FableUI DOM renderer | .NET: Wisp renderer |        |
-        |  or the embedding host's own (redbat Solid)                   |
+        |  or the embedding host's own (e.g. Solid)                     |
         +----------------------^----------------------------------------+
                                | command registry, specs, view state (signals)
         +----------------------+----------------------------------------+
@@ -574,7 +574,7 @@ Smaller ones:
 - Two renderers of the same specs:
   - FableUI DOM: complete `OfficeUiDialog` with tabs and all eleven field kinds.
   - Wisp: `OfficeShell`, already complete.
-- Mode 1 hosts (redbat) get the registry and state as plain JS (`getCommands()`, `onCommandStateChange`) to bind their own Solid UI. They may also use our specs' data (the option lists, the validation) without our renderers.
+- Mode 1 hosts get the registry and state as plain JS (`getCommands()`, `onCommandStateChange`) to bind their own Solid UI. They may also use our specs' data (the option lists, the validation) without our renderers.
 - Bespoke surfaces (the filter panel, CF rule manager, comment threads) are allowed as per-platform widgets, but their state and validation live in the UI core.
 
 **Migration rules:**
@@ -584,7 +584,7 @@ Smaller ones:
 ## 6. Migration plan
 
 Each step is shippable on its own:
-- It keeps the JS host API (redbat) unchanged unless the step says so.
+- It keeps the JS host API unchanged unless the step says so.
 - It keeps `tools/word-browser` and `tools/xlsx-browser` green.
 - It adds a .NET check where one is cheap.
 
@@ -605,7 +605,7 @@ Sizes are rough: S under ~300 lines changed, M ~300-1,500, L ~1,500-4,000, XL mo
      - The edit input, comment box, list and filter buttons, pictures and charts.
    - Give the harness a geometry API in place of the DOM queries: `PortableCellGeometry` and `GetCellEdges` exist. About 112 lines of `tools/xlsx-browser/*.js` query `.spreadsheet-cell` / `-col-header` / `-row-header` / `-edge` / `-cf-*`.
    - Run the harness in both modes, and gate on `perf.mjs` / `bigsheet.mjs` / `grid-scroll-frames`.
-   - Shippable with the flag off. Redbat is unaffected until it opts in.
+   - Shippable with the flag off. An embedding host is unaffected until it opts in.
 4. **One text stack (M).**
    - Generalise `src/ShaperText` into a `FontProvider` (font bytes by family / bold / italic, with fallbacks and the CJK chain from `SpreadsheetGrid.fs`) and measurers for both Word's `TextStyle` and the sheet's `TextMeasurer`.
    - Use it in the four .NET hosts, deleting four font loaders.
@@ -619,7 +619,7 @@ Sizes are rough: S under ~300 lines changed, M ~300-1,500, L ~1,500-4,000, XL mo
 6. **The painted grid as the default; delete the DOM cell paths (M).**
    - Remove `drawCell`, the header nodes, DOM overlays, outline and page-break nodes (~1,700 lines), and `src/Grid` except `Dom.fs`.
    - Draw charts through `scenePaintItems` on the canvas, keeping SVG only for export if wanted.
-   - Prerequisite: step 3's perf parity and redbat's adoption harness (1104/1104) on the painted grid.
+   - Prerequisite: step 3's perf parity and the host's adoption harness (1104/1104) on the painted grid.
 7. **Lift `WordView` out of `Renderer.fs` (L).**
    - Move everything except the canvas calls out of `#if FABLE_COMPILER` into a portable module:
      - Progressive layout, caches, frames, dirty bands, viewport mapping.
@@ -682,11 +682,11 @@ Order rationale:
   - `Emit` / `jsNative` code compiles on .NET and throws at run time (`Docx.fs`, `DocumentWriter`, `Spreadsheet.fs`, `HostShapes`). A .NET build passing proves nothing; .NET tests must exercise the paths.
   - Reference-equality caches (`obj.ReferenceEquals` on models, WeakMap vs ConditionalWeakTable) are load-bearing for performance on both. Keep them as primitives behind small `#if`.
   - `Model.fs` reads fable-library's Map tree internals. A Fable upgrade can break it silently; keep its .NET twin tested.
-  - `[<AttachMembers>]` classes define the JS API shape. Moving logic must not change member names, overloads or optional `obj` arguments that redbat calls.
+  - `[<AttachMembers>]` classes define the JS API shape. Moving logic must not change member names, overloads or optional `obj` arguments that hosts call.
   - Threads: .NET hosts lay out on several threads (`TablePlanScopeHolder`). Portable controllers must not add global mutable state; `Paint.fs` has `drawingSink` and `SpreadsheetGrid.fs` has module-level caches today.
 - **Coupling of hosts and harnesses to the DOM.**
-  - About 112 lines of the xlsx harness and redbat's CSS address `.spreadsheet-*` nodes.
-  - Steps 3 and 6 need a geometry and test API first, and a redbat adoption run.
+  - About 112 lines of the xlsx harness and the host's CSS address `.spreadsheet-*` nodes.
+  - Steps 3 and 6 need a geometry and test API first, and a host adoption run.
 - **Scope pressure.** Steps 5, 7, 8 and 9 are large refactors of the files with the most traffic (`Spreadsheet.fs`, `Input.fs`, `Renderer.fs`, `DocumentWriter.fs`), during alpha work.
   - Do them as moves with no behaviour change, one region per branch, and rebase often.
   - Use the slot script for every heavy run (memory: several agents at once swap the machine).

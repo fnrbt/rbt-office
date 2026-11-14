@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The Wisp backend for the Office UI abstraction (renders RedBat.Office.Ui specs onto Wisp),
+  <!-- The Wisp backend for the Office UI abstraction (renders Rbt.Office.Ui specs onto Wisp),
        the office UI shell for the Wisp apps (word-wisp / spreadsheet-wisp). Replaced the Composit office-native shell in Jul 2026. -->
   <PropertyGroup>
     <OutputType>Library</OutputType>
