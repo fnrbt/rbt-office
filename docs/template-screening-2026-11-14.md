@@ -27,23 +27,23 @@ the report after the fact: if one doesn't show the difference, search the side-b
 
 | # | Difference | Examples | Status |
 |---|---|---|---|
-| S1 | Cell text is drawn one CSS px per point (11pt → 11px; Excel draws 14.67px), so all sheet text is about 25% small. Column widths and row heights match. | every workbook | open (in progress) |
-| S2 | A cell's font family is ignored when the face isn't installed: Georgia, Constantia, Segoe UI, Calibri, Century Gothic and Franklin Gothic all fall back to a generic sans. The Word side ships web fonts for some of these. | x-tf03986924, x-tf04035471 | open |
-| S3 | Sparklines aren't drawn. | x-tf02802361 | open |
-| S4 | Pattern (hatched) fills aren't drawn. | x-tf03107663 | open |
-| S5 | Rich-text runs in a cell lose their colours ("OPEN vs. CLOSED", "Step one:"). | x-tf03784001 | open |
-| S6 | Accounting format doesn't pin `$` to the cell's left edge. | x-tf03458075 | open |
-| S7 | Icon sets look different from Excel's. | x-tf02897386 | open |
-| S8 | `###` where Excel shows the number (attendance sheet). | x-tf02780235 | open |
-| S9 | A pictogram shows its alt text ("decorative element") instead of the picture. | x-tf02930056 | open |
-| S10 | Chart series labels spill outside the chart; pie data labels are missing. | x-tf03783862, x-tf03986584 | open |
-| S11 | Filter buttons show on table headers where Excel hides them (table with `showAutoFilter`/header buttons off). | x-tf03427338 | open |
-| S12 | A General number too wide for its cell shows `4E+...`; Excel shrinks it to `4E+05`. | `=SUM` of salaries in a narrow column | open |
-| S13 | The browser importer drops `ht` on rows without `customHeight`. Excel saves auto-fitted rows that way, so wrapped rows from Excel-saved files open at the default 20px. Fixing it changes what export writes. | any Excel-saved workbook with wrapped text | open |
-| S14 | Chart frame: Excel draws the chart area's border with rounded corners (`c:roundedCorners` absent or 1, the default spPr line); we draw no frame. | ~/Dev/office-hype/docs/designed/dashboard.xlsx (both charts) | open |
-| S15 | A line chart's value axis loses its default major gridlines (Excel draws them); the category axis skips every other label where Excel fits all twelve months. | dashboard.xlsx ("Fleet total") | open |
-| S16 | Chart titles draw larger and regular; Excel's default title here is bold and smaller (`c:title` without txPr: 14pt bold in Excel 2019's default chart style for openpyxl's `style` 10/12). | dashboard.xlsx | open |
-| S17 | Data bars without the x14 extension draw solid; Excel draws them with the 2007 gradient (colour fading to white). | dashboard.xlsx (Total column) | open |
+| S1 | Cell text is drawn one CSS px per point (11pt → 11px; Excel draws 14.67px), so all sheet text is about 25% small. Column widths and row heights match. | every workbook | fixed (0ae66a9d): 11 pt is drawn 14.67 px; rows auto-fit to Excel's line heights (20/40/60 px for 1/2/3 lines of Calibri 11) |
+| S2 | A cell's font family is ignored when the face isn't installed: Georgia, Constantia, Segoe UI, Calibri, Century Gothic and Franklin Gothic all fall back to a generic sans. The Word side ships web fonts for some of these. | x-tf03986924, x-tf04035471 | fixed in the grid (7b4fa526): `SetFontLoader(family, bold, italic)` fetches the faces a workbook shows when the system lacks them, and Calibri without a face is drawn in Arial at Calibri's size (`font-size-adjust`). Needs the host to pass a loader: redbat's word-text-stack has Calibri, Georgia, Segoe UI, Cambria ...; Constantia, Century Gothic and Franklin Gothic it does not ship |
+| S3 | Sparklines aren't drawn. | x-tf02802361 | open: sparklines are not read into the model (only kept as XML). A fix needs the x14:sparklineGroups parsed (tools/excel-native-runner's ChartRender.parseSparklines has a parser) and drawn per cell in the grid, canvas and PDF painters |
+| S4 | Pattern (hatched) fills aren't drawn. | x-tf03107663 | open: XlsxReader.parseFill blends a pattern to one colour (`patternDensity`). A fix needs the pattern type and both colours kept in CellFormat and drawn as a tile (CSS gradient / canvas pattern / PDF) |
+| S5 | Rich-text runs in a cell lose their colours ("OPEN vs. CLOSED", "Step one:"). | x-tf03784001 | fixed (7b4fa526): the web grid did not draw `RichRuns` at all, and runs in a theme colour lost it (the reader kept only `rgb`) |
+| S6 | Accounting format doesn't pin `$` to the cell's left edge. | x-tf03458075 | fixed (7b4fa526): the fill spaces ran together in the DOM; the sign and the number are now laid at the cell's two edges (example: x-tf03986991, Gross profit) |
+| S7 | Icon sets look different from Excel's. | x-tf02897386 | open: icon sets are drawn as Unicode characters (`ConditionalFormatting.iconGlyph`). A fix needs Excel's icons as small SVGs per set and index, used by the grid, canvas and PDF |
+| S8 | `###` where Excel shows the number (attendance sheet). | x-tf02780235 | fixed (7b4fa526): a one-letter date format ("d") was .NET's short date, so "1/1/2022" didn't fit; "m"/"mm" alone are now the month too |
+| S9 | A pictogram shows its alt text ("decorative element") instead of the picture. | x-tf02930056 | open: the example draws its picture; what differs is in x-tf00414392, whose `leftBrace` shapes were filled rectangles - braces are now drawn (7b4fa526). No alt-text case found among the side-by-sides |
+| S10 | Chart series labels spill outside the chart; pie data labels are missing. | x-tf03783862, x-tf03986584 | fixed (7b4fa526): the "labels" were the chart's source cells under the `;;;` format, whose empty text section Excel hides (a text's format section was ignored). Pie labels show in x-tf03986584 already |
+| S11 | Filter buttons show on table headers where Excel hides them (table with `showAutoFilter`/header buttons off). | x-tf03427338 | fixed (7b4fa526): `hiddenButton` on a table's filter columns is read; also x-tf03458075, x-tf03986584, the attendance calendar |
+| S12 | A General number too wide for its cell shows `4E+...`; Excel shrinks it to `4E+05`. | `=SUM` of salaries in a narrow column | fixed (0ae66a9d): General and #### use the column's whole-pixel width; a number is never ellipsised |
+| S13 | The browser importer drops `ht` on rows without `customHeight`. Excel saves auto-fitted rows that way, so wrapped rows from Excel-saved files open at the default 20px. Fixing it changes what export writes. | any Excel-saved workbook with wrapped text | open: the reader drops a non-custom `ht` (XlsxReader.rowFromNode). Using it makes export write those rows as customHeight="1", so a fix needs the model to know which heights are auto-fitted |
+| S14 | Chart frame: Excel draws the chart area's border with rounded corners (`c:roundedCorners` absent or 1, the default spPr line); we draw no frame. | ~/Dev/office-hype/docs/designed/dashboard.xlsx (both charts) | fixed (7b4fa526): a chart part without `spPr` has Excel's grey frame; `roundedCorners` absent means rounded |
+| S15 | A line chart's value axis loses its default major gridlines (Excel draws them); the category axis skips every other label where Excel fits all twelve months. | dashboard.xlsx ("Fleet total") | fixed (7b4fa526): grid lines and axis lines without a line of their own are black (Excel 2019); category labels are thinned only when they would touch; `smooth` lines are curves |
+| S16 | Chart titles draw larger and regular; Excel's default title here is bold and smaller (`c:title` without txPr: 14pt bold in Excel 2019's default chart style for openpyxl's `style` 10/12). | dashboard.xlsx | fixed (7b4fa526): a title of its own text that names no size is 10 pt bold, black; a title or legend without `overlay` is laid over the plot, as Excel 2019 does |
+| S17 | Data bars without the x14 extension draw solid; Excel draws them with the 2007 gradient (colour fading to white). | dashboard.xlsx (Total column) | fixed (7b4fa526): a data bar rule without the x14 part fades its colour to white |
 
 ## Word
 
