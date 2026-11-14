@@ -53,4 +53,4 @@ the report after the fact: if one doesn't show the difference, search the side-b
 
 | # | Difference | Status |
 |---|---|---|
-| U1 | (redbat) The Word toolbar's table tools are always present, disabled outside a table, so the toolbar wraps to two rows below about 1700px. Before, the toolbar wrapped and unwrapped as the caret entered tables, and the page jumped. Now a single "Table ▾" menu: one row, same height in and out of tables. | fixed (redbat da573afd7 → Table menu) |
+| U1 | (redbat) The Word toolbar's table tools are always present, disabled outside a table, so the toolbar wraps to two rows below about 1700px. Before, the toolbar wrapped and unwrapped as the caret entered tables, and the page jumped. Now a single "Table ▾" menu: one row, same height in and out of tables. | fixed (redbat 3567e0e2f) |
