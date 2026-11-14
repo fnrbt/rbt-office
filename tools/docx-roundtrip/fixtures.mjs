@@ -97,13 +97,14 @@ const editedKept = (typed = '') =>
 // A paragraph with what the model does not hold of a paragraph, of more kinds (see synthetic/patched-paragraphs):
 // attributes and elements of later formats, proofing marks, a smart tag, custom XML, a run with a tab and a
 // break, a complex field, a comment range, a hyperlink around two runs.
-const patchedKept = (id) =>
+// (`comment`: the id of its comment range - each copy in one part has its own: two ranges of one id are one range.)
+const patchedKept = (id, comment = 7) =>
     `<w:p w:rsidR="00BB0001" w:rsidRDefault="00BB0003" w14:paraId="3A3B3C${id}" w14:textId="77777777"><w:pPr><w:suppressAutoHyphens/><w:spacing w:beforeAutospacing="1" w:after="120"/><w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr>` +
     `<w:proofErr w:type="spellStart"/><w:r w:rsidRPr="00BB0002"><w:rPr><w:rFonts w:ascii="Georgia" w:hAnsi="Georgia" w:eastAsia="MS Mincho" w:cs="Georgia"/><w:noProof/><w14:ligatures w14:val="standard"/></w:rPr><w:t xml:space="preserve">alpha beta gamma</w:t></w:r><w:proofErr w:type="spellEnd"/>` +
     `<w:smartTag w:uri="urn:example" w:element="place"><w:r><w:rPr><w:strike/></w:rPr><w:t xml:space="preserve"> delta</w:t></w:r></w:smartTag>` +
     `<w:r w:rsidR="00BB0004"><w:tab/><w:t>zeta</w:t><w:br/><w:t>eta</w:t></w:r>` +
     `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText xml:space="preserve"> QUOTE "result" </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:rPr><w:noProof/></w:rPr><w:t>result</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>` +
-    `<w:commentRangeStart w:id="7"/><w:r><w:t xml:space="preserve"> theta</w:t></w:r><w:commentRangeEnd w:id="7"/>` +
+    `<w:commentRangeStart w:id="${comment}"/><w:r><w:t xml:space="preserve"> theta</w:t></w:r><w:commentRangeEnd w:id="${comment}"/>` +
     `<w:hyperlink r:id="rId30" w:tooltip="a tip" w:history="1"><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t xml:space="preserve"> link one</w:t></w:r><w:r><w:rPr><w:b/><w:u w:val="single"/></w:rPr><w:t xml:space="preserve"> link two</w:t></w:r></w:hyperlink></w:p>`;
 const regexOf = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -964,7 +965,7 @@ const docs = [
         root: 'xmlns:w14="http://schemas.microsoft.com/office/word/2010/wordml" mc:Ignorable="w14"',
         body: patchedKept('01') +
             `<w:tbl><w:tblPr><w:tblW w:w="4800" w:type="dxa"/><w:tblLook w:val="04A0" w:firstRow="1" w:noHBand="0"/><w:tblCaption w:val="a caption"/></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>` +
-            `<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>${cell(patchedKept('02'), '<w:noWrap/><w:hideMark/>')}${cell(p('second cell'))}</w:tr>` +
+            `<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>${cell(patchedKept('02', 72), '<w:noWrap/><w:hideMark/>')}${cell(p('second cell'))}</w:tr>` +
             `<w:tr w:rsidR="00BB0006"><w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/><w:tcFitText/></w:tcPr>` +
             `<w:p w14:paraId="3A3B3C03"><w:r><w:rPr><w:i/><w:rPrChange w:id="9" w:author="A" w:date="2020-01-01T00:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t xml:space="preserve">tracked format here</w:t></w:r></w:p></w:tc>${cell(p('last cell'))}</w:tr></w:tbl>` +
             p('after the table') +

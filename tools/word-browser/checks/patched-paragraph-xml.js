@@ -33,10 +33,10 @@ try {
         return [para.Alignment, para.ExplicitAlignment ?? null, para.SpacingAfter ?? null, para.ListStyle, characters];
     }));
     const layoutText = (e) => JSON.stringify(Word.getLayoutFingerprint(e)).replace(/,single\//g, ',-/');
-    // What the model does not hold of the paragraph (in the body: with its own id).
-    const kept = (id) => [`<w:p w:rsidR="00BB0001" w:rsidRDefault="00BB0003" w14:paraId="3A3B3C${id}" w14:textId="77777777">`, '<w:suppressAutoHyphens/>', '<w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr>',
+    // What the model does not hold of the paragraph (in the body: with its own id; in the cell its comment range's is 72).
+    const kept = (id, comment = 7) => [`<w:p w:rsidR="00BB0001" w:rsidRDefault="00BB0003" w14:paraId="3A3B3C${id}" w14:textId="77777777">`, '<w:suppressAutoHyphens/>', '<w:rPr><w:lang w:val="de-DE"/></w:rPr></w:pPr>',
         '<w:proofErr w:type="spellStart"/>', '<w:proofErr w:type="spellEnd"/>', '<w:smartTag w:uri="urn:example" w:element="place">', '<w:instrText xml:space="preserve"> QUOTE "result" </w:instrText>',
-        '<w:r><w:fldChar w:fldCharType="begin"/></w:r>', '<w:r><w:fldChar w:fldCharType="end"/></w:r>', '<w:commentRangeStart w:id="7"/>', '<w:commentRangeEnd w:id="7"/>', '<w:hyperlink r:id="rId30" w:tooltip="a tip" w:history="1">',
+        '<w:r><w:fldChar w:fldCharType="begin"/></w:r>', '<w:r><w:fldChar w:fldCharType="end"/></w:r>', `<w:commentRangeStart w:id="${comment}"/>`, `<w:commentRangeEnd w:id="${comment}"/>`, '<w:hyperlink r:id="rId30" w:tooltip="a tip" w:history="1">',
         '<w14:ligatures w14:val="standard"/>', 'w:eastAsia="MS Mincho"', 'w:rsidRPr="00BB0002"', 'w:rsidR="00BB0004"'];
     const tableKept = ['<w:tblLook w:val="04A0" w:firstRow="1" w:noHBand="0"/><w:tblCaption w:val="a caption"/>', '<w:tr w:rsidR="00BB0005" w14:paraId="4A4B4C01"><w:trPr><w:cantSplit/><w:tblHeader/></w:trPr>', '<w:noWrap/><w:hideMark/>', '<w:tcFitText/>', '<w:tr w:rsidR="00BB0006">'];
     // One edit of a document opened anew: saved XML and the editor model read back from it.
@@ -68,7 +68,7 @@ try {
             // (What is there instead, when it is not.)
             check(`${label}: ${what}`, found ? true : own, true);
         }
-        if (where === 'body' || where === 'cell') check(`${label}: everything the model does not hold of the paragraph is kept`, kept(where === 'body' ? '01' : '02').filter((piece) => !own.includes(piece)), []);
+        if (where === 'body' || where === 'cell') check(`${label}: everything the model does not hold of the paragraph is kept`, (where === 'body' ? kept('01') : kept('02', 72)).filter((piece) => !own.includes(piece)), []);
         if (where !== 'table') check(`${label}: the table's own XML is kept`, tableKept.filter((piece) => !xml.includes(piece)), []);
         if (where === 'body') check(`${label}: the table is the text it was`, xml.includes(tableOf(original)), true);
         else check(`${label}: the paragraph of the body is the text it was`, xml.includes(bodyOf(original)), true);
