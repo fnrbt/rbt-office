@@ -40,6 +40,10 @@ the report after the fact: if one doesn't show the difference, search the side-b
 | S11 | Filter buttons show on table headers where Excel hides them (table with `showAutoFilter`/header buttons off). | x-tf03427338 | open |
 | S12 | A General number too wide for its cell shows `4E+...`; Excel shrinks it to `4E+05`. | `=SUM` of salaries in a narrow column | open |
 | S13 | The browser importer drops `ht` on rows without `customHeight`. Excel saves auto-fitted rows that way, so wrapped rows from Excel-saved files open at the default 20px. Fixing it changes what export writes. | any Excel-saved workbook with wrapped text | open |
+| S14 | Chart frame: Excel draws the chart area's border with rounded corners (`c:roundedCorners` absent or 1, the default spPr line); we draw no frame. | ~/Dev/office-hype/docs/designed/dashboard.xlsx (both charts) | open |
+| S15 | A line chart's value axis loses its default major gridlines (Excel draws them); the category axis skips every other label where Excel fits all twelve months. | dashboard.xlsx ("Fleet total") | open |
+| S16 | Chart titles draw larger and regular; Excel's default title here is bold and smaller (`c:title` without txPr: 14pt bold in Excel 2019's default chart style for openpyxl's `style` 10/12). | dashboard.xlsx | open |
+| S17 | Data bars without the x14 extension draw solid; Excel draws them with the 2007 gradient (colour fading to white). | dashboard.xlsx (Total column) | open |
 
 ## Word
 
