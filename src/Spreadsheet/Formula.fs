@@ -406,11 +406,16 @@ type Token =
 
 let private futureFunctionPrefixes = [ "_xlfn."; "_xlws."; "_xlpm." ]
 
-let private tokenizeFrom (input: string) startIndex : Token array =
+/// `spans` (when not null) gets, for each token, where it stands in `input`:
+/// struct (start, end) - the intersection operator's is its white space, TEnd's
+/// the end of the text.
+let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collections.Generic.List<struct (int * int)>) : Token array =
     let n = input.Length
     let tokens = System.Collections.Generic.List<Token>(max 1 (n - startIndex + 1))
     let mutable i = startIndex
     while i < n do
+        let tokenStart = i
+        let before = tokens.Count
         let c = input.[i]
         if Char.IsWhiteSpace c then
             while i < n && Char.IsWhiteSpace input.[i] do i <- i + 1
@@ -557,8 +562,14 @@ let private tokenizeFrom (input: string) startIndex : Token array =
                 // Anything else is not formula syntax. Dropping it would make
                 // a different formula out of the text, so the parse fails.
                 | other -> failwithf "Unexpected character '%c'" other
+        if not (isNull spans) then
+            for _ in before .. tokens.Count - 1 do spans.Add(struct (tokenStart, i))
     tokens.Add(TEnd)
+    if not (isNull spans) then spans.Add(struct (n, n))
     tokens.ToArray()
+
+let private tokenizeFrom (input: string) startIndex : Token array =
+    tokenizeSpansFrom input startIndex null
 
 let tokenize (input: string) : Token array =
     tokenizeFrom input 0
@@ -1895,6 +1906,68 @@ let exprToFormula (expr: Expr) : string =
     appendExpr sb 1 expr
     sb.ToString()
 
+/// A formula whose references changed (rows put in, a cell moved), as it was
+/// written with only those references written anew - its brackets, spaces and
+/// spelling as the user (or Excel) left them, as Excel keeps them. `printedWas`
+/// and `printedNow` are the tree before and after the change printed; when they
+/// differ in anything but reference tokens, or the text cannot be matched token
+/// for token with what was printed of it, None (the caller prints the tree).
+let private spliceChangedReferences (formula: string) (printedWas: string) (printedNow: string) : string option =
+    let referenceToken t = match t with TIdent _ | TSheet _ | TError _ | TNumber _ -> true | _ -> false
+    let same a b =
+        match a, b with
+        | TIdent x, TIdent y | TSheet x, TSheet y -> String.Equals(x, y, StringComparison.OrdinalIgnoreCase)
+        | _ -> a = b
+    try
+        if formula.TrimStart().StartsWith "{" then None
+        else
+            let spans = System.Collections.Generic.List<struct (int * int)>()
+            let written = tokenizeSpansFrom formula (if formula.StartsWith "=" then 1 else 0) spans
+            let was = tokenize printedWas
+            let nowSpans = System.Collections.Generic.List<struct (int * int)>()
+            let now = tokenizeSpansFrom printedNow 0 nowSpans
+            let changed = [ for k in 0 .. was.Length - 1 do if k < now.Length && not (was.[k] = now.[k]) then yield k ]
+            if was.Length <> now.Length || changed.IsEmpty || changed |> List.exists (fun k -> not (referenceToken was.[k] && referenceToken now.[k]))
+               || written.Length * was.Length > 1000000 then None
+            else
+                // Match the written tokens with the printed ones (longest common subsequence): what the
+                // printing leaves out may only be brackets.
+                let w, p = written.Length, was.Length
+                let at i j = i * (p + 1) + j
+                let lengths : int[] = Array.zeroCreate ((w + 1) * (p + 1))
+                for i = w - 1 downto 0 do
+                    for j = p - 1 downto 0 do
+                        lengths.[at i j] <- if same written.[i] was.[j] then lengths.[at (i + 1) (j + 1)] + 1 else max lengths.[at (i + 1) j] lengths.[at i (j + 1)]
+                let writtenOf : int[] = Array.create p (-1)
+                let mutable i, j = 0, 0
+                let mutable ok = true
+                while i < w && j < p do
+                    if same written.[i] was.[j] then
+                        writtenOf.[j] <- i
+                        i <- i + 1
+                        j <- j + 1
+                    elif lengths.[at (i + 1) j] >= lengths.[at i (j + 1)] then
+                        (match written.[i] with TLParen | TRParen -> () | _ -> ok <- false)
+                        i <- i + 1
+                    else
+                        ok <- false
+                        j <- j + 1
+                while i < w do
+                    (match written.[i] with TLParen | TRParen -> () | _ -> ok <- false)
+                    i <- i + 1
+                if not ok || j < p || writtenOf |> Array.exists (fun index -> index < 0) then None
+                else
+                    let sb = System.Text.StringBuilder()
+                    let mutable from = 0
+                    for k in changed do
+                        let struct (start, finish) = spans.[writtenOf.[k]]
+                        let struct (nowStart, nowFinish) = nowSpans.[k]
+                        sb.Append(formula.Substring(from, start - from)).Append(printedNow.Substring(nowStart, nowFinish - nowStart)) |> ignore
+                        from <- finish
+                    sb.Append(formula.Substring from) |> ignore
+                    Some (sb.ToString())
+    with _ -> None
+
 /// Parse `formula`, apply `rewrite` to its tree and print it back, keeping the
 /// leading `=` exactly as the original had it. Text that does not parse — or
 /// that the rewrite leaves untouched — is returned as it was, so formulas that
@@ -1907,7 +1980,9 @@ let rewriteFormulaText (rewrite: Expr -> Expr) (formula: string) : string =
         if rewritten = expr then formula
         else
             let text = exprToFormula rewritten
-            if formula.StartsWith "=" then "=" + text else text
+            match spliceChangedReferences formula (exprToFormula expr) text with
+            | Some kept -> kept
+            | None -> if formula.StartsWith "=" then "=" + text else text
 
 /// Shift a formula's relative references by (rows, cols) — what copying or
 /// filling it to another cell does.

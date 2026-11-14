@@ -91,6 +91,20 @@ ok "shift-whole-col"  (shiftFormulaText 3 1 "=SUM(A:A)" = "=SUM(B:B)") (shiftFor
 ok "shift-whole-row"  (shiftFormulaText 3 1 "=SUM(2:2)" = "=SUM(5:5)") (shiftFormulaText 3 1 "=SUM(2:2)")
 ok "insert-row-whole-col" (adjustFormulaTextForEdit (InsertRows (1, 1)) Option.isNone "=SUM(A:A)" = "=SUM(A:A)") "whole column must not change on a row insert"
 ok "delete-col-whole-col" (adjustFormulaTextForEdit (DeleteCols (0, 1)) Option.isNone "=SUM(B:B)" = "=SUM(A:A)") (adjustFormulaTextForEdit (DeleteCols (0, 1)) Option.isNone "=SUM(B:B)")
+// A rewritten formula keeps how it was written: only the references that moved are written anew
+// (lyric-multifamily, poi-47804: brackets the tree does not need, a space before a bracket).
+let insertRow = adjustFormulaTextForEdit (InsertRows (1, 1)) Option.isNone
+let kept name formula want = ok name (insertRow formula = want) (insertRow formula)
+kept "spelling-redundant-brackets" "=+E361/((1+Discount_Rate)^Q383)" "=+E362/((1+Discount_Rate)^Q384)"
+kept "spelling-space-before-bracket" "=CELL(\"width\",C3 )" "=CELL(\"width\",C4 )"
+kept "spelling-lower-case" "=sum( a2 : a5 )*2" "=sum( A3 : A6 )*2" // (a moved reference is written as Excel stores it)
+kept "spelling-unmoved-reference" "=((A1))+B5" "=((A1))+B6"
+let onMySheet = adjustFormulaTextForEdit (InsertRows (1, 1)) (fun sheet -> sheet = Some "My Sheet")
+ok "spelling-quoted-sheet" (onMySheet "=('My Sheet'!B3 )+B3" = "=('My Sheet'!B4 )+B3") (onMySheet "=('My Sheet'!B3 )+B3")
+kept "spelling-whole-column-untouched" "=SUM(A:A )" "=SUM(A:A )"
+ok "spelling-deleted-ref" (adjustFormulaTextForEdit (DeleteRows (1, 1)) Option.isNone "=(A2)+A3" = "=(#REF!)+A2") (adjustFormulaTextForEdit (DeleteRows (1, 1)) Option.isNone "=(A2)+A3")
+ok "spelling-deleted-range-falls-back" (adjustFormulaTextForEdit (DeleteRows (1, 2)) Option.isNone "=SUM((A2:A3))+A4" = "=SUM(#REF!)+A2") (adjustFormulaTextForEdit (DeleteRows (1, 2)) Option.isNone "=SUM((A2:A3))+A4")
+ok "spelling-shift-copy" (shiftFormulaText 1 0 "=((A1 ))*2" = "=((A2 ))*2") (shiftFormulaText 1 0 "=((A1 ))*2")
 
 // A whole-column dependency is one rectangle, never a million cells.
 let colDeps, colRects = referencesRanged None "sheet1" (match parseFormula "=SUM(A:A)" with Ok x -> x | _ -> failwith "parse")
