@@ -1235,6 +1235,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
                 recordChange handler "Edit" handler.Document newDoc
             dropPendingFormat handler newDoc
             handler.Document <- newDoc
+            // (A selection deleted: what is typed next has the formatting of its first character.)
+            if ke.key = "Backspace" || ke.key = "Delete" then
+                handler.Session.KeepFormatOfDeletedSelection(beforeKey, newDoc)
             renderWithHover handler.RenderContext newDoc handler.HoveredImage
             handler.SyncInputProxy newDoc
             handler.OnChange newDoc

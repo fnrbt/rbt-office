@@ -803,6 +803,20 @@ let rec private boundaryInsertStyle (style: TextStyle) (otherSide: TextStyle opt
 /// tracked change.
 let withoutAnnotations (style: TextStyle) : TextStyle = boundaryInsertStyle style None
 
+/// `typed` (the style text typed somewhere gets) with the character formatting of
+/// `chosen` - face, size, colour, bold, ... -: of what the text is part of (a link, a
+/// comment's range, a tracked insertion) it keeps what typing there gives; it is not
+/// in the bookmarks, the field or the note `chosen` came from.
+let withCharacterFormattingOf (chosen: TextStyle) (typed: TextStyle) : TextStyle =
+    { typed with
+        Style = chosen.Style; Bold = chosen.Bold; Italic = chosen.Italic; Underline = chosen.Underline
+        UnderlineStyle = chosen.UnderlineStyle; UnderlineColor = chosen.UnderlineColor; AllCaps = chosen.AllCaps
+        SmallCaps = chosen.SmallCaps; Strike = chosen.Strike; DoubleStrike = chosen.DoubleStrike; Hidden = chosen.Hidden
+        Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
+        CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
+        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
+        BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false }
+
 /// Insert text at position
 let insert pos (text: string) buffer =
     if String.length text = 0 then buffer

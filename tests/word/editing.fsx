@@ -323,5 +323,45 @@ check "Backspace at the start of a control in a cell: nothing joined"
     (docOf [ Doc.Paragraph (cellPara "c0" ""); Doc.Paragraph (inCellControl "g2" (cellPara "c1" "29 January 2015")) ] |> caret "c1" 0 |> Doc.deleteBackward |> texts) [ ""; "29 January 2015" ]
 check "Backspace with no control on either side: joined" (docOf [ Doc.Paragraph (paragraph "x" "one"); Doc.Paragraph (paragraph "y" "two") ] |> caret "y" 0 |> Doc.deleteBackward |> texts) [ "onetwo" ]
 
+// ---- text typed over a selection has the formatting of its first character -------------
+// As in Word. A run selected from its start to its end - all of its paragraph's text -
+// and typed over left nothing to type into: the text came out in the paragraph's own
+// style ("4.8 GW" in Georgia 22pt teal, retyped, became Calibri 10.5 in the ink colour).
+do
+    let kpi = { TB.defaultStyle with FontFamily = Some "Georgia"; FontSize = 29.3; Color = Some "#0F7C80"; Bold = true }
+    let styled id (text: string) (style: TB.TextStyle) : Doc.ParagraphBlock =
+        let para = paragraph id text
+        { para with Buffer = TB.applyStyle 0 text.Length (fun _ -> style) para.Buffer }
+    let formatOf (style: TB.TextStyle) = style.FontFamily, style.FontSize, style.Color, style.Bold
+    let doc = docOf [ Doc.Paragraph (styled "k" "4.8 GW" kpi); Doc.Paragraph (paragraph "n" "next") ]
+    let retyped = doc |> range ("k", 0) ("k", 6) |> Doc.insertText "5.1 GW"
+    check "typed over a whole run: the text" (texts retyped) [ "5.1 GW"; "next" ]
+    check "typed over a whole run: its formatting" ([ 0; 5 ] |> List.map (fun i -> formatOf (styleAt retyped "k" i))) [ formatOf kpi; formatOf kpi ]
+    check "typed over a whole run selected backwards" (formatOf (styleAt (doc |> range ("k", 6) ("k", 0) |> Doc.insertText "x") "k" 0)) (formatOf kpi)
+    // (The first selected character's, not the one before the selection.)
+    let mixed =
+        let para = paragraph "m" "plain BOLD"
+        docOf [ Doc.Paragraph { para with Buffer = TB.applyStyle 6 4 (fun _ -> kpi) para.Buffer } ]
+    let overBold = mixed |> range ("m", 6) ("m", 10) |> Doc.insertText "new"
+    check "typed over the end of a paragraph: the selection's formatting" (formatOf (styleAt overBold "m" 6)) (formatOf kpi)
+    let overBoth = mixed |> range ("m", 3) ("m", 8) |> Doc.insertText "z"
+    check "typed over two runs: the first one's formatting" (formatOf (styleAt overBoth "m" 3)) (formatOf TB.defaultStyle)
+    // A caret at the start of a formatted paragraph: the text typed there has its formatting.
+    check "typed at the start of a formatted paragraph" (formatOf (styleAt (doc |> caret "k" 0 |> Doc.insertText "~") "k" 0)) (formatOf kpi)
+    // Backspace over the selection, then typing: what is typed has the deleted text's formatting.
+    let session = Rbt.Word.Session.EditingSession(doc |> range ("k", 0) ("k", 6))
+    let before = session.Document
+    let deleted = Doc.deleteSelection before
+    session.Document <- deleted
+    session.KeepFormatOfDeletedSelection(before, deleted)
+    check "after Backspace over the selection: a pending format" (session.PendingFormat |> Option.map (fun pending -> formatOf pending.PendingStyle)) (Some (formatOf kpi))
+    let typed = session.WithPendingFormat(deleted, Doc.insertText "5" deleted)
+    check "after Backspace over the selection: the typed text's formatting" (formatOf (styleAt typed "k" 0)) (formatOf kpi)
+    let caretDeleted = Doc.deleteBackward (doc |> caret "n" 2)
+    let other = Rbt.Word.Session.EditingSession(doc |> caret "n" 2)
+    other.Document <- caretDeleted
+    other.KeepFormatOfDeletedSelection(doc |> caret "n" 2, caretDeleted)
+    check "Backspace at a caret: no pending format" other.PendingFormat.IsNone true
+
 printfn "Word editing tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -400,14 +400,7 @@ let wordAroundCaret (doc: Doc.Document) : (Doc.Position * Doc.Position) option =
 /// characters typed one after the other are one run, and a bookmark around
 /// the run they are typed into is not theirs.
 let private pendingStyleOver (chosen: TextBuffer.TextStyle) (typed: TextBuffer.TextStyle) : TextBuffer.TextStyle =
-    { typed with
-        Style = chosen.Style; Bold = chosen.Bold; Italic = chosen.Italic; Underline = chosen.Underline
-        UnderlineStyle = chosen.UnderlineStyle; UnderlineColor = chosen.UnderlineColor; AllCaps = chosen.AllCaps
-        SmallCaps = chosen.SmallCaps; Strike = chosen.Strike; DoubleStrike = chosen.DoubleStrike; Hidden = chosen.Hidden
-        Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
-        CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
-        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
-        BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false }
+    TextBuffer.withCharacterFormattingOf chosen typed
 
 /// `after`: `before` with text typed at its caret. The text has the pending
 /// format of that caret, if there is one. (What says that the text is a
@@ -850,6 +843,16 @@ type EditingSession(initialDocument: Document, ?maxHistory: int) =
             true
         | None -> false
     member _.WithPendingFormat(before: Document, after: Document) = withPendingFormat pending before after
+    /// `after`: `before` with its selection deleted (Backspace, Delete). What is typed next
+    /// at the caret has the formatting of the first character that was deleted, as in Word
+    /// (the formatting is pending: see PendingFormat). Call it once `after` is the document.
+    member _.KeepFormatOfDeletedSelection(before: Document, after: Document) =
+        match before.Selection, after.Selection with
+        | Some was, Some now when not was.IsCollapsed && now.IsCollapsed && obj.ReferenceEquals(after.Blocks, document.Blocks) ->
+            match Doc.firstSelectedCharacterStyle before with
+            | Some style -> pending <- Some { PendingDocument = document; PendingStyle = style }
+            | None -> ()
+        | _ -> ()
     member _.DropPendingFormat(doc: Document) = dropPending doc
     member _.CommitPendingInsertion(after: Document) =
         match pending with

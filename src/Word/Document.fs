@@ -2865,12 +2865,29 @@ let private moveTypingOutsidePicture doc =
     | _ -> doc
 
 /// Insert text at cursor
+/// The character formatting of the first character of the selection: text typed over
+/// the selection has it, as in Word - also when the selection is all a paragraph's text,
+/// which leaves nothing of it to type into (the text typed came out in the paragraph's
+/// own style). None for a caret, or a selection that starts at a paragraph's end.
+let firstSelectedCharacterStyle (doc: Document) : TextBuffer.TextStyle option =
+    match doc.Selection with
+    | Some sel when not sel.IsCollapsed ->
+        let (startPos, _, _) = getNormalizedRange sel doc
+        findParagraph doc startPos.BlockId
+        |> Option.bind (fun para ->
+            para.Buffer.Runs
+            |> List.tryPick (function
+                | Text run when run.Start <= startPos.Offset && startPos.Offset < run.Start + run.Length -> Some run.Style
+                | _ -> None))
+    | _ -> None
+
 let insertText text doc =
     // (Not into the mark of a comment: before it or after it.)
     let doc = snapSelectionToMarks None doc
     match doc.Selection with
     | None -> doc
     | Some sel ->
+        let firstSelected = firstSelectedCharacterStyle doc
         // Delete selection if not collapsed
         let doc' = if sel.IsCollapsed then doc else deleteSelection doc
         let doc' = if text = "" then doc' else moveTypingOutsidePicture doc'
@@ -2883,6 +2900,11 @@ let insertText text doc =
             | None -> doc'
             | Some para ->
                 let newBuffer = TextBuffer.insert sel'.Focus.Offset text para.Buffer
+                let newBuffer =
+                    match firstSelected with
+                    | Some chosen when text <> "" ->
+                        TextBuffer.applyStyle sel'.Focus.Offset text.Length (TextBuffer.withCharacterFormattingOf chosen) newBuffer
+                    | _ -> newBuffer
                 let newPara = { para with Buffer = newBuffer }
 
                 let newDoc = replaceParagraph doc' para.Id newPara
