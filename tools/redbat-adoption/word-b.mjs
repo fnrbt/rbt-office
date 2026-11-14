@@ -10,6 +10,9 @@ const frame = (page) => ev(page, () => new Promise((r) => requestAnimationFrame(
 const focusDoc = (page) => ev(page, () => window.__word.getInputElement(window.__editors.at(-1)).focus());
 const tables = (page) => ev(page, () => { const pkg = window.__word.exportDocumentPackage(window.__editors.at(-1)); return pkg.Paragraphs.filter((p) => p.Type === "Table").map((t) => t.Rows.map((r) => r.Cells.map((c) => (c.ColSpan > 1 ? "S" + c.ColSpan : "") + c.Paragraphs.map((p) => (p.Runs ?? []).map((r) => r.Text ?? "").join("")).join("/")))); });
 const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
+// Table commands live in the Table menu (open it if it isn't).
+const tableItem = async (page, id) => { if ((await sel(page, "word-table-menu").count()) === 0) await sel(page, "word-table-position").click(); return sel(page, id); };
+const closeTableMenu = async (page) => { if ((await sel(page, "word-table-menu").count()) > 0) await sel(page, "word-table-position").click(); };
 
 // ---------------- chart document: table tools, image, save round trip ----------------
 {
@@ -18,7 +21,7 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
   await open(page, "word-editor", file);
   await ready(page);
   await focusDoc(page);
-  check("table tools disabled outside a table", await sel(page, "word-row-above").isDisabled());
+  check("table tools disabled outside a table", await sel(page, "word-table-position").isDisabled());
   const toolbarOutside = await ev(page, () => document.querySelector('[data-testid="word-toolbar"]').offsetHeight);
   await page.keyboard.press("Control+End");
   await page.keyboard.type("after the chart");
@@ -31,7 +34,7 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
   check("table inserted (3 x 3)", t.length === 1 && t[0].length === 3 && t[0][0].length === 3, t);
   // right after the insert, before anything is typed
   const ctx0 = await ev(page, () => window.__word.getCaretContext(window.__editors[0]));
-  check("the caret is in the new table's first cell and the table tools are shown at once", ctx0.InTable && ctx0.Row === 0 && ctx0.Column === 0 && ctx0.RowCount === 3 && ctx0.ColumnCount === 3 && (await sel(page, "word-row-above").isEnabled()), ctx0);
+  check("the caret is in the new table's first cell and the table tools are shown at once", ctx0.InTable && ctx0.Row === 0 && ctx0.Column === 0 && ctx0.RowCount === 3 && ctx0.ColumnCount === 3 && (await sel(page, "word-table-position").isEnabled()), ctx0);
   { const h = await ev(page, () => document.querySelector('[data-testid="word-toolbar"]').offsetHeight); check("the toolbar keeps its height when the caret goes into a table", h === toolbarOutside, { outside: toolbarOutside, inside: h }); }
   check("the table tools say where the caret is", (await sel(page, "word-table-position").getAttribute("title")) === "Row 1 of 3, column 1 of 3", await sel(page, "word-table-position").getAttribute("title"));
   await page.keyboard.type("a1");
@@ -56,49 +59,50 @@ const sel = (page, id) => page.locator(`[data-testid="${id}"]`);
   t = await tables(page);
   check("typing fills the cells Tab went to", t[0][0][0] === "a1" && t[0][0][1] === "b1", t[0][0]);
   await page.screenshot({ path: `${SHOTS}/word-table-tools-1366.png` });
-  await sel(page, "word-row-above").click();
+  await (await tableItem(page, "word-row-above")).click();
   t = await tables(page);
   check("row above", t[0].length === 4 && t[0][1][0] === "a1", t[0].map((r) => r.join(",")));
-  await sel(page, "word-row-below").click();
+  await (await tableItem(page, "word-row-below")).click();
   t = await tables(page);
   check("row below", t[0].length === 5 && t[0][1][0] === "a1" && t[0][2].join("") === "", t[0].map((r) => r.join(",")));
-  await sel(page, "word-column-left").click();
+  await (await tableItem(page, "word-column-left")).click();
   t = await tables(page);
   check("column to the left", t[0][1].length === 4 && t[0][1][0] === "a1" && t[0][1][2] === "b1", t[0][1]);
-  await sel(page, "word-column-right").click();
+  await (await tableItem(page, "word-column-right")).click();
   t = await tables(page);
   check("column to the right", t[0][1].length === 5 && t[0][1][2] === "b1" && t[0][1][3] === "", t[0][1]);
-  await sel(page, "word-column-delete").click();
+  await (await tableItem(page, "word-column-delete")).click();
   t = await tables(page);
   check("delete column", t[0][1].length === 4 && !t[0][1].includes("b1"), t[0][1]);
   await page.keyboard.press("Control+z");
   t = await tables(page);
   check("delete column is one undo step", t[0][1].length === 5 && t[0][1][2] === "b1", t[0][1]);
-  await sel(page, "word-row-delete").click();
+  await (await tableItem(page, "word-row-delete")).click();
   t = await tables(page);
   check("delete row", t[0].length === 4 && !t[0].some((r) => r.includes("b1")), t[0].map((r) => r.join(",")));
   await page.keyboard.press("Control+z");
   t = await tables(page);
   check("delete row undone", t[0].length === 5 && t[0][1][2] === "b1");
   // merge: select from the b1 cell to the next cell with Shift+Right across the cell boundary
-  check("merge and split disabled with the caret in one plain cell", (await sel(page, "word-cells-merge").isDisabled()) && (await sel(page, "word-cell-split").isDisabled()));
+  check("merge and split disabled with the caret in one plain cell", (await (await tableItem(page, "word-cells-merge")).isDisabled()) && (await sel(page, "word-cell-split").isDisabled()));
+  await closeTableMenu(page);
   await ev(page, ([a, b]) => window.__word.setSelection(window.__editors[0], a, 0, b, 1), [cellA, cellB]);
   await frame(page);
   const canMerge = await ev(page, () => window.__word.canMergeTableCells(window.__editors[0]));
-  check("merge enabled for a selection over two cells", canMerge && !(await sel(page, "word-cells-merge").isDisabled()), { canMerge, s: await ev(page, () => window.__word.getSelection(window.__editors[0])) });
-  await sel(page, "word-cells-merge").click();
+  check("merge enabled for a selection over two cells", canMerge && !(await (await tableItem(page, "word-cells-merge")).isDisabled()), { canMerge, s: await ev(page, () => window.__word.getSelection(window.__editors[0])) });
+  await (await tableItem(page, "word-cells-merge")).click();
   t = await tables(page);
   check("cells merged (the two cells and the one between them)", t[0][1].length === 3 && t[0][1][0].startsWith("S3"), t[0][1]);
   await ev(page, (a) => window.__word.setSelection(window.__editors[0], a, 0, a, 0), cellA);
   await frame(page);
-  check("split enabled in the merged cell", !(await sel(page, "word-cell-split").isDisabled()) && (await ev(page, () => window.__word.getCaretContext(window.__editors[0]).CanSplitCell)));
-  await sel(page, "word-cell-split").click();
+  check("split enabled in the merged cell", !(await (await tableItem(page, "word-cell-split")).isDisabled()) && (await ev(page, () => window.__word.getCaretContext(window.__editors[0]).CanSplitCell)));
+  await (await tableItem(page, "word-cell-split")).click();
   t = await tables(page);
   check("cell split", t[0][1].length === 5 && !t[0][1].some((c) => c.startsWith("S")), t[0][1]);
 
   await page.keyboard.press("Control+Home");
   await frame(page);
-  check("table tools disabled when the caret leaves the table", (await sel(page, "word-row-above").isDisabled()) && !(await ev(page, () => window.__word.getCaretContext(window.__editors[0]).InTable)));
+  check("table tools disabled when the caret leaves the table", (await sel(page, "word-table-position").isDisabled()) && !(await ev(page, () => window.__word.getCaretContext(window.__editors[0]).InTable)));
   // image: insert, click selects it, a handle resizes it, undo restores
   await page.keyboard.press("Control+Home");
   await sel(page, "word-image-input").setInputFiles(`${S}/red.png`);
