@@ -274,8 +274,35 @@ module Host =
     let beginOpen host =
         host.OpenGeneration <- host.OpenGeneration + 1
 
+    /// The pictures of a package (its `data:image/...` sources), decoded; then
+    /// `onDecoded` with a Map of source to image element. The renderer draws
+    /// pictures synchronously from the cache it is given, and without one an
+    /// image is drawn only if it happens to be decoded already: in this host,
+    /// which gave none, pictures never showed.
+    [<Emit("""(function (pkg, onDecoded) {
+        const found = new Set();
+        const walk = (v) => {
+            if (typeof v === 'string') { if (v.length > 11 && v.startsWith('data:image/')) found.add(v); }
+            else if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) walk(v[i]); }
+            else if (v !== null && typeof v === 'object') {
+                if (ArrayBuffer.isView(v)) return;
+                for (const k in v) if (k !== 'Progressive') walk(v[k]);
+            }
+        };
+        walk(pkg);
+        if (found.size === 0) return;
+        const cache = new Map();
+        Promise.all(Array.from(found, (src) => { const img = new Image(); img.src = src; return img.decode().then(() => { cache.set(src, img); }, () => {}); }))
+            .then(() => onDecoded(cache));
+    })($0, $1)""")>]
+    let private decodePackageImages (package: obj) (onDecoded: obj -> unit) : unit = jsNative
+
     let private replacePackage host editor package fileName =
         WordApi.importFromDocxPackage editor package
+        decodePackageImages package (fun cache ->
+            match host.Editor with
+            | Some current when obj.ReferenceEquals(current, editor) -> WordApi.setImageCache editor cache
+            | _ -> ())
         host.FileName.Value <- fileName
         host.SelectionVersion.Value <- host.SelectionVersion.Value + 1
         host.StyleCatalogVersion.Value <- host.StyleCatalogVersion.Value + 1
