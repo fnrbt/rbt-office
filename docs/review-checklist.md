@@ -67,16 +67,45 @@ The fixture priorities below are the initial review queue. They are not a reques
 
 These establish execution and opening, not complete visual or editing fidelity. The remaining work is comparison, unsupported-capability testing and explicit release decisions.
 
+## Settled before review (2026-11-14, after 0.1.32)
+
+These were checked against the files and the code; the bundle's files are from the 0.1.31 candidate, so where a
+fix is named, judge the case on the package that has it (open the original in Redbat's `/office/review` and make
+the edit), not on the bundle's output.
+
+- **Comment ranges after bold-at-caret typing (`patched-paragraphs`): a fixture error, not a loss.** The fixture's
+  body and table-cell copies of the paragraph both had comment range `7`; two ranges of one id are one range, so
+  the writer paired one copy's start with the other's end. With an id per copy nothing is lost (`fc03852d`).
+- **Joins and content controls (`docx4j-invoice-2013`, `docx4j-hyperlink-binding`, `docx4j-opendope-hyperlinks`):
+  fixed.** Backspace at the start of the only paragraph of a block control (the invoice date) joined it to the
+  paragraph above and the control was gone with its binding and date format. Backspace and Delete no longer join
+  paragraphs across a block control's edge, as in Word.
+- **Joins and paragraph properties (`autoSpaceDE`, `autoSpaceDN`, `adjustRightInd`): intended.** The joined
+  paragraph keeps the first paragraph's properties, as Word does (`docs/save-architecture.md`, *Left*).
+- **Control IDs in four ordinary saves (`docx4j-invoice-2013`, `reader-structure`): Word's, not ours.** Neither
+  original has a `w:id` on those controls; Word makes up an ID each time it opens either file, so original, pass1
+  and pass2 all differ from each other. The saved `document.xml` is the original's text (the invoice's without its
+  byte-order mark).
+- **Excel formula spelling after insertion (`lyric-multifamily`, `poi-47804`): fixed.** A formula whose references
+  move keeps its brackets, spaces and spelling; only the moved references are written anew, as Excel does.
+- **Inserted row and column sizes: fixed.** Rows and columns put in take the size of the row above / column to the
+  left (of the one after, at the start), as Excel; a hidden neighbour's zero size is not taken. The note-box
+  positions in `jumeirah-hotel`, `milk-street-office`, `saopaulo-condos`, `synthetic-cell-comments-print` and the
+  drawings of `dashboard-ecommerce-sales` / `poi-47504` differed by exactly that width; recheck them on the new
+  package.
+- **Volatile values (`phpsp-32chartreadwrite` RANDBETWEEN) and Office 2019's missing functions
+  (`synthetic-dynamic-arrays`, `-groupby`, `-lambda`): not differences of the save.**
+
 ## 1. Word: review suspected editing losses first
 
 Open each original beside its saved or edited counterpart in real Word. Check body text, comments, controls, tables, fields, headers/footers, page breaks and print preview. For edited outputs, distinguish the intended edit from collateral changes; the generated edit descriptions and per-fixture diagnostics are in `prepare.log`.
 
 | Priority | Files / variants | What to check | Acceptable result |
 |---|---|---|---|
-| Blocking investigation | `patched-paragraphs.original.docx` versus `patched-paragraphs.bold-chosen-at-a-caret-{1,2,5}-character[s]-typed.docx` (actual names below) | Diagnostics report removed comment-range markers. Inspect comment text, attachment and selected range after typing. | No unintended orphaned, deleted or relocated comment. An intentional change must be explained. |
-| Blocking investigation | Paragraph-join outputs: suffix `.joined-to-the-one-before-Backspace.docx`, especially `docx4j-invoice-2013` | Diagnostics report lost content-control wrappers and paragraph properties. Check control boundaries, mapped values, spacing and indentation around the join. | Only the requested merge changes content/formatting; unrelated controls and bindings survive. |
+| Settled (fixture error, see above) | `patched-paragraphs.original.docx` versus `patched-paragraphs.bold-chosen-at-a-caret-{1,2,5}-character[s]-typed.docx` (actual names below) | Diagnostics report removed comment-range markers. Inspect comment text, attachment and selected range after typing. | No unintended orphaned, deleted or relocated comment. An intentional change must be explained. |
+| Recheck on the fixed package (see above) | Paragraph-join outputs: suffix `.joined-to-the-one-before-Backspace.docx`, especially `docx4j-invoice-2013` | Diagnostics report lost content-control wrappers and paragraph properties. Check control boundaries, mapped values, spacing and indentation around the join. | Only the requested merge changes content/formatting; unrelated controls and bindings survive. |
 | High | `.split-in-two-Enter.docx` outputs and other affected fixtures listed in `prepare.log` | Some operations regenerate neighboring paragraphs. Compare adjacent text, formatting, pagination, headers and footers. | No unintended changes outside the edited range. |
-| High | `docx4j-invoice-2013` and `reader-structure`: `.original`, `.pass1`, `.pass2` | Four ordinary-save comparisons differ only in reported control IDs. Check control type, text, title/tag and XML mapping—not just appearance. | Controls remain usable and mapped correctly; assess whether any integration depends on their IDs. |
+| Settled (Word's IDs, see above) | `docx4j-invoice-2013` and `reader-structure`: `.original`, `.pass1`, `.pass2` | Four ordinary-save comparisons differ only in reported control IDs. Check control type, text, title/tag and XML mapping—not just appearance. | Controls remain usable and mapped correctly; assess whether any integration depends on their IDs. |
 | High | Table row insertion/deletion, column insertion and cell-shading variants of `reader-structure` and `docx4j-invoice-2013` | Inspect edited table geometry, text, borders, controls and pagination. | Intended table change only; no displaced or missing content. |
 | Scope decision | All 42 differing `.model.docx` comparisons, identified in `office-comparison.json` | Model-only reconstruction discards retained source-package state. Review and classify differences separately from normal saves. | Do not advertise this path as lossless. Decide whether the observed losses are acceptable for its exposed use. |
 
@@ -106,7 +135,7 @@ For a visual Excel-generated baseline, open a copy of the original and perform t
 | `synthetic-formatting` | Inspect the note exposed after export. Its original package has a comments part without the associated VML drawing. | Existing note content is preserved; document the source-metadata normalization. |
 | `phpsp-32chartreadwrite` | Check formulas and chart references, allowing for RANDBETWEEN recalculation. | Volatile values may differ; formulas, references and nonvolatile content must not change unexpectedly. |
 
-**Product-policy decision:** insertion currently uses model-default row/column dimensions, rather than Excel's inherited neighbor dimensions. This explains some geometry differences but is not automatic approval. Accept and document that behavior, or request an implementation change and a new candidate.
+**Insertion dimensions:** inserted rows and columns now take their neighbour's size as Excel does (see *Settled before review*); recheck geometry differences on the package that has it.
 
 ### Rejected insertion baselines
 
