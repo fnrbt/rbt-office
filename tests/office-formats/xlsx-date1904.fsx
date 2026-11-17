@@ -57,7 +57,7 @@ for name in [ "pandas-times_1904.xlsx"; "poi-47504.xlsx"; "poi-47804.xlsx"; "poi
         let input : Bridge.ExportInput =
             { Sheets = sheets; Names = opened.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = opened.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = book.Preserved.ActiveTab; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names
-              Source = Some opened.Source; Macros = None }
+              Source = Some opened.Source; Macros = None; MacroProject = None }
         partsOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
     let same = export id
     ok (name + ": saved untouched: the workbook says date1904") (says1904 same) (text same.["xl/workbook.xml"] |> fun xml -> xml.Substring(0, min 400 xml.Length))
@@ -74,7 +74,7 @@ for name in [ "pandas-times_1904.xlsx"; "poi-47504.xlsx"; "poi-47804.xlsx"; "poi
     let strip (xml: string) = Text.RegularExpressions.Regex.Replace(xml, "<c r=\"D501\"[^>]*>.*?</c>| spans=\"[^\"]*\"|<dimension[^>]*>", "").Replace("<row r=\"501\"></row>", "").Replace("<sheetData></sheetData>", "<sheetData/>")
     ok (name + ": edited: the rest of the sheet's part is the file's") (strip now = strip sheetXml) (sprintf "%d chars, the file's %d" now.Length sheetXml.Length)
     // Read again: still 1904, the same serials, and the typed date reads as that date.
-    let again = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [||]; Names = [||]; Visible = [||]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })) 
+    let again = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [||]; Names = [||]; Visible = [||]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None })) 
     ok (name + ": a workbook that is not a file's is in the 1900 system") (again |> Option.forall (fun book -> not book.Date1904)) ""
     // A workbook in the 1900 system opened in between leaves this one as it is: the system is the workbook's own.
     let between = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(root, "real-world/milk-street-office.xlsx"))) |> Option.get)
@@ -92,7 +92,7 @@ do
 // A workbook made without a file, its sheets in the 1904 system: the save says date1904, and it reads back so.
 do
     let sheet = { M.createEmpty 10 5 with Date1904 = true } |> M.setCell { Row = 0; Col = 0 } { Value = M.CellValue.Number 42000.0; Format = { M.defaultFormat with NumberFormat = Some "yyyy-mm-dd" }; Comment = None }
-    let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [| sheet |]; Names = [| "Sheet1" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })
+    let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { Sheets = [| sheet |]; Names = [| "Sheet1" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None })
     let back = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)
     ok "a new workbook in the 1904 system: saved and read again" (says1904 (partsOf bytes) && back.Date1904 && back.Sheets.[0].Model.Date1904 && M.getCellValue { Row = 0; Col = 0 } (M.resolveSheet back.Sheets.[0].Model) = M.CellValue.Number 42000.0) ""
 

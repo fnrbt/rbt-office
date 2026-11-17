@@ -42,7 +42,7 @@ let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array)
       ActiveSheetIndex = 0
       NameInfo = Map.empty; DefinedNames = imported.Context.Names
       Source = Some imported.Source
-      Macros = None }
+      Macros = None; MacroProject = None }
 let export (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) =
     XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported sheets))
 let addr row col : CellAddress = { Row = row; Col = col }
@@ -144,7 +144,7 @@ do
     let names = [| "Main"; "Second"; "Hidden"; "Fourth"; "Other" |]
     let input : Bridge.ExportInput =
         { Sheets = models; Names = names; Visible = [| true; true; false; true; true |]; ActiveSheetIndex = 0
-          NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
+          NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None }
     let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     let book = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes bytes)
     let standIns = book.Sheets |> Array.map (fun sheet -> sheet.Model)

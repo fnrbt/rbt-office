@@ -523,7 +523,7 @@ let savePivotFixtureFrom source pivotModel =
           Visible = pivotImported.Sheets |> Array.map (fun sheet -> sheet.Visible)
           ActiveSheetIndex = pivotIndex
           DefinedNames = pivotImported.Context.Names; NameInfo = Map.empty
-          Source = Some source; Macros = None }
+          Source = Some source; Macros = None; MacroProject = None }
     XlsxWriter.writeWorkbookPackageBytes (Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut export)
 let savePivotFixture = savePivotFixtureFrom pivotImported.Source
 let pivotFileSaved = savePivotFixture pivotFileChanged

@@ -672,6 +672,65 @@ checks['macros'] = async () => {
     return lines;
 };
 
+// The VBA editor from the shell's Data menu: in a workbook without macros a blank Module1 to write in,
+// Apply compiles it, its macro runs on the grid (one undo step), the Immediate line evaluates, the output
+// shows each, and a save writes the project from the module.
+checks['shell-vba-editor'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const shellHost = document.createElement('div');
+    document.body.appendChild(shellHost);
+    const { createSpreadsheetShell } = await import('/spreadsheet/Toolbar.js');
+    const shell = createSpreadsheetShell(grid, () => {});
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+    const type = async (testId, value, event = 'input') => {
+        const field = shellHost.querySelector(`[data-testid="${testId}"]`);
+        field.value = value; field.dispatchEvent(new Event(event, { bubbles: true })); await settle();
+    };
+    const press = async (testId) => { shellHost.querySelector(`[data-testid="${testId}"]`).click(); await settle(); };
+    const output = () => shellHost.querySelector('[data-testid="dlg-field-output"]')?.textContent ?? '';
+    try {
+        grid.SetCell(0, 0, '5');
+        shell.Mount(shellHost);
+        shellHost.querySelector('[data-sheet-menu="data"]').click();
+        shellHost.querySelector('[data-sheet-menu-item="vba-editor"]').click();
+        await settle();
+        check('the editor opens with a blank Module1', [!!shellHost.querySelector('[data-testid="xl-dlg-vba"]'), shellHost.querySelector('[data-testid="dlg-field-module"]')?.value, shellHost.querySelector('[data-testid="dlg-field-source"]')?.value], [true, 'Module1', '']);
+        await type('dlg-field-source', 'Sub Double()\n    Range("B1") = Range("A1") * 2\n    Debug.Print "doubled"; Range("B1")\nEnd Sub');
+        await press('dlg-vba-apply');
+        check('Apply compiles it', [/Module1: compiled/.test(output()), Array.from(grid.GetMacros())], [true, ['Double']]);
+        grid.SetMacroHooks({ output: () => {} });
+        check('shown again, its macro listed', shellHost.querySelector('[data-testid="dlg-field-macro"]')?.value, 'Double');
+        await press('dlg-vba-run');
+        check('Run runs it on the grid, enabling macros', [grid.MacrosEnabled, grid.GetRange('B1:B1')[0][0].value, /doubled\s+10/.test(output())], [true, 10, true]);
+        grid.Undo();
+        check('one undo step', grid.GetRange('B1:B1')[0][0].value, null);
+        grid.Redo();
+        await type('dlg-field-immediate', '?Range("B1").Value + 1');
+        await press('dlg-vba-immediate');
+        check('the Immediate line evaluates, the output shows it', [/> \?Range\("B1"\)\.Value \+ 1/.test(output()), /\b11\b/.test(output())], [true, true]);
+        await type('dlg-field-immediate', 'Range("C1") = "set from the Immediate window"');
+        await press('dlg-vba-immediate');
+        check('an Immediate statement changes the grid', grid.GetRange('C1:C1')[0][0].value, 'set from the Immediate window');
+        await type('dlg-field-source', 'Sub Double(\nEnd Sub');
+        await press('dlg-vba-apply');
+        check('a syntax error is shown, the dialog stays', [/problem/.test(output()), !!shellHost.querySelector('[data-testid="xl-dlg-vba"]'), grid.GetMacroProblems().length > 0], [true, true, true]);
+        await type('dlg-field-source', 'Sub Double()\n    Range("B1") = Range("A1") * 3\nEnd Sub');
+        await press('dlg-vba-apply');
+        const zip = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        check('saved: a macro-enabled workbook with the project', [!!zip.files['xl/vbaProject.bin'], /macroEnabled/.test(await zip.files['[Content_Types].xml'].async('string'))], [true, true]);
+        await press('dlg-vba-close');
+        check('Close closes it', !!shellHost.querySelector('[data-testid="xl-dlg-vba"]'), false);
+        const reopened = mountGrid();
+        try {
+            await reopened.grid.ImportXlsx(await zip.generateAsync({ type: 'uint8array' }));
+            check('reopened: the module and its code', reopened.grid.GetMacroModules().map((m) => [m.name, /Range\("A1"\) \* 3/.test(m.code)]), [['Module1', true]]);
+        } finally { reopened.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    shell.Dispose(); shellHost.remove(); close();
+    return lines;
+};
+
 // A macro-enabled workbook saved from the browser keeps its VBA project byte for byte, with its signature
 // and the code names that tie the document modules to the workbook and its sheets - unedited and edited.
 checks['xlsm-vba-project'] = async () => {

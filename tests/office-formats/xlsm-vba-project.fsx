@@ -59,7 +59,7 @@ let save macros =
     let input : Bridge.ExportInput =
         { Sheets = imported.Sheets |> Array.map (fun s -> s.Model); Names = imported.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imported.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
-          DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = macros }
+          DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = macros; MacroProject = None }
     parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 
 let kept label (saved: Map<string, byte[]>) =
@@ -102,7 +102,7 @@ let editedSheet =
         { Sheets = imported.Sheets |> Array.mapi (fun i s -> if i = 0 then Rbt.Spreadsheet.Model.setCell { Row = 40; Col = 0 } cell model else s.Model)
           Names = imported.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imported.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
-          DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = None }
+          DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = None; MacroProject = None }
     parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 check "edited sheet: the cell written" ((text editedSheet.["xl/worksheets/sheet1.xml"]).Contains "r=\"A41\"") true
 check "edited sheet: its code name kept" ((text editedSheet.["xl/worksheets/sheet1.xml"]).Contains "codeName=\"Sheet1\"") true
@@ -115,7 +115,7 @@ let plain =
         let imp = Bridge.Import.importWorkbookWith Bridge.editorImportOptions wb
         { Sheets = imp.Sheets |> Array.map (fun s -> s.Model); Names = imp.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imp.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
-          DefinedNames = imp.Context.Names; Source = Some imp.Source; Macros = None }
+          DefinedNames = imp.Context.Names; Source = Some imp.Source; Macros = None; MacroProject = None }
     parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 check "plain workbook: no project" (plain.ContainsKey "xl/vbaProject.bin") false
 check "plain workbook: not macro-enabled" ((text plain.["[Content_Types].xml"]).Contains "macroEnabled") false

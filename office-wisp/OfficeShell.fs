@@ -28,6 +28,8 @@ let openDialog (st: ShellState) (spec: DialogSpec) =
     st.Fields.Clear()
     st.ActiveTab.Value <- 0
     for f in spec.Fields @ (spec.Tabs |> List.collect snd) do st.Fields.[f.Id] <- signal f.Initial
+    // (Bumped after an action that keeps the dialog open: computed fields show what it changed.)
+    st.Fields.["__revision"] <- signal "0"
     st.Dialog.Value <- Some spec
 
 let closeDialog (st: ShellState) =
@@ -177,7 +179,12 @@ let private dialogView (st: ShellState) (spec: DialogSpec) : Element =
                   dyn (fun () -> st.ActiveTab.Value) (fun () -> fieldsView (snd spec.Tabs.[st.ActiveTab.Peek()])) ]
         else fieldsView spec.Fields
     let runBtn (b: DialogButton) =
-        let act () = if b.Action (currentMap st) then closeDialog st
+        let act () =
+            if b.Action (currentMap st) then closeDialog st
+            else
+                match st.Fields.TryGetValue "__revision" with
+                | true, revision -> revision.Value <- string (int (revision.Peek()) + 1)
+                | _ -> ()
         if b.IsPrimary then Ui.btnPrimary b.Label act else Ui.btn b.Label act
     Wisp.Widgets.modal (fun () -> closeDialog st)
         (fixedWidth 470.0

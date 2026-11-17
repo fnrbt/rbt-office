@@ -156,7 +156,7 @@ for file in files do
                             let input : Bridge.ExportInput =
                                 { Sheets = sheets; Names = opened.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = opened.Sheets |> Array.map (fun sheet -> sheet.Visible)
                                   ActiveSheetIndex = book.Preserved.ActiveTab; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names
-                                  Source = Some opened.Source; Macros = None }
+                                  Source = Some opened.Source; Macros = None; MacroProject = None }
                             let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
                             let now = text (partsOf saved).[path]
                             let how = written was now own rows

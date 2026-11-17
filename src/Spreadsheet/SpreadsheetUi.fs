@@ -572,6 +572,62 @@ module Ui =
         ]
     }
 
+    /// What the VBA editor works with; the app supplies it (the browser grid, the native host).
+    type MacroEditorHost = {
+        /// The project's modules: (name, kind - "standard" | "class" | "document" -, source).
+        Modules: unit -> (string * string * string) list
+        /// The macros a user can run, as RunMacro names them.
+        Macros: unit -> string list
+        /// Run a macro on the workbook (one undo step); what it prints and how it ends go to Output.
+        Run: string -> unit
+        /// Run an Immediate line (`?expression`, `Print expression` or statements) on the workbook.
+        Immediate: string -> unit
+        /// Take a module's edited source (module name, source) and compile the project again; problems go to
+        /// Output. The app shows the editor again on that module (its macro list follows the new code).
+        Apply: string -> string -> unit
+        /// What macros printed, how runs ended, the Immediate window's lines: newest last.
+        Output: unit -> string
+    }
+
+    /// The VBA editor: a module's code to read and change, the macros to run, an Immediate line, and
+    /// the output, which shows what each action did (the dialog stays open).
+    /// `shown`: the module to show first (else the first one).
+    let macroEditor (host: MacroEditorHost) (shown: string option) : DialogSpec =
+        let modules = host.Modules ()
+        let sourceOf name = modules |> List.tryPick (fun (n, _, source) -> if n = name then Some source else None) |> Option.defaultValue ""
+        let firstModule =
+            match shown with
+            | Some name when modules |> List.exists (fun (n, _, _) -> n = name) -> name
+            | _ -> modules |> List.tryHead |> Option.map (fun (n, _, _) -> n) |> Option.defaultValue ""
+        let macros = host.Macros ()
+        let choice value label = { Value = value; Label = label; IsEnabled = true }
+        {
+            TestId = "xl-dlg-vba"
+            Title = "VBA"
+            Subtitle = Some "Apply compiles a module's changes; Run runs a macro on the workbook as one undo step."
+            Fields = [
+                dialogSelect "module" "Module" [ for name, kind, _ in modules -> choice name (sprintf "%s (%s)" name kind) ] firstModule
+                |> dialogUpdating (fun values chosen -> values |> Map.add "module" chosen |> Map.add "source" (sourceOf chosen))
+                dialogTextArea "source" "Code" "Sub Main()\n    Range(\"A1\").Value = 42\nEnd Sub" 16 (sourceOf firstModule)
+                dialogSelect "macro" "Macro" [ for name in macros -> choice name name ] (macros |> List.tryHead |> Option.defaultValue "")
+                dialogText "immediate" "Immediate (?expression, or a statement)" "?Range(\"A1\").Value" ""
+                dialogComputed "output" "Output" (fun _ -> host.Output ())
+            ]
+            Tabs = []
+            Buttons = [
+                dialogButton "dlg-vba-close" "Close" false (fun _ -> true)
+                dialogButton "dlg-vba-apply" "Apply" false (fun values ->
+                    host.Apply (Map.tryFind "module" values |> Option.defaultValue "") (Map.tryFind "source" values |> Option.defaultValue "")
+                    false)
+                dialogButton "dlg-vba-immediate" "Run line" false (fun values ->
+                    host.Immediate (Map.tryFind "immediate" values |> Option.defaultValue "")
+                    false)
+                dialogButton "dlg-vba-run" "Run macro" true (fun values ->
+                    host.Run (Map.tryFind "macro" values |> Option.defaultValue "")
+                    false)
+            ]
+        }
+
     /// What the Insert-Pivot dialog collects; the app resolves field names
     /// against the source headers and places the computed grid.
     type PivotUiRequest = {

@@ -527,6 +527,9 @@ type XlsxWorkbookOut = {
     ActiveSheetIndex: int
     DefinedNames: XlsxDefinedName list
     VbaProjectSource: string option
+    /// A whole VBA project to write (a project of several modules edited in the app,
+    /// `VbaProject.writeProjectModules`); it replaces the kept one and its signatures.
+    VbaProjectBytes: byte[] option
     /// Differential formats conditional-formatting rules refer to by index.
     Dxfs: XlsxReader.Dxf list
     /// What was kept of the opened package (theme, chart parts, named cell
@@ -3900,7 +3903,7 @@ let private keptVbaRelationship (workbook: XlsxWorkbookOut) =
     |> List.tryFind (fun (_, relType, _, isExternal) -> not isExternal && OpcXml.relationshipKind relType = "vbaProject")
 
 let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) (keptParts: (string * byte[]) list) (ownMetadata: bool) (noteParts: string list) (noteBoxes: bool) =
-    let hasVba = workbook.VbaProjectSource |> Option.exists hasText
+    let hasVba = workbook.VbaProjectSource |> Option.exists hasText || workbook.VbaProjectBytes.IsSome
     let workbookType =
         if hasVba || (keptVbaRelationship workbook).IsSome then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
@@ -4570,6 +4573,12 @@ let private withVbaProjectResolved (workbook: XlsxWorkbookOut) =
             |> List.tryPick (fun (kept, data) -> if kept = path then Some data else None)
             |> Option.bind (fun data -> try Some (VbaProject.readMacroSource data) with _ -> None)
         match workbook.VbaProjectSource, keptSource with
+        | _ when workbook.VbaProjectBytes.IsSome ->
+            { workbook with
+                VbaProjectSource = None
+                Preserved =
+                    { workbook.Preserved with
+                        WorkbookRelationships = workbook.Preserved.WorkbookRelationships |> List.filter (fun kept -> kept <> relationship) } }
         | None, _ -> workbook
         | Some source, Some kept when normalized source = normalized kept -> { workbook with VbaProjectSource = None }
         | Some _, _ ->
@@ -4738,7 +4747,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             let styles = collectStyles workbook
             let sharedItems, sharedIndex = collectSharedStrings workbook
             styles, (fun () -> stylesXml styles), sharedIndex, (fun () -> sharedStringsXmlPreserved sharedItems)
-    let hasVba = workbook.VbaProjectSource |> Option.exists hasText
+    let hasVba = workbook.VbaProjectSource |> Option.exists hasText || workbook.VbaProjectBytes.IsSome
     let mutable tableId = 1
     let textFiles = ResizeArray<PackageFile>()
     // The theme stays only if its part was kept.
@@ -5093,8 +5102,9 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedXml }
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
-        (match workbook.VbaProjectSource with
-         | Some source when source <> "" -> [ "xl/vbaProject.bin", VbaProject.writeProject "Module1" source ]
+        (match workbook.VbaProjectBytes, workbook.VbaProjectSource with
+         | Some bytes, _ -> [ "xl/vbaProject.bin", bytes ]
+         | None, Some source when source <> "" -> [ "xl/vbaProject.bin", VbaProject.writeProject "Module1" source ]
          | _ -> [])
         @ List.ofSeq mediaFiles
         // Kept parts go back as they were, unless the writer produced a part of that name.
@@ -5174,6 +5184,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
+      VbaProjectBytes = None
       Dxfs = []
       Preserved = XlsxReader.emptyWorkbookPreservation }
 
@@ -5414,6 +5425,7 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
       ActiveSheetIndex = max 0 (min (workbook.Sheets.Length - 1) workbook.Preserved.ActiveTab)
       DefinedNames = workbook.NamedRanges |> List.map (fun n -> { Name = n.Name; RefersTo = n.RefersTo; LocalSheetIndex = n.Scope |> Option.bind (fun s -> match System.Int32.TryParse s with true, v -> Some v | _ -> None); Comment = n.Comment; Hidden = n.Hidden })
       VbaProjectSource = None
+      VbaProjectBytes = None
       Dxfs = workbook.Dxfs |> Array.toList
       Preserved = workbook.Preserved }
 

@@ -110,7 +110,8 @@ let exportWorkbook (st: EditorState) (source: Rbt.Spreadsheet.XlsxBridge.XlsxSou
           DefinedNames = remap wb.Names
           NameInfo = remap wb.NameInfo
           Source = source
-          Macros = models |> Array.tryPick (fun model -> if String.IsNullOrWhiteSpace model.Macros then None else Some model.Macros) }
+          Macros = models |> Array.tryPick (fun model -> if String.IsNullOrWhiteSpace model.Macros then None else Some model.Macros)
+          MacroProject = None }
     Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut input
     |> Rbt.Spreadsheet.XlsxBridge.Export.withIteration wb.Iteration
 
@@ -384,6 +385,46 @@ let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (so
             st.Session.CommitApplied({ Description = "Edit macros"; Workbook = withSource start })
             install st st.Session.Workbook
         Error (failure.Number, Rbt.Vb.Api.VbFailure.format failure)
+
+/// Make `source` the workbook's macros (every sheet holds the same copy; a save writes it): one undo step.
+let setMacros (st: EditorState) (source: string) =
+    let start = st.Session.Workbook
+    if start.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Macros <> source) then
+        let edited = { start with Sheets = start.Sheets |> Map.map (fun _ sheet -> { sheet with Model = { sheet.Model with Macros = source } }) }
+        st.Session.CommitApplied({ Description = "Edit macros"; Workbook = edited })
+        install st st.Session.Workbook
+
+/// The macros of the source (the editor's macro list).
+let macroNames (source: string) : string list =
+    match programOf source with
+    | Some (Result.Ok program) -> program.Macros
+    | _ -> []
+
+/// What keeps the source from compiling, one line each (none when it compiles).
+let macroProblems (source: string) : string list =
+    match programOf source with
+    | Some (Result.Error failures) -> failures |> List.map Rbt.Vb.Api.VbFailure.format
+    | _ -> []
+
+/// Run an Immediate-window line (`?expression`, `Print expression`, statements) with the source's
+/// program on the workbook; what it changes is one undo step. Enables the workbook's macros.
+let runMacroLine (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (source: string) (line: string) : Result<unit, string> =
+    st.MacrosEnabled <- true
+    let program =
+        match programOf source with
+        | Some program -> program
+        | None -> Rbt.Spreadsheet.MacroHost.MacroProgram.Compile []
+    match program with
+    | Result.Error failures -> Error (Rbt.Vb.Api.VbFailure.format (List.head failures))
+    | Result.Ok program ->
+        let start = st.Session.Workbook
+        match program.Immediate(start, hooks, line) with
+        | Rbt.Spreadsheet.MacroHost.MacroDone (result, _) ->
+            if not (Object.ReferenceEquals(result, start)) then
+                st.Session.CommitApplied({ Description = "Immediate"; Workbook = result })
+                install st st.Session.Workbook
+            Ok ()
+        | Rbt.Spreadsheet.MacroHost.MacroFailed failure -> Error (Rbt.Vb.Api.VbFailure.format failure)
 
 let startEditing (st: EditorState) row col seed =
     let model = activeModel st

@@ -29,7 +29,7 @@ let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array)
       ActiveSheetIndex = 0
       NameInfo = Map.empty; DefinedNames = names
       Source = Some imported.Source
-      Macros = None }
+      Macros = None; MacroProject = None }
 let modelsOf (imported: Bridge.ImportedWorkbook) = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
 let cellsOf (sheet: XlsxWriter.XlsxSheetOut) = sheet.Cells |> List.map (fun cell -> (cell.Row, cell.Col), cell) |> Map.ofList
 let addr row col : CellAddress = { Row = row; Col = col }
@@ -180,7 +180,7 @@ let freshOut =
     Bridge.Export.toWorkbookOut
         { Sheets = [| fresh; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; false |]; ActiveSheetIndex = 0
           NameInfo = Map.empty; DefinedNames = Wb.namesOfTriples [ None, "Total", "First!$A$3"; Some (Bridge.sheetIdOfIndex 0), "Local", "First!$A$2" ]
-          Source = None; Macros = None }
+          Source = None; Macros = None; MacroProject = None }
 let freshBack = reread freshOut
 eq "fresh: sheets and visibility" (freshBack.Sheets |> List.map (fun s -> s.Name, s.State)) [ "First", XlsxReader.SheetVisible; "Hidden one", XlsxReader.SheetHidden ]
 eq "fresh: values" (freshBack.Sheets.[0].Rows |> List.collect (fun r -> r.Cells |> List.map (fun c -> c.Formula, XlsxReader.resolveValue freshBack c.Value)))
@@ -197,7 +197,7 @@ let namedBook =
         (Bridge.buildWorkbookContext [| fresh; createEmpty 10 5 |] [| "First"; "Hidden one" |] [| true; false |] Map.empty Map.empty 0)
 let namedInput (wb: Wb.Workbook) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
     { Sheets = [| fresh; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; false |]; ActiveSheetIndex = 0
-      NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None }
+      NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None; MacroProject = None }
 let namedBack = reread (Bridge.Export.toWorkbookOut (namedInput namedBook None))
 eq "names: written with their spelling, comment and scope"
     (namedBack.NamedRanges |> List.map (fun n -> n.Name, n.RefersTo, n.Scope, n.Comment, n.Hidden) |> List.sort)
@@ -226,7 +226,7 @@ let viewed = { fresh with Zoom = 1.35; ShowHeaders = false; ShowFormulas = true;
 let viewOut =
     Bridge.Export.toWorkbookOut
         { Sheets = [| viewed; createEmpty 10 5 |]; Names = [| "Viewed"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0
-          NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
+          NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None }
 let viewBack = reread viewOut
 eq "view: written to the sheet view" (viewBack.Sheets |> List.map (fun s -> s.View, s.ShowZeros, s.ShowGridLines, s.FrozenPane))
     [ { XlsxReader.ShowRowColHeaders = false; ShowFormulas = true; ZoomScale = 135; TabColor = None; SummaryBelow = true; SummaryRight = true; ShowOutlineSymbols = true }, false, false, Some { XlsxReader.XSplit = 2; YSplit = 3 }
@@ -254,7 +254,7 @@ let dressedSheet =
     |> setCell (addr 0 0) { Value = CellValue.Number 1234.5; Format = dressed; Comment = None }
     |> setCell (addr 1 1) { Value = CellValue.String "shrunk"; Format = shrunk; Comment = None }
 let dressedBack =
-    Bridge.Export.toWorkbookOut { Sheets = [| dressedSheet |]; Names = [| "Formats" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
+    Bridge.Export.toWorkbookOut { Sheets = [| dressedSheet |]; Names = [| "Formats" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None }
     |> reread |> Bridge.Import.importWorkbook
 let dressedFormat row col = dressedBack.Sheets.[0].Model.Cells.[addr row col].Format
 let sameColors (format: CellFormat) =
@@ -284,7 +284,7 @@ let lists =
     |> setCell (addr 0 0) { Value = CellValue.String "North"; Format = defaultFormat; Comment = None }
     |> setCell (addr 1 0) { Value = CellValue.String "South"; Format = defaultFormat; Comment = None }
 let validatedOut =
-    Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None }
+    Bridge.Export.toWorkbookOut { Sheets = [| validated; lists |]; Names = [| "Data"; "Lists" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None }
 let validatedFile = reread validatedOut
 // (The list that reads the other sheet is in the x14 list of the sheet, which is read after the others.)
 eq "validations: the sqrefs of the file (a whole column written out)" (validatedFile.Sheets.[0].DataValidations |> List.map (fun dv -> dv.Range, dv.ValidationType) |> List.sort)
@@ -428,7 +428,7 @@ eq "paint: the viewport items scroll the drawing with the body" (Rbt.Spreadsheet
     [ Rbt.Spreadsheet.Layout.BodyZone, 30.0 + (pictureRect extrasModel).Y - 40.0 ]
 // A picture in a workbook made in the editor is written; threads too.
 let pictured = { fresh with Drawings = [ extrasModel.Drawings.[0] ]; Threads = Map.ofList [ addr 0 0, { Id = "{BBBBBBBB-0000-0000-0000-000000000001}"; Author = Some "New Author"; PersonId = None; Date = None; Text = "typed here"; Replies = []; Done = false } ] }
-let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None })
+let picturedBack = reread (Bridge.Export.toWorkbookOut { Sheets = [| pictured |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None })
 eq "fresh: picture and thread written" (picturedBack.Sheets.[0].Extras.Images |> List.map (fun image -> image.Data.Length, image.Anchor.FromRow), picturedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun thread -> thread.Author, thread.Text))
     ([ 154, 2 ], [ Some "New Author", "typed here" ])
 
@@ -479,7 +479,7 @@ let tabbed =
     [| { fresh with TabColor = Some "#FF8800" }; { createEmpty 10 5 with VeryHidden = true }; { createEmpty 10 5 with TabColor = Some "theme:4:-0.249977111117893" }
        { createEmpty 10 5 with TabColor = Some "indexed:10"; VeryHidden = true } |]
 let tabbedInput (sheets: SpreadsheetModel array) (names: string array) (visible: bool array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = sheets; Names = names; Visible = visible; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+    { Sheets = sheets; Names = names; Visible = visible; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
 let tabbedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput tabbed [| "One"; "Two"; "Three"; "Four" |] [| true; false; true; true |] None))
 let tabbedBack = XlsxReader.loadBytesNative tabbedBytes |> Option.get
 eq "sheets: tab colours and states are written"
@@ -527,7 +527,7 @@ let relistedOrder = List.toArray relisted.SheetOrder
 let relistedBack =
     XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut
         { Sheets = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Model); Names = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Name)
-          Visible = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Visible); ActiveSheetIndex = 1; NameInfo = relisted.NameInfo; DefinedNames = relisted.Names; Source = None; Macros = None })) |> Option.get
+          Visible = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Visible); ActiveSheetIndex = 1; NameInfo = relisted.NameInfo; DefinedNames = relisted.Names; Source = None; Macros = None; MacroProject = None })) |> Option.get
 eq "sheets: the list after the operations" (relistedBack.Sheets |> List.map (fun s -> s.Name, s.State)) [ "Third", XlsxReader.SheetVeryHidden; "First (2)", XlsxReader.SheetVisible; "Number 2", XlsxReader.SheetVisible ]
 let formulasOf (sheet: XlsxReader.Worksheet) = sheet.Rows |> List.collect (fun r -> r.Cells |> List.choose (fun c -> c.Formula))
 eq "sheets: formulas name the sheets as they are now" (relistedBack.Sheets |> List.map formulasOf) [ [ "'Number 2'!A1+#REF!" ]; [ "A2*2"; "'Number 2'!A1+1" ]; [ "#REF!*2" ] ]
@@ -542,7 +542,7 @@ let axesModel =
     |> Ops.changeOutlineLevel true 5 8 1 |> Ops.changeOutlineLevel true 6 7 1 |> Ops.setGroupCollapsed "test" true 6 true
     |> Ops.changeOutlineLevel false 4 5 1 |> Ops.setGroupCollapsed "test" false 4 true
 let axesInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = [| model |]; Names = [| "Axes" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+    { Sheets = [| model |]; Names = [| "Axes" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
 let axesFile = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None))) |> Option.get
 let rowAttributes (wb: XlsxReader.Workbook) =
     wb.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden || r.OutlineLevel > 0 || r.Collapsed) |> List.map (fun r -> r.Index, r.Hidden, r.Height |> Option.map (fun h -> Math.Round (h, 2)), r.OutlineLevel, r.Collapsed)
@@ -698,7 +698,7 @@ eq "kept filter: written back beside a new one" (keptEdited.Sheets.[0].Extras.Au
 module Ops = Rbt.Spreadsheet.SheetOps
 let okOf (result: Result<'a, string>) = match result with Ok value -> value | Result.Error message -> failwith message
 let singleInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = [| model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+    { Sheets = [| model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
 let commentsOfModel (model: SpreadsheetModel) =
     Ops.allComments model |> List.map (fun c -> c.Cell.Row, c.Cell.Col, c.Text, c.Author, c.Thread |> Option.map (fun t -> t.Done, t.Replies |> List.map (fun r -> r.Text, r.Author, r.Date)))
 // A fresh workbook: a note, and a note turned into a thread by a reply, resolved.
@@ -742,7 +742,7 @@ let linkedModel =
     |> Ops.setHyperlink [ cellRange 6 1 7 2 ] "'Hidden one'!A1" true (Some "go there") None
     |> Ops.setHyperlink [ cellRange 9 0 9 0 ] "mailto:someone@example.com" false (Some "write") (Some "mail")
 let linkedInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = [| model; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+    { Sheets = [| model; createEmpty 10 5 |]; Names = [| "First"; "Hidden one" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
 let linkedBack = reread (Bridge.Export.toWorkbookOut (linkedInput linkedModel None))
 eq "links: written with target, tooltip and display"
     (linkedBack.Sheets.[0].Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal, l.Tooltip, l.Display))
@@ -816,7 +816,7 @@ let tableBook =
     |> fun wb -> (Ops.setTableTotalRow "SetTableTotalRow" "Sales" true wb).Book
     |> fun wb -> (Ops.defineTable "DefineTable" tableId { From = addr 10 0; To = addr 12 1 } None false None wb |> fst).Book
 let tableInput (wb: Wb.Workbook) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = [| wb.Sheets.[tableId].Model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None }
+    { Sheets = [| wb.Sheets.[tableId].Model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None; MacroProject = None }
 let tableBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableBook None))
 let tableBack = XlsxReader.loadBytesNative tableBytes |> Option.get
 eq "tables: written with their columns, total row, filter and style"
@@ -874,7 +874,7 @@ let printed =
     { createEmpty 100 12 with PageSetup = setup } |> setCell (addr 0 0) { Value = CellValue.String "x"; Format = defaultFormat; Comment = None }
 let plainSheet = createEmpty 50 8 |> setCell (addr 0 0) { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None }
 let printInput (sheets: SpreadsheetModel array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
-    { Sheets = sheets; Names = [| "Print me"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None }
+    { Sheets = sheets; Names = [| "Print me"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
 let printedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printed; plainSheet |] None))
 let printedFile = XlsxReader.loadBytesNative printedBytes |> Option.get
 let printedBack = Bridge.Import.importWorkbook printedFile

@@ -185,7 +185,7 @@ let exported (sheets: SpreadsheetModel array) =
           ActiveSheetIndex = 0
           NameInfo = Map.empty; DefinedNames = book.Context.Names
           Source = Some book.Source
-          Macros = None }
+          Macros = None; MacroProject = None }
     XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
 let original = partsOf (File.ReadAllBytes(Path.Combine(root, ecommerceFile)))
 let chartExParts = original |> Map.toList |> List.map fst |> List.filter (fun path -> path.StartsWith "xl/charts/" && (path.Contains "chartEx" || path.Contains "/colors" || path.Contains "/style"))

@@ -123,7 +123,7 @@ for file in files do
                       ActiveSheetIndex = activeTab
                       NameInfo = Map.empty; DefinedNames = imported.Context.Names
                       Source = Some imported.Source
-                      Macros = None }
+                      Macros = None; MacroProject = None }
                 let written = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input) |> partsOf
                 // Only what the original package itself reaches counts (a stray entry nothing refers to is not a part).
                 let wanted = reachable original |> Set.filter (fun part -> Map.containsKey part original && not (regenerated part))
@@ -277,7 +277,7 @@ if named.Length = 0 then
         let input : Bridge.ExportInput =
             { Sheets = sheets; Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = workbook.Preserved.ActiveTab; NameInfo = imported.Context.NameInfo; DefinedNames = imported.Context.Names
-              Source = Some imported.Source; Macros = None }
+              Source = Some imported.Source; Macros = None; MacroProject = None }
         XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     let typed (model: Rbt.Spreadsheet.Model.SpreadsheetModel) =
         let cell at = Rbt.Spreadsheet.Model.getCell at model

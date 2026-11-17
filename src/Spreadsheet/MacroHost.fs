@@ -1423,3 +1423,37 @@ let macroModulesOf (preserved: XlsxReader.WorkbookPreservation) : ModuleSource l
 /// Macro source typed or edited by hand (the native host's macro dialog), as one standard module.
 let editedModules (source: string) : ModuleSource list =
     if String.IsNullOrWhiteSpace source then [] else [ ModuleSource.standard "Module1" source ]
+
+/// A module's source as (header, code): the export header and Attribute lines Excel's editor does not
+/// show, and the code after them.
+let splitHeader (source: string) : string * string =
+    let lines = source.Replace("\r\n", "\n").Split('\n')
+    let mutable index = 0
+    let mutable inBegin = false
+    let isHeader (line: string) =
+        let text = line.Trim()
+        if inBegin then
+            (if text.Equals("END", StringComparison.OrdinalIgnoreCase) then inBegin <- false)
+            true
+        elif text.StartsWith("Attribute ", StringComparison.OrdinalIgnoreCase) then true
+        elif text.StartsWith("VERSION ", StringComparison.OrdinalIgnoreCase) then true
+        elif text.Equals("BEGIN", StringComparison.OrdinalIgnoreCase) then inBegin <- true; true
+        else false
+    while index < lines.Length && isHeader lines.[index] do index <- index + 1
+    String.concat "\n" lines.[.. index - 1], String.concat "\n" lines.[index ..]
+
+/// The header of a module again in front of its (edited) code.
+let joinHeader (header: string) (code: string) =
+    if header = "" then code else header + "\n" + code.Replace("\r\n", "\n")
+
+/// A project of the modules, as vbaProject.bin (source only: Office compiles it when it opens the file).
+let projectBytes (modules: ModuleSource list) : byte[] =
+    modules
+    |> List.map (fun m ->
+        let kind =
+            match m.Kind with
+            | Standard -> VbaProject.StandardModule
+            | Class -> VbaProject.ClassModule
+            | Document -> VbaProject.DocumentModule
+        m.Name, kind, m.Source)
+    |> VbaProject.writeProjectModules

@@ -1402,6 +1402,8 @@ type ExportInput = {
     Source: XlsxSource option
     /// VBA module source to write as the workbook's VBA project (native hosts).
     Macros: string option
+    /// A whole VBA project to write instead of the one opened (modules edited in the app).
+    MacroProject: byte[] option
 }
 
 module Export =
@@ -3197,6 +3199,7 @@ module Export =
           ActiveSheetIndex = max 0 (min (input.Sheets.Length - 1) input.ActiveSheetIndex)
           DefinedNames = definedNamesOut input
           VbaProjectSource = input.Macros |> Option.bind (fun source -> if String.IsNullOrWhiteSpace source then None else Some source)
+          VbaProjectBytes = input.MacroProject
           Dxfs = List.ofSeq dxfs
           Preserved =
             match input.Source with

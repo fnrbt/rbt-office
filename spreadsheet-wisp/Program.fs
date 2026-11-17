@@ -221,17 +221,38 @@ let main argv =
             status.Value <- sprintf "Inserted table %s" name)
         |> Shell.openDialog shell
 
+    // The VBA editor: the workbook's macros as one module, its macros, an Immediate line and the output.
+    let macroLog = ResizeArray<string>()
     let openMacroDialog () =
-        let model = EH.activeModel st
-        XlUi.macroDialog model.Macros (fun source ->
-            // MsgBox and Debug.Print show on the status line until the app has dialogs for them.
-            let hooks = { Rbt.Spreadsheet.MacroHost.defaultHooks with
-                            MessageBox = (fun prompt _ _ -> status.Value <- prompt; 1)
-                            Output = (fun text -> status.Value <- text) }
-            match EH.runMacro st hooks source None with
-            | Result.Ok () -> if status.Value = "" then status.Value <- "Macro ran"
-            | Result.Error (number, description) -> status.Value <- sprintf "Macro error %d: %s" number description)
-        |> Shell.openDialog shell
+        let source () = (EH.activeModel st).Macros
+        let hooks = { Rbt.Spreadsheet.MacroHost.defaultHooks with
+                        MessageBox = (fun prompt _ _ -> macroLog.Add("MsgBox: " + prompt); 1)
+                        Output = macroLog.Add }
+        let mutable reopen : unit -> unit = ignore
+        let host : XlUi.MacroEditorHost = {
+            Modules = fun () -> [ "Module1", "standard", source () ]
+            Macros = fun () -> EH.macroNames (source ())
+            Run = fun name ->
+                if name <> "" then
+                    match EH.runMacro st hooks (source ()) (Some name) with
+                    | Result.Ok () -> macroLog.Add("Ran " + name)
+                    | Result.Error (_, description) -> macroLog.Add description
+            Immediate = fun line ->
+                if line.Trim() <> "" then
+                    macroLog.Add("> " + line)
+                    match EH.runMacroLine st hooks (source ()) line with
+                    | Result.Ok () -> ()
+                    | Result.Error description -> macroLog.Add description
+            Apply = fun _ code ->
+                // (The code becomes the workbook's macros: one undo step, saved with the workbook.)
+                EH.setMacros st code
+                match EH.macroProblems code with
+                | [] -> macroLog.Add "Module1: compiled"
+                | problems -> macroLog.Add(sprintf "Module1: %d problem(s)" problems.Length); problems |> List.iter macroLog.Add
+                reopen ()
+            Output = fun () -> String.concat "\n" (if macroLog.Count > 200 then macroLog.GetRange(macroLog.Count - 200, 200) |> Seq.toList else List.ofSeq macroLog) }
+        reopen <- fun () -> XlUi.macroEditor host (Some "Module1") |> Shell.openDialog shell
+        XlUi.macroEditor host None |> Shell.openDialog shell
 
     let openPivotDialog () =
         let cellText v =

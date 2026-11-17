@@ -65,7 +65,7 @@ let export (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) 
               NameInfo = Map.empty
               DefinedNames = imported.Context.Names
               Source = Some imported.Source
-              Macros = None })
+              Macros = None; MacroProject = None })
 let modelsOf (imported: Bridge.ImportedWorkbook) = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
 
 // ---- a package as Excel writes it ----------------------------------------------

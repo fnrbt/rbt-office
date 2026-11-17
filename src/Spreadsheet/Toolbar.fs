@@ -1400,6 +1400,30 @@ type SpreadsheetShell
             quickData "Conditional formatting" (fun () -> grid.ShowConditionalFormattingDialog())))
         commands.Add(command "data.names" "Name manager" None dataEnabled (fun _ ->
             quickData "Name manager" (fun () -> grid.ShowDefinedNamesDialog())))
+        // The VBA editor: the workbook's modules (a blank Module1 when it has none), its macros, an
+        // Immediate line and their output. Running from it enables the workbook's macros.
+        commands.Add(command "tools.vba" "VBA editor" None dataEnabled (fun _ ->
+            let attempt (action: unit -> unit) =
+                try action () with error -> setFileMessage ("VBA: " + printError (box error))
+            let enable () = if not grid.MacrosEnabled then grid.EnableMacros() |> ignore
+            let mutable reopen : string -> unit = ignore
+            let host : Rbt.Spreadsheet.Ui.MacroEditorHost = {
+                Modules = fun () ->
+                    match grid.GetMacroModules() |> Array.map (fun m -> textOf (property m "name"), textOf (property m "kind"), textOf (property m "code")) |> List.ofArray with
+                    | [] -> [ "Module1", "standard", "" ]
+                    | modules -> modules
+                Macros = fun () -> grid.GetMacros() |> List.ofArray
+                Run = fun name -> if name <> "" then attempt (fun () -> enable (); grid.RunMacro name |> ignore)
+                Immediate = fun line -> if line.Trim() <> "" then attempt (fun () -> enable (); grid.RunMacroLine line |> ignore)
+                Apply = fun name code ->
+                    attempt (fun () -> grid.SetMacroModule(name, code) |> ignore)
+                    // (Shown again: the macro list follows the module's new code.)
+                    reopen name
+                Output = fun () ->
+                    let lines = grid.GetMacroOutput()
+                    String.concat "\n" (if lines.Length > 200 then lines.[lines.Length - 200 ..] else lines) }
+            reopen <- fun name -> openDialog dialog (Rbt.Spreadsheet.Ui.macroEditor host (Some name))
+            openDialog dialog (Rbt.Spreadsheet.Ui.macroEditor host None)))
         let sheetEnabled () = live () && not (grid.IsReadOnly())
         let targetId argument =
             let infos = grid.GetSheetInfos()
@@ -1553,6 +1577,8 @@ type SpreadsheetShell
                 MItem { Id = "validation"; Label = "Data validation..."; Shortcut = None; Action = run "data.validation" }
                 MItem { Id = "conditional-formatting"; Label = "Conditional formatting..."; Shortcut = None; Action = run "data.conditionalFormatting" }
                 MItem { Id = "name-manager"; Label = "Name manager..."; Shortcut = None; Action = run "data.names" }
+                MSep
+                MItem { Id = "vba-editor"; Label = "VBA editor..."; Shortcut = None; Action = run "tools.vba" }
             ]
         }
     ]

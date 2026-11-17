@@ -782,4 +782,23 @@ let picture : Rbt.Spreadsheet.Paint.PaintImage = { ContentType = "image/gif"; Da
 assertEq "native GIF content is painted rather than a placeholder" (255uy, 0uy, 0uy)
     (rgbAt (renderScene [ Rbt.Spreadsheet.Paint.DrawImage (clip, picture) ]) 15 25)
 
+// The VBA editor's operations: set the workbook's macros, list and run them, an Immediate line.
+let vba = create [| createEmpty 20 10; createEmpty 20 10 |] [| "Data"; "Other" |] 0
+applyCellEdit vba 0 0 "21" |> ignore
+let vbaCode = "Sub Double()\n    Range(\"B1\") = Range(\"A1\") * 2\nEnd Sub\nSub Broken()\n    Worksheets(\"Nope\").Activate\nEnd Sub"
+setMacros vba vbaCode
+assertEq "the macros are on every sheet" true (vba.Session.Workbook.Sheets |> Map.forall (fun _ sheet -> sheet.Model.Macros = vbaCode))
+assertEq "the editor's macro list" [ "Double"; "Broken" ] (macroNames vbaCode)
+assertEq "a compiling source has no problems" [] (macroProblems vbaCode)
+assertEq "a syntax error is a problem" 1 (macroProblems "Sub Broken(\nEnd Sub").Length
+assertEq "a named macro runs" true (runMacro vba Rbt.Spreadsheet.MacroHost.defaultHooks vbaCode (Some "Double") |> Result.isOk)
+assertEq "on the grid" (Number 42.0) (value vba 0 1)
+assertEq "a failing macro reports where" true (match runMacro vba Rbt.Spreadsheet.MacroHost.defaultHooks vbaCode (Some "Broken") with Result.Error (9, text) -> text.Contains "Broken" | _ -> false)
+let printed = ResizeArray<string>()
+assertEq "an Immediate statement runs" true (runMacroLine vba { Rbt.Spreadsheet.MacroHost.defaultHooks with Output = printed.Add } vbaCode "Range(\"C1\") = Range(\"B1\") + 1" |> Result.isOk)
+assertEq "and changes the grid" (Number 43.0) (value vba 0 2)
+assertEq "an Immediate expression prints" true (runMacroLine vba { Rbt.Spreadsheet.MacroHost.defaultHooks with Output = printed.Add } vbaCode "?Range(\"C1\").Value" |> Result.isOk && (printed |> Seq.exists (fun text -> text.Trim() = "43")))
+undo vba |> ignore
+assertEq "the Immediate statement undoes as one step" Empty (value vba 0 2)
+
 printfn "wisp-editorhost: %d assertions passed" checks

@@ -61,7 +61,7 @@ let export (source: Bridge.ImportedWorkbook option) (sheets: SpreadsheetModel ar
               NameInfo = Map.empty
               DefinedNames = (match source with Some imported -> imported.Context.Names | None -> Map.empty)
               Source = source |> Option.map (fun imported -> imported.Source)
-              Macros = None })
+              Macros = None; MacroProject = None })
 /// The start tag of a cell and of its formula: `<c r="C1" …><f …>`.
 let cellTags (sheetXml: string) (cell: string) =
     let m = Text.RegularExpressions.Regex.Match(sheetXml, sprintf "<c r=\"%s\"[^>]*>(<f[^>]*>)?" cell)

@@ -20,11 +20,16 @@ type DialogState = { Open: Signal<OpenDialogState option> }
 
 let createState () : DialogState = { Open = signal None }
 
+/// A value no field has: computed fields read it with the others, so bumping it re-runs them.
+let private revisionField = "__revision"
+
 let openDialog (state: DialogState) (spec: DialogSpec) =
     let values = Dictionary<string, Signal<string>>()
     let fields = if spec.Tabs.IsEmpty then spec.Fields else spec.Tabs |> List.collect snd
     for field in fields do
         values.[field.Id] <- signal field.Initial
+    // (Bumped after an action that keeps the dialog open: computed fields show what it changed.)
+    values.[revisionField] <- signal "0"
     state.Open.Value <- Some (OpenDialogState(spec, values))
 
 /// Reuse application-owned field signals when migrating a form without
@@ -146,6 +151,10 @@ let private activate (state: DialogState) (opened: OpenDialogState) (btn: Dialog
         let shouldClose = btn.Action (snapshot opened.Values)
         // An action can synchronously replace this dialog.
         if shouldClose && isCurrent state opened then closeDialog state
+        elif not shouldClose then
+            match opened.Values.TryGetValue revisionField with
+            | true, revision -> revision.Value <- string (int revision.Value + 1)
+            | _ -> ()
 
 /// Default CSS, which the host can replace with its own theme.
 let defaultStylesheet = """
