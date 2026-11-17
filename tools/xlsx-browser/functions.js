@@ -5,7 +5,10 @@
 import { checks, makeLog, mountGrid } from '/component.js';
 import { excelPackage } from '/features.js';
 
-const fetched = (module) => performance.getEntriesByType('resource').some((entry) => entry.name.includes('/spreadsheet/Functions/' + module + '.js'));
+const { isFunctionModuleInstalled } = await import('/spreadsheet/Formula.js');
+// Whether a module is installed (a page's modules are kept from check to check: an earlier one may have loaded it).
+const moduleNames = { FnMath: 'Math', FnEngineering: 'Engineering', FnFinancial: 'Financial', FnText: 'Text' };
+const fetched = (module) => isFunctionModuleInstalled(moduleNames[module]);
 const valueAt = (grid, row, col) => grid.GetCell(row, col).value;
 // The value of a cell once it is no longer `#BUSY!` (at most `ms`).
 const settled = async (grid, row, col, ms = 5000) => {
@@ -26,7 +29,7 @@ checks['function-modules'] = async () => {
     const { grid, close } = mountGrid();
     try {
         // Nothing of the modules comes with the grid.
-        const before = ['FnMath', 'FnEngineering', 'FnFinancial', 'Kit'].filter(fetched);
+        const before = ['FnMath', 'FnEngineering', 'FnFinancial', 'FnText'].filter(fetched);
         if (before.length === 0) check('no function module is fetched with the grid', before, []);
         else note('modules an earlier check fetched: ' + before.join(', '));
         // A formula typed: #BUSY! until its module is there, then its value.
@@ -51,12 +54,13 @@ checks['function-modules'] = async () => {
         const book = await excelPackage('<sheetData><row r="1"><c r="A1"><f>BIN2HEX(1110)</f></c><c r="B1"><f>_xlfn.BITLSHIFT(4,2)</f></c></row>'
             + '<row r="2"><c r="A2" t="str"><f>_xlfn.WEBSERVICE("http://example.com/a")</f><v>cached answer</v></c><c r="B2"><f>_xlfn.WEBSERVICE("http://example.com/b")</f></c>'
             + '<c r="C2"><f>LEN(A2)</f><v>13</v></c></row></sheetData>');
+        const financialBefore = fetched('FnFinancial');
         await grid.ImportXlsx(book);
         if (!engineeringBefore) note('the Engineering module was not loaded before the workbook was opened');
         check('BIN2HEX right after the workbook is opened', valueAt(grid, 0, 0), 'E');
         check('BITLSHIFT (stored as _xlfn.BITLSHIFT)', valueAt(grid, 0, 1), 16);
         check('the Engineering module was fetched', fetched('FnEngineering'), true);
-        check('a module nothing needs is not fetched', fetched('FnFinancial'), false);
+        if (!financialBefore) check('a module nothing needs is not fetched', fetched('FnFinancial'), false);
         // Provider functions without a provider: the cached value is kept, none is the error.
         check('WEBSERVICE without a provider keeps its cached value', valueAt(grid, 1, 0), 'cached answer');
         check('WEBSERVICE without a provider or cached value', valueAt(grid, 1, 1), '#CONNECT!');
