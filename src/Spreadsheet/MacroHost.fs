@@ -63,6 +63,8 @@ let private toInt (value: Value) =
     match scalarOf value with
     | VInteger i -> i
     | VDouble d -> int (Math.Round d)
+    | VDate serial -> int (Math.Round serial)
+    | VCurrency units -> int (Math.Round (float units / 10000.0))
     | VBoolean b -> if b then -1 else 0
     | VString s ->
         match Double.TryParse(s, Globalization.NumberStyles.Any, Globalization.CultureInfo.InvariantCulture) with
@@ -75,6 +77,8 @@ let private toFloat (value: Value) =
     match scalarOf value with
     | VInteger i -> float i
     | VDouble d -> d
+    | VDate serial -> serial
+    | VCurrency units -> float units / 10000.0
     | VBoolean b -> if b then -1.0 else 0.0
     | VString s ->
         match Double.TryParse(s, Globalization.NumberStyles.Any, Globalization.CultureInfo.InvariantCulture) with
@@ -88,6 +92,7 @@ let private toText (value: Value) =
     | VString s -> s
     | VInteger i -> string i
     | VDouble d -> d.ToString("R", Globalization.CultureInfo.InvariantCulture)
+    | VDate _ | VCurrency _ -> Rbt.Vb.Api.displayValue value
     | VBoolean b -> if b then "True" else "False"
     | VEmpty | VNull | VNothing | VUndefined -> ""
     | _ -> fail 13 "Type mismatch"
@@ -104,15 +109,28 @@ let private toBool (value: Value) =
 
 let private isMissing (value: Value) = match value with VEmpty | VUndefined -> true | _ -> false
 
-/// What a cell holds, as VBA sees it: numbers as Double, text, booleans, errors as their text (#N/A).
+/// Excel's error values as VBA's Error codes (CVErr(xlErrNA) is 2042), both ways.
+let private errorCodes =
+    [ "NULL!", 2000; "DIV/0!", 2007; "VALUE!", 2015; "REF!", 2023; "NAME?", 2029; "NUM!", 2036; "N/A", 2042
+      "GETTING_DATA", 2043; "SPILL!", 2045; "CONNECT!", 2046; "BLOCKED!", 2047; "UNKNOWN!", 2048; "FIELD!", 2049; "CALC!", 2050 ]
+let private errorCodeOf (text: string) = errorCodes |> List.tryPick (fun (name, code) -> if name = text then Some code else None) |> Option.defaultValue 2015
+let private errorTextOf (code: int) = errorCodes |> List.tryPick (fun (name, c) -> if c = code then Some name else None) |> Option.defaultValue "VALUE!"
+
+/// What a cell holds, as VBA's Value2 gives it: numbers as Double (dates too), text, booleans, Error values.
 let rec cellValue (value: CellValue) : Value =
     match value with
     | CellValue.Empty -> VEmpty
     | Number n -> VDouble n
     | String s -> VString s
     | Boolean b -> VBoolean b
-    | Error e -> VString ("#" + e)
+    | Error e -> VError (errorCodeOf e)
     | Formula (_, cached) -> cellValue cached
+
+/// What a cell holds as VBA's Value gives it: a number formatted as a date or time is a Date.
+let cellValueAs (date1904: bool) (format: CellFormat) (value: CellValue) : Value =
+    match cellValue value, format.NumberFormat with
+    | VDouble n, Some code when code = "date" || CellText.isDateTimeNumberFormat code -> VDate (if date1904 then n + 1462.0 else n)
+    | other, _ -> other
 
 /// A 2-D array of a range's values, 1-based in both dimensions, as Range.Value gives it.
 let private array2D (rows: int) (cols: int) (item: int -> int -> Value) =
@@ -401,6 +419,15 @@ let private entered (book: MacroWorkbook) (sheetId: SheetId) (row: int) (col: in
     | VInteger i -> withValue (Number (float i))
     | VDouble d -> withValue (Number d)
     | VBoolean b -> withValue (Boolean b)
+    | VDate serial ->
+        // A Date gets a date format when the cell has none (as Excel gives it one).
+        let format =
+            match format.NumberFormat with
+            | None -> { format with NumberFormat = Some (if serial <> Math.Floor serial then "m/d/yyyy h:mm" else "m/d/yyyy") }
+            | Some _ -> format
+        Some { Value = Number (if book.Date1904 then serial - 1462.0 else serial); Format = format; Comment = comment }
+    | VCurrency units -> withValue (Number (float units / 10000.0))
+    | VError code -> withValue (Error (errorTextOf code))
     | VString "" -> if comment.IsSome || format <> defaultFormat then withValue CellValue.Empty else None
     | VString text ->
         let cell = Rbt.Spreadsheet.Input.cellFromInputFor book.Date1904 DateTime.Now.Year previous text
@@ -414,7 +441,8 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
     let sheetName () = (book.Sheet r.Sheet).Name
     let sub top left bottom right = rangeObject book { r with Top = top; Left = left; Bottom = bottom; Right = right }
     let cellAt row col = book.Cell(r.Sheet, row, col)
-    let valueAt row col = cellAt row col |> Option.map (fun c -> cellValue c.Value) |> Option.defaultValue VEmpty
+    let valueAt row col = cellAt row col |> Option.map (fun c -> cellValueAs book.Date1904 c.Format c.Value) |> Option.defaultValue VEmpty
+    let value2At row col = cellAt row col |> Option.map (fun c -> cellValue c.Value) |> Option.defaultValue VEmpty
     let formulaAt row col =
         match cellAt row col with
         | Some { Value = Formula (text, _) } -> VString (if text.StartsWith "=" then text else "=" + text)
@@ -599,7 +627,8 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             (fun () -> seq { for i in 1 .. usedCount () -> item i })
     let get (name: string) : Value option =
         if name = "__RbtRange" then Some (VString (String.Join("\t", [| r.Sheet; string r.Top; string r.Left; string r.Bottom; string r.Right |])))
-        elif eq name "Value" || eq name "Value2" || eq name "_Default" || name = "" then Some (gather valueAt)
+        elif eq name "Value2" then Some (gather value2At)
+        elif eq name "Value" || eq name "_Default" || name = "" then Some (gather valueAt)
         elif eq name "Formula" || eq name "FormulaLocal" then Some (gather formulaAt)
         elif eq name "Text" then Some (textAt r.Top r.Left)
         elif eq name "HasFormula" then Some (VBoolean (match cellAt r.Top r.Left with Some { Value = Formula _ } -> true | _ -> false))
@@ -1065,6 +1094,9 @@ let private formulaArgument (book: MacroWorkbook) (value: Value) =
         | VDouble d -> d.ToString("R", Globalization.CultureInfo.InvariantCulture)
         | VBoolean b -> if b then "TRUE" else "FALSE"
         | VString s -> "\"" + s.Replace("\"", "\"\"") + "\""
+        | VDate serial -> (if book.Date1904 then serial - 1462.0 else serial).ToString("R", Globalization.CultureInfo.InvariantCulture)
+        | VCurrency units -> (float units / 10000.0).ToString("R", Globalization.CultureInfo.InvariantCulture)
+        | VError code -> "#" + errorTextOf code
         | VEmpty | VNull | VUndefined -> ""
         | _ -> fail 13 "Type mismatch"
     match rangeRefOf value with
@@ -1098,7 +1130,7 @@ let private worksheetFunctionObject (book: MacroWorkbook) =
         (fun name args ->
             let formula = name.ToUpperInvariant() + "(" + String.Join(",", args |> Array.map (formulaArgument book)) + ")"
             match evaluate book formula with
-            | VString text when text.StartsWith "#" -> failApp (sprintf "Unable to get the %s property of the WorksheetFunction class" name)
+            | VError _ -> failApp (sprintf "Unable to get the %s property of the WorksheetFunction class" name)
             | value -> Some value)
 
 /// Evaluate("A1:B2") is that range; anything else is a formula.
@@ -1283,9 +1315,13 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
         { Print = (fun text -> book.Hooks.Output text)
           MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
           InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
-          CreateObject = (fun _ -> None) }
-    let finish (status: ExecutionStatus) =
+          CreateObject = (fun _ -> None)
+          Environ = (fun _ -> "") }
+    let rec finish (status: ExecutionStatus) =
         match status with
+        | Paused _ ->
+            // (Stop: no debugger is attached, so the run carries on.)
+            finish (session.RunToEnd defaultInstructionLimit)
         | Finished _ -> MacroDone (book.Workbook, book.Selection)
         | Failed failure -> MacroFailed failure
         | Running ->
@@ -1301,7 +1337,8 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
             { Print = (fun text -> book.Hooks.Output text)
               MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
               InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
-              CreateObject = (fun _ -> None) }
+              CreateObject = (fun _ -> None)
+              Environ = (fun _ -> "") }
         let options =
             ProjectOptions.vba
             |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book))

@@ -271,6 +271,34 @@ match counter.Run(start (), hooks, "Spin", maxInstructions = 1_000_000) with
 | M.MacroFailed failure -> check "a runaway macro is stopped" failure.Number 18
 | M.MacroDone _ -> check "a runaway macro is stopped" false true
 
+// ---- 0.4.0: dates, errors, Format, collections ----
+let datesSource = """
+Sub Main()
+    Range("D1").Value = DateSerial(2024, 1, 31)
+    Range("D2").Value = Range("D1").Value + 1
+    Range("E1").Value = TypeName(Range("D1").Value) & "/" & TypeName(Range("D1").Value2)
+    Range("E2").Value = Format(Range("D2").Value, "yyyy-mm-dd")
+    Range("E3").Value = Year(Range("D1").Value)
+    Range("D3").Formula = "=1/0"
+    Range("E4").Value = IsError(Range("D3").Value) & "/" & Range("D3").Text
+    Range("D4").Value = CVErr(xlErrNA)
+    Dim d
+    Set d = CreateObject("Scripting.Dictionary")
+    d("Ann") = 1: d("Bob") = 2
+    Range("E5").Value = d.Count & ":" & Join(d.Keys, ",")
+    Range("E6").Value = WorksheetFunction.Sum(Range("D1:D2")) = 2 * CDbl(DateSerial(2024, 1, 31)) + 1
+End Sub"""
+let dates = run datesSource (Some "Main")
+check "a Date written gets a date format" ((formatAt dates "Data" (0, 3)).NumberFormat) (Some "m/d/yyyy")
+check "and its serial" (valueAt dates "Data" (0, 3)) (Number 45322.0)
+check "Value is a Date, Value2 a Double" (valueAt dates "Data" (0, 4)) (String "Date/Double")
+check "date arithmetic and Format (the text entered as a date, as typing would)" (valueAt dates "Data" (1, 4)) (Number 45323.0)
+check "Year of a cell's date" (valueAt dates "Data" (2, 4)) (Number 2024.0)
+check "an error cell reads as an Error value" (valueAt dates "Data" (3, 4)) (String "True/#DIV/0!")
+check "CVErr written is the error" (valueAt dates "Data" (3, 3)) (Error "N/A")
+check "Scripting.Dictionary" (valueAt dates "Data" (4, 4)) (String "2:Ann,Bob")
+check "dates into WorksheetFunction" (valueAt dates "Data" (5, 4)) (Boolean true)
+
 // ---- the macro list of a project of several modules ----
 let modules =
     [ M.macroModule "Module1" "Attribute VB_Name = \"Module1\"\nSub Main()\nEnd Sub\nPrivate Sub Hidden()\nEnd Sub\nSub WithArgs(x)\nEnd Sub\nFunction F()\nEnd Function"
