@@ -13,6 +13,7 @@
     <Compile Include="src/ModelText.fs" />
     <Compile Include="src/AxisGeometry.fs" />
     <Compile Include="src/ValueText.fs" />
+    <Compile Include="src/DefaultFonts.fs" />
     <Compile Include="src/VbaProject.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/WordEditorPackage.fs" />

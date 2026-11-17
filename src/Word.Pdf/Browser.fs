@@ -70,13 +70,39 @@ let private decodeImage (_: string) : JS.Promise<obj> = jsNative
 [<Emit("new Blob([$0], {type:'application/pdf'})")>]
 let private pdfBlob (_: byte[]) : obj = jsNative
 
-/// A captured immutable whole-document snapshot, not the editor's later state.
+// The package's own faces (fonts/ beside this bundle), for text the host has supplied no face for.
+[<Emit("new URL('../fonts/', import.meta.url).href")>]
+let private defaultFontsUrl () : string = jsNative
+
+/// The host's faces and, for each face the document's text needs that the host has not got, the
+/// package's own (DefaultFonts): a host that supplies none gets a PDF with all its text.
+let private withDefaultFonts (document: Rbt.Word.Document.Document) (hostFaces: Pdf.FontFace list) =
+    async {
+        let required =
+            Rbt.Word.Renderer.requiredFontsOfDocument document
+            |> Array.map (fun face -> (face?family: string), (face?bold: bool), (face?italic: bool))
+        let has = DefaultFonts.hasFace (hostFaces |> List.map (fun face -> face.Family, face.Bold, face.Italic))
+        let planned = DefaultFonts.plan has "Calibri" required
+        if planned.IsEmpty then return hostFaces
+        else
+            let! fetched = DefaultFonts.fetchFaces (defaultFontsUrl ()) planned |> Async.AwaitPromise
+            let added =
+                fetched
+                |> Array.map (fun (planned, data) ->
+                    ({ FaceName = planned.FaceName; Family = planned.Family; Bold = planned.Bold; Italic = planned.Italic; Data = data }: Pdf.FontFace))
+                |> Array.toList
+            return hostFaces @ added
+    }
+
+/// A captured immutable whole-document snapshot, not the editor's later state. `fonts` are the host's
+/// faces (none is fine: the package's own set the text then).
 let exportPdf (document: Rbt.Word.Document.Document) (fonts: obj array) (allowLinkedImages: bool) : JS.Promise<obj> =
     async {
-        if isNull fonts || fonts.Length = 0 then failwith "Configure PDF font bytes before exporting"
+        let hostFaces = if isNull fonts then [] else fonts |> Array.map face |> Array.toList
+        let! faces = withDefaultFonts document hostFaces
         let options: Pdf.RenderOptions = {
             DefaultFontFamily = "Calibri"
-            Fonts = fonts |> Array.map face |> Array.toList
+            Fonts = faces
             MeasureText = None
             ShapeText = None
             Images = []

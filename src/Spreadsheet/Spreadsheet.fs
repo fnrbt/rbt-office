@@ -211,6 +211,7 @@ let private gridTextMeasurer : SpreadsheetLayout.TextMeasurer option =
 /// bundle's modules): loaded when a PDF is first asked for, not with the grid.
 type private SheetPdfModule =
     abstract exportSheets: string * string * obj array * obj array -> byte[]
+    abstract exportSheetsWithDefaultFonts: string * string * obj array * obj array -> JS.Promise<byte[]>
     abstract pdfSheet: SpreadsheetModel * string * (int * int * float * float * float * float * SpreadsheetPaint.PaintItem list) list -> obj
     abstract fontFace: string * string * bool * bool * byte[] -> obj
     abstract pngPictures: obj list -> byte[] array
@@ -7550,7 +7551,7 @@ type Spreadsheet(container: Element) as this =
                     | _ -> None
                 let sheetList = if pictures.Length = 0 then sheetList else pdf.withPictures (replace, sheetList)
                 let faces = fonts |> Array.map (fun (faceName, family, bold, italic, data) -> pdf.fontFace (faceName, family, bold, italic, data))
-                pdf.exportSheets (defaultFont, fileName, faces, List.toArray sheetList)))
+                pdf.exportSheetsWithDefaultFonts (defaultFont, fileName, faces, List.toArray sheetList)))
         |> unbox<JS.Promise<byte[]>>
 
     /// Print through the browser: the PDF of `ExportPdf(options)` in a hidden frame of the page, with the

@@ -24,8 +24,13 @@ try {
         await wait(() => root.querySelector('[data-testid="word-menu-print-pdf"]'));
         root.querySelector('[data-testid="word-menu-print-pdf"]').click();
     };
+    // No host fonts: the package's own faces (dist/fonts) set the text.
     await print(); await wait(() => !host.Printing);
-    check('missing fonts reject before opening a blank tab', [popups.length, blobs.length, /font/i.test(host.Status.Value)], [0,0,true]);
+    const fontRequests = performance.getEntriesByType('resource').filter(entry => /\/fonts\/[^/]+\.ttf$/.test(entry.name)).map(entry => entry.name.split('/').pop());
+    const defaultPdf = blobs.length ? new TextDecoder('latin1').decode(new Uint8Array(await blobs[0].arrayBuffer())) : '';
+    check('without host fonts the PDF is set in the default faces', [popups.length, blobs.length, /\/FontFile2\b/.test(defaultPdf), /\/BaseFont\s*\/[A-Z]{6}\+Carlito/.test(defaultPdf), fontRequests.includes('Carlito-Regular.ttf')], [1,1,true,true,true]);
+    check('and only the faces its text needs are fetched', fontRequests.every(name => /^Carlito-/.test(name)), true);
+    blobs.length = 0; popups.length = 0;
     let response;
     for (const name of ['LiberationSans-Regular.ttf','calibri.ttf']) {
         response = await fetch('/font?name='+name); if (response.ok) break;

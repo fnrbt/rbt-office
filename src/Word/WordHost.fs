@@ -505,8 +505,6 @@ module Host =
         match host.Editor with
         | None -> host.Status.Value <- "Editor not ready"
         | Some _ when host.Printing -> ()
-        | Some _ when host.PdfFonts.Length = 0 ->
-            host.Status.Value <- "PDF export requires host-provided font bytes"
         | Some editor ->
             let revisionIndex = editor.Handler.Session.Epoch
             let isCurrent () = isCurrentEditor host editor revisionIndex

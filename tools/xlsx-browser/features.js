@@ -624,6 +624,34 @@ checks['sheet-pdf'] = async () => {
     return lines;
 };
 
+// No host fonts: ExportPdf sets the text in the package's own faces (dist/fonts, DefaultFonts), fetching
+// only the faces the text needs: the dashboard's Calibri as Carlito, its Garamond as Liberation Serif, its
+// Segoe UI as Liberation Sans.
+checks['sheet-pdf-default-fonts'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        await grid.ImportXlsx(await bytesOf('tests/real-world/dashboard-sales-analysis.xlsx'));
+        for (let index = 1; index <= 6; index++) grid.SwitchSheet(index);
+        grid.SwitchSheet(0);
+        grid.SetPdfFonts([]);
+        const bytes = await grid.ExportPdf({ fileName: 'dashboard-sales-analysis' });
+        if (window.keepPdf) { let binary = ''; for (const b of bytes) binary += String.fromCharCode(b); await window.keepPdf('browser-dashboard-default-fonts.pdf', btoa(binary)); }
+        const summary = await pdfSummary(bytes);
+        const text = latin1(bytes);
+        const fetched = performance.getEntriesByType('resource').filter((entry) => /\/fonts\/[^/]+\.ttf$/.test(entry.name)).map((entry) => entry.name.split('/').pop());
+        check('the PDF has its text, in the default faces', [summary.pages > 0, summary.shown.length > 50, /\/BaseFont\s*\/[A-Z]{6}\+Carlito/.test(text)], [true, true, true]);
+        const embedded = [...text.matchAll(/\/BaseFont\s*\/[A-Z]{6}\+([A-Za-z-]+)/g)].map((m) => m[1] + '.ttf');
+        check('the faces of its families, and only those its text needs', [fetched.includes('Carlito-Regular.ttf'), fetched.includes('LiberationSerif-Regular.ttf'), [...new Set(fetched)].sort().join()], [true, true, [...new Set(embedded)].sort().join()]);
+        note(`fetched ${[...new Set(fetched)].join(', ')}; ${summary.pages} pages, ${summary.shown.length} text runs`);
+        const again = await grid.ExportPdf({ fileName: 'dashboard-sales-analysis' });
+        const refetched = performance.getEntriesByType('resource').filter((entry) => /\/fonts\/[^/]+\.ttf$/.test(entry.name)).length;
+        check('a second export fetches nothing again', [again.length > 0, refetched], [true, fetched.length]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // File > Print PDF must use the mounted grid's real lazy-loaded PDF writer. Chromium
 // headless has no print dialog: intercept only the iframe's platform print() call,
 // leaving export and the PDF blob/iframe handoff untouched.

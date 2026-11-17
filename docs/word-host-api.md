@@ -719,12 +719,21 @@ shell and its editor input, not unrelated page inputs.
 fileName)` now requires the filename and applies replacement protection. The
 engine's `Word.importFromDocxPackage(editor, package)` remains unchanged.
 
-After mounting, call `WordShell.setPdfFonts(fonts)` before File → Print PDF.
-Fonts use the same shape as Spreadsheet: `{ family, faceName?, bold?, italic?,
-data }`, where `data` is TrueType bytes (`Uint8Array` or `ArrayBuffer`); typed
-Word.Pdf `FontFace` records are also accepted. Hosts supply licensed font files
-and enough faces/glyph coverage for their documents. Missing fonts are an error,
-not a textless PDF.
+File → Print PDF works without any font setup. For each face the document's
+text needs that the host has not supplied, the export fetches a free face
+with the same character widths from `fonts/` beside the bundles (`dist/fonts`):
+Carlito for Calibri, Caladea for Cambria, Liberation Sans / Serif / Mono for
+Arial, Times New Roman and Courier New, and the closest of those for other
+families (`src/Office.Formats/src/DefaultFonts.fs`, `fonts/README.md`). It
+fetches only those faces, once per page load, and the PDF embeds only the
+glyphs it uses. Symbol fonts (Symbol, Wingdings) get no substitute. A host
+that has licensed faces (Calibri itself, say) calls `WordShell.setPdfFonts(fonts)`;
+those are always used first. Fonts use the same shape as Spreadsheet:
+`{ family, faceName?, bold?, italic?, data }`, where `data` is TrueType bytes
+(`Uint8Array` or `ArrayBuffer`); typed Word.Pdf `FontFace` records are also
+accepted. A host that serves the package must serve `fonts/` with it; a face
+that cannot be fetched fails the export rather than giving a PDF without its
+text.
 
 The shell lazily loads packaged `word-pdf/Browser.js` and renders a captured
 whole-document snapshot through the existing Word PDF engine. The build stages

@@ -1919,6 +1919,53 @@ let exportSheets (defaultFamily: string) (fileName: string) (fonts: FontFace arr
     let options = { DefaultFontFamily = defaultFamily; Fonts = List.ofArray fonts; CjkFallback = []; SheetName = ""; FileName = fileName }
     toBytesOfSheets options (List.ofArray sheets)
 
+/// The faces (family, bold, italic) the text of `sheets` is set in: the cells' formats and their rich-text
+/// runs (cells with a value), the text of their charts and shapes, and the default family's regular and bold (headers, footers
+/// and headings). Families are as the workbook names them (`defaultFamily` for a cell that names none).
+let requiredFaces (defaultFamily: string) (sheets: PdfSheet array) : (string * bool * bool) array =
+    let faces = System.Collections.Generic.HashSet<string * bool * bool>()
+    let add (family: string option) bold italic =
+        faces.Add((family |> Option.filter (String.IsNullOrWhiteSpace >> not) |> Option.defaultValue defaultFamily), bold, italic) |> ignore
+    add None false false
+    add None true false
+    let rec addItem item =
+        match item with
+        | DrawText t -> add t.FontName t.Bold t.Italic
+        | VecGroup (_, children) | Clipped (_, children) -> children |> List.iter addItem
+        | _ -> ()
+    for sheet in sheets do
+        for KeyValue(address, cell) in sheet.Model.Cells do
+            // A cell with a format but nothing in it shows no text.
+            if unwrapFormulaValue cell.Value <> CellValue.Empty then
+                let format = cell.Format
+                add format.FontName format.Bold format.Italic
+                match Map.tryFind address sheet.Model.RichRuns with
+                | Some runs ->
+                    for _, run in runs do
+                        add (run.FontName |> Option.orElse format.FontName) (defaultArg run.Bold format.Bold) (defaultArg run.Italic format.Italic)
+                | None -> ()
+        for _, _, _, _, _, _, items in sheet.Overlays do
+            items |> List.iter addItem
+    Seq.toArray faces
+
+#if FABLE_COMPILER
+// The package's own faces (fonts/ beside this bundle), for text the host has supplied no face for.
+[<Fable.Core.Emit("new URL('../fonts/', import.meta.url).href")>]
+let private defaultFontsUrl () : string = Fable.Core.Util.jsNative
+
+[<Fable.Core.Emit("$0.then($1)")>]
+let private thenMap (_: Fable.Core.JS.Promise<'T>) (_: 'T -> 'U) : Fable.Core.JS.Promise<'U> = Fable.Core.Util.jsNative
+
+/// As `exportSheets`, with the package's own face (DefaultFonts) for each face the sheets' text needs that
+/// `fonts` has not got: a host that supplies no fonts gets a PDF with all its text.
+let exportSheetsWithDefaultFonts (defaultFamily: string) (fileName: string) (fonts: FontFace array) (sheets: PdfSheet array) : Fable.Core.JS.Promise<byte[]> =
+    let has = DefaultFonts.hasFace (fonts |> Array.map (fun face -> face.Family, face.Bold, face.Italic))
+    let planned = DefaultFonts.plan has defaultFamily (requiredFaces defaultFamily sheets)
+    thenMap (DefaultFonts.fetchFaces (defaultFontsUrl ()) planned) (fun fetched ->
+        let added = fetched |> Array.map (fun (face, data) -> fontFace face.FaceName face.Family face.Bold face.Italic data)
+        exportSheets defaultFamily fileName (Array.append fonts added) sheets)
+#endif
+
 /// A sheet of `exportSheets`.
 let pdfSheet (model: SpreadsheetModel) (sheetName: string) (overlays: (int * int * float * float * float * float * PaintItem list) list) : PdfSheet =
     { Model = model; SheetName = sheetName; Overlays = overlays }
