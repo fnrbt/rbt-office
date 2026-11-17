@@ -206,6 +206,37 @@ let private cellTextWidth (text: string) (fontPt: float) (fontName: string optio
 let private gridTextMeasurer : SpreadsheetLayout.TextMeasurer option =
     Some (fun (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) -> cellTextWidth text fontPt fontName bold italic)
 
+// ---- macros in the browser -------------------------------------------------------------------------
+[<Emit("window.alert($0)")>]
+let private alertBox (_: string) : unit = jsNative
+[<Emit("window.confirm($0)")>]
+let private confirmBox (_: string) : bool = jsNative
+[<Emit("window.prompt($0, $1)")>]
+let private promptBox (_: string) (_: string) : string = jsNative
+[<Emit("console.log($0)")>]
+let private consoleLog (_: string) : unit = jsNative
+[<Emit("$0($1, $2, $3)")>]
+let private callHook3 (_: obj) (_: obj) (_: obj) (_: obj) : obj = jsNative
+[<Emit("$0($1)")>]
+let private callHook1 (_: obj) (_: obj) : unit = jsNative
+
+/// MsgBox / InputBox / Debug.Print with the browser's own dialogs, until a host gives its own
+/// (SetMacroHooks). MsgBox's answer is VBA's: vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4.
+let private browserMacroHooks : Rbt.Spreadsheet.MacroHost.MacroHooks =
+    { MessageBox = fun prompt buttons title ->
+        let text = if title = "" || title = "Microsoft Excel" then prompt else title + "\n\n" + prompt
+        match buttons &&& 7 with
+        | 0 -> alertBox text; 1
+        | 1 -> if confirmBox text then 1 else 2
+        | 3 | 4 -> if confirmBox text then 6 else 7
+        | 5 -> if confirmBox text then 4 else 2
+        | _ -> if confirmBox text then 4 else 3
+      InputBox = fun prompt _ defaultText ->
+        let answer = promptBox prompt defaultText
+        if isNull answer then None else Some answer
+      Output = consoleLog
+      FileName = "Book1.xlsm" }
+
 // ---- PDF in the browser ----------------------------------------------------------------------
 /// The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the bundle dist/spreadsheet-pdf, which shares this
 /// bundle's modules): loaded when a PDF is first asked for, not with the grid.
@@ -664,6 +695,13 @@ type Spreadsheet(container: Element) as this =
     /// The XLSX file the current workbook was imported from, for ExportXlsx:
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
+    // The VBA macros of the opened workbook (an .xlsm's project, kept as it was), and whether the host
+    // let them run: off until EnableMacros, as Excel's "Enable content".
+    let mutable macroSource: string option = None
+    let mutable macroModules: (string * string) list = []
+    let mutable macrosEnabled = false
+    let mutable workbookOpened = false
+    let mutable macroHooks = browserMacroHooks
     // The browser keeps a generation to cancel stale scheduled warmups.
     // Calculation graphs and statistics belong only to the shared session.
     let mutable engineGeneration = 0
@@ -6589,6 +6627,11 @@ type Spreadsheet(container: Element) as this =
     /// Either way the previous workbook's context is discarded — keeping it
     /// would resolve sheet ids, tables and names against sheets that are gone.
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
+        // (Another workbook: its macros, if any, come with its import.)
+        macroSource <- None
+        macroModules <- []
+        macrosEnabled <- false
+        workbookOpened <- false
         if newSheets.Length = 0 then () else
         // Session.Replace below advances the workbook epoch and clears history.
         clipboardGeneration <- clipboardGeneration + 1
@@ -6729,6 +6772,8 @@ type Spreadsheet(container: Element) as this =
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then
             xlsxSource <- Some imported.Source
+        macroSource <- Rbt.Spreadsheet.MacroHost.macroSourceOf imported.Source.Workbook.Preserved
+        macroModules <- Rbt.Spreadsheet.MacroHost.macroModulesOf imported.Source.Workbook.Preserved
         // (What kind of sheet is on display is the file's to say.)
         let wasLocked = sheetLocked
         refreshSheetLock ()
@@ -7559,6 +7604,74 @@ type Spreadsheet(container: Element) as this =
     /// opened.
     member this.PrintPdf(?options: obj) : JS.Promise<unit> =
         (this.ExportPdf(defaultArg options null)).``then``(fun (pdf: byte[]) -> printPdfInFrame pdf) |> unbox<JS.Promise<unit>>
+
+    // ---- macros ------------------------------------------------------------------------------------
+
+    /// Whether the opened workbook has VBA macros.
+    member _.HasMacros = macroSource.IsSome
+
+    /// The macros a user can run (Excel's Macros dialog): the public Subs without arguments, in order.
+    member _.GetMacros() : string array =
+        macroSource |> Option.map (Rbt.Spreadsheet.MacroHost.macroNames >> List.toArray) |> Option.defaultValue [||]
+
+    /// The modules of the workbook's VBA project: [{ name, source }].
+    member _.GetMacroModules() : obj array =
+        [| for name, source in macroModules -> createObj [ "name" ==> name; "source" ==> source ] |]
+
+    /// Whether macros may run (`EnableMacros`). Off for every workbook opened, as Excel's "Enable content".
+    member _.MacrosEnabled = macrosEnabled
+
+    /// Let the workbook's macros run; runs its Workbook_Open (or Auto_Open) once, as opening it in Excel
+    /// with content enabled would. Resolves nothing; a failing Workbook_Open is reported like RunMacro's.
+    member this.EnableMacros() : obj =
+        macrosEnabled <- true
+        if workbookOpened then createObj [ "ok" ==> true ]
+        else
+            workbookOpened <- true
+            match macroSource with
+            | Some source when Rbt.Spreadsheet.MacroHost.definesSub "Workbook_Open" source -> this.RunMacro "Workbook_Open"
+            | Some source when Rbt.Spreadsheet.MacroHost.definesSub "Auto_Open" source -> this.RunMacro "Auto_Open"
+            | _ -> createObj [ "ok" ==> true ]
+
+    /// Where MsgBox, InputBox and Debug.Print go: { messageBox(prompt, buttons, title) -> VBA's answer
+    /// (vbOK 1, vbCancel 2, vbYes 6, vbNo 7 ...), inputBox(prompt, title, default) -> text or null,
+    /// output(text) }. Missing members keep the browser's dialogs and the console; null restores them.
+    member _.SetMacroHooks(hooks: obj) =
+        if Host.isNullish hooks then macroHooks <- browserMacroHooks
+        else
+            let fn (key: string) = let f = Host.getKey hooks key in if Host.isNullish f then None else Some f
+            macroHooks <-
+                { browserMacroHooks with
+                    MessageBox = (match fn "messageBox" with Some f -> (fun p b t -> let r = callHook3 f (box p) (box b) (box t) in if Host.isNullish r then 1 else unbox<int> r) | None -> browserMacroHooks.MessageBox)
+                    InputBox = (match fn "inputBox" with Some f -> (fun p t d -> let r = callHook3 f (box p) (box t) (box d) in if Host.isNullish r then None else Some (string r)) | None -> browserMacroHooks.InputBox)
+                    Output = (match fn "output" with Some f -> (fun text -> callHook1 f (box text)) | None -> browserMacroHooks.Output) }
+
+    /// Run a macro of the workbook by name (one of GetMacros, or any Sub without arguments). What it
+    /// changes is one undo step; nothing of a macro that stops on an error is kept. Returns
+    /// { ok: true } or { ok: false, number, description } (Excel's Err.Number and Err.Description).
+    /// Throws when macros are not enabled or the workbook has none.
+    member this.RunMacro(name: string) : obj =
+        if not macrosEnabled then Host.hostFail "RunMacro" "macros are not enabled (EnableMacros)"
+        match macroSource with
+        | None -> Host.hostFail "RunMacro" "the workbook has no macros"
+        | Some source ->
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            observeRevision ()
+            let start = currentWorkbookSnapshot ()
+            let hooks = { macroHooks with FileName = (match xlsxSource with Some _ -> macroHooks.FileName | None -> macroHooks.FileName) }
+            match Rbt.Spreadsheet.MacroHost.run hooks start source (Some name) with
+            | Rbt.Spreadsheet.MacroHost.MacroDone (result, selection) ->
+                if not (obj.ReferenceEquals(result, start)) then
+                    session.CommitApplied({ Description = "Run macro " + name; Workbook = result })
+                    installBook session.Workbook
+                match selection with
+                | Some (sheet, top, left, bottom, right) when sheet = sheetIdForIndex activeSheetIndex ->
+                    selectFromTo { Row = top; Col = left } { Row = bottom; Col = right }
+                | _ -> ()
+                render()
+                createObj [ "ok" ==> true ]
+            | Rbt.Spreadsheet.MacroHost.MacroFailed (number, description) ->
+                createObj [ "ok" ==> false; "number" ==> number; "description" ==> description ]
 
     /// Change the page setup of a sheet (the active one, or `sheetIndex`):
     /// `changes` is the object of GetPageSetup with only the keys to change

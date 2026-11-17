@@ -70,6 +70,8 @@ const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSy
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
 const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
+// (Checks count what the page fetched: the browser keeps 250 resource entries by default, fewer than a full run makes.)
+performance.setResourceTimingBufferSize(100000);
 try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/shell-file.js'); await import('/shell-commands.js'); await import('/chrome.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
 </script>`;
 

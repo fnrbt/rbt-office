@@ -1083,6 +1083,36 @@ disposing the shell does not cancel a PDF export or browser print already begun.
 
 What differs from the .NET PDF of the same sheet (`tools/spreadsheet-pdf-runner`, checked by xlsx-browser `sheet-pdf`: the same pages and the same text): the runner opens a file with its own conversion (`ExcelNativeRunner.toModel`, row heights in whole pixels), so rows and columns can be a fraction of a point apart; a chart that reads a sheet the browser has not converted yet draws the cache of its part (what Excel last showed), while the runner reads the cells; no fallback faces for CJK text unless the host's fonts cover it.
 
+## Macros (VBA)
+
+A macro-enabled workbook (.xlsm) keeps its VBA project: it is saved back byte for byte (modules, forms,
+signatures), whatever is edited in the cells. Its macros run on the grid through Excel's object model
+(`src/Spreadsheet/MacroHost.fs`, the same in the native hosts) with the VBA engine Rbt.Vb.
+
+| Member | Arguments | Returns | What it does |
+|---|---|---|---|
+| `HasMacros` | | `boolean` | Whether the opened workbook has a VBA project with code. |
+| `GetMacros()` | | `string[]` | The macros a user can run, as Excel's Macros dialog lists them: the public Subs without arguments, in order. |
+| `GetMacroModules()` | | `{ name, source }[]` | The project's modules and their source (Attribute lines included). |
+| `MacrosEnabled` | | `boolean` | Whether macros may run. Off for every workbook opened: the host asks the user, as Excel's "Enable content". |
+| `EnableMacros()` | | `{ ok, number?, description? }` | Lets the macros run, and runs `Workbook_Open` (or `Auto_Open`) once, as opening the workbook in Excel with content enabled would; its result as `RunMacro`'s. |
+| `SetMacroHooks(hooks)` | `{ messageBox?(prompt, buttons, title): number, inputBox?(prompt, title, default): string \| null, output?(text) }` or null | | Where `MsgBox`, `InputBox` and `Debug.Print` go. `messageBox` returns VBA's answer (vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4). Without hooks: the browser's alert / confirm / prompt and the console. |
+| `RunMacro(name)` | a Sub without arguments | `{ ok: true }` or `{ ok: false, number, description }` | Runs it on the workbook. What it changes is one undo step and marks the workbook changed; a macro that stops on an error keeps nothing and returns Excel's `Err.Number` / `Err.Description`. The selection it leaves (`Range("B3").Select`) becomes the grid's. Throws when macros are not enabled or the workbook has none. |
+
+What macros reach: `Application`, `ActiveWorkbook` / `ThisWorkbook`, `Worksheets` / `Sheets` (by name or
+index, `Count`, `Add`, `Name`, `Visible`, `Delete`, `Activate`), `Range` / `Cells` / `Rows` / `Columns` on
+any sheet (`Value` - typed, 2-D arrays for blocks -, `Value2`, `Formula`, `Text`, `NumberFormat`, `Font`,
+`Interior`, alignment, `WrapText`, `ColumnWidth`, `RowHeight`, `Hidden`, `Address`, `Offset`, `Resize`,
+`End`, `CurrentRegion`, `EntireRow` / `EntireColumn`, `UsedRange`, `ClearContents` / `Clear` / `ClearFormats`,
+`Delete` / `Insert`, `Copy` / `PasteSpecial`, `Merge` / `UnMerge`, `Find`, `Select` / `Activate`), `Names`,
+`Selection`, `ActiveCell`, `WorksheetFunction.<any function>` and `Evaluate` (the grid's formula engine),
+`Intersect`, `Union` (as one block), the `xl*` constants, `RGB`, `MsgBox`, `InputBox`, `Debug.Print`.
+A value written is entered as typing would enter it (`"123"` a number, `"=A1*2"` a formula), and formulas
+are calculated before the macro reads again. A member Excel has and the object model does not raises
+error 438, as Excel does for an object without it. Not yet: event handlers other than `Workbook_Open`
+(Worksheet_Change ...), class modules, `For Each` over ranges, `Range("A1") = 5` without `.Value`, named
+arguments (`After:=`); they come with Rbt.Vb 0.3.0.
+
 ## Calculation (groups 15 / 16)
 Nothing to call for the recalculation itself: every edit recalculates what it has to. What a host can read and set:
 

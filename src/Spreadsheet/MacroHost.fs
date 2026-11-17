@@ -224,7 +224,8 @@ type MacroWorkbook(initial: Workbook, hooks: MacroHooks) =
     let mutable dirty = false
     let hints = ResizeArray<SheetId * CellAddress>()
     let mutable selection : (SheetId * int * int * int * int) option = None
-    let settings = Collections.Generic.Dictionary<string, Value>(StringComparer.OrdinalIgnoreCase)
+    // (Keyed by lower-cased name: Fable has no case-insensitive comparer.)
+    let settingValues = Collections.Generic.Dictionary<string, Value>()
 
     let resolve (sheetId: SheetId) =
         match Map.tryFind sheetId workbook.Sheets with
@@ -253,7 +254,11 @@ type MacroWorkbook(initial: Workbook, hooks: MacroHooks) =
             dirty <- false
 
     member _.Hooks = hooks
-    member _.Settings = settings
+    member _.Setting(name: string) =
+        match settingValues.TryGetValue(name.ToLowerInvariant()) with
+        | true, value -> Some value
+        | _ -> None
+    member _.SetSetting(name: string, value: Value) = settingValues.[name.ToLowerInvariant()] <- value
     member _.Workbook = calculate (); workbook
     member _.SheetOrder = workbook.SheetOrder
     member _.ActiveSheet = workbook.ActiveSheet
@@ -680,10 +685,10 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             match args |> Array.tryHead |> Option.bind (scalarOf >> fun _ -> rangeRefOf args.[0]) with
             | Some target -> copyTo target -4104; Some VEmpty
             | None ->
-                book.Settings.["__Clipboard"] <- rangeObject book r
+                book.SetSetting("__Clipboard", rangeObject book r)
                 Some VEmpty
         elif eq name "PasteSpecial" then
-            match book.Settings.TryGetValue "__Clipboard" |> function true, v -> rangeRefOf v | _ -> None with
+            match book.Setting "__Clipboard" |> Option.bind rangeRefOf with
             | Some source ->
                 let what = if isMissing (arg 0) then -4104 else toInt (arg 0)
                 (match rangeObject book source with
@@ -715,7 +720,9 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 |> Seq.sortBy (fun (a, _) -> a.Row, a.Col)
                 |> Seq.tryFind (fun (a, _) ->
                     let text = toText (valueAt a.Row a.Col)
-                    if whole then String.Equals(text, what, comparison) else text.IndexOf(what, comparison) >= 0)
+                    if whole then String.Equals(text, what, comparison)
+                    elif matchCase then text.Contains what
+                    else text.ToLowerInvariant().Contains(what.ToLowerInvariant()))
             Some (match found with Some (a, _) -> sub a.Row a.Col a.Row a.Col | None -> VNothing)
         elif eq name "Calculate" then Some VEmpty
         else
@@ -1054,18 +1061,18 @@ let private applicationObject (book: MacroWorkbook) =
         elif eq name "Name" then Some (VString "Microsoft Excel")
         elif eq name "Application" then Some (VString "Microsoft Excel")
         elif eq name "UserName" then Some (VString "")
-        elif eq name "Calculation" then Some (match book.Settings.TryGetValue "Calculation" with | true, v -> v | _ -> VInteger -4105)
+        elif eq name "Calculation" then Some (book.Setting "Calculation" |> Option.defaultValue (VInteger -4105))
         elif eq name "Calculate" || eq name "CalculateFull" then Some VEmpty
         elif ["ScreenUpdating"; "EnableEvents"; "DisplayAlerts"; "StatusBar"; "CutCopyMode"; "DisplayStatusBar"; "Interactive"; "EnableCancelKey"; "AskToUpdateLinks"]
              |> List.exists (eq name) then
-            Some (match book.Settings.TryGetValue name with | true, v -> v | _ -> (if eq name "StatusBar" then VBoolean false else VBoolean true))
+            Some (book.Setting name |> Option.defaultValue (if eq name "StatusBar" then VBoolean false else VBoolean true))
         else None
     host "Application"
         (fun name -> match get name with Some v -> Some v | None -> unsupported "Application" name)
         (fun name value ->
             if ["ScreenUpdating"; "EnableEvents"; "DisplayAlerts"; "StatusBar"; "CutCopyMode"; "Calculation"; "DisplayStatusBar"; "Interactive"; "EnableCancelKey"; "AskToUpdateLinks"]
                |> List.exists (eq name) then
-                book.Settings.[name] <- value; true
+                book.SetSetting(name, value); true
             else unsupported "Application" name)
         (fun name args ->
             if eq name "Range" then
@@ -1147,6 +1154,20 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
                     let part (v: Value) = max 0 (min 255 (toInt v))
                     Some (VInteger (part args.[0] + part args.[1] * 256 + part args.[2] * 65536))
                 else fail 450 "Wrong number of arguments or invalid property assignment")
+      "MsgBox", host "MsgBox" (fun n -> unsupported "MsgBox" n) (fun _ _ -> false) (fun n args ->
+                if n = "" || eq n "_Default" then
+                    let prompt = if args.Length > 0 then toText args.[0] else ""
+                    let buttons = if args.Length > 1 && not (isMissing args.[1]) then toInt args.[1] else 0
+                    let title = if args.Length > 2 && not (isMissing args.[2]) then toText args.[2] else "Microsoft Excel"
+                    Some (VInteger (book.Hooks.MessageBox prompt buttons title))
+                else unsupported "MsgBox" n)
+      "InputBox", host "InputBox" (fun n -> unsupported "InputBox" n) (fun _ _ -> false) (fun n args ->
+                if n = "" || eq n "_Default" then
+                    let prompt = if args.Length > 0 then toText args.[0] else ""
+                    let title = if args.Length > 1 && not (isMissing args.[1]) then toText args.[1] else "Microsoft Excel"
+                    let defaultText = if args.Length > 2 && not (isMissing args.[2]) then toText args.[2] else ""
+                    Some (VString (book.Hooks.InputBox prompt title defaultText |> Option.defaultValue ""))
+                else unsupported "InputBox" n)
       "DoEvents", host "DoEvents" (fun _ -> Some (VInteger 0)) (fun _ _ -> false) (fun _ _ -> Some (VInteger 0))
       "Debug", host "Debug" (fun n -> unsupported "Debug" n) (fun _ _ -> false) (fun n args ->
                 if eq n "Print" then
@@ -1158,9 +1179,10 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
 
 // ---- running macros ---------------------------------------------------------------------------------------------
 
-/// What a run gives back: the workbook as the macro left it (calculated), or the error it stopped on.
+/// What a run gives back: the workbook as the macro left it (calculated) and the cells it selected
+/// (sheet, top, left, bottom, right), or the error it stopped on.
 type MacroResult =
-    | MacroDone of Workbook
+    | MacroDone of workbook: Workbook * selection: (SheetId * int * int * int * int) option
     | MacroFailed of number: int * description: string
 
 /// The names `hostGlobals` binds: the same for every workbook, so a module compiles once.
@@ -1202,7 +1224,27 @@ let run (hooks: MacroHooks) (workbook: Workbook) (source: string) (procedure: st
         let book = MacroWorkbook(workbook, hooks)
         try
             Rbt.Vb.Api.executeWithHostGlobals (hostGlobals book) bytecode |> ignore
-            MacroDone book.Workbook
+            MacroDone (book.Workbook, book.Selection)
         with
         | MacroError (number, description) -> MacroFailed (number, description)
         | e -> MacroFailed (0, e.Message)
+
+// ---- the macros of an opened workbook -----------------------------------------------------------------------
+
+let private keptProject (preserved: XlsxReader.WorkbookPreservation) =
+    preserved.WorkbookRelationships
+    |> List.tryPick (fun (_, relType, target, isExternal) ->
+        if not isExternal && OpcXml.relationshipKind relType = "vbaProject" then Some (ZipInterop.normalizePath target) else None)
+    |> Option.bind (fun path -> preserved.Parts |> List.tryPick (fun (part, data) -> if part = path then Some data else None))
+
+/// The modules of the VBA project an opened workbook keeps: (name, source), Attribute lines and all.
+let macroModulesOf (preserved: XlsxReader.WorkbookPreservation) : (string * string) list =
+    match keptProject preserved with
+    | Some bytes -> (try VbaProject.readModules bytes with _ -> []) |> List.filter (fun (_, source) -> not (String.IsNullOrWhiteSpace source))
+    | None -> []
+
+/// Their source as one program (the form `run` takes), when the workbook has macros.
+let macroSourceOf (preserved: XlsxReader.WorkbookPreservation) : string option =
+    match keptProject preserved with
+    | Some bytes -> (try Some (VbaProject.readMacroSource bytes) with _ -> None) |> Option.filter (String.IsNullOrWhiteSpace >> not)
+    | None -> None

@@ -624,6 +624,47 @@ checks['sheet-pdf'] = async () => {
     return lines;
 };
 
+// VBA macros in the browser (MacroHost through the grid's API): listed, off until enabled, Workbook_Open
+// on enabling, one undo step per run, MsgBox / InputBox / Debug.Print through the host's hooks, a macro
+// that stops on an error keeps nothing, the selection it leaves, and the project saved as it was.
+checks['macros'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/test-documents-excel/synthetic-macros.xlsm');
+        await grid.ImportXlsx(original);
+        check('the workbook has macros, listed as Excel lists them', [grid.HasMacros, Array.from(grid.GetMacros())], [true, ['FillTotals', 'Greet', 'Broken']]);
+        check('its module, with the source', grid.GetMacroModules().map((m) => [m.name, /Sub FillTotals\(\)/.test(m.source)]), [['Module1', true]]);
+        let refused = null;
+        try { grid.RunMacro('FillTotals'); } catch (e) { refused = String(e.message); }
+        check('macros do not run until enabled', [grid.MacrosEnabled, /not enabled/.test(refused ?? '')], [false, true]);
+        const opened = grid.EnableMacros();
+        check('enabling runs Workbook_Open once', [opened.ok, grid.GetRange('D1:D1')[0][0].value], [true, 'opened']);
+        grid.EnableMacros();
+        const out = [];
+        grid.SetMacroHooks({ output: (text) => out.push(text), messageBox: (prompt, buttons, title) => { out.push(`box:${prompt}|${buttons}|${title}`); return 6; }, inputBox: () => 'Ada' });
+        const before = [grid.GetRange('B1:B1')[0][0].value, grid.GetRange('C1:C1')[0][0].value];
+        const filled = grid.RunMacro('FillTotals');
+        check('a macro runs on the grid', [filled.ok, grid.GetRange('B1:B5').map((row) => row[0].value), grid.GetRange('C1:C2').map((row) => row[0].value)], [true, [20, 40, 60, 80, 100], [300, 301]]);
+        check('the format it set and the selection it leaves', [grid.GetFormatOf('C1').bold, grid.GetSelectionRef()], [true, 'B1']);
+        check('Debug.Print to the host', out.includes('filled 5'), true);
+        grid.Undo();
+        check('one undo step', [grid.GetRange('B1:B1')[0][0].value, grid.GetRange('C1:C1')[0][0].value, grid.GetRange('D1:D1')[0][0].value], [...before, 'opened']);
+        grid.Redo();
+        check('and redone', grid.GetRange('C1:C1')[0][0].value, 300);
+        const greeted = grid.RunMacro('Greet');
+        check('MsgBox and InputBox through the hooks', [greeted.ok ? true : greeted.description, out.includes('box:Write the answer?|4|Greeting'), grid.GetRange('E1:E2').map((row) => row[0].value)], [true, true, [6, 'Ada']]);
+        const broken = grid.RunMacro('Broken');
+        check('a macro that stops: its error, nothing kept', [broken.ok, broken.number, /Subscript/.test(broken.description ?? ''), grid.GetRange('A1:A1')[0][0].value], [false, 9, true, 10]);
+        const zip0 = await window.JSZip.loadAsync(original);
+        const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+        const binary = async (zip) => Array.from(await zip.files['xl/vbaProject.bin'].async('uint8array')).join();
+        check('saved: the project as it was, the values the macros wrote', [await binary(zip1) === await binary(zip0), /<c r="C1"[^>]*><f>SUM\(B1:B5\)<\/f><v>300<\/v>/.test(await zip1.files['xl/worksheets/sheet1.xml'].async('string'))], [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // A macro-enabled workbook saved from the browser keeps its VBA project byte for byte, with its signature
 // and the code names that tie the document modules to the workbook and its sheets - unedited and edited.
 checks['xlsm-vba-project'] = async () => {

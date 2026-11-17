@@ -37,7 +37,7 @@ let start () =
 
 let run source procedure =
     match M.run hooks (start ()) source procedure with
-    | M.MacroDone wb -> wb
+    | M.MacroDone (wb, _) -> wb
     | M.MacroFailed (n, d) -> failwithf "macro failed: %d %s" n d
 let tryRun source procedure = M.run hooks (start ()) source procedure
 
