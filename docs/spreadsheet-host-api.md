@@ -1091,16 +1091,17 @@ signatures), whatever is edited in the cells. Its macros run on the grid through
 
 | Member | Arguments | Returns | What it does |
 |---|---|---|---|
-| `HasMacros` | | `boolean` | Whether the opened workbook has a VBA project with code. |
-| `GetMacros()` | | `string[]` | The macros a user can run, as Excel's Macros dialog lists them: the public Subs without arguments, in order. |
+| `HasMacros` | | `boolean` | Whether the opened workbook has a VBA project, known without loading it. |
+| `LoadMacros()` | | `Promise<void>` | Loads the project with the VBA engine (`spreadsheet/MacroProject.js`, fetched the first time; a workbook that runs no macro never fetches it). `GetMacros`, `GetMacroModules` and `GetMacroProblems` answer from what is loaded; the members that run macros load first. |
+| `GetMacros()` | | `string[]` | The macros a user can run, as Excel's Macros dialog lists them: the public Subs without arguments, in order; those of the workbook's and sheets' modules as `Module.Name`. Empty until `LoadMacros`. |
 | `GetMacroModules()` | | `{ name, kind, source, code }[]` | The project's modules: `kind` "standard", "class" or "document" (ThisWorkbook, a sheet's module), `source` with its Attribute lines, `code` without them. |
 | `GetMacroProblems()` | | `{ module, line, column, description }[]` | What keeps the project from compiling (none when it compiles). |
 | `MacrosEnabled` | | `boolean` | Whether macros may run. Off for every workbook opened: the host asks the user, as Excel's "Enable content". |
-| `EnableMacros()` | | `{ ok, number?, description? }` | Lets the macros run, and runs `Workbook_Open` (or `Auto_Open`) once, as opening the workbook in Excel with content enabled would; its result as `RunMacro`'s. |
+| `EnableMacros()` | | `Promise<{ ok, number?, description? }>` | Lets the macros run, and runs `Workbook_Open` (or `Auto_Open`) once, as opening the workbook in Excel with content enabled would; its result as `RunMacro`'s. |
 | `SetMacroHooks(hooks)` | `{ messageBox?(prompt, buttons, title): number, inputBox?(prompt, title, default): string \| null, output?(text) }` or null | | Where `MsgBox`, `InputBox` and `Debug.Print` go. `messageBox` returns VBA's answer (vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4). Without hooks: the browser's alert / confirm / prompt and the console. |
-| `RunMacro(name)` | a Sub without arguments | `{ ok: true }` or `{ ok: false, number, description }` | Runs it on the workbook. What it changes is one undo step and marks the workbook changed; a macro that stops on an error keeps nothing and returns Excel's `Err.Number` / `Err.Description`. The selection it leaves (`Range("B3").Select`) becomes the grid's. Throws when macros are not enabled or the workbook has none. |
-| `RunMacroLine(line)` | `?expression`, `Print expression` or statements | as `RunMacro` | An Immediate-window line on the workbook (a value it asks for goes to the output); one undo step. A workbook without macros has an empty project for it. |
-| `SetMacroModule(name, code)` | a module's name, its code as the editor shows it (without Attribute lines) | problems, as `GetMacroProblems` | Replaces the module's code (adds a standard module of that name when there is none) and compiles the project again. A save then writes the project from the modules. |
+| `RunMacro(name)` | a Sub without arguments | `Promise<{ ok: true } \| { ok: false, number, description, module, procedure, line }>` | Runs it on the workbook. What it changes is one undo step and marks the workbook changed; a macro that stops on an error keeps nothing and returns Excel's `Err.Number` / `Err.Description`. The selection it leaves (`Range("B3").Select`) becomes the grid's. Throws when macros are not enabled or the workbook has none. |
+| `RunMacroLine(line)` | `?expression`, `Print expression` or statements | `Promise`, as `RunMacro` | An Immediate-window line on the workbook (a value it asks for goes to the output); one undo step. A workbook without macros has an empty project for it. |
+| `SetMacroModule(name, code)` | a module's name, its code as the editor shows it (without Attribute lines) | `Promise` of the problems, as `GetMacroProblems` | Replaces the module's code (adds a standard module of that name when there is none) and compiles the project again. A save then writes the project from the modules. |
 | `GetMacroOutput()` | | `string[]` | What macros printed and how the VBA editor's runs ended (errors with their module, procedure and line), newest last. |
 
 What macros reach: `Application`, `ActiveWorkbook` / `ThisWorkbook`, `Worksheets` / `Sheets` (by name or

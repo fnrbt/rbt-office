@@ -218,20 +218,9 @@ let private parseReference (text: string) : (string option * int * int * int * i
 
 // ---- the workbook a run works on ---------------------------------------------------------------------------
 
-/// What a host gives a run: MsgBox / InputBox / Debug.Print, and the workbook's file name.
-type MacroHooks = {
-    MessageBox: string -> int -> string -> int
-    InputBox: string -> string -> string -> string option
-    Output: string -> unit
-    FileName: string
-}
-
-let defaultHooks = {
-    MessageBox = fun _ _ _ -> 1
-    InputBox = fun _ _ _ -> None
-    Output = ignore
-    FileName = "Book1.xlsx"
-}
+/// What a host gives a run (MacroApi.MacroHooks): MsgBox / InputBox / Debug.Print, the file's name.
+type MacroHooks = Rbt.Spreadsheet.MacroApi.MacroHooks
+let defaultHooks = Rbt.Spreadsheet.MacroApi.defaultHooks
 let private noMacroHooks = defaultHooks
 
 /// The workbook a run reads and writes. A read after a write sees the formulas calculated again.
@@ -1413,32 +1402,6 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
             match session.Call(handler, args) with
             | Result.Error failure -> Some (MacroFailed failure)
             | Result.Ok () -> Some (finish (session.RunToEnd defaultInstructionLimit))
-
-/// The code name of each sheet of an opened workbook (`<sheetPr codeName>`, the name of its module), by
-/// sheet name; Excel's default (Sheet1, Sheet2 ... in order) for a sheet without one.
-let sheetCodeNames (source: XlsxReader.Workbook) : Map<string, string> =
-    let pattern = Text.RegularExpressions.Regex("<sheetPr\\b[^>]*\\bcodeName=\"([^\"]+)\"")
-    let texts = source.Preserved.SourceParts |> Map.ofList
-    source.Sheets
-    |> List.mapi (fun index sheet ->
-        let codeName =
-            sheet.Extras.SourcePart
-            |> Option.bind (fun (path, _) -> Map.tryFind path texts)
-            |> Option.bind (fun bytes ->
-                let text = Text.Encoding.UTF8.GetString(bytes, 0, min bytes.Length 4096)
-                let m = pattern.Match text
-                if m.Success then Some m.Groups.[1].Value else None)
-        sheet.Name, codeName |> Option.defaultValue (sprintf "Sheet%d" (index + 1)))
-    |> Map.ofList
-
-/// The code name of the workbook (`<workbookPr codeName>`): its module, ThisWorkbook by default.
-let workbookCodeName (source: XlsxReader.Workbook) : string =
-    source.Preserved.WorkbookPart
-    |> Option.bind (fun path -> source.Preserved.SourceParts |> List.tryPick (fun (part, data) -> if part = path then Some data else None))
-    |> Option.bind (fun bytes ->
-        let m = Text.RegularExpressions.Regex("<workbookPr\\b[^>]*\\bcodeName=\"([^\"]+)\"").Match(Text.Encoding.UTF8.GetString bytes)
-        if m.Success then Some m.Groups.[1].Value else None)
-    |> Option.defaultValue "ThisWorkbook"
 
 // ---- the macros of an opened workbook -----------------------------------------------------------------------
 

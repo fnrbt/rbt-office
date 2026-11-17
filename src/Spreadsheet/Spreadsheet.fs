@@ -222,7 +222,7 @@ let private callHook1 (_: obj) (_: obj) : unit = jsNative
 
 /// MsgBox / InputBox / Debug.Print with the browser's own dialogs, until a host gives its own
 /// (SetMacroHooks). MsgBox's answer is VBA's: vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4.
-let private browserMacroHooks : Rbt.Spreadsheet.MacroHost.MacroHooks =
+let private browserMacroHooks : Rbt.Spreadsheet.MacroApi.MacroHooks =
     { MessageBox = fun prompt buttons title ->
         let text = if title = "" || title = "Microsoft Excel" then prompt else title + "\n\n" + prompt
         match buttons &&& 7 with
@@ -236,6 +236,16 @@ let private browserMacroHooks : Rbt.Spreadsheet.MacroHost.MacroHooks =
         if isNull answer then None else Some answer
       Output = consoleLog
       FileName = "Book1.xlsm" }
+
+/// The VBA engine and Excel's object model (MacroProject.fs): fetched when macros are first enabled, run or
+/// edited - the grid never imports it otherwise, so a workbook that runs no macro does not load it.
+#if FABLE_COMPILER
+[<Emit("import(\"./MacroProject.js\").then(m => m.openProject($0))")>]
+let private loadMacroProject (_preserved: XlsxReader.WorkbookPreservation option) : JS.Promise<Rbt.Spreadsheet.MacroApi.IMacroProject> = jsNative
+#else
+let private loadMacroProject (preserved: XlsxReader.WorkbookPreservation option) : JS.Promise<Rbt.Spreadsheet.MacroApi.IMacroProject> =
+    Fable.Core.JS.Constructors.Promise.resolve (Rbt.Spreadsheet.MacroProject.openProject preserved)
+#endif
 
 // ---- PDF in the browser ----------------------------------------------------------------------
 /// The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the bundle dist/spreadsheet-pdf, which shares this
@@ -696,9 +706,11 @@ type Spreadsheet(container: Element) as this =
     /// what the editor does not model is carried over from it.
     let mutable xlsxSource: Rbt.Spreadsheet.XlsxBridge.XlsxSource option = None
     // The VBA macros of the opened workbook (an .xlsm's project, kept as it was), and whether the host
-    // let them run: off until EnableMacros, as Excel's "Enable content".
-    let mutable macroModules: Rbt.Vb.Api.ModuleSource list = []
-    let mutable macroProgram: Result<Rbt.Spreadsheet.MacroHost.MacroProgram, Rbt.Vb.Api.VbFailure list> option = None
+    // let them run: off until EnableMacros, as Excel's "Enable content". The project is loaded (with the
+    // VBA engine) on first use; until then only whether the workbook has one is known.
+    let mutable macroPreserved: XlsxReader.WorkbookPreservation option = None
+    let mutable macroProject: Rbt.Spreadsheet.MacroApi.IMacroProject option = None
+    let mutable macroProjectLoad: JS.Promise<Rbt.Spreadsheet.MacroApi.IMacroProject> option = None
     // The code names of the sheets (their modules, for Worksheet_Change ...) and of the workbook.
     let mutable sheetCodeNames: Map<SheetId, string> = Map.empty
     let mutable workbookCodeName = "ThisWorkbook"
@@ -2187,17 +2199,17 @@ type Spreadsheet(container: Element) as this =
             currentWorkbookSnapshot()
         // The sheet's Worksheet_Change (its module's, by code name) runs in the edit's step: undone with it.
         let changeEvent : (Workbook -> Workbook) option =
-            match macroProgram with
-            | Some (Result.Ok program) when macrosEnabled ->
+            match macroProject with
+            | Some project when macrosEnabled ->
                 let sheetId = sheetIdForIndex activeSheetIndex
                 let handler = (Map.tryFind sheetId sheetCodeNames |> Option.defaultValue sheetNames.[activeSheetIndex]) + ".Worksheet_Change"
-                if not (program.Has handler) then None
+                if not (project.Has handler) then None
                 else
                     Some (fun wb ->
-                        match program.RunEvent(wb, macroHooks, handler, Some (sheetId, addr.Row, addr.Col, addr.Row, addr.Col)) with
-                        | Some (Rbt.Spreadsheet.MacroHost.MacroDone (next, _)) -> next
-                        | Some (Rbt.Spreadsheet.MacroHost.MacroFailed failure) ->
-                            macroHooks.Output (Rbt.Vb.Api.VbFailure.format failure)
+                        match project.RunEvent(wb, macroHooks, handler, Some (sheetId, addr.Row, addr.Col, addr.Row, addr.Col)) with
+                        | Some (Rbt.Spreadsheet.MacroApi.MacroDone (next, _)) -> next
+                        | Some (Rbt.Spreadsheet.MacroApi.MacroFailed failure) ->
+                            macroHooks.Output failure.Text
                             wb
                         | None -> wb)
             | _ -> None
@@ -6651,8 +6663,9 @@ type Spreadsheet(container: Element) as this =
     /// would resolve sheet ids, tables and names against sheets that are gone.
     member _.InstallWorkbook(newSheets: SpreadsheetModel array, names: string array, activeIndex: int, context: Workbook option) =
         // (Another workbook: its macros, if any, come with its import.)
-        macroModules <- []
-        macroProgram <- None
+        macroPreserved <- None
+        macroProject <- None
+        macroProjectLoad <- None
         macroLog.Clear()
         macroProjectEdited <- false
         sheetCodeNames <- Map.empty
@@ -6799,11 +6812,10 @@ type Spreadsheet(container: Element) as this =
         this.InstallWorkbook(models, names, active, Some imported.Context)
         if models.Length > 0 then
             xlsxSource <- Some imported.Source
-        macroModules <- Rbt.Spreadsheet.MacroHost.macroModulesOf imported.Source.Workbook.Preserved
-        macroProgram <- if macroModules.IsEmpty then None else Some (Rbt.Spreadsheet.MacroHost.MacroProgram.Compile macroModules)
-        let byName = Rbt.Spreadsheet.MacroHost.sheetCodeNames imported.Source.Workbook
+        macroPreserved <- if Rbt.Spreadsheet.MacroApi.hasProject imported.Source.Workbook.Preserved then Some imported.Source.Workbook.Preserved else None
+        let byName = Rbt.Spreadsheet.MacroApi.sheetCodeNames imported.Source.Workbook
         sheetCodeNames <- names |> Array.mapi (fun index name -> sheetIdForIndex index, Map.tryFind name byName |> Option.defaultValue (sprintf "Sheet%d" (index + 1))) |> Map.ofArray
-        workbookCodeName <- Rbt.Spreadsheet.MacroHost.workbookCodeName imported.Source.Workbook
+        workbookCodeName <- Rbt.Spreadsheet.MacroApi.workbookCodeName imported.Source.Workbook
         // (What kind of sheet is on display is the file's to say.)
         let wasLocked = sheetLocked
         refreshSheetLock ()
@@ -6915,7 +6927,10 @@ type Spreadsheet(container: Element) as this =
               Source = xlsxSource
               // A VBA project of the opened file is one of its kept parts.
               Macros = None
-              MacroProject = if macroProjectEdited && not macroModules.IsEmpty then Some (Rbt.Spreadsheet.MacroHost.projectBytes macroModules) else None }
+              MacroProject =
+                match macroProject with
+                | Some project when macroProjectEdited && not project.Modules.IsEmpty -> Some (project.ProjectBytes())
+                | _ -> None }
         input
 
     /// The editor's workbook in the XLSX writer's shape. (ExportXlsx writes
@@ -7638,45 +7653,65 @@ type Spreadsheet(container: Element) as this =
 
     // ---- macros ------------------------------------------------------------------------------------
 
-    /// Whether the opened workbook has VBA macros.
-    member _.HasMacros = not macroModules.IsEmpty
+    /// Whether the opened workbook has VBA macros (known without loading them).
+    member _.HasMacros = macroPreserved.IsSome || (macroProject |> Option.exists (fun p -> not p.Modules.IsEmpty))
+
+    /// Load the workbook's macros, with the VBA engine (fetched the first time in the browser). The
+    /// members that read them (GetMacros, GetMacroModules, GetMacroProblems) answer from what is loaded;
+    /// those that run them load first.
+    member _.LoadMacros() : JS.Promise<unit> =
+        let loaded =
+            match macroProject, macroProjectLoad with
+            | Some project, _ -> Fable.Core.JS.Constructors.Promise.resolve project
+            | None, Some pending -> pending
+            | None, None ->
+                let preserved = macroPreserved
+                let pending =
+                    (loadMacroProject preserved).``then``(fun (project: Rbt.Spreadsheet.MacroApi.IMacroProject) ->
+                        // (A newer workbook installed meanwhile has its own.)
+                        if obj.ReferenceEquals(preserved, macroPreserved) && macroProject.IsNone then macroProject <- Some project
+                        project)
+                macroProjectLoad <- Some pending
+                pending
+        loaded.``then``(fun _ -> ())
 
     /// The macros a user can run (Excel's Macros dialog): the public Subs without required arguments, in
-    /// order; those of the workbook's and sheets' own modules as `Module.Name`.
+    /// order; those of the workbook's and sheets' own modules as `Module.Name`. Empty until LoadMacros.
     member _.GetMacros() : string array =
-        match macroProgram with
-        | Some (Result.Ok program) -> List.toArray program.Macros
-        | _ -> [||]
+        match macroProject with
+        | Some project -> List.toArray project.Macros
+        | None -> [||]
 
-    /// The modules of the workbook's VBA project: [{ name, kind ("standard" | "class" | "document"), source }].
+    /// The modules of the workbook's VBA project: [{ name, kind ("standard" | "class" | "document"), source,
+    /// code }] (`code` without the Attribute lines). Empty until LoadMacros.
     member _.GetMacroModules() : obj array =
-        [| for m in macroModules ->
-            createObj [ "name" ==> m.Name
-                        "kind" ==> (match m.Kind with Rbt.Vb.Api.Standard -> "standard" | Rbt.Vb.Api.Class -> "class" | Rbt.Vb.Api.Document -> "document")
-                        "source" ==> m.Source
-                        "code" ==> snd (Rbt.Spreadsheet.MacroHost.splitHeader m.Source) ] |]
+        match macroProject with
+        | Some project ->
+            [| for m in project.Modules -> createObj [ "name" ==> m.Name; "kind" ==> m.Kind; "source" ==> m.Source; "code" ==> m.Code ] |]
+        | None -> [||]
 
     /// What keeps the project from compiling: [{ module, line, column, description }] (none when it compiles).
     member _.GetMacroProblems() : obj array =
-        match macroProgram with
-        | Some (Result.Error failures) ->
-            [| for f in failures -> createObj [ "module" ==> f.Module; "line" ==> f.Line; "column" ==> f.Column; "description" ==> f.Description ] |]
-        | _ -> [||]
+        match macroProject with
+        | Some project ->
+            [| for f in project.Problems -> createObj [ "module" ==> f.Module; "line" ==> f.Line; "column" ==> f.Column; "description" ==> f.Description ] |]
+        | None -> [||]
 
     /// Whether macros may run (`EnableMacros`). Off for every workbook opened, as Excel's "Enable content".
     member _.MacrosEnabled = macrosEnabled
 
-    /// Let the workbook's macros run; runs its Workbook_Open (of ThisWorkbook) or Auto_Open once, as opening
-    /// the workbook in Excel with content enabled would; its result as RunMacro's.
-    member this.EnableMacros() : obj =
+    /// Let the workbook's macros run (loading them); runs its Workbook_Open (of ThisWorkbook) or Auto_Open
+    /// once, as opening the workbook in Excel with content enabled would. Resolves to its result, as RunMacro's.
+    member this.EnableMacros() : JS.Promise<obj> =
         macrosEnabled <- true
-        if workbookOpened then createObj [ "ok" ==> true ]
-        else
-            workbookOpened <- true
-            match macroProgram with
-            | Some (Result.Ok program) when program.Has (workbookCodeName + ".Workbook_Open") -> this.RunMacro (workbookCodeName + ".Workbook_Open")
-            | Some (Result.Ok program) when program.Has "Auto_Open" -> this.RunMacro "Auto_Open"
-            | _ -> createObj [ "ok" ==> true ]
+        (this.LoadMacros()).``then``(fun () ->
+            if workbookOpened then createObj [ "ok" ==> true ]
+            else
+                workbookOpened <- true
+                match macroProject with
+                | Some project when project.Has (workbookCodeName + ".Workbook_Open") -> this.RunLoaded(workbookCodeName + ".Workbook_Open", (fun project start hooks -> project.Run(start, hooks, workbookCodeName + ".Workbook_Open")), "Workbook_Open")
+                | Some project when project.Has "Auto_Open" -> this.RunLoaded("Auto_Open", (fun project start hooks -> project.Run(start, hooks, "Auto_Open")), "Auto_Open")
+                | _ -> createObj [ "ok" ==> true ])
 
     /// Where MsgBox, InputBox and Debug.Print go: { messageBox(prompt, buttons, title) -> VBA's answer
     /// (vbOK 1, vbCancel 2, vbYes 6, vbNo 7 ...), inputBox(prompt, title, default) -> text or null,
@@ -7692,34 +7727,39 @@ type Spreadsheet(container: Element) as this =
                     Output = (match fn "output" with Some f -> (fun text -> callHook1 f (box text)) | None -> browserMacroHooks.Output) }
 
     /// Run a macro of the workbook by name (one of GetMacros, or any Sub, as `Name` or `Module.Name`). What
-    /// it changes is one undo step; nothing of a macro that stops on an error is kept. Returns { ok: true }
-    /// or { ok: false, number, description, module, procedure, line } (Excel's Err.Number and
-    /// Err.Description, and where it stopped). Throws when macros are not enabled or the workbook has none.
-    member this.RunMacro(name: string) : obj = this.RunMacroWith(name, (fun program start hooks -> program.Run(start, hooks, name)), "Run macro " + name)
+    /// it changes is one undo step; nothing of a macro that stops on an error is kept. Resolves to
+    /// { ok: true } or { ok: false, number, description, module, procedure, line } (Excel's Err.Number and
+    /// Err.Description, and where it stopped); once the macros are loaded it runs at once. Throws when
+    /// macros are not enabled.
+    member this.RunMacro(name: string) : JS.Promise<obj> =
+        this.RunWhenLoaded(name, (fun project start hooks -> project.Run(start, hooks, name)), "Run macro " + name)
 
     /// Run a line as the VBA editor's Immediate window does (`?expression`, `Print expression`, or
-    /// statements) on the workbook: what it changes is one undo step. Returns as RunMacro.
-    member this.RunMacroLine(line: string) : obj =
+    /// statements) on the workbook: what it changes is one undo step. Resolves as RunMacro.
+    member this.RunMacroLine(line: string) : JS.Promise<obj> =
+        if not macrosEnabled then Host.hostFail "RunMacroLine" "macros are not enabled (EnableMacros)"
         macroLog.Add("> " + line)
-        this.RunMacroWith(line, (fun program start hooks -> program.Immediate(start, hooks, line)), "Immediate")
+        this.RunWhenLoaded(line, (fun project start hooks -> project.Immediate(start, hooks, line)), "Immediate")
 
-    member private this.RunMacroWith(label: string, run: Rbt.Spreadsheet.MacroHost.MacroProgram -> Workbook -> Rbt.Spreadsheet.MacroHost.MacroHooks -> Rbt.Spreadsheet.MacroHost.MacroResult, description: string) : obj =
+    member private this.RunWhenLoaded(label: string, run: Rbt.Spreadsheet.MacroApi.IMacroProject -> Workbook -> Rbt.Spreadsheet.MacroApi.MacroHooks -> Rbt.Spreadsheet.MacroApi.MacroOutcome, description: string) : JS.Promise<obj> =
         if not macrosEnabled then Host.hostFail "RunMacro" "macros are not enabled (EnableMacros)"
-        let failed (f: Rbt.Vb.Api.VbFailure) =
-            macroLog.Add(Rbt.Vb.Api.VbFailure.format f)
+        match macroProject with
+        | Some _ -> Fable.Core.JS.Constructors.Promise.resolve (this.RunLoaded(label, run, description))
+        | None -> (this.LoadMacros()).``then``(fun () -> this.RunLoaded(label, run, description))
+
+    member private this.RunLoaded(label: string, run: Rbt.Spreadsheet.MacroApi.IMacroProject -> Workbook -> Rbt.Spreadsheet.MacroApi.MacroHooks -> Rbt.Spreadsheet.MacroApi.MacroOutcome, description: string) : obj =
+        let failed (f: Rbt.Spreadsheet.MacroApi.MacroFailure) =
+            macroLog.Add f.Text
             createObj [ "ok" ==> false; "number" ==> f.Number; "description" ==> f.Description; "module" ==> f.Module; "procedure" ==> f.Procedure; "line" ==> f.Line ]
-        // (A workbook without macros gets an empty project: the Immediate window works in any workbook.)
-        if macroProgram.IsNone then macroProgram <- Some (Rbt.Spreadsheet.MacroHost.MacroProgram.Compile macroModules)
-        match macroProgram with
-        | None -> Host.hostFail "RunMacro" "the workbook has no macros"
-        | Some (Result.Error failures) -> failed (List.head failures)
-        | Some (Result.Ok program) ->
+        match macroProject with
+        | None -> createObj [ "ok" ==> false; "number" ==> 0; "description" ==> "The macros are not loaded" ]
+        | Some project ->
             if model.EditingCell.IsSome then finishEditing true |> ignore
             observeRevision ()
             let start = currentWorkbookSnapshot ()
             let hooks = { macroHooks with Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
-            match run program start hooks with
-            | Rbt.Spreadsheet.MacroHost.MacroDone (result, selection) ->
+            match run project start hooks with
+            | Rbt.Spreadsheet.MacroApi.MacroDone (result, selection) ->
                 if not (obj.ReferenceEquals(result, start)) then
                     session.CommitApplied({ Description = description; Workbook = result })
                     installBook session.Workbook
@@ -7729,30 +7769,25 @@ type Spreadsheet(container: Element) as this =
                 | _ -> ()
                 render()
                 createObj [ "ok" ==> true ]
-            | Rbt.Spreadsheet.MacroHost.MacroFailed f -> failed f
+            | Rbt.Spreadsheet.MacroApi.MacroFailed f -> failed f
 
     /// Replace the code of a module of the workbook's project (the code as the VBA editor shows it, without
-    /// its Attribute lines) and compile the project again; its macros run from the new code, and a save
-    /// writes the project from the modules. Returns the problems, as GetMacroProblems.
-    member this.SetMacroModule(name: string, code: string) : obj array =
-        // (A module the project does not have yet is added, as a standard module.)
-        if not (macroModules |> List.exists (fun m -> m.Name = name)) then
-            if System.String.IsNullOrWhiteSpace name then Host.hostFail "SetMacroModule" "the module needs a name"
-            macroModules <- macroModules @ [ Rbt.Vb.Api.ModuleSource.standard name "" ]
-        match macroModules |> List.tryFindIndex (fun m -> m.Name = name) with
-        | None -> Host.hostFail "SetMacroModule" (sprintf "the project has no module %s" name)
-        | Some index ->
-            let edited = macroModules.[index]
-            let header, _ = Rbt.Spreadsheet.MacroHost.splitHeader edited.Source
-            macroModules <- macroModules |> List.mapi (fun i m -> if i = index then { m with Source = Rbt.Spreadsheet.MacroHost.joinHeader header code } else m)
-            macroProjectEdited <- true
-            macroProgram <- Some (Rbt.Spreadsheet.MacroHost.MacroProgram.Compile macroModules)
-            let problems = this.GetMacroProblems()
-            macroLog.Add(if problems.Length = 0 then sprintf "%s: compiled" name else sprintf "%s: %d problem(s)" name problems.Length)
-            match macroProgram with
-            | Some (Result.Error failures) -> for f in failures do macroLog.Add(Rbt.Vb.Api.VbFailure.format f)
-            | _ -> ()
-            problems
+    /// its Attribute lines; a module it does not have is added, as a standard module) and compile the
+    /// project again; its macros run from the new code, and a save writes the project from the modules.
+    /// Resolves to the problems, as GetMacroProblems.
+    member this.SetMacroModule(name: string, code: string) : JS.Promise<obj array> =
+        if System.String.IsNullOrWhiteSpace name then Host.hostFail "SetMacroModule" "the module needs a name"
+        (this.LoadMacros()).``then``(fun () ->
+            match macroProject with
+            | None -> [||]
+            | Some project ->
+                let edited = project.WithModule(name, code)
+                macroProject <- Some edited
+                macroProjectEdited <- true
+                let problems = this.GetMacroProblems()
+                macroLog.Add(if problems.Length = 0 then sprintf "%s: compiled" name else sprintf "%s: %d problem(s)" name problems.Length)
+                for f in edited.Problems do macroLog.Add f.Text
+                problems)
 
     /// What macros printed and how the VBA editor's runs ended, newest last.
     member _.GetMacroOutput() : string array = macroLog.ToArray()

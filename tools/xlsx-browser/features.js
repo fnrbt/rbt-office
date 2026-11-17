@@ -633,19 +633,22 @@ checks['macros'] = async () => {
     try {
         const original = await bytesOf('tests/test-documents-excel/synthetic-macros.xlsm');
         await grid.ImportXlsx(original);
-        check('the workbook has macros, listed as Excel lists them', [grid.HasMacros, Array.from(grid.GetMacros())], [true, ['FillTotals', 'Greet', 'Broken', 'Sheet1.Hello']]);
+        const engineFetched = () => performance.getEntriesByType('resource').some((entry) => /MacroProject\.js|Rbt\.Vb/.test(entry.name));
+        check('it has macros, known without loading the VBA engine', [grid.HasMacros, grid.GetMacros().length, engineFetched()], [true, 0, false]);
+        await grid.LoadMacros();
+        check('loaded: listed as Excel lists them', [Array.from(grid.GetMacros()), engineFetched()], [['FillTotals', 'Greet', 'Broken', 'Sheet1.Hello'], true]);
         check('its modules, their kinds, the source', grid.GetMacroModules().map((m) => [m.name, m.kind, m.source.length > 0]), [['Module1', 'standard', true], ['ThisWorkbook', 'document', true], ['Sheet1', 'document', true]]);
         check('the project compiles', grid.GetMacroProblems().length, 0);
         let refused = null;
-        try { grid.RunMacro('FillTotals'); } catch (e) { refused = String(e.message); }
+        try { await grid.RunMacro('FillTotals'); } catch (e) { refused = String(e.message); }
         check('macros do not run until enabled', [grid.MacrosEnabled, /not enabled/.test(refused ?? '')], [false, true]);
-        const opened = grid.EnableMacros();
+        const opened = await grid.EnableMacros();
         check('enabling runs Workbook_Open once', [opened.ok, grid.GetRange('D1:D1')[0][0].value], [true, 'opened']);
-        grid.EnableMacros();
+        await grid.EnableMacros();
         const out = [];
         grid.SetMacroHooks({ output: (text) => out.push(text), messageBox: (prompt, buttons, title) => { out.push(`box:${prompt}|${buttons}|${title}`); return 6; }, inputBox: () => 'Ada' });
         const before = [grid.GetRange('B1:B1')[0][0].value, grid.GetRange('C1:C1')[0][0].value];
-        const filled = grid.RunMacro('FillTotals');
+        const filled = await grid.RunMacro('FillTotals');
         check('a macro runs on the grid', [filled.ok, grid.GetRange('B1:B5').map((row) => row[0].value), grid.GetRange('C1:C2').map((row) => row[0].value)], [true, [20, 40, 60, 80, 100], [300, 301]]);
         check('the format it set and the selection it leaves', [grid.GetFormatOf('C1').bold, grid.GetSelectionRef()], [true, 'B1']);
         check('Debug.Print to the host', out.some((text) => /^filled\s*5\s*$/.test(text)), true);
@@ -653,20 +656,44 @@ checks['macros'] = async () => {
         check('one undo step', [grid.GetRange('B1:B1')[0][0].value, grid.GetRange('C1:C1')[0][0].value, grid.GetRange('D1:D1')[0][0].value], [...before, 'opened']);
         grid.Redo();
         check('and redone', grid.GetRange('C1:C1')[0][0].value, 300);
-        const greeted = grid.RunMacro('Greet');
+        const greeted = await grid.RunMacro('Greet');
         check('MsgBox and InputBox through the hooks', [greeted.ok ? true : greeted.description, out.includes('box:Write the answer?|4|Greeting'), grid.GetRange('E1:E2').map((row) => row[0].value)], [true, true, [6, 'Ada']]);
-        const hello = grid.RunMacro('Sheet1.Hello');
+        const hello = await grid.RunMacro('Sheet1.Hello');
         check('a macro of a sheet\'s module', [hello.ok, grid.GetRange('D2:D2')[0][0].value], [true, 'hello from ' + grid.GetSheetNames()[0]]);
         grid.EnterText(5, 0, '7');
         check('Worksheet_Change of the sheet\'s module runs on an edit', grid.GetRange('G6:G6')[0][0].value, 700);
         grid.Undo();
         check('and undoes with it', [grid.GetRange('A6:A6')[0][0].value, grid.GetRange('G6:G6')[0][0].value], [null, null]);
-        const broken = grid.RunMacro('Broken');
+        const broken = await grid.RunMacro('Broken');
         check('a macro that stops: its error and where, nothing kept', [broken.ok, broken.number, /Subscript/.test(broken.description ?? ''), broken.module, broken.procedure, grid.GetRange('A1:A1')[0][0].value], [false, 9, true, 'Module1', 'Broken', 10]);
         const zip0 = await window.JSZip.loadAsync(original);
         const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
         const binary = async (zip) => Array.from(await zip.files['xl/vbaProject.bin'].async('uint8array')).join();
         check('saved: the project as it was, the values the macros wrote', [await binary(zip1) === await binary(zip0), /<c r="C1"[^>]*><f>SUM\(B1:B5\)<\/f><v>300<\/v>/.test(await zip1.files['xl/worksheets/sheet1.xml'].async('string'))], [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// A workbook that runs no macro never fetches the VBA engine: not with the grid, not when a workbook
+// with macros is opened, not when cells are edited; it is fetched when macros are loaded or enabled.
+checks['vba-loads-on-use'] = async () => {
+    const { lines, check, note } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const fetched = () => performance.getEntriesByType('resource').filter((entry) => /MacroProject\.js|MacroHost\.js|Rbt\.Vb|rbt-vb/.test(entry.name)).map((entry) => entry.name.split('/').slice(-2).join('/'));
+        const before = fetched().length;
+        // (A module is fetched once per page: after an earlier check loaded the engine there is nothing to see.
+        // The build's import-graph check, check-lazy-modules, holds either way.)
+        if (before > 0) { note('the VBA engine was loaded by an earlier check of this page'); close(); return lines; }
+        grid.SetCell(0, 0, '1');
+        await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-namedrange.xlsx'));
+        grid.EnterText(0, 1, '2');
+        await grid.ImportXlsx(await bytesOf('tests/test-documents-excel/synthetic-macros.xlsm'));
+        grid.EnterText(5, 0, '3');
+        check('no VBA module fetched for a grid, an .xlsx, an .xlsm opened and edited', fetched().length - before, 0);
+        await grid.LoadMacros();
+        check('fetched when the macros are loaded', fetched().length - before > 0, true);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;
@@ -694,7 +721,7 @@ checks['shell-vba-editor'] = async () => {
         shell.Mount(shellHost);
         shellHost.querySelector('[data-sheet-menu="data"]').click();
         shellHost.querySelector('[data-sheet-menu-item="vba-editor"]').click();
-        await settle();
+        await settle(); await settle();
         check('the editor opens with a blank Module1', [!!shellHost.querySelector('[data-testid="xl-dlg-vba"]'), shellHost.querySelector('[data-testid="dlg-field-module"]')?.value, shellHost.querySelector('[data-testid="dlg-field-source"]')?.value], [true, 'Module1', '']);
         await type('dlg-field-source', 'Sub Double()\n    Range("B1") = Range("A1") * 2\n    Debug.Print "doubled"; Range("B1")\nEnd Sub');
         await press('dlg-vba-apply');
@@ -724,6 +751,7 @@ checks['shell-vba-editor'] = async () => {
         const reopened = mountGrid();
         try {
             await reopened.grid.ImportXlsx(await zip.generateAsync({ type: 'uint8array' }));
+            await reopened.grid.LoadMacros();
             check('reopened: the module and its code', reopened.grid.GetMacroModules().map((m) => [m.name, /Range\("A1"\) \* 3/.test(m.code)]), [['Module1', true]]);
         } finally { reopened.close(); }
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }

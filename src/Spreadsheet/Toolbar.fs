@@ -1405,25 +1405,38 @@ type SpreadsheetShell
         commands.Add(command "tools.vba" "VBA editor" None dataEnabled (fun _ ->
             let attempt (action: unit -> unit) =
                 try action () with error -> setFileMessage ("VBA: " + printError (box error))
-            let enable () = if not grid.MacrosEnabled then grid.EnableMacros() |> ignore
             let mutable reopen : string -> unit = ignore
+            let mutable refresh : unit -> unit = ignore
+            // (Macros load before the editor opens: its actions then run at once and the output follows.)
+            let enabled (action: unit -> JS.Promise<obj>) =
+                attempt (fun () ->
+                    let run () = (action ()).``then``(fun _ -> refresh ()) |> ignore
+                    if grid.MacrosEnabled then run ()
+                    else (grid.EnableMacros()).``then``(fun _ -> run ()) |> ignore)
             let host : Rbt.Spreadsheet.Ui.MacroEditorHost = {
                 Modules = fun () ->
                     match grid.GetMacroModules() |> Array.map (fun m -> textOf (property m "name"), textOf (property m "kind"), textOf (property m "code")) |> List.ofArray with
                     | [] -> [ "Module1", "standard", "" ]
                     | modules -> modules
                 Macros = fun () -> grid.GetMacros() |> List.ofArray
-                Run = fun name -> if name <> "" then attempt (fun () -> enable (); grid.RunMacro name |> ignore)
-                Immediate = fun line -> if line.Trim() <> "" then attempt (fun () -> enable (); grid.RunMacroLine line |> ignore)
+                Run = fun name -> if name <> "" then enabled (fun () -> grid.RunMacro name)
+                Immediate = fun line -> if line.Trim() <> "" then enabled (fun () -> grid.RunMacroLine line)
                 Apply = fun name code ->
-                    attempt (fun () -> grid.SetMacroModule(name, code) |> ignore)
-                    // (Shown again: the macro list follows the module's new code.)
-                    reopen name
+                    // (Shown again when compiled: the macro list follows the module's new code.)
+                    attempt (fun () -> (grid.SetMacroModule(name, code)).``then``(fun _ -> reopen name) |> ignore)
                 Output = fun () ->
                     let lines = grid.GetMacroOutput()
                     String.concat "\n" (if lines.Length > 200 then lines.[lines.Length - 200 ..] else lines) }
             reopen <- fun name -> openDialog dialog (Rbt.Spreadsheet.Ui.macroEditor host (Some name))
-            openDialog dialog (Rbt.Spreadsheet.Ui.macroEditor host None)))
+            refresh <- fun () ->
+                // (An action that settled after its button returned: the output follows on a fresh view.)
+                match dialog.Open.Peek() with
+                | Some opened when opened.Spec.TestId = "xl-dlg-vba" ->
+                    match opened.Values.TryGetValue "__revision" with
+                    | true, revision -> revision.Value <- string (int revision.Value + 1)
+                    | _ -> ()
+                | _ -> ()
+            (grid.LoadMacros()).``then``(fun () -> openDialog dialog (Rbt.Spreadsheet.Ui.macroEditor host None)) |> ignore))
         let sheetEnabled () = live () && not (grid.IsReadOnly())
         let targetId argument =
             let infos = grid.GetSheetInfos()
