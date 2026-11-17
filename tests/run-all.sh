@@ -54,7 +54,7 @@ formats_suites=(
     builders docx-progressive docx-reader docx-source-spans docx-writer
     xlsx-bridge xlsx-carry-over xlsx-date1904 xlsx-dynamic-arrays xlsx-lazy
     xlsx-orphans xlsx-package xlsx-parts xlsx-patched-corpus xlsx-reader
-    xlsx-regenerated xlsx-rules xlsx-scan xlsx-writer xlsx-x14
+    xlsx-regenerated xlsx-rules xlsx-scan xlsx-writer xlsx-x14 xlsm-vba-project
     xml-patch xml-source zipinterop
 )
 word_suites=(

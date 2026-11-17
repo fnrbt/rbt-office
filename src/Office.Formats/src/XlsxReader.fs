@@ -5576,12 +5576,14 @@ type private WorkbookHeader = {
 /// Relationship types of the workbook part whose targets are kept as they
 /// are: every one but those of the parts a writer makes from the model (the
 /// sheets, styles, shared strings, the theme, the calculation chain, the
-/// persons of threaded comments, the macros). So pivot and slicer caches,
-/// external links, connections, cell metadata and rich values, the Power
-/// Pivot data model, custom XML, XML maps ... all go back as they were.
+/// persons of threaded comments). So pivot and slicer caches, external links,
+/// connections, cell metadata and rich values, the Power Pivot data model,
+/// custom XML, XML maps, the VBA project (with its signatures) ... all go
+/// back as they were. (The writer writes a new VBA project only when the
+/// macro source it is given differs from the kept project's.)
 let private isKeptWorkbookRelType (relType: string) =
     not ([ "/worksheet"; "/chartsheet"; "/dialogsheet"; "/macrosheet"; "/xlMacrosheet"; "/xlIntlMacrosheet"; "/styles"; "/sharedStrings"; "/theme"
-           "/calcChain"; "/person"; "/vbaProject"; "/officeDocument" ]
+           "/calcChain"; "/person"; "/officeDocument" ]
          |> List.exists (fun suffix -> ValueText.isRelationshipType suffix relType))
 
 /// Sheets the editor has no model of: a chart sheet, a dialog sheet. They are

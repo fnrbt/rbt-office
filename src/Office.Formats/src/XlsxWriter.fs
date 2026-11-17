@@ -3894,10 +3894,15 @@ let private workbookRelsXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     sprintf "%s\n<Relationships xmlns=\"%s\">%s</Relationships>" declaration Namespaces.relationshipsPackage (String.concat "" baseRels)
     |> relationshipsFromFile "xl" true (packageText workbook "xl/_rels/workbook.xml.rels")
 
+/// The kept VBA project of the opened file (its workbook relationship), if it has one.
+let private keptVbaRelationship (workbook: XlsxWorkbookOut) =
+    workbook.Preserved.WorkbookRelationships
+    |> List.tryFind (fun (_, relType, _, isExternal) -> not isExternal && OpcXml.relationshipKind relType = "vbaProject")
+
 let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPlacement list) (keptParts: (string * byte[]) list) (ownMetadata: bool) (noteParts: string list) (noteBoxes: bool) =
     let hasVba = workbook.VbaProjectSource |> Option.exists hasText
     let workbookType =
-        if hasVba then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
+        if hasVba || (keptVbaRelationship workbook).IsSome then "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
         else "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
     let worksheetType = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"
     let sheetOverrides =
@@ -3937,8 +3942,7 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
     let ownDefaults =
         [ yield "rels", "application/vnd.openxmlformats-package.relationships+xml"
           yield "xml", "application/xml"
-          yield "vml", "application/vnd.openxmlformats-officedocument.vmlDrawing"
-          if hasVba then yield "bin", "application/vnd.ms-office.vbaProject" ]
+          yield "vml", "application/vnd.openxmlformats-officedocument.vmlDrawing" ]
     let imageDefaults =
         workbook.Sheets
         |> List.collect (fun sheet -> sheet.Extras.Images |> List.map (fun image -> image.Extension, image.ContentType))
@@ -3958,8 +3962,16 @@ let private contentTypesXmlFull (workbook: XlsxWorkbookOut) (placements: SheetPl
               yield "<Override PartName=\"/xl/metadata.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheetMetadata+xml\"/>"
           if workbook.Sheets |> List.exists (fun sheet -> not sheet.Extras.ThreadedComments.IsEmpty) then
               yield "<Override PartName=\"/xl/persons/person.xml\" ContentType=\"application/vnd.ms-excel.person+xml\"/>"
+          // The VBA project is typed by its own Override: ".bin" may be printer settings by default.
+          let vbaPart =
+              if hasVba then Some "/xl/vbaProject.bin"
+              else keptVbaRelationship workbook |> Option.map (fun (_, _, target, _) -> "/" + ZipInterop.normalizePath target)
+          match vbaPart with
+          | Some part -> yield sprintf "<Override %s ContentType=\"application/vnd.ms-office.vbaProject\"/>" (attr "PartName" part)
+          | None -> ()
           for name, contentType in workbook.Preserved.Overrides do
-              if Set.contains (name.ToLowerInvariant()) keptPaths && not (Set.contains (name.ToLowerInvariant()) verbatimPaths) then
+              if Set.contains (name.ToLowerInvariant()) keptPaths && not (Set.contains (name.ToLowerInvariant()) verbatimPaths)
+                 && vbaPart |> Option.forall (fun part -> not (part.Equals(name, System.StringComparison.OrdinalIgnoreCase))) then
                   yield sprintf "<Override %s %s/>" (attr "PartName" name) (attr "ContentType" contentType) ]
         |> String.concat ""
     declaration + "\n"
@@ -4543,7 +4555,31 @@ type private NotesInPlace = {
 }
 
 
+/// The opened file's VBA project goes back byte for byte (its modules, forms,
+/// p-code and signatures) unless the macro source given (`VbaProjectSource`) differs
+/// from what the project holds: then the given source is written as a new project
+/// and the kept one, with its signatures, is left out. No source given: kept.
+let private withVbaProjectResolved (workbook: XlsxWorkbookOut) =
+    match keptVbaRelationship workbook with
+    | None -> workbook
+    | Some ((_, _, target, _) as relationship) ->
+        let path = ZipInterop.normalizePath target
+        let normalized (source: string) = source.Replace("\r\n", "\n").Trim()
+        let keptSource =
+            workbook.Preserved.Parts
+            |> List.tryPick (fun (kept, data) -> if kept = path then Some data else None)
+            |> Option.bind (fun data -> try Some (VbaProject.readMacroSource data) with _ -> None)
+        match workbook.VbaProjectSource, keptSource with
+        | None, _ -> workbook
+        | Some source, Some kept when normalized source = normalized kept -> { workbook with VbaProjectSource = None }
+        | Some _, _ ->
+            { workbook with
+                Preserved =
+                    { workbook.Preserved with
+                        WorkbookRelationships = workbook.Preserved.WorkbookRelationships |> List.filter (fun kept -> kept <> relationship) } }
+
 let private workbookFiles (workbook: XlsxWorkbookOut) =
+    let workbook = withVbaProjectResolved workbook
     // Styles and shared strings: the file's, added to (so that a sheet written
     // as it was read still means what it meant), or made from the cells.
     let partText (path: string) =

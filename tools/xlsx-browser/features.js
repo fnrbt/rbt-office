@@ -624,6 +624,30 @@ checks['sheet-pdf'] = async () => {
     return lines;
 };
 
+// A macro-enabled workbook saved from the browser keeps its VBA project byte for byte, with its signature
+// and the code names that tie the document modules to the workbook and its sheets - unedited and edited.
+checks['xlsm-vba-project'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        const original = await bytesOf('tests/test-documents-excel/synthetic-vba-project.xlsm');
+        const zip0 = await window.JSZip.loadAsync(original);
+        const binary = async (zip, part) => zip.files[part] ? Array.from(await zip.files[part].async('uint8array')).join() : null;
+        await grid.ImportXlsx(original);
+        for (const [label, edit] of [['unedited', () => {}], ['a cell edited', () => grid.EnterText(9, 0, 'edited')]]) {
+            edit();
+            const zip1 = await window.JSZip.loadAsync(await grid.ExportXlsx());
+            const part = async (name) => zip1.files[name] ? zip1.files[name].async('string') : '';
+            check(label + ': the project and its signature, byte for byte', [await binary(zip1, 'xl/vbaProject.bin') === await binary(zip0, 'xl/vbaProject.bin'), await binary(zip1, 'xl/vbaProjectSignature.bin') === await binary(zip0, 'xl/vbaProjectSignature.bin'), !!zip1.files['xl/_rels/vbaProject.bin.rels']], [true, true, true]);
+            const types = await part('[Content_Types].xml');
+            check(label + ': a macro-enabled workbook, the project typed', [/macroEnabled\.main\+xml/.test(types), /PartName="\/xl\/vbaProject\.bin" ContentType="application\/vnd\.ms-office\.vbaProject"/.test(types), ((await part('xl/_rels/workbook.xml.rels')).match(/\/vbaProject"/g) ?? []).length], [true, true, 1]);
+            check(label + ': the code names', [/codeName="ThisWorkbook"/.test(await part('xl/workbook.xml')), /codeName="Sheet1"/.test(await part('xl/worksheets/sheet1.xml'))], [true, true]);
+        }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // No host fonts: ExportPdf sets the text in the package's own faces (dist/fonts, DefaultFonts), fetching
 // only the faces the text needs: the dashboard's Calibri as Carlito, its Garamond as Liberation Serif, its
 // Segoe UI as Liberation Sans.

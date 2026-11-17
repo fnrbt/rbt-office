@@ -515,9 +515,10 @@ let injectIntoXlsx (xlsxBytes: byte[]) (moduleName: string) (source: string) : b
     let patch name (f: string -> string) (lst: (string * byte[]) list) =
         lst |> List.map (fun (n, data) -> if n = name then n, utf8.GetBytes(f (utf8.GetString data)) else n, data)
     let ct (s: string) =
+        // (Its own Override: ".bin" may already be printer settings by default.)
         let s =
-            if s.Contains "Extension=\"bin\"" then s
-            else s.Replace("</Types>", "<Default Extension=\"bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/></Types>")
+            if s.Contains "/xl/vbaProject.bin" then s
+            else s.Replace("</Types>", "<Override PartName=\"/xl/vbaProject.bin\" ContentType=\"application/vnd.ms-office.vbaProject\"/></Types>")
         s.Replace("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml",
                   "application/vnd.ms-excel.sheet.macroEnabled.main+xml")
     let rels (s: string) =
