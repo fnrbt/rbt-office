@@ -55,6 +55,7 @@ let entries : Entry array =
        { Name = "VDB"; Module = "Financial"; Signature = "|S"; Flags = 0 }
        { Name = "YIELDDISC"; Module = "Financial"; Signature = "|S"; Flags = 0 }
        { Name = "YIELDMAT"; Module = "Financial"; Signature = "|S"; Flags = 0 }
+       { Name = "AREAS"; Module = "Information"; Signature = "|R"; Flags = 0 }
        { Name = "CELL"; Module = "Information"; Signature = ""; Flags = 1 }
        { Name = "FORMULATEXT"; Module = "Information"; Signature = ""; Flags = 0 }
        { Name = "INFO"; Module = "Information"; Signature = "|S"; Flags = 1 }

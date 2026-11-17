@@ -235,6 +235,20 @@ let functions : FunctionDef list =
                 | Some { Value = CellValue.Formula (formula, _) } ->
                     Ok (CellValue.String (if formula.StartsWith "=" then formula else "=" + formula))
                 | _ -> Result.Error Err.na)
+      scalar "AREAS" 1 1 "|R" (fun a ->
+        // A union (`(A1:B2,C3)`, a 3-D reference) is its areas; a reference is one.
+        let rec areas (e: Expr) =
+            match e with
+            | Function (",", parts) -> parts |> List.map areas |> List.fold (fun acc n -> match acc, n with Some x, Some y -> Some (x + y) | _ -> None) (Some 0)
+            | CellRef _ | RangeRef _ -> Some 1
+            | NameRef _ ->
+                match a.Ctx.Workbook |> Option.bind (fun wb -> resolveNameExpr (match e with NameRef n -> n | _ -> "") a.Ctx.Sheet wb) with
+                | Some resolved -> areas resolved
+                | None -> None
+            | other -> if (a.Ev.Reference other a.Ctx).IsSome then Some 1 else None
+        match areas (a.Expr 0) with
+        | Some n -> Ok (CellValue.Number (float n))
+        | None -> (match a.Value 0 with CellValue.Error e -> Result.Error e | _ -> Result.Error Err.value))
       scalar "ISOMITTED" 1 1 "" (fun a -> Ok (CellValue.Boolean (not (a.Supplied 0))))
       volatileFn (scalar "CELL" 1 2 "" cellInfo)
       volatileFn (scalar "INFO" 1 1 "|S" infoValue) ]

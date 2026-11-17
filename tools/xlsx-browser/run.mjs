@@ -70,7 +70,7 @@ const fixtures = new Map(files.map((file) => [path.basename(file), fs.readFileSy
 const componentFixture = (name) => { const file = path.join(repo, path.normalize(name)); return file.startsWith(repo) && fs.existsSync(file) ? fs.readFileSync(file) : null; };
 const componentPage = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
-try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/shell-file.js'); await import('/shell-commands.js'); await import('/chrome.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
+try { await import('/component.js'); await import('/host-api.js'); await import('/sheet-api.js'); await import('/features.js'); await import('/shell-file.js'); await import('/shell-commands.js'); await import('/chrome.js'); await import('/functions.js'); window.componentReady = true; } catch (e) { window.loadError = String(e && e.stack || e); }
 </script>`;
 
 const page = `<!doctype html><meta charset="utf-8"><script src="/jszip.min.js"></script>

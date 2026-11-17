@@ -4986,7 +4986,7 @@ let hostInfo (field: string) : string option =
 let private appendValueKey (sb: Text.StringBuilder) (value: CellValue) =
     match unwrapFormulaValue value with
     | CellValue.Empty -> sb.Append "e;" |> ignore
-    | CellValue.Number n -> sb.Append("n").Append(n.ToString("R", CultureInfo.InvariantCulture)).Append(';') |> ignore
+    | CellValue.Number n -> sb.Append("n").Append(n.ToString(CultureInfo.InvariantCulture)).Append(';') |> ignore
     | CellValue.String s -> sb.Append("s").Append(s.Length).Append(':').Append(s).Append(';') |> ignore
     | CellValue.Boolean b -> sb.Append(if b then "t;" else "f;") |> ignore
     | CellValue.Error e -> sb.Append("x").Append(e).Append(';') |> ignore
