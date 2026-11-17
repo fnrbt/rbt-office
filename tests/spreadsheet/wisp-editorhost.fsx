@@ -412,12 +412,15 @@ switchSheet events 1
 applyCellEdit events 0 0 "=Data!C1*2" |> ignore
 switchSheet events 0
 applyChange events (fun m -> { m with Macros = "Sub Worksheet_Change(ByVal Target As Range)\nRange(\"C1\").Value = Range(\"B1\").Value\nEnd Sub" }) |> ignore
+applyCellEdit events 0 0 "3" |> ignore
+assertEq "events wait until macros are enabled" Empty (value events 0 2)
+events.MacrosEnabled <- true
 applyCellEdit events 0 0 "4" |> ignore
 assertEq "event sees recalculated dependent" (Number 20.0) (cached events 0 2)
 switchSheet events 1
 assertEq "event writes recalculate foreign dependent" (Number 40.0) (cached events 0 0)
 undo events |> ignore
-assertEq "event and edit undo together" (Number 2.0) (cached events 0 0)
+assertEq "event and edit undo together" (Number 3.0) (cached events 0 0)
 assertEq "event output undone" Empty (value events 0 2)
 copySelection events |> ignore
 startEditing events 0 0 (Some "99")
@@ -425,7 +428,7 @@ let replacement = W.createWorkbook () |> W.withDate1904 true
 replaceWorkbook events replacement
 assertEq "replacement cancels pending entry" false (commitEdit events)
 assertEq "replacement retains OS text as a plain paste" true (pasteFromClipboard events)
-assertEq "replacement never revives copied formula provenance" (Number 2.0) (value events 0 0)
+assertEq "replacement never revives copied formula provenance" (Number 3.0) (value events 0 0)
 addSheet events "New" |> ok
 assertEq "new sheet keeps workbook date system" true (activeModel events).Date1904
 

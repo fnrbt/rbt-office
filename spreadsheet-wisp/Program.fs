@@ -224,13 +224,13 @@ let main argv =
     let openMacroDialog () =
         let model = EH.activeModel st
         XlUi.macroDialog model.Macros (fun source ->
-            let sheetName = EH.activeSheetName st
-            let mutable msg = "Macro ran"
-            EH.applyChange st (fun m ->
-                match Rbt.Spreadsheet.Vba.runOnModelWithSheetName sheetName { m with Macros = source } source with
-                | Result.Ok m2 -> m2
-                | Result.Error e -> msg <- "Macro error: " + e; { m with Macros = source }) |> ignore
-            status.Value <- msg)
+            // MsgBox and Debug.Print show on the status line until the app has dialogs for them.
+            let hooks = { Rbt.Spreadsheet.MacroHost.defaultHooks with
+                            MessageBox = (fun prompt _ _ -> status.Value <- prompt; 1)
+                            Output = (fun text -> status.Value <- text) }
+            match EH.runMacro st hooks source None with
+            | Result.Ok () -> if status.Value = "" then status.Value <- "Macro ran"
+            | Result.Error (number, description) -> status.Value <- sprintf "Macro error %d: %s" number description)
         |> Shell.openDialog shell
 
     let openPivotDialog () =

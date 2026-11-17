@@ -32,7 +32,10 @@ type EditorState =
       DragAnchor: Signal<(int * int) option>
       ClipboardStatus: Signal<string>
       mutable ClipboardToken: string option
-      mutable ClipboardTransport: ClipboardTransport }
+      mutable ClipboardTransport: ClipboardTransport
+      /// Whether the workbook's macros may run on their own (Worksheet_Change ...): off for a workbook
+      /// opened, on once the user runs or enables its macros, as Excel's "Enable content".
+      mutable MacrosEnabled: bool }
 
 let createWithWorkbook (wb: Workbook.Workbook) =
     let entries = wb.SheetOrder |> List.map (fun id -> wb.Sheets.[id]) |> List.toArray
@@ -50,7 +53,8 @@ let createWithWorkbook (wb: Workbook.Workbook) =
       DragAnchor = signal None
       ClipboardStatus = signal ""
       ClipboardToken = None
-      ClipboardTransport = { WriteText = Wisp.OfficeClipboard.writeText; ReadText = Wisp.OfficeClipboard.readText } }
+      ClipboardTransport = { WriteText = Wisp.OfficeClipboard.writeText; ReadText = Wisp.OfficeClipboard.readText }
+      MacrosEnabled = false }
 
 let create (sheets: M.SpreadsheetModel array) (names: string array) (activeIndex: int) =
     let sheets = if sheets.Length = 0 then [| M.createEmpty 100 26 |] else sheets
@@ -77,6 +81,7 @@ let private install (st: EditorState) (wb: Workbook.Workbook) =
 let replaceWorkbook (st: EditorState) wb =
     st.Session.Replace(wb, markSaved = true)
     st.ClipboardToken <- None
+    st.MacrosEnabled <- false
     install st st.Session.Workbook
     st.EditingCell.Value <- None
     st.EditBuffer.Value <- ""
@@ -315,14 +320,45 @@ let applyCellEdit (st: EditorState) row col text =
     let id = st.Session.Workbook.ActiveSheet
     let addr : M.CellAddress = { Row = row; Col = col }
     let accept (cell: M.CellData) = M.validateEdit addr cell.Value st.Session.Workbook.Sheets.[id].Model |> Result.isOk
+    // Worksheet_Change runs over the whole workbook, in the edit's step: undone with it.
     let afterCalculate (wb: Workbook.Workbook) =
-        let model = wb.Sheets.[id].Model
-        let target = sprintf "Range(\"%s%d\")" (M.columnToLetter col) (row + 1)
-        let changed = Rbt.Spreadsheet.Vba.fireEvent "Worksheet_Change" target model
-        if Object.ReferenceEquals(model, changed) then wb else Workbook.updateSheetModelWithTables id changed wb
+        let source = wb.Sheets.[id].Model.Macros
+        if not st.MacrosEnabled || not (Rbt.Spreadsheet.MacroHost.definesSub "Worksheet_Change" source) then wb
+        else
+            let call = sprintf "Set rbtChangeTarget = Range(\"%s%d\")\nWorksheet_Change rbtChangeTarget" (M.columnToLetter col) (row + 1)
+            match Rbt.Spreadsheet.MacroHost.run Rbt.Spreadsheet.MacroHost.defaultHooks wb source (Some call) with
+            | Rbt.Spreadsheet.MacroHost.MacroDone (changed, _) -> changed
+            | Rbt.Spreadsheet.MacroHost.MacroFailed _ -> wb
     let changed = st.Session.EnterCell(id, addr, text, DateTime.UtcNow.Year, accept = accept, afterCalculate = afterCalculate)
     if changed then install st st.Session.Workbook
     changed
+
+/// Run macro source on the workbook: `procedure` (a Sub of it), or its own top-level statements when
+/// None. The source becomes the workbook's macros (a save writes it as its VBA project when it differs
+/// from the one opened). What the macro changes is one undo step; Error (Excel's number and description)
+/// when it stops, and then nothing of it is kept. Enables the workbook's macros.
+let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (source: string) (procedure: string option) : Result<unit, int * string> =
+    st.MacrosEnabled <- true
+    let start = st.Session.Workbook
+    let withSource (wb: Workbook.Workbook) =
+        { wb with Sheets = wb.Sheets |> Map.map (fun _ sheet -> if sheet.Model.Macros = source then sheet else { sheet with Model = { sheet.Model with Macros = source } }) }
+    match Rbt.Spreadsheet.MacroHost.run hooks start source procedure with
+    | Rbt.Spreadsheet.MacroHost.MacroDone (result, selection) ->
+        let result =
+            match selection with
+            | Some (sheetId, top, left, bottom, right) when Map.containsKey sheetId result.Sheets ->
+                let sheet = result.Sheets.[sheetId]
+                let selected = if top = bottom && left = right then M.SingleCell (top, left) else M.Range (top, left, bottom, right)
+                { result with Sheets = Map.add sheetId { sheet with Model = { sheet.Model with Selection = selected } } result.Sheets }
+            | _ -> result
+        st.Session.CommitApplied({ Description = "Run macro"; Workbook = withSource result })
+        install st st.Session.Workbook
+        Ok ()
+    | Rbt.Spreadsheet.MacroHost.MacroFailed (number, description) ->
+        if start.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Macros <> source) then
+            st.Session.CommitApplied({ Description = "Edit macros"; Workbook = withSource start })
+            install st st.Session.Workbook
+        Error (number, description)
 
 let startEditing (st: EditorState) row col seed =
     let model = activeModel st
