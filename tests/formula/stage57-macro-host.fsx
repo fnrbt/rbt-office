@@ -214,5 +214,5 @@ check "nothing of a failed macro is kept" (match tryRun "Sub Main()\n    Range(\
 check "public parameterless Subs are the macros" (M.macroNames "Sub Main()\nEnd Sub\nPrivate Sub Hidden()\nEnd Sub\nSub WithArgs(x)\nEnd Sub\nPublic Sub Other ()\nEnd Sub\nFunction F()\nEnd Function") [ "Main"; "Other" ]
 check "an event handler is found" (M.definesSub "Workbook_Open" "Private Sub Workbook_Open()\nEnd Sub") true
 
-printfn "Stage 22 macro host tests: %d passed, %d failed" pass fail
+printfn "Stage 57 macro host tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
