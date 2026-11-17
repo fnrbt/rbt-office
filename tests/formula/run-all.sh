@@ -56,6 +56,7 @@ stages=(
     stage19-vba
     stage20-vbabin
     stage21-structure
+    stage22-macro-host
     stage22-semantics
     stage23-functions
     stage24-moves

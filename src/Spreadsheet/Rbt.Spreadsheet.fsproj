@@ -20,6 +20,7 @@
     <Compile Include="SheetOps.fs" />
     <Compile Include="ChartAuthoring.fs" />
     <Compile Include="Session.fs" />
+    <Compile Include="MacroHost.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="Charts.fs" />
     <Compile Include="Slicers.fs" />
