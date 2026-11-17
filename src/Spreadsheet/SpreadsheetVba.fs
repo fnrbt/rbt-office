@@ -1094,7 +1094,11 @@ let rec private valueToObj (value: Value) =
     | VDouble d -> box d
     | VString s -> box s
     | VBoolean b -> box b
-    | VArray values -> values |> Array.map valueToObj |> box
+    | VArray array -> array.Data |> Array.map valueToObj |> box
+    | VFieldRef (instance, field) ->
+        match instance.Fields.TryGetValue field with
+        | true, inner -> valueToObj inner
+        | _ -> null
     | VRef (values, idx) when idx >= 0 && idx < values.Length -> valueToObj values.[idx]
     | VRef _ -> null
     | VEmpty
