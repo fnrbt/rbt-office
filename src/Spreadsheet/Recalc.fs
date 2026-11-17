@@ -1450,13 +1450,13 @@ let private placeInOrder (node: Node) (order: ResizeArray<Node>) (ready: Stack<N
 let private evaluateNode (node: Node) (model: SpreadsheetModel) (workbook: Workbook) (forced: CellValue) (baseline: CellValue) : SpreadsheetModel =
     match getCellAt node.Row node.Col model with
     | Some cell ->
+        let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
         let result =
             if not (isNull (box forced)) then forced
             else
                 match node.Expr with
-                | Some expr -> evalCell expr { Model = model; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } }
+                | Some expr -> evalFormulaCell expr { Model = model; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } } previous
                 | None -> CellValue.Error Err.syntax
-        let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
         let changed = not (sameValue previous result)
         // What reads it was calculated with the value it had before the edit.
         if (if isNull (box baseline) then changed else not (sameValue baseline result)) then
@@ -2248,11 +2248,11 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         let addr = { Row = node.Row; Col = node.Col }
                                         match Map.tryFind addr model.Cells with
                                         | Some cell ->
+                                            let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
                                             let result =
                                                 match node.Expr with
-                                                | Some expr -> evalCell expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr }
+                                                | Some expr -> evalFormulaCell expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr } previous
                                                 | None -> CellValue.Error Err.syntax
-                                            let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
                                             if previous <> result then
                                                 change <-
                                                     match previous, result with

@@ -359,7 +359,9 @@ let private tryDateTime (date1904: bool) (currentYear: int) (input: string) : Pa
                     Some { Value = Number (serial + fraction); NumberFormat = Some ("m/d/yyyy " + timeFormat) }
                 | _ -> None
 
-let private errorLiterals = [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!"; "#SPILL!"; "#CALC!" ]
+let private errorLiterals =
+    [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!"; "#SPILL!"; "#CALC!"
+      "#BUSY!"; "#CONNECT!"; "#BLOCKED!"; "#FIELD!"; "#UNKNOWN!"; "#GETTING_DATA" ]
 
 /// Parse what was typed into a cell. `currentYear` completes a date typed
 /// without a year (`4-Mar`); `date1904` is the workbook's date system, in

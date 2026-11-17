@@ -294,12 +294,84 @@ module Err =
     /// blocked by an occupied target cell.
     let calc = "CALC!"
     let spill = "SPILL!"
-    /// Every recognized error literal, for the lexer.
-    let all = [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!"; "#SPILL!"; "#CALC!" ]
+    /// A value that is still being worked out: a function whose module has not
+    /// loaded yet, or a provider (`registerFunctionProvider`) that has not answered.
+    let busy = "BUSY!"
+    /// A service a function needs could not be reached (no provider for it).
+    let connect = "CONNECT!"
+    /// What a function needs is blocked or switched off (CALL, REGISTER.ID, file access).
+    let blocked = "BLOCKED!"
+    /// A field a data type does not have (FIELDVALUE, `A1.Field`).
+    let field = "FIELD!"
+    /// A data type the application does not know.
+    let unknown = "UNKNOWN!"
+    /// What a cube function shows while its data is fetched.
+    let gettingData = "GETTING_DATA"
+    /// Every recognized error literal, for the lexer and for what is typed into a cell.
+    let all =
+        [ "#DIV/0!"; "#VALUE!"; "#REF!"; "#NAME?"; "#NUM!"; "#N/A"; "#NULL!"; "#SPILL!"; "#CALC!"
+          "#BUSY!"; "#CONNECT!"; "#BLOCKED!"; "#FIELD!"; "#UNKNOWN!"; "#GETTING_DATA" ]
+    /// ERROR.TYPE's number for an error (0 when it has none). The numbers past 8 are those
+    /// Excel 365 gives (#SPILL! 9 ... #CALC! 14); #BUSY! has no number Microsoft documents.
+    let typeNumber (code: string) =
+        match code with
+        | "NULL!" -> 1 | "DIV/0!" -> 2 | "VALUE!" -> 3 | "REF!" -> 4 | "NAME?" -> 5 | "NUM!" -> 6 | "N/A" -> 7
+        | "GETTING_DATA" -> 8 | "SPILL!" -> 9 | "CONNECT!" -> 10 | "BLOCKED!" -> 11 | "UNKNOWN!" -> 12
+        | "FIELD!" -> 13 | "CALC!" -> 14
+        | _ -> 0
     /// What a formula that does not parse evaluates to. Excel refuses to
     /// commit such a formula; here it is stored and shows a real error value
     /// rather than the parser's diagnostic text.
     let syntax = name
+
+// ---------------------------------------------------------------------------
+// What is known of every function before its code is there: the functions of the
+// separately loaded modules (FunctionCatalog, generated from src/Spreadsheet/Functions)
+// and the functions a host answers (providers). See "The function table" below.
+// ---------------------------------------------------------------------------
+
+/// The functions whose value comes from outside the engine: a host registers a
+/// provider for them (`registerFunctionProvider`). Without one a formula keeps the
+/// value the file cached for it; with no cached value it shows the error given here.
+/// (name, the error without a provider, gives an array)
+let providerFunctionSpecs : (string * string * bool) list =
+    [ "CUBEKPIMEMBER", Err.na, false; "CUBEMEMBER", Err.na, false; "CUBEMEMBERPROPERTY", Err.na, false
+      "CUBERANKEDMEMBER", Err.na, false; "CUBESET", Err.na, false; "CUBESETCOUNT", Err.na, false
+      "CUBEVALUE", Err.na, false; "RTD", Err.na, false
+      // (Code from outside: never run in this process. A host routes them to a sandbox.)
+      "CALL", Err.blocked, false; "REGISTER.ID", Err.blocked, false
+      "WEBSERVICE", Err.connect, false; "STOCKHISTORY", Err.connect, true; "FIELDVALUE", Err.connect, false
+      "TRANSLATE", Err.connect, false; "DETECTLANGUAGE", Err.connect, false; "COPILOT", Err.connect, true
+      "PY", Err.connect, true; "IMAGE", Err.connect, false
+      "IMPORTCSV", Err.blocked, true; "IMPORTTEXT", Err.blocked, true ]
+
+let private providerSpecByName =
+    let table = Dictionary<string, string * bool>()
+    for (name, error, gives) in providerFunctionSpecs do table.[name] <- (error, gives)
+    table
+
+let private catalogByName =
+    let table = Dictionary<string, Rbt.Spreadsheet.FunctionCatalog.Entry>()
+    for entry in Rbt.Spreadsheet.FunctionCatalog.entries do table.[entry.Name] <- entry
+    table
+
+let private upperName (name: string) =
+    let upper = name.ToUpperInvariant()
+    if upper = name then name else upper
+
+/// The catalog's entry of a function a module provides (loaded or not).
+let catalogEntry (name: string) : Rbt.Spreadsheet.FunctionCatalog.Entry option =
+    match catalogByName.TryGetValue (upperName name) with
+    | true, entry -> Some entry
+    | false, _ -> None
+
+/// Is this one of the functions a host answers (`providerFunctionSpecs`)?
+let isProviderFunction (name: string) = providerSpecByName.ContainsKey (upperName name)
+
+let private catalogFlag (flag: int) (name: string) =
+    match catalogByName.TryGetValue (upperName name) with
+    | true, entry -> entry.Flags &&& flag <> 0
+    | false, _ -> false
 
 // ---------------------------------------------------------------------------
 // AST
@@ -2273,7 +2345,8 @@ and applyLambdaExpr (parts: Expr list) (args: Expr list) : Expr =
             | argument :: restArguments ->
                 bind (Map.add (n.ToUpperInvariant()) argument subst) restParts restArguments
             | [] ->
-                bind subst restParts []
+                // An omitted argument is missing (ISOMITTED is TRUE of it; as a value it is 0).
+                bind (Map.add (n.ToUpperInvariant()) MissingArg subst) restParts []
         | _ :: restParts ->
             match arguments with
             | _ :: restArguments -> bind subst restParts restArguments
@@ -2339,7 +2412,8 @@ let containsVolatile (expr: Expr) : bool =
                || equalsOrdinalIgnoreCase name "NOW"
                || equalsOrdinalIgnoreCase name "TODAY"
                || equalsOrdinalIgnoreCase name "OFFSET"
-               || equalsOrdinalIgnoreCase name "INDIRECT" then
+               || equalsOrdinalIgnoreCase name "INDIRECT"
+               || catalogFlag 1 name then
                 found <- true
             else
                 for arg in args do
@@ -4018,6 +4092,9 @@ let private arrayFunctionNames =
        "BYROW"; "BYCOL"
        "VSTACK"; "HSTACK"; "TAKE"; "DROP"; "CHOOSECOLS"; "CHOOSEROWS"; "TOCOL"; "TOROW"
        "MMULT"; "MINVERSE"; "FREQUENCY" |]
+    // (And those of the modules and of the providers that give one.)
+    |> Array.append [| for entry in Rbt.Spreadsheet.FunctionCatalog.entries do if entry.Flags &&& 2 <> 0 then yield entry.Name
+                       for (name, _, gives) in providerFunctionSpecs do if gives then yield name |]
 
 #if FABLE_COMPILER
 /// (Asked for every function call of every formula: what was found for a name, as it is written, is kept.)
@@ -4128,6 +4205,8 @@ let private functionSignatures : Dictionary<string, FunctionSignature> =
     let table = Dictionary<string, FunctionSignature>()
     for (name, spec) in functionSignatureSpecs do
         table.[name] <- parseSignature spec
+    for entry in Rbt.Spreadsheet.FunctionCatalog.entries do
+        if entry.Signature <> "" && not (table.ContainsKey entry.Name) then table.[entry.Name] <- parseSignature entry.Signature
     table
 
 /// The registered signature of a function (name matched case-insensitively).
@@ -4637,6 +4716,354 @@ let private resolveNameForEval (name: string) (currentSheet: Rbt.Spreadsheet.Wor
 /// to itself through other names (`A = B+1`, `B = A+1`): that is a circular
 /// reference, reported as an error instead of recursing until the stack ends.
 let private namesBeingEvaluated = ResizeArray<string>()
+
+// ---------------------------------------------------------------------------
+// The function table
+//
+// Functions added since the catalogue above was closed are not cases of its
+// match: each is a `FunctionDef` of a module of src/Spreadsheet/Functions,
+// registered here by the module's `install` (`registerFunctions`). In the
+// browser a module is its own ES module, fetched with a dynamic `import()`
+// the first time a workbook or a formula needs one of its functions
+// (`requestFunctions`, or a call met while evaluating, which shows #BUSY!
+// until the module is there - then `onFunctionsArrived` listeners hear of it
+// and recalculate). On .NET every module is installed at start-up
+// (Functions/All.fs). The generated FunctionCatalog knows every name the
+// modules provide, so a function not loaded yet is told from one nobody
+// provides (#NAME?).
+// ---------------------------------------------------------------------------
+
+/// What a function of a module is handed to evaluate its arguments with: the
+/// evaluator's own entry points (a module compiles after this file and cannot
+/// be part of its recursive group).
+type FunctionEvaluator = {
+    /// The value of an expression (a reference in a scalar context is its first cell).
+    Eval: Expr -> EvalContext -> CellValue
+    /// The values of an expression as rows of columns: a reference's cells
+    /// (blank cells are Empty), an array's items, one value for anything else.
+    EvalArray: Expr -> EvalContext -> CellValue[][]
+    /// The reference an argument stands for - a cell or a range, also through a
+    /// defined name, OFFSET, INDIRECT, INDEX or a spill (`A1#`) - when it is one.
+    Reference: Expr -> EvalContext -> Expr option
+    /// Does the expression give more than one value (a range, an array, a
+    /// function that gives one)?
+    IsArray: Expr -> bool
+    /// A criteria value (COUNTIF's, the database functions') as a test of a value.
+    Criteria: CellValue -> (CellValue -> bool)
+    /// A call of another function, built in or of the table.
+    Call: string -> Expr list -> EvalContext -> CellValue
+}
+
+type FunctionImpl =
+    /// Gives one value. In an array context its scalar parameters are lifted as
+    /// the signature says.
+    | ScalarFunction of (FunctionEvaluator -> Expr list -> EvalContext -> CellValue)
+    /// Gives an array (spills); in a scalar context its top-left value.
+    | ArrayFunction of (FunctionEvaluator -> Expr list -> EvalContext -> CellValue[][])
+
+/// A function of a module. `Signature` is the lifting signature (see
+/// `functionSignatureSpecs`; "" for one that takes its arguments as written);
+/// `MaxArgs` -1 for no limit. The generated FunctionCatalog repeats Name,
+/// Signature and the flags (volatile, gives an array) so that they are known
+/// before the module is loaded.
+type FunctionDef = {
+    Name: string
+    MinArgs: int
+    MaxArgs: int
+    Signature: string
+    Volatile: bool
+    Impl: FunctionImpl
+}
+
+/// A call of a provider function, its arguments evaluated (an omitted one is a 1x1 of Empty).
+type ProviderCall = {
+    Name: string
+    Arguments: CellValue[][] array
+    /// The sheet (its id) and cell of the formula, when known (-1 when not).
+    Sheet: string option
+    Row: int
+    Col: int
+}
+
+/// What a host registers for a provider function: `Invoke call answer` calls
+/// `answer` with the result, then or later (a later answer shows #BUSY! until
+/// it comes; answering again replaces the value, which is how a stream of
+/// values - RTD - updates the cell). Held in a record: mutable function values
+/// are not reliable in Fable.
+type FunctionProvider = { Invoke: ProviderCall -> (CellValue[][] -> unit) -> unit }
+
+/// Something to tell when functions arrived (a module loaded, a provider
+/// answered): the formulas that showed #BUSY! are worth calculating again.
+type FunctionArrival = { Arrived: unit -> unit }
+
+let private registeredFunctions = Dictionary<string, FunctionDef>()
+let private moduleStates = Dictionary<string, int>()   // 1 loading, 2 installed
+let private arrivalListeners = ResizeArray<FunctionArrival>()
+
+/// Tell the listeners that functions arrived.
+let notifyFunctionsArrived () =
+    for listener in arrivalListeners.ToArray() do
+        try listener.Arrived () with _ -> ()
+
+/// Listen for functions arriving; gives what stops listening.
+let onFunctionsArrived (arrived: unit -> unit) : (unit -> unit) =
+    let listener = { Arrived = arrived }
+    arrivalListeners.Add listener
+    fun () -> arrivalListeners.Remove listener |> ignore
+
+/// Register a module's functions (its `install` does this).
+let registerFunctions (moduleName: string) (defs: FunctionDef list) : unit =
+    for def in defs do registeredFunctions.[upperName def.Name] <- def
+    moduleStates.[moduleName] <- 2
+
+#if !FABLE_COMPILER
+let mutable private allInstalled = false
+/// (.NET: reading Functions/All.fs's `installed` installs every module - the
+/// assembly initialises a file when one of its values is first read.)
+let private ensureAllInstalled () =
+    if not allInstalled then
+        allInstalled <- true
+        try
+            let all = typeof<Expr>.Assembly.GetType "Rbt.Spreadsheet.Functions.All"
+            if not (isNull all) then
+                let installed = all.GetProperty "installed"
+                if not (isNull installed) then installed.GetValue(null, null) |> ignore
+        with _ -> ()
+#endif
+
+/// The function of the table of that name, when its module is installed.
+let tryFunctionDef (name: string) : FunctionDef option =
+#if !FABLE_COMPILER
+    ensureAllInstalled ()
+#endif
+    match registeredFunctions.TryGetValue (upperName name) with
+    | true, def -> Some def
+    | false, _ -> None
+
+/// Is the module installed?
+let isFunctionModuleInstalled (moduleName: string) =
+#if !FABLE_COMPILER
+    ensureAllInstalled ()
+#endif
+    match moduleStates.TryGetValue moduleName with
+    | true, 2 -> true
+    | _ -> false
+
+/// Start loading a module (browser; on .NET they are all installed). `ready`
+/// is called once it is installed, at once when it is already.
+let private loadFunctionModule (moduleName: string) (ready: unit -> unit) : unit =
+    if isFunctionModuleInstalled moduleName then ready ()
+    else
+#if FABLE_COMPILER
+        if not (moduleStates.ContainsKey moduleName) then moduleStates.[moduleName] <- 1
+        let loading = Rbt.Spreadsheet.FunctionCatalog.load moduleName
+        loading.``then``(fun () ->
+            moduleStates.[moduleName] <- 2
+            ready ()) |> ignore
+#else
+        ready ()
+#endif
+
+/// The modules that the names need and are not installed.
+let private modulesFor (names: string seq) : string list =
+    names
+    |> Seq.choose (fun name ->
+        match catalogEntry name with
+        | Some entry when not (isFunctionModuleInstalled entry.Module) -> Some entry.Module
+        | _ -> None)
+    |> Seq.distinct
+    |> List.ofSeq
+
+/// Load the modules of these function names; `ready` once all are installed
+/// (at once when nothing is missing). Opening a workbook does this with every
+/// name its formulas call before calculating.
+let requestFunctions (names: string seq) (ready: unit -> unit) : unit =
+    match modulesFor names with
+    | [] -> ready ()
+    | needed ->
+        let mutable left = needed.Length
+        for moduleName in needed do
+            loadFunctionModule moduleName (fun () ->
+                left <- left - 1
+                if left = 0 then ready ())
+
+/// A function met while evaluating whose module is not installed: load it and
+/// tell the listeners when it is.
+let private requestFunctionWhileEvaluating (moduleName: string) =
+    match moduleStates.TryGetValue moduleName with
+    | true, _ -> ()   // loading already (or installed)
+    | false, _ -> loadFunctionModule moduleName notifyFunctionsArrived
+
+let private isFormulaNameStart (c: char) = Char.IsLetter c || c = '_' || c = '\\'
+let private isFormulaNameChar (c: char) = Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\\'
+
+/// The names a formula's text calls (`NAME(`), upper-cased, prefixes
+/// (`_xlfn.`) taken off; what stands in quotes is skipped. A cheap scan, for
+/// finding the modules a workbook needs without parsing every formula.
+let calledFunctionNames (formula: string) : string list =
+    if isNull formula || formula.IndexOf '(' < 0 then []
+    else
+        let found = ResizeArray<string>()
+        let n = formula.Length
+        let mutable i = 0
+        while i < n do
+            let c = formula.[i]
+            if c = '"' || c = '\'' then
+                i <- i + 1
+                while i < n && formula.[i] <> c do i <- i + 1
+                i <- i + 1
+            elif isFormulaNameStart c && (i = 0 || not (isFormulaNameChar formula.[i - 1])) then
+                let start = i
+                while i < n && isFormulaNameChar formula.[i] do i <- i + 1
+                if i < n && formula.[i] = '(' then
+                    let mutable word = formula.Substring(start, i - start).ToUpperInvariant()
+                    for prefix in [ "_XLFN._XLWS."; "_XLFN."; "_XLWS." ] do
+                        if word.StartsWith prefix then word <- word.Substring prefix.Length
+                    found.Add word
+            else i <- i + 1
+        List.ofSeq found
+
+/// The modules the formulas need, loaded; `ready` when they all are.
+let requestFunctionsFor (formulas: string seq) (ready: unit -> unit) : unit =
+    let names = HashSet<string>()
+    for formula in formulas do
+        for name in calledFunctionNames formula do names.Add name |> ignore
+    requestFunctions names ready
+
+// ----- providers -----------------------------------------------------------
+
+let private providers = Dictionary<string, FunctionProvider>()
+let private providerResults = Dictionary<string, CellValue[][]>()
+let private providerPending = HashSet<string>()
+
+let private forgetProviderResults (key: string) =
+    let prefix = key + "|"
+    for cached in [ for k in providerResults.Keys do if k.StartsWith prefix then yield k ] do
+        providerResults.Remove cached |> ignore
+    for pending in [ for k in providerPending do if k.StartsWith prefix then yield k ] do
+        providerPending.Remove pending |> ignore
+
+/// Register the provider of a provider function (`providerFunctionSpecs`);
+/// false for a name that is none. Results the one before gave are forgotten.
+let registerFunctionProvider (name: string) (provider: FunctionProvider) : bool =
+    let key = upperName name
+    if not (providerSpecByName.ContainsKey key) then false
+    else
+        providers.[key] <- provider
+        forgetProviderResults key
+        true
+
+/// Take a provider away: its formulas keep the values they have.
+let unregisterFunctionProvider (name: string) : unit =
+    let key = upperName name
+    providers.Remove key |> ignore
+    forgetProviderResults key
+
+let hasFunctionProvider (name: string) = providers.ContainsKey (upperName name)
+
+/// The functions that have a provider now.
+let functionProviderNames () : string list = [ for name in providers.Keys -> name ]
+
+// ----- what the host says about itself (INFO, CELL("filename")) -------------
+
+let private hostInfoFields = Dictionary<string, string>()
+
+/// Set (Some) or clear (None) what INFO(field) gives - "directory", "origin",
+/// "osversion", "system", "release", "recalc", "numfile" - and "filename", the
+/// workbook's file name CELL("filename") puts with "directory". A field the
+/// host does not set has INFO's default.
+let setHostInfo (field: string) (value: string option) : unit =
+    let key = upperName field
+    match value with
+    | Some text -> hostInfoFields.[key] <- text
+    | None -> hostInfoFields.Remove key |> ignore
+
+let hostInfo (field: string) : string option =
+    match hostInfoFields.TryGetValue (upperName field) with
+    | true, text -> Some text
+    | false, _ -> None
+
+let private appendValueKey (sb: Text.StringBuilder) (value: CellValue) =
+    match unwrapFormulaValue value with
+    | CellValue.Empty -> sb.Append "e;" |> ignore
+    | CellValue.Number n -> sb.Append("n").Append(n.ToString(CultureInfo.InvariantCulture)).Append(';') |> ignore
+    | CellValue.String s -> sb.Append("s").Append(s.Length).Append(':').Append(s).Append(';') |> ignore
+    | CellValue.Boolean b -> sb.Append(if b then "t;" else "f;") |> ignore
+    | CellValue.Error e -> sb.Append("x").Append(e).Append(';') |> ignore
+    | CellValue.Formula _ -> sb.Append "?;" |> ignore
+
+/// A provider function's value for these arguments: what the provider gave,
+/// #BUSY! while it has not answered, the function's error without a provider.
+let callProvider (call: ProviderCall) : CellValue[][] =
+    let key = upperName call.Name
+    match providers.TryGetValue key with
+    | false, _ ->
+        let error = match providerSpecByName.TryGetValue key with | true, (e, _) -> e | _ -> Err.name
+        [| [| CellValue.Error error |] |]
+    | true, provider ->
+        let sb = Text.StringBuilder(key).Append('|')
+        for argument in call.Arguments do
+            sb.Append(argument.Length).Append('x').Append(if argument.Length > 0 then argument.[0].Length else 0).Append('[') |> ignore
+            for row in argument do
+                for value in row do appendValueKey sb value
+            sb.Append(']') |> ignore
+        let resultKey = sb.ToString()
+        match providerResults.TryGetValue resultKey with
+        | true, result -> result
+        | false, _ ->
+            if providerPending.Contains resultKey then [| [| CellValue.Error Err.busy |] |]
+            else
+                let mutable invoking = true
+                providerPending.Add resultKey |> ignore
+                let answer (result: CellValue[][]) =
+                    let result = if isNull result || result.Length = 0 || result.[0].Length = 0 then [| [| CellValue.Empty |] |] else result
+                    // (An answer of a provider taken away or replaced since is dropped.)
+                    match providers.TryGetValue key with
+                    | true, current when obj.ReferenceEquals(current, provider) ->
+                        providerResults.[resultKey] <- result
+                        providerPending.Remove resultKey |> ignore
+                        if not invoking then notifyFunctionsArrived ()
+                    | _ -> ()
+                (try provider.Invoke call answer
+                 with _ -> answer [| [| CellValue.Error Err.connect |] |])
+                invoking <- false
+                match providerResults.TryGetValue resultKey with
+                | true, result -> result
+                | false, _ -> [| [| CellValue.Error Err.busy |] |]
+
+/// Does an expression call a function that `test` accepts?
+let private callsFunctionWhere (test: string -> bool) (expr: Expr) : bool =
+    let stack = ResizeArray<Expr>()
+    stack.Add expr
+    let mutable found = false
+    while not found && stack.Count > 0 do
+        let current = stack.[stack.Count - 1]
+        stack.RemoveAt(stack.Count - 1)
+        match current with
+        | Function (name, args) ->
+            if test name then found <- true
+            else for arg in args do stack.Add arg
+        | UnaryOp (_, inner) -> stack.Add inner
+        | BinOp (l, _, r) -> stack.Add l; stack.Add r
+        | _ -> ()
+    found
+
+let private callsProviderTable = newFormTable ()
+
+/// Does the formula keep the value it has instead of being calculated? Yes when
+/// it calls a provider function that has no provider: what the file cached
+/// for it (what Excel computed with the service) is the best value there is.
+let keepsCachedValue (expr: Expr) : bool =
+    let known = formTableGet callsProviderTable (box expr)
+    let calls =
+        if not (isNull known) then unbox<bool> known
+        else
+            let found = callsFunctionWhere isProviderFunction expr
+            formTableSet callsProviderTable (box expr) (box found)
+            found
+    calls && callsFunctionWhere (fun name -> isProviderFunction name && not (hasFunctionProvider name)) expr
+
+let mutable private sharedEvaluator : FunctionEvaluator option = None
 
 let private noCallPlan : CallPlan = { PlanName = ""; Code = 0 }
 
@@ -13415,17 +13842,9 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
         else
             match unwrapValue (argRaw 0) with
             | CellValue.Error code ->
-                (match code with
-                 | "NULL!" -> CellValue.Number 1.0
-                 | "DIV/0!" -> CellValue.Number 2.0
-                 | "VALUE!" -> CellValue.Number 3.0
-                 | "REF!" -> CellValue.Number 4.0
-                 | "NAME?" -> CellValue.Number 5.0
-                 | "NUM!" -> CellValue.Number 6.0
-                 | "N/A" -> CellValue.Number 7.0
-                 | "SPILL!" -> CellValue.Number 9.0
-                 | "CALC!" -> CellValue.Number 14.0
-                 | _ -> err Err.na)
+                (match Err.typeNumber code with
+                 | 0 -> err Err.na
+                 | number -> CellValue.Number (float number))
             | _ -> err Err.na
     | "TYPE" ->
         if nargs <> 1 then err Err.value
@@ -13718,8 +14137,8 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
     | "BITOR" -> bitOperation (fun a b -> a ||| b)
     | "BITXOR" -> bitOperation (fun a b -> a ^^^ b)
     | _ ->
-        // Unknown / unsupported function.
-        err Err.name
+        // A function of the table, one not loaded yet, a provider's - or unknown.
+        callTableFunction fnName args ctx
 
 /// Array-returning functions added alongside `evalExtendedFunction`: stacking
 /// and slicing of arrays, matrix product/inverse, FREQUENCY, and the array
@@ -13919,7 +14338,85 @@ and evalExtendedArrayFunction (name: string) (args: Expr list) (ctx: EvalContext
                     i <- i + 1
                 counts.[slot] <- counts.[slot] + 1
             counts |> Array.map (fun n -> [| CellValue.Number (float n) |])
-    | _ -> errArr Err.name
+    | _ -> callTableArrayFunction name args ctx
+
+/// The evaluator a function of the table is handed (made once).
+and functionEvaluator () : FunctionEvaluator =
+    match sharedEvaluator with
+    | Some evaluator -> evaluator
+    | None ->
+        let evaluator =
+            { Eval = eval
+              EvalArray = evalArray
+              Reference = argumentReference
+              IsArray = isArrayExpr
+              Criteria = criteriaPredicate
+              Call = fun name args ctx -> eval (Function (name, args)) ctx }
+        sharedEvaluator <- Some evaluator
+        evaluator
+
+/// See `FunctionEvaluator.Reference`.
+and argumentReference (e: Expr) (ctx: EvalContext) : Expr option =
+    match e with
+    | CellRef _ | RangeRef _ -> Some e
+    | SpillRef anchor -> Some (RangeRef (spillRangeIn anchor ctx.Model ctx.Workbook))
+    | NameRef name ->
+        match ctx.Workbook |> Option.bind (resolveNameForEval name ctx.Sheet) with
+        | Some resolved when resolved <> e -> argumentReference resolved ctx
+        | _ -> None
+    | Function (name, args) when isReferenceFunction name ->
+        match resolveReferenceFunction name args ctx with
+        | (CellRef _ | RangeRef _) as r -> Some r
+        | _ -> None
+    | Function (name, args) when isIndexFunction name ->
+        match indexAsReference args ctx with
+        | Some ((CellRef _ | RangeRef _) as r) -> Some r
+        | _ -> None
+    | _ -> None
+
+/// A call whose name the built-in catalogue does not know, for one value.
+and callTableFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue =
+    let topLeft (a: ArrVal) = if a.Length > 0 && a.[0].Length > 0 then a.[0].[0] else err Err.value
+    match tryFunctionDef name with
+    | Some def ->
+        let count = List.length args
+        if count < def.MinArgs || (def.MaxArgs >= 0 && count > def.MaxArgs) then err Err.value
+        else
+            match def.Impl with
+            | ScalarFunction f -> f (functionEvaluator ()) args ctx
+            | ArrayFunction f -> topLeft (f (functionEvaluator ()) args ctx)
+    | None ->
+        if isProviderFunction name then topLeft (callProviderFunction name args ctx)
+        else
+            match catalogEntry name with
+            | Some entry ->
+                requestFunctionWhileEvaluating entry.Module
+                err Err.busy
+            | None -> err Err.name
+
+/// A call whose name the built-in catalogue does not know, for an array.
+and callTableArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrVal =
+    match tryFunctionDef name with
+    | Some def ->
+        let count = List.length args
+        if count < def.MinArgs || (def.MaxArgs >= 0 && count > def.MaxArgs) then [| [| err Err.value |] |]
+        else
+            match def.Impl with
+            | ArrayFunction f -> f (functionEvaluator ()) args ctx
+            | ScalarFunction f -> [| [| f (functionEvaluator ()) args ctx |] |]
+    | None ->
+        if isProviderFunction name then callProviderFunction name args ctx
+        else [| [| callTableFunction name args ctx |] |]
+
+/// A provider function's call: its arguments evaluated, handed to `callProvider`.
+and callProviderFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrVal =
+    let arguments =
+        [| for arg in args ->
+            match arg with
+            | MissingArg -> [| [| CellValue.Empty |] |]
+            | _ -> evalArray arg ctx |> Array.map (Array.map unwrapValue) |]
+    let row, col = match ctx.CurrentCell with Some cell -> cell.Row, cell.Col | None -> -1, -1
+    callProvider { Name = upperName name; Arguments = arguments; Sheet = ctx.Sheet; Row = row; Col = col }
 
 /// Parse + evaluate a formula string in one shot. Defined names resolve at
 /// the workbook's active sheet — the right scope for an interactive
@@ -13938,6 +14435,17 @@ let evalCell (expr: Expr) (ctx: EvalContext) : CellValue =
             if (a > 0.0) <> (b > 0.0) && abs x <= max (abs a) (abs b) * 3.552713678800501e-15 then CellValue.Number 0.0 else value
         | _ -> value
     | _ -> value
+
+/// The value of a formula cell whose value now is `cached`: `evalCell`, except
+/// that a formula calling a provider function nobody provides keeps the value
+/// it has (`keepsCachedValue`) - the value the file came with. One with no
+/// value yet (or #BUSY!) is calculated, and shows the function's error.
+let evalFormulaCell (expr: Expr) (ctx: EvalContext) (cached: CellValue) : CellValue =
+    let cached = if isNull (box cached) then CellValue.Empty else unwrapValue cached
+    match cached with
+    | CellValue.Empty -> evalCell expr ctx
+    | CellValue.Error e when e = Err.busy -> evalCell expr ctx
+    | _ -> if keepsCachedValue expr then cached else evalCell expr ctx
 
 let evaluateFormula (formula: string) (model: SpreadsheetModel)
                     (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
@@ -14171,7 +14679,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 | None ->
                     let updated = { model with Cells = updatedCells }
                     let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
-                    let result = evalCell fc.Expr ctx
+                    let result = evalFormulaCell fc.Expr ctx (match fc.Cell.Value with CellValue.Formula (_, cached) -> cached | _ -> CellValue.Empty)
                     applyFormulaResult addr fc result
             | false, _ -> ()
         // OFFSET / INDIRECT pick their precedents while evaluating, so the
@@ -14214,7 +14722,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                         | true, fc when fc.ParseError.IsNone ->
                             let updated = { model with Cells = updatedCells }
                             let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
-                            let nextValue = CellValue.Formula (fc.Formula, evalCell fc.Expr ctx)
+                            let nextValue = CellValue.Formula (fc.Formula, evalFormulaCell fc.Expr ctx (match fc.Cell.Value with CellValue.Formula (_, cached) -> cached | _ -> CellValue.Empty))
                             let current = Map.tryFind addr updatedCells |> Option.map (fun cell -> cell.Value)
                             if current <> Some nextValue then
                                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells

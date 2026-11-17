@@ -464,7 +464,11 @@ let recalculateCell (cell: SheetCell) (workbook: Workbook) (engine: CalcEngine):
                   Workbook = Some workbook
                   Sheet = Some cell.Sheet
                   CurrentCell = Some cell.Cell }
-            Some (evalCell expr ctx)
+            let cached =
+                match Map.tryFind cell.Cell model.Cells with
+                | Some { Value = CellValue.Formula (_, value) } -> value
+                | _ -> CellValue.Empty
+            Some (evalFormulaCell expr ctx cached)
         | _ -> None
     | None -> None
 

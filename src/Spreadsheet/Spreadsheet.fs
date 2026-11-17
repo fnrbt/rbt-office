@@ -247,6 +247,55 @@ let private loadMacroProject (preserved: XlsxReader.WorkbookPreservation option)
     Fable.Core.JS.Constructors.Promise.resolve (Rbt.Spreadsheet.MacroProject.openProject preserved)
 #endif
 
+// ---- function providers (Formula.fs, "The function table") ----------------------------------
+[<Emit("($0 != null && typeof $0.then === 'function')")>]
+let private isThenable (value: obj) : bool = jsNative
+
+[<Emit("$0.then($1, $2)")>]
+let private whenSettled (promise: obj) (fulfilled: obj -> unit) (rejected: obj -> unit) : unit = jsNative
+
+[<Emit("$0($1)")>]
+let private callHostFunction (f: obj) (argument: obj) : obj = jsNative
+
+[<Emit("new Promise((resolve) => $0(() => resolve()))")>]
+let private promiseOfReady (start: (unit -> unit) -> unit) : JS.Promise<unit> = jsNative
+
+/// A value a provider gave: a number, text, a boolean, null (empty) or { error: "#N/A" }.
+let private providerValueOf (value: obj) : CellValue =
+    if Host.isNullish value then CellValue.Empty
+    else
+        match Host.jsTypeOf value with
+        | "number" ->
+            let n = unbox<float> value
+            if System.Double.IsNaN n || System.Double.IsInfinity n then CellValue.Error Rbt.Spreadsheet.Formula.Err.num else CellValue.Number n
+        | "string" -> CellValue.String (unbox<string> value)
+        | "boolean" -> CellValue.Boolean (unbox<bool> value)
+        | "object" when not (Host.isNullish (value?error)) && Host.jsTypeOf (value?error) = "string" ->
+            CellValue.Error ((unbox<string> (value?error)).TrimStart '#')
+        | _ -> CellValue.Error Rbt.Spreadsheet.Formula.Err.value
+
+/// What a provider gave as rows: one value, an array (one row) or an array of rows.
+let private providerRowsOf (value: obj) : CellValue[][] =
+    if Host.isJsArray value then
+        let items = unbox<obj[]> value
+        if items.Length > 0 && Host.isJsArray items.[0] then
+            let rows = items |> Array.map (fun row -> unbox<obj[]> row |> Array.map providerValueOf)
+            let width = rows |> Array.map Array.length |> Array.fold max 0
+            rows |> Array.map (fun row -> Array.init width (fun c -> if c < row.Length then row.[c] else CellValue.Error Rbt.Spreadsheet.Formula.Err.na))
+        else [| items |> Array.map providerValueOf |]
+    else [| [| providerValueOf value |] |]
+
+/// A value handed to a provider: as `providerValueOf` takes it.
+let private providerValueJs (value: CellValue) : obj =
+    match unwrapFormulaValue value with
+    | CellValue.Error code -> createObj [ "error" ==> ("#" + code) ]
+    | other -> Host.valueToObj other
+
+/// An argument handed to a provider: one value, or an array of rows.
+let private providerArgumentJs (rows: CellValue[][]) : obj =
+    if rows.Length = 1 && rows.[0].Length = 1 then providerValueJs rows.[0].[0]
+    else box (rows |> Array.map (Array.map providerValueJs))
+
 // ---- PDF in the browser ----------------------------------------------------------------------
 /// The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the bundle dist/spreadsheet-pdf, which shares this
 /// bundle's modules): loaded when a PDF is first asked for, not with the grid.
@@ -5527,6 +5576,26 @@ type Spreadsheet(container: Element) as this =
                 if not disposed then renderScroll()
             )
 
+    /// A function module or a provider's answer arrived (`Formula.onFunctionsArrived`):
+    /// the formulas that showed #BUSY! are calculated again - once for a burst of
+    /// arrivals, and not while a cell is being edited.
+    let mutable functionsArrivalScheduled = false
+    let rec recalculateForArrivedFunctions () =
+        if not disposed then
+            if model.EditingCell.IsSome then
+                setTimeoutMs recalculateForArrivedFunctions 250 |> ignore
+            else
+                functionsArrivalScheduled <- false
+                recalculateFromScratch ()
+                render ()
+    do
+        let stop =
+            Rbt.Spreadsheet.Formula.onFunctionsArrived (fun () ->
+                if not functionsArrivalScheduled && not disposed then
+                    functionsArrivalScheduled <- true
+                    setTimeoutMs recalculateForArrivedFunctions 0 |> ignore)
+        cleanups.Add stop
+
     /// Mount the spreadsheet
     member this.Mount() =
         // Create container
@@ -9664,6 +9733,69 @@ type Spreadsheet(container: Element) as this =
         match workbook |> Option.bind (fun wb -> wb.Iteration) with
         | Some setting -> createObj [ "enabled" ==> true; "maxIterations" ==> setting.MaxIterations; "maxChange" ==> setting.MaxChange ]
         | None -> createObj [ "enabled" ==> false; "maxIterations" ==> 100; "maxChange" ==> 0.001 ]
+
+    // ---- functions of the function table and their providers ----------------------------------
+    /// Answer a provider function (WEBSERVICE, STOCKHISTORY, CUBEVALUE, RTD, CALL ... - see
+    /// `GetProviderFunctions`): `provider({ name, args, sheet, row, col })` gives the value - a
+    /// number, text, a boolean, null, { error: "#N/A" }, an array or an array of rows (a spill) - or
+    /// a Promise of it. `args` holds each argument evaluated: one value, or an array of rows for a
+    /// range or array. A formula shows #BUSY! until the Promise settles (rejected: #CONNECT!); an
+    /// answer is kept for the same arguments. null takes the provider away: the formulas keep the
+    /// values they have. The workbook is calculated again with the provider.
+    member _.RegisterFunctionProvider(name: obj, provider: obj) : unit =
+        let memberName = "RegisterFunctionProvider"
+        let name = Host.stringArg memberName "name" name
+        if not (Rbt.Spreadsheet.Formula.isProviderFunction name) then
+            Host.hostFail memberName (sprintf "%s is not a provider function (%s)" name
+                (System.String.Join(", ", Rbt.Spreadsheet.Formula.providerFunctionSpecs |> List.map (fun (n, _, _) -> n))))
+        if Host.isNullish provider then Rbt.Spreadsheet.Formula.unregisterFunctionProvider name
+        else
+            if Host.jsTypeOf provider <> "function" then
+                Host.hostFail memberName "the provider is a function ({ name, args, sheet, row, col }) => value | Promise<value>"
+            let invoke (call: Rbt.Spreadsheet.Formula.ProviderCall) (answer: CellValue[][] -> unit) =
+                let sheetName =
+                    match call.Sheet, workbook with
+                    | Some id, Some wb -> Map.tryFind id wb.Sheets |> Option.map (fun sheet -> box sheet.Name) |> Option.defaultValue null
+                    | _ -> null
+                let request =
+                    createObj [ "name" ==> call.Name
+                                "args" ==> (call.Arguments |> Array.map providerArgumentJs)
+                                "sheet" ==> sheetName
+                                "row" ==> call.Row
+                                "col" ==> call.Col ]
+                let result = callHostFunction provider request
+                if isThenable result then
+                    whenSettled result (fun value -> answer (providerRowsOf value))
+                        (fun _ -> answer [| [| CellValue.Error Rbt.Spreadsheet.Formula.Err.connect |] |])
+                else answer (providerRowsOf result)
+            Rbt.Spreadsheet.Formula.registerFunctionProvider name { Invoke = invoke } |> ignore
+        Rbt.Spreadsheet.Formula.notifyFunctionsArrived ()
+
+    /// The functions a host can answer with `RegisterFunctionProvider`, and whether one has a provider now.
+    member _.GetProviderFunctions() : obj[] =
+        [| for (name, error, spills) in Rbt.Spreadsheet.Formula.providerFunctionSpecs ->
+            createObj [ "name" ==> name
+                        "provided" ==> Rbt.Spreadsheet.Formula.hasFunctionProvider name
+                        "errorWithout" ==> ("#" + error)
+                        "spills" ==> spills ] |]
+
+    /// What INFO(field) gives - "directory", "origin", "osversion", "system", "release", "recalc",
+    /// "numfile" - and "filename", the workbook's file name CELL("filename") puts with "directory"
+    /// ("C:\\Books\\[Plan.xlsx]Sheet1"). null: INFO's default again. Shared by every grid of the page.
+    member _.SetHostInfo(field: obj, value: obj) : unit =
+        let memberName = "SetHostInfo"
+        let field = Host.stringArg memberName "field" field
+        Rbt.Spreadsheet.Formula.setHostInfo field (if Host.isNullish value then None else Some (Host.stringArg memberName "value" value))
+        Rbt.Spreadsheet.Formula.notifyFunctionsArrived ()
+
+    /// Load the modules of these function names (["ROMAN", "XIRR", ...]) ahead of their first use;
+    /// resolves once they are installed. Opening a workbook and evaluating a formula load what they
+    /// need by themselves (a function not loaded yet shows #BUSY! meanwhile).
+    member _.LoadFunctions(names: obj) : JS.Promise<unit> =
+        let memberName = "LoadFunctions"
+        if not (Host.isJsArray names) then Host.hostFail memberName "names is an array of function names"
+        let names = unbox<obj[]> names |> Array.map (Host.stringArg memberName "names[]")
+        promiseOfReady (fun ready -> Rbt.Spreadsheet.Formula.requestFunctions names ready)
 
     /// Switch the iterative calculation of circular references on or off
     /// (see GetIterativeCalculation). `maxIterations` (1 .. 32767, default

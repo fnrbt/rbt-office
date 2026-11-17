@@ -92,6 +92,11 @@ stages=(
     stage55-chartex
     stage56-slicers
     stage57-macro-host
+    stage58-function-table
+    stage59-math-functions
+    stage60-statistics-functions
+    stage61-financial-functions
+    stage62-text-array-info-functions
     numbertext
 )
 

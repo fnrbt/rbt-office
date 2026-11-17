@@ -78,16 +78,43 @@ let importSheet (workbook: ExcelWorkbook) (sheetName: string option): Spreadshee
 // F# Async; the Async ones remain for F# callers.
 // ---------------------------------------------------------------------------
 
-/// Read a workbook from an ArrayBuffer / Uint8Array / Blob.
+[<Emit("new Promise((resolve) => $0(() => resolve()))")>]
+let private promiseOfCallback (start: (unit -> unit) -> unit): JS.Promise<unit> = jsNative
+
+[<Emit("$0.then(() => $1)")>]
+let private thenValue (promise: JS.Promise<unit>) (value: 'T): JS.Promise<'T> = jsNative
+
+/// The formulas of a reader workbook: of its cells (found without reading
+/// every row: `SheetRows.FormulaCells`) and of its defined names.
+let formulasOfReaderWorkbook (workbook: XlsxReader.Workbook): string seq =
+    seq {
+        for sheet in workbook.Sheets do
+            for cell in sheet.RowSource.FormulaCells do
+                match cell.Formula, cell.Value with
+                | Some formula, _ -> yield formula
+                | None, XlsxReader.Formula formula -> yield formula
+                | _ -> ()
+        for name in workbook.NamedRanges do yield name.RefersTo }
+
+/// The function modules a workbook's formulas need (Formula.fs, "The
+/// function table"), loaded: resolves once they are installed - at once when
+/// none is missing. Done before a workbook is converted, so that its first
+/// calculation finds the functions.
+let loadFunctionsOf (workbook: XlsxReader.Workbook): JS.Promise<unit> =
+    promiseOfCallback (fun ready -> Rbt.Spreadsheet.Formula.requestFunctionsFor (formulasOfReaderWorkbook workbook) ready)
+
+/// Read a workbook from an ArrayBuffer / Uint8Array / Blob, with the function
+/// modules its formulas need loaded.
 let loadReaderWorkbook (data: obj) (selected: string option option): JS.Promise<XlsxReader.Workbook> =
     let loading =
         match selected with
         | Some sheetName -> XlsxReader.loadSelected data sheetName
         | None -> XlsxReader.load data
-    loading.``then``(fun workbook ->
+    (loading.``then``(fun workbook ->
         match workbook with
-        | Some workbook -> workbook
-        | None -> failwith "Not a readable XLSX workbook: the package has no workbook part")
+        | Some workbook -> thenValue (loadFunctionsOf workbook) workbook
+        | None -> failwith "Not a readable XLSX workbook: the package has no workbook part"))
+    |> unbox<JS.Promise<XlsxReader.Workbook>>
 
 /// Import one sheet. Only that sheet is parsed, so formulas keep their
 /// cached values but nothing outside the sheet is available to recompute.
