@@ -30,6 +30,8 @@ type private HostObject(typeName: string, getMember: string -> Value option, set
         member _.GetMember name = getMember name
         member _.SetMember name value = setMember name value
         member _.CallMethod name args = callMethod name args
+        member _.CallNamed name args _ = callMethod name args
+        member _.Enumerate () = None
 
 let private host (typeName: string) (getMember: string -> Value option) (callMethod: string -> Value array -> Value option) =
     VHostObject (HostObject(typeName, getMember, (fun _ _ -> false), callMethod) :> IHostObject)

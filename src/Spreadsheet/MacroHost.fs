@@ -12,10 +12,8 @@ open Rbt.Spreadsheet.Workbook
 
 // ---- errors ------------------------------------------------------------------------------------------
 
-/// A run-time error of the object model, as Excel raises it (Err.Number / Err.Description).
-exception MacroError of number: int * description: string
-
-let private fail number description = raise (MacroError (number, description))
+/// A run-time error of the object model, as Excel raises it: `On Error` sees its number.
+let private fail number (description: string) : 'a = raiseVbErrorWith number description
 let private failApp description = fail 1004 description
 let private unsupported (typeName: string) (memberName: string) =
     fail 438 (sprintf "Object doesn't support this property or method (%s.%s)" typeName memberName)
@@ -216,10 +214,12 @@ let defaultHooks = {
     Output = ignore
     FileName = "Book1.xlsx"
 }
+let private noMacroHooks = defaultHooks
 
 /// The workbook a run reads and writes. A read after a write sees the formulas calculated again.
-type MacroWorkbook(initial: Workbook, hooks: MacroHooks) =
+type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let mutable workbook = initial
+    let mutable hooks = initialHooks
     let mutable engine : Recalc.Engine option = None
     let mutable dirty = false
     let hints = ResizeArray<SheetId * CellAddress>()
@@ -254,6 +254,15 @@ type MacroWorkbook(initial: Workbook, hooks: MacroHooks) =
             dirty <- false
 
     member _.Hooks = hooks
+    /// Start over on another workbook (a program's globals stay bound to this object across runs).
+    member _.Reset(next: Workbook, nextHooks: MacroHooks) =
+        workbook <- next
+        hooks <- nextHooks
+        engine <- None
+        dirty <- false
+        hints.Clear()
+        selection <- None
+        settingValues.Clear()
     member _.Setting(name: string) =
         match settingValues.TryGetValue(name.ToLowerInvariant()) with
         | true, value -> Some value
@@ -303,14 +312,63 @@ type MacroWorkbook(initial: Workbook, hooks: MacroHooks) =
 
 // ---- the object model ----------------------------------------------------------------------------------------
 
-type private Host(typeName: string, get: string -> Value option, set: string -> Value -> bool, call: string -> Value array -> Value option) =
+/// The parameters of Excel's methods by name, for calls with named arguments (`Find What:="x"`,
+/// `Worksheets.Add After:=ws`): by (object type, method), lower case.
+let private parameterNames : Map<string * string, string list> =
+    [ ("Range", "find"), [ "What"; "After"; "LookIn"; "LookAt"; "SearchOrder"; "SearchDirection"; "MatchCase"; "MatchByte"; "SearchFormat" ]
+      ("Range", "address"), [ "RowAbsolute"; "ColumnAbsolute"; "ReferenceStyle"; "External"; "RelativeTo" ]
+      ("Range", "offset"), [ "RowOffset"; "ColumnOffset" ]
+      ("Range", "resize"), [ "RowSize"; "ColumnSize" ]
+      ("Range", "copy"), [ "Destination" ]
+      ("Range", "pastespecial"), [ "Paste"; "Operation"; "SkipBlanks"; "Transpose" ]
+      ("Range", "delete"), [ "Shift" ]
+      ("Range", "insert"), [ "Shift"; "CopyOrigin" ]
+      ("Range", "end"), [ "Direction" ]
+      ("Range", "cells"), [ "RowIndex"; "ColumnIndex" ]
+      ("Range", "item"), [ "RowIndex"; "ColumnIndex" ]
+      ("Sheets", "add"), [ "Before"; "After"; "Count"; "Type" ]
+      ("Names", "add"), [ "Name"; "RefersTo"; "Visible"; "MacroType"; "ShortcutKey"; "Category"; "NameLocal"; "RefersToLocal" ]
+      ("Application", "inputbox"), [ "Prompt"; "Title"; "Default"; "Left"; "Top"; "HelpFile"; "HelpContextID"; "Type" ]
+      ("Application", "intersect"), [ "Arg1"; "Arg2"; "Arg3"; "Arg4" ]
+      ("Application", "union"), [ "Arg1"; "Arg2"; "Arg3"; "Arg4" ] ]
+    |> List.map (fun ((typeName, methodName), names) -> (typeName, methodName), names |> List.map (fun n -> n.ToLowerInvariant()))
+    |> Map.ofList
+
+type private Host(typeName: string, get: string -> Value option, set: string -> Value -> bool,
+                  call: string -> Value array -> Value option, enumerate: (unit -> Value seq) option) =
     interface IHostObject with
         member _.TypeName = typeName
         member _.GetMember name = get name
         member _.SetMember name value = set name value
         member _.CallMethod name args = call name args
+        member _.CallNamed name args names =
+            // Named arguments into their places; the holes are omitted arguments.
+            // (Globals that stand for a collection or range name their parameters as it does.)
+            let kind =
+                match typeName with
+                | "Worksheets" -> "Sheets"
+                | "Selection" | "ActiveCell" | "Cells" | "Rows" | "Columns" -> "Range"
+                | "ActiveSheet" -> "Worksheet"
+                | other -> other
+            match Map.tryFind (kind, name.ToLowerInvariant()) parameterNames with
+            | None -> call name args
+            | Some parameters ->
+                let slots = ResizeArray<Value>()
+                let put index value =
+                    while slots.Count <= index do slots.Add VUndefined
+                    slots.[index] <- value
+                args |> Array.iteri (fun i arg ->
+                    let argName = if i < names.Length then names.[i] else ""
+                    if argName = "" then put i arg
+                    else
+                        match parameters |> List.tryFindIndex ((=) (argName.ToLowerInvariant())) with
+                        | Some index -> put index arg
+                        | None -> raiseVbErrorWith 448 ("Named argument not found: " + argName))
+                call name (slots.ToArray())
+        member _.Enumerate () = enumerate |> Option.map (fun items -> items ())
 
-let private host typeName get set call = VHostObject (Host(typeName, get, set, call) :> IHostObject)
+let private host typeName get set call = VHostObject (Host(typeName, get, set, call, None) :> IHostObject)
+let private collection typeName get set call items = VHostObject (Host(typeName, get, set, call, Some items) :> IHostObject)
 
 /// A range, recognised among host objects (for WorksheetFunction arguments, Union, Intersect, Copy).
 type private RangeRef = { Sheet: SheetId; Top: int; Left: int; Bottom: int; Right: int }
@@ -526,12 +584,19 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         let item (i: int) = if vertical then sub r.Top (r.Left + i - 1) r.Bottom (r.Left + i - 1) else sub (r.Top + i - 1) r.Left (r.Top + i - 1) r.Right
         let self = rangeObject book r
         let selfHost = match self with VHostObject h -> h | _ -> failwith "range"
-        host "Range"
+        let usedCount () =
+            if not (wholeRows || wholeCols) then count
+            else
+                match used () with
+                | Some (_, _, usedBottom, usedRight) -> if vertical then min count (usedRight - r.Left + 1) else min count (usedBottom - r.Top + 1)
+                | None -> 0
+        collection "Range"
             (fun name -> if eq name "Count" then Some (VInteger count) else selfHost.GetMember name)
             (fun name value -> selfHost.SetMember name value)
             (fun name args ->
                 if (name = "" || eq name "_Default" || eq name "Item") && args.Length >= 1 then Some (item (toInt args.[0]))
                 else selfHost.CallMethod name args)
+            (fun () -> seq { for i in 1 .. usedCount () -> item i })
     let get (name: string) : Value option =
         if name = "__RbtRange" then Some (VString (String.Join("\t", [| r.Sheet; string r.Top; string r.Left; string r.Bottom; string r.Right |])))
         elif eq name "Value" || eq name "Value2" || eq name "_Default" || name = "" then Some (gather valueAt)
@@ -568,7 +633,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             Some (VDouble (Math.Round(px * 0.75, 2)))
         elif eq name "Hidden" then
             Some (VBoolean (if wholeCols then book.Model(r.Sheet).ColumnWidths |> Map.tryFind r.Left = Some 0.0 else book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top = Some 0.0))
-        elif eq name "Areas" then Some (host "Areas" (fun n -> if eq n "Count" then Some (VInteger 1) else unsupported "Areas" n) (fun n _ -> unsupported "Areas" n) (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (rangeObject book r) else unsupported "Areas" n))
+        elif eq name "Areas" then Some (collection "Areas" (fun n -> if eq n "Count" then Some (VInteger 1) else unsupported "Areas" n) (fun n _ -> unsupported "Areas" n) (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (rangeObject book r) else unsupported "Areas" n) (fun () -> Seq.singleton (rangeObject book r)))
         elif eq name "Next" then Some (sub r.Top (r.Left + 1) r.Top (r.Left + 1))
         elif eq name "Previous" then Some (sub r.Top (max 0 (r.Left - 1)) r.Top (max 0 (r.Left - 1)))
         elif eq name "Application" then Some (VString "Microsoft Excel")
@@ -729,7 +794,17 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             match get name with
             | Some value when args.Length = 0 -> Some value
             | _ -> unsupported "Range" name
-    host "Range" (fun name -> match get name with Some v -> Some v | None -> unsupported "Range" name) set call
+    // For Each over a range: its cells, row by row (whole rows / columns only as far as the sheet is used).
+    let items () =
+        let bottom, right =
+            if wholeRows || wholeCols then
+                match used () with
+                | Some (_, _, usedBottom, usedRight) -> min r.Bottom usedBottom, min r.Right usedRight
+                | None -> r.Top - 1, r.Left - 1
+            else r.Bottom, r.Right
+        seq { for row in r.Top .. bottom do
+                for col in r.Left .. right -> sub row col row col }
+    collection "Range" (fun name -> match get name with Some v -> Some v | None -> unsupported "Range" name) set call items
 
 and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
     let whole = { Sheet = sheetId; Top = 0; Left = 0; Bottom = maxRow; Right = maxCol }
@@ -790,7 +865,7 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
                 if vertical then rangeObject book { whole with Left = i; Right = i } else rangeObject book { whole with Top = i; Bottom = i }
         | _ -> fail 450 "Wrong number of arguments or invalid property assignment"
     let lines (vertical: bool) =
-        host "Range"
+        collection "Range"
             (fun name ->
                 if eq name "Count" then Some (VInteger (if vertical then maxCol + 1 else maxRow + 1))
                 else match rangeObject book whole with VHostObject h -> h.GetMember name | _ -> None)
@@ -798,6 +873,11 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
             (fun name args ->
                 if name = "" || eq name "_Default" || eq name "Item" then Some (lineRange vertical args)
                 else match rangeObject book whole with VHostObject h -> h.CallMethod name args | _ -> None)
+            (fun () ->
+                // (As far as the sheet is used.)
+                let model = book.Model sheetId
+                let last = if Map.isEmpty model.Cells then -1 else model.Cells |> Map.toSeq |> Seq.map (fun (a, _) -> if vertical then a.Col else a.Row) |> Seq.max
+                seq { for i in 0 .. last -> lineRange vertical [| VInteger (i + 1) |] })
     let get (name: string) =
         if eq name "Name" then Some (VString (book.Sheet sheetId).Name)
         elif eq name "CodeName" then Some (VString (book.Sheet sheetId).Name)
@@ -890,7 +970,7 @@ and private sheetsObject (book: MacroWorkbook) : Value =
             let order = (List.take at without) @ [ added ] @ (List.skip at without)
             reorderSheets order grown |> setActiveSheet added)
         worksheetObject book added
-    host "Sheets"
+    collection "Sheets"
         (fun name ->
             if eq name "Count" then Some (VInteger book.SheetOrder.Length)
             elif eq name "Add" then Some (add [||])
@@ -901,6 +981,7 @@ and private sheetsObject (book: MacroWorkbook) : Value =
             elif eq name "Add" then Some (add args)
             elif eq name "Count" then Some (VInteger book.SheetOrder.Length)
             else unsupported "Sheets" name)
+        (fun () -> book.SheetOrder |> List.map (worksheetObject book) |> Seq.ofList)
 
 and private namesObject (book: MacroWorkbook) : Value =
     let names () = definedNames book.Workbook
@@ -921,7 +1002,7 @@ and private namesObject (book: MacroWorkbook) : Value =
                 if eq n "RefersTo" then book.ChangeWorkbook(setDefinedName name.Scope name.Name ((toText value).TrimStart '=') name.Comment); true
                 else unsupported "Name" n)
             (fun n _ -> if eq n "Delete" then book.ChangeWorkbook(fun wb -> deleteDefinedName name.Scope name.Name wb |> Option.defaultValue wb); Some VEmpty else unsupported "Name" n)
-    host "Names"
+    collection "Names"
         (fun n -> if eq n "Count" then Some (VInteger (names ()).Length) else unsupported "Names" n)
         (fun n _ -> unsupported "Names" n)
         (fun n args ->
@@ -948,6 +1029,7 @@ and private namesObject (book: MacroWorkbook) : Value =
                     book.ChangeWorkbook(setDefinedName None name refersTo None)
                     Some (nameObject (tryFindDefinedName None name book.Workbook |> Option.get))
             else unsupported "Names" n)
+        (fun () -> names () |> List.map nameObject |> Seq.ofList)
 
 and private workbookObject (book: MacroWorkbook) : Value =
     let get (name: string) =
@@ -1048,10 +1130,11 @@ let private applicationObject (book: MacroWorkbook) =
         elif eq name "ActiveSheet" then Some (worksheetObject book book.ActiveSheet)
         elif eq name "Worksheets" || eq name "Sheets" then Some (sheetsObject book)
         elif eq name "Workbooks" then
-            Some (host "Workbooks"
+            Some (collection "Workbooks"
                     (fun n -> if eq n "Count" then Some (VInteger 1) else unsupported "Workbooks" n)
                     (fun n _ -> unsupported "Workbooks" n)
-                    (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (workbookObject book) else unsupported "Workbooks" n))
+                    (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (workbookObject book) else unsupported "Workbooks" n)
+                    (fun () -> Seq.singleton (workbookObject book)))
         elif eq name "Selection" then Some (activeRange () |> Option.map (rangeObject book) |> Option.defaultValue VNothing)
         elif eq name "ActiveCell" then
             Some (activeRange () |> Option.map (fun r -> rangeObject book { r with Bottom = r.Top; Right = r.Left }) |> Option.defaultValue VNothing)
@@ -1119,18 +1202,29 @@ let private applicationObject (book: MacroWorkbook) =
                 | Some value when args.Length = 0 -> Some value
                 | _ -> unsupported "Application" name)
 
+/// A range object of the workbook (an event's Target).
+let private rangeValue (book: MacroWorkbook) (r: RangeRef) = rangeObject book r
+
 /// The objects a macro starts from, by name: Application and the globals Excel puts in scope (ActiveSheet,
 /// Range, Cells, Worksheets, Selection, ...), and the xl* constants.
 let hostGlobals (book: MacroWorkbook) : (string * Value) list =
     let app = applicationObject book
     let appHost = match app with VHostObject h -> h | _ -> failwith "application"
-    let viaApp (name: string) =
-        host name
-            (fun member' -> match appHost.GetMember name with Some (VHostObject h) -> h.GetMember member' | _ -> unsupported name member')
-            (fun member' value -> match appHost.GetMember name with Some (VHostObject h) -> h.SetMember member' value | _ -> false)
+    /// A global that stands for what the active sheet / Application has now (ActiveSheet, Range, Rows ...):
+    /// resolved on each use, with its members, its default call and For Each.
+    let forward (name: string) (target: unit -> Value option) (defaultCall: Value array -> Value option) =
+        let current () = match target () with Some (VHostObject h) -> Some h | _ -> None
+        collection name
+            (fun member' -> match current () with Some h -> h.GetMember member' | None -> unsupported name member')
+            (fun member' value -> match current () with Some h -> h.SetMember member' value | None -> false)
             (fun member' args ->
-                if member' = "" || eq member' "_Default" then appHost.CallMethod name args
-                else match appHost.GetMember name with Some (VHostObject h) -> h.CallMethod member' args | _ -> unsupported name member')
+                if member' = "" || eq member' "_Default" then (if args.Length = 0 then (match current () with Some h -> h.CallMethod "" args | None -> None) else defaultCall args)
+                else match current () with Some h -> h.CallMethod member' args | None -> unsupported name member')
+            (fun () -> match current () |> Option.bind (fun h -> h.Enumerate ()) with Some items -> items | None -> raiseVbError 451)
+    let viaApp (name: string) = forward name (fun () -> appHost.GetMember name) (fun args -> appHost.CallMethod name args)
+    let viaSheet (name: string) =
+        let sheet () = match worksheetObject book book.ActiveSheet with VHostObject h -> h | _ -> failwith "sheet"
+        forward name (fun () -> (sheet ()).GetMember name) (fun args -> (sheet ()).CallMethod name args)
     [ "Application", app
       "ActiveWorkbook", workbookObject book
       "ThisWorkbook", workbookObject book
@@ -1140,94 +1234,174 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
       "Worksheets", viaApp "Worksheets"
       "Sheets", viaApp "Sheets"
       "Range", viaApp "Range"
-      "Cells", viaApp "Cells"
-      "Rows", host "Rows" (fun n -> match worksheetObject book book.ActiveSheet with VHostObject h -> (match h.GetMember "Rows" with Some (VHostObject r) -> r.GetMember n | _ -> None) | _ -> None) (fun _ _ -> false) (fun n args -> match worksheetObject book book.ActiveSheet with VHostObject h -> (if n = "" || eq n "_Default" then h.CallMethod "Rows" args else match h.GetMember "Rows" with Some (VHostObject r) -> r.CallMethod n args | _ -> None) | _ -> None)
-      "Columns", host "Columns" (fun n -> match worksheetObject book book.ActiveSheet with VHostObject h -> (match h.GetMember "Columns" with Some (VHostObject r) -> r.GetMember n | _ -> None) | _ -> None) (fun _ _ -> false) (fun n args -> match worksheetObject book book.ActiveSheet with VHostObject h -> (if n = "" || eq n "_Default" then h.CallMethod "Columns" args else match h.GetMember "Columns" with Some (VHostObject r) -> r.CallMethod n args | _ -> None) | _ -> None)
+      "Cells", viaSheet "Cells"
+      "Rows", viaSheet "Rows"
+      "Columns", viaSheet "Columns"
       "Names", namesObject book
       "WorksheetFunction", worksheetFunctionObject book
       "Evaluate", host "Evaluate" (fun n -> unsupported "Evaluate" n) (fun _ _ -> false) (fun n args -> if (n = "" || eq n "_Default") && args.Length = 1 then Some (evaluateArgument book (toText args.[0])) else unsupported "Evaluate" n)
       "Intersect", host "Intersect" (fun n -> unsupported "Intersect" n) (fun _ _ -> false) (fun n args -> if n = "" || eq n "_Default" then appHost.CallMethod "Intersect" args else unsupported "Intersect" n)
       "Union", host "Union" (fun n -> unsupported "Union" n) (fun _ _ -> false) (fun n args -> if n = "" || eq n "_Default" then appHost.CallMethod "Union" args else unsupported "Union" n)
-      // VBA's own functions the engine does not have.
-      "RGB", host "RGB" (fun n -> unsupported "RGB" n) (fun _ _ -> false) (fun n args ->
-                if (n = "" || eq n "_Default") && args.Length = 3 then
-                    let part (v: Value) = max 0 (min 255 (toInt v))
-                    Some (VInteger (part args.[0] + part args.[1] * 256 + part args.[2] * 65536))
-                else fail 450 "Wrong number of arguments or invalid property assignment")
-      "MsgBox", host "MsgBox" (fun n -> unsupported "MsgBox" n) (fun _ _ -> false) (fun n args ->
-                if n = "" || eq n "_Default" then
-                    let prompt = if args.Length > 0 then toText args.[0] else ""
-                    let buttons = if args.Length > 1 && not (isMissing args.[1]) then toInt args.[1] else 0
-                    let title = if args.Length > 2 && not (isMissing args.[2]) then toText args.[2] else "Microsoft Excel"
-                    Some (VInteger (book.Hooks.MessageBox prompt buttons title))
-                else unsupported "MsgBox" n)
-      "InputBox", host "InputBox" (fun n -> unsupported "InputBox" n) (fun _ _ -> false) (fun n args ->
-                if n = "" || eq n "_Default" then
-                    let prompt = if args.Length > 0 then toText args.[0] else ""
-                    let title = if args.Length > 1 && not (isMissing args.[1]) then toText args.[1] else "Microsoft Excel"
-                    let defaultText = if args.Length > 2 && not (isMissing args.[2]) then toText args.[2] else ""
-                    Some (VString (book.Hooks.InputBox prompt title defaultText |> Option.defaultValue ""))
-                else unsupported "InputBox" n)
-      "DoEvents", host "DoEvents" (fun _ -> Some (VInteger 0)) (fun _ _ -> false) (fun _ _ -> Some (VInteger 0))
-      "Debug", host "Debug" (fun n -> unsupported "Debug" n) (fun _ _ -> false) (fun n args ->
-                if eq n "Print" then
-                    book.Hooks.Output (String.Join(" ", args |> Array.map (fun a -> try toText a with _ -> "")))
-                    Some VEmpty
-                elif eq n "Assert" then Some VEmpty
-                else unsupported "Debug" n) ]
+      // (DoEvents: the engine has no event loop to yield to.)
+      "DoEvents", host "DoEvents" (fun _ -> Some (VInteger 0)) (fun _ _ -> false) (fun _ _ -> Some (VInteger 0)) ]
     @ constants
 
 // ---- running macros ---------------------------------------------------------------------------------------------
 
+open Rbt.Vb.Api
+
 /// What a run gives back: the workbook as the macro left it (calculated) and the cells it selected
-/// (sheet, top, left, bottom, right), or the error it stopped on.
+/// (sheet, top, left, bottom, right), or the error it stopped on (number, description, module, line).
 type MacroResult =
     | MacroDone of workbook: Workbook * selection: (SheetId * int * int * int * int) option
-    | MacroFailed of number: int * description: string
+    | MacroFailed of VbFailure
 
-/// The names `hostGlobals` binds: the same for every workbook, so a module compiles once.
-let hostGlobalNames : string list =
-    hostGlobals (MacroWorkbook(createWorkbook (), defaultHooks)) |> List.map fst
+/// How many VBA instructions a run may take before it is stopped as a runaway (about ten seconds).
+let defaultInstructionLimit = 300_000_000
 
-let private parseOptions = Rbt.Vb.Api.ParseOptions.withHostGlobals hostGlobalNames Rbt.Vb.Api.ParseOptions.vba
-let private compiled = Collections.Generic.Dictionary<string, Rbt.Vb.Bytecode.BytecodeProgram>()
+/// The kind of a module of a VBA project, from its Attribute lines: ThisWorkbook, sheet modules and
+/// forms are document modules, class modules are classes, the rest standard modules.
+let moduleKind (source: string) : ModuleKind =
+    let header = ModuleSource.parseHeader source
+    let attribute name = header.Attributes |> List.tryPick (fun (key, value) -> if eq key name then Some (value.Trim('"')) else None)
+    match attribute "VB_Base" with
+    | Some _ -> Document
+    | None ->
+        match attribute "VB_Creatable", attribute "VB_Exposed", attribute "VB_PredeclaredId" with
+        | None, None, None -> Standard
+        | _ -> Class
 
-let private withoutAttributes (source: string) =
-    source.Replace("\r\n", "\n").Split('\n')
-    |> Array.filter (fun line -> not (line.TrimStart().StartsWith("Attribute ", StringComparison.OrdinalIgnoreCase)))
-    |> String.concat "\n"
+/// A module of the project, its name from its VB_Name (else the stream's name).
+let macroModule (streamName: string) (source: string) : ModuleSource =
+    let header = ModuleSource.parseHeader source
+    { Name = header.Name |> Option.defaultValue streamName; Kind = moduleKind source; Source = source }
 
-/// The public macros of the source that run without arguments (what Excel's Macros dialog lists), in order.
-let macroNames (source: string) : string list =
-    let pattern = Text.RegularExpressions.Regex(@"^\s*(?:Public\s+)?Sub\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", Text.RegularExpressions.RegexOptions.IgnoreCase ||| Text.RegularExpressions.RegexOptions.Multiline)
-    [ for m in pattern.Matches(withoutAttributes source) -> m.Groups.[1].Value ]
-    |> List.distinct
+/// A workbook's VBA project compiled against Excel's object model, with its module-level state kept
+/// between runs (as Excel keeps it while the workbook is open). One run at a time.
+type MacroProgram private (project: Project, book: MacroWorkbook, session: Session) =
+    let hooksOf (book: MacroWorkbook) : RuntimeHooks =
+        { Print = (fun text -> book.Hooks.Output text)
+          MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
+          InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
+          CreateObject = (fun _ -> None) }
+    let finish (status: ExecutionStatus) =
+        match status with
+        | Finished _ -> MacroDone (book.Workbook, book.Selection)
+        | Failed failure -> MacroFailed failure
+        | Running ->
+            session.Cancel()
+            match session.Step 1 with
+            | Failed failure -> MacroFailed { failure with Description = "The macro ran too long and was stopped" }
+            | _ -> MacroFailed { Kind = Runtime; Number = 18; Description = "The macro ran too long and was stopped"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
 
-/// Whether the source defines a Sub of that name (an event handler such as Workbook_Open).
-let definesSub (name: string) (source: string) =
-    Text.RegularExpressions.Regex(@"^\s*(?:Public\s+|Private\s+)?Sub\s+" + Text.RegularExpressions.Regex.Escape name + @"\b",
-                                  Text.RegularExpressions.RegexOptions.IgnoreCase ||| Text.RegularExpressions.RegexOptions.Multiline).IsMatch(source)
+    /// Compile the modules (`macroModule` for those of a file); the compile errors when they do not.
+    static member Compile(modules: ModuleSource list) : Result<MacroProgram, VbFailure list> =
+        let book = MacroWorkbook(createWorkbook (), noMacroHooks)
+        let runtime : RuntimeHooks =
+            { Print = (fun text -> book.Hooks.Output text)
+              MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
+              InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
+              CreateObject = (fun _ -> None) }
+        let options =
+            ProjectOptions.vba
+            |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book))
+            |> ProjectOptions.withHooks runtime
+        match Project.compile options modules with
+        | Result.Error failures -> Result.Error failures
+        | Result.Ok project ->
+            // (Module-level code runs once, on a blank workbook: Excel's modules have none to speak of.)
+            match Session.Create(project, defaultInstructionLimit) with
+            | Result.Ok session -> Result.Ok (MacroProgram(project, book, session))
+            | Result.Error failure -> Result.Error [ failure ]
 
-/// Run `procedure` of the macro source (or the source's own top-level statements, when None) on the workbook.
-let run (hooks: MacroHooks) (workbook: Workbook) (source: string) (procedure: string option) : MacroResult =
-    let program = withoutAttributes source + (match procedure with Some name -> "\n" + name + "\n" | None -> "\n")
-    let bytecode =
-        match compiled.TryGetValue program with
-        | true, bytecode -> Result.Ok bytecode
-        | _ ->
-            match Rbt.Vb.Api.compileSource parseOptions program with
-            | Result.Ok (_, bytecode) -> compiled.[program] <- bytecode; Result.Ok bytecode
-            | Result.Error e -> Result.Error (sprintf "%A" e)
-    match bytecode with
-    | Result.Error e -> MacroFailed (0, "Compile error: " + e)
-    | Result.Ok bytecode ->
-        let book = MacroWorkbook(workbook, hooks)
-        try
-            Rbt.Vb.Api.executeWithHostGlobals (hostGlobals book) bytecode |> ignore
-            MacroDone (book.Workbook, book.Selection)
-        with
-        | MacroError (number, description) -> MacroFailed (number, description)
-        | e -> MacroFailed (0, e.Message)
+    member _.Project = project
+    member _.Modules = project.Modules
+    /// The macros a user can run (Excel's Macros dialog): public Subs without required arguments; those of
+    /// sheet and workbook modules as `Module.Name`.
+    member _.Macros : string list =
+        Project.macros project
+        |> List.map (fun p -> if p.ModuleKind = Standard then p.Name else p.QualifiedName)
+    member _.Procedures = Project.procedures project
+    /// Whether the project has that procedure (`Name` or `Module.Name`).
+    member _.Has(name: string) = (Project.tryFindProcedure name project).IsSome
+    member _.Session = session
+
+    /// Begin running `name` with arguments on the workbook; drive it with `Step`, end with `Result`.
+    member _.Begin(workbook: Workbook, hooks: MacroHooks, name: string, args: Value list) : Result<unit, VbFailure> =
+        book.Reset(workbook, hooks)
+        session.SetHooks(hooksOf book)
+        session.Call(name, args)
+    /// Begin an Immediate-window line (`?expr`, `Print expr`, statements) on the workbook.
+    member _.BeginImmediate(workbook: Workbook, hooks: MacroHooks, line: string, ?moduleName: string) : Result<unit, VbFailure> =
+        book.Reset(workbook, hooks)
+        session.SetHooks(hooksOf book)
+        session.Immediate(line, ?moduleName = moduleName)
+    member _.Step(maxInstructions: int) = session.Step maxInstructions
+    member _.Cancel() = session.Cancel()
+    member _.Location = session.Location
+    member _.IsRunning = session.IsRunning
+    /// The outcome of the run that ended with `status`.
+    member _.Result(status: ExecutionStatus) = finish status
+
+    /// Run `name` to its end on the workbook (stopped after `maxInstructions`).
+    member this.Run(workbook: Workbook, hooks: MacroHooks, name: string, ?args: Value list, ?maxInstructions: int) : MacroResult =
+        match this.Begin(workbook, hooks, name, defaultArg args []) with
+        | Result.Error failure -> MacroFailed failure
+        | Result.Ok () -> finish (session.RunToEnd(defaultArg maxInstructions defaultInstructionLimit))
+    /// Run an Immediate-window line to its end on the workbook; `?expr` / `Print expr` prints its value.
+    member this.Immediate(workbook: Workbook, hooks: MacroHooks, line: string, ?moduleName: string, ?maxInstructions: int) : MacroResult =
+        match this.BeginImmediate(workbook, hooks, line, ?moduleName = moduleName) with
+        | Result.Error failure -> MacroFailed failure
+        | Result.Ok () ->
+            let status = session.RunToEnd(defaultArg maxInstructions defaultInstructionLimit)
+            match status with
+            | Finished value when MacroProgram.Prints line -> hooks.Output (displayValue value)
+            | _ -> ()
+            finish status
+    /// Whether an Immediate-window line asks for a value (`?expr`, `Print expr`).
+    static member Prints(line: string) =
+        let text = line.Trim()
+        text.StartsWith "?" || text.StartsWith("print ", StringComparison.OrdinalIgnoreCase)
+    /// Run an event handler of a module (Workbook_Open of ThisWorkbook, Worksheet_Change of a sheet's
+    /// module) when the project has it; its Target a range of the sheet (sheet, top, left, bottom, right).
+    member this.RunEvent(workbook: Workbook, hooks: MacroHooks, handler: string, target: (SheetId * int * int * int * int) option) : MacroResult option =
+        if not (this.Has handler) then None
+        else
+            let args =
+                match target with
+                | Some (sheet, top, left, bottom, right) -> [ rangeValue book { Sheet = sheet; Top = top; Left = left; Bottom = bottom; Right = right } ]
+                | None -> []
+            book.Reset(workbook, hooks)
+            session.SetHooks(hooksOf book)
+            match session.Call(handler, args) with
+            | Result.Error failure -> Some (MacroFailed failure)
+            | Result.Ok () -> Some (finish (session.RunToEnd defaultInstructionLimit))
+
+/// The code name of each sheet of an opened workbook (`<sheetPr codeName>`, the name of its module), by
+/// sheet name; Excel's default (Sheet1, Sheet2 ... in order) for a sheet without one.
+let sheetCodeNames (source: XlsxReader.Workbook) : Map<string, string> =
+    let pattern = Text.RegularExpressions.Regex("<sheetPr\\b[^>]*\\bcodeName=\"([^\"]+)\"")
+    let texts = source.Preserved.SourceParts |> Map.ofList
+    source.Sheets
+    |> List.mapi (fun index sheet ->
+        let codeName =
+            sheet.Extras.SourcePart
+            |> Option.bind (fun (path, _) -> Map.tryFind path texts)
+            |> Option.bind (fun bytes ->
+                let text = Text.Encoding.UTF8.GetString(bytes, 0, min bytes.Length 4096)
+                let m = pattern.Match text
+                if m.Success then Some m.Groups.[1].Value else None)
+        sheet.Name, codeName |> Option.defaultValue (sprintf "Sheet%d" (index + 1)))
+    |> Map.ofList
+
+/// The code name of the workbook (`<workbookPr codeName>`): its module, ThisWorkbook by default.
+let workbookCodeName (source: XlsxReader.Workbook) : string =
+    source.Preserved.WorkbookPart
+    |> Option.bind (fun path -> source.Preserved.SourceParts |> List.tryPick (fun (part, data) -> if part = path then Some data else None))
+    |> Option.bind (fun bytes ->
+        let m = Text.RegularExpressions.Regex("<workbookPr\\b[^>]*\\bcodeName=\"([^\"]+)\"").Match(Text.Encoding.UTF8.GetString bytes)
+        if m.Success then Some m.Groups.[1].Value else None)
+    |> Option.defaultValue "ThisWorkbook"
 
 // ---- the macros of an opened workbook -----------------------------------------------------------------------
 
@@ -1237,14 +1411,15 @@ let private keptProject (preserved: XlsxReader.WorkbookPreservation) =
         if not isExternal && OpcXml.relationshipKind relType = "vbaProject" then Some (ZipInterop.normalizePath target) else None)
     |> Option.bind (fun path -> preserved.Parts |> List.tryPick (fun (part, data) -> if part = path then Some data else None))
 
-/// The modules of the VBA project an opened workbook keeps: (name, source), Attribute lines and all.
-let macroModulesOf (preserved: XlsxReader.WorkbookPreservation) : (string * string) list =
+/// The modules of the VBA project an opened workbook keeps, with their kinds (Attribute lines and all).
+let macroModulesOf (preserved: XlsxReader.WorkbookPreservation) : ModuleSource list =
     match keptProject preserved with
-    | Some bytes -> (try VbaProject.readModules bytes with _ -> []) |> List.filter (fun (_, source) -> not (String.IsNullOrWhiteSpace source))
+    | Some bytes ->
+        (try VbaProject.readModules bytes with _ -> [])
+        |> List.filter (fun (_, source) -> not (String.IsNullOrWhiteSpace source))
+        |> List.map (fun (stream, source) -> macroModule stream source)
     | None -> []
 
-/// Their source as one program (the form `run` takes), when the workbook has macros.
-let macroSourceOf (preserved: XlsxReader.WorkbookPreservation) : string option =
-    match keptProject preserved with
-    | Some bytes -> (try Some (VbaProject.readMacroSource bytes) with _ -> None) |> Option.filter (String.IsNullOrWhiteSpace >> not)
-    | None -> None
+/// Macro source typed or edited by hand (the native host's macro dialog), as one standard module.
+let editedModules (source: string) : ModuleSource list =
+    if String.IsNullOrWhiteSpace source then [] else [ ModuleSource.standard "Module1" source ]

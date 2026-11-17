@@ -561,7 +561,7 @@ module Ui =
         Title = "Run macro (VBA)"
         Subtitle = Some "Edits are saved to the workbook's macro module."
         Fields = [
-            dialogTextArea "source" "Macro source" "Sub Main()\n  Range(\"A1\").Value = 42\nEnd Sub\nMain()" 12 initialSource
+            dialogTextArea "source" "Macro source (Run runs Main, else the first Sub)" "Sub Main()\n  Range(\"A1\").Value = 42\nEnd Sub" 12 initialSource
         ]
         Tabs = []
         Buttons = [

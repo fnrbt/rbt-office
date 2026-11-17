@@ -424,52 +424,78 @@ let readMacroSource (vbaProjectBin: byte[]) : string =
     |> List.filter (fun s -> s <> "")
     |> String.concat "\n\n"
 
-/// Build a minimal source-only vbaProject.bin for one module. Emits the module
-/// stream (OVBA-compressed source at offset 0 — no p-code), a dir stream, a
-/// stub _VBA_PROJECT (version won't match → Office recompiles from source), and
-/// PROJECT/PROJECTwm. Round-trips through readModules.
-let writeProject (moduleName: string) (source: string) : byte[] =
-    // VBA source must start with the VB_Name attribute.
-    let attr = sprintf "Attribute VB_Name = \"%s\"\r\n" moduleName
-    let full = attr + source.Replace("\n", "\r\n")
-    let moduleData = ovbaCompress (latin1Bytes full)
-    // Minimal dir stream (compressed). MODULEOFFSET points at 0 (source-only).
-    // Our reader uses the Attribute anchor, so the dir need only be present.
+/// The kind of a module of a written project: a standard module, a document module (ThisWorkbook, a
+/// sheet's) or a class module.
+type ProjectModuleKind =
+    | StandardModule
+    | DocumentModule
+    | ClassModule
+
+/// Build a source-only vbaProject.bin of several modules: each module's stream (OVBA-compressed source
+/// at offset 0, no p-code), a dir stream naming them with their types, a stub _VBA_PROJECT (its version
+/// matches no host, so Office compiles from source) and PROJECT / PROJECTwm. A module's source without
+/// its own `Attribute VB_Name` line gets one. Round-trips through readModules.
+let writeProjectModules (modules: (string * ProjectModuleKind * string) list) : byte[] =
+    let withName (name: string) (kind: ProjectModuleKind) (source: string) =
+        let text = source.Replace("\r\n", "\n")
+        if text.TrimStart().StartsWith("Attribute VB_Name", StringComparison.OrdinalIgnoreCase) then text.Replace("\n", "\r\n")
+        else
+            let header =
+                match kind with
+                | StandardModule -> sprintf "Attribute VB_Name = \"%s\"\n" name
+                | DocumentModule ->
+                    sprintf "Attribute VB_Name = \"%s\"\nAttribute VB_Base = \"0{00020820-0000-0000-C000-000000000046}\"\nAttribute VB_GlobalNameSpace = False\nAttribute VB_Creatable = False\nAttribute VB_PredeclaredId = True\nAttribute VB_Exposed = True\nAttribute VB_TemplateDerived = False\nAttribute VB_Customizable = True\n" name
+                | ClassModule ->
+                    sprintf "Attribute VB_Name = \"%s\"\nAttribute VB_GlobalNameSpace = False\nAttribute VB_Creatable = False\nAttribute VB_PredeclaredId = False\nAttribute VB_Exposed = False\n" name
+            (header + text).Replace("\n", "\r\n")
     let dirRaw =
         let b = System.Collections.Generic.List<byte>()
         let rec16 id (data: byte[]) =
             putU16 b id; putU32 b data.Length; b.AddRange data
         let mbcs (s: string) = latin1Bytes s
-        rec16 0x0004 (mbcs "VBAProject")                 // PROJECTNAME
-        rec16 0x000F [| 1uy; 0uy |]                      // PROJECTMODULES count=1
-        putU16 b 0x0013; putU32 b 2; putU16 b 0xFFFF     // PROJECTCOOKIE
-        rec16 0x0019 (mbcs moduleName)                   // MODULENAME
-        // MODULESTREAMNAME (MBCS + reserved + unicode)
-        let sn = mbcs moduleName
-        putU16 b 0x001A; putU32 b sn.Length; b.AddRange sn
-        putU16 b 0x0032; putU32 b (moduleName.Length * 2); b.AddRange (Text.Encoding.Unicode.GetBytes moduleName)
-        putU16 b 0x0031; putU32 b 4; putU32 b 0          // MODULEOFFSET = 0
-        putU16 b 0x0021; putU32 b 0                       // MODULETYPE procedural
-        putU16 b 0x002B; putU32 b 0                       // MODULETERMINATOR
-        putU16 b 0x0010; putU32 b 0                       // PROJECT TERMINATOR
+        rec16 0x0004 (mbcs "VBAProject")                                  // PROJECTNAME
+        rec16 0x000F [| byte (modules.Length &&& 0xFF); byte (modules.Length >>> 8) |]   // PROJECTMODULES
+        putU16 b 0x0013; putU32 b 2; putU16 b 0xFFFF                      // PROJECTCOOKIE
+        for name, kind, _ in modules do
+            rec16 0x0019 (mbcs name)                                      // MODULENAME
+            let streamName = mbcs name                                    // MODULESTREAMNAME (MBCS + reserved + unicode)
+            putU16 b 0x001A; putU32 b streamName.Length; b.AddRange streamName
+            putU16 b 0x0032; putU32 b (name.Length * 2); b.AddRange (Text.Encoding.Unicode.GetBytes name)
+            putU16 b 0x0031; putU32 b 4; putU32 b 0                       // MODULEOFFSET = 0
+            putU16 b (if kind = StandardModule then 0x0021 else 0x0022); putU32 b 0   // MODULETYPE procedural / document-class
+            putU16 b 0x002B; putU32 b 0                                   // MODULETERMINATOR
+        putU16 b 0x0010; putU32 b 0                                       // PROJECT TERMINATOR
         b.ToArray()
-    let dirData = ovbaCompress dirRaw
-    // Stub _VBA_PROJECT: magic 0x61CC + a version word that won't match a host.
     let vbaProjStream = [| 0xCCuy; 0x61uy; 0xFFuy; 0xFFuy; 0x00uy; 0x00uy; 0x00uy |]
     let projectText =
         String.concat "\r\n"
-            [ "ID=\"{00000000-0000-0000-0000-000000000000}\""
-              sprintf "Module=%s" moduleName
-              "Name=\"VBAProject\""
-              "" ]
-    let projectwm = Array.append (latin1Bytes (moduleName + "\x00")) (Array.append (Text.Encoding.Unicode.GetBytes moduleName) [| 0uy; 0uy; 0uy; 0uy |])
+            [ yield "ID=\"{00000000-0000-0000-0000-000000000000}\""
+              for name, kind, _ in modules do
+                  match kind with
+                  | StandardModule -> yield sprintf "Module=%s" name
+                  | DocumentModule -> yield sprintf "Document=%s/&H00000000" name
+                  | ClassModule -> yield sprintf "Class=%s" name
+              yield "Name=\"VBAProject\""
+              yield "" ]
+    let projectwm =
+        Array.concat
+            [ for name, _, _ in modules do
+                yield latin1Bytes (name + "\x00")
+                yield Text.Encoding.Unicode.GetBytes name
+                yield [| 0uy; 0uy |]
+              yield [| 0uy; 0uy |] ]
     cfbWrite
         [ CStorage("VBA",
-            [ CStream("_VBA_PROJECT", vbaProjStream)
-              CStream("dir", dirData)
-              CStream(moduleName, moduleData) ])
+            [ yield CStream("_VBA_PROJECT", vbaProjStream)
+              yield CStream("dir", ovbaCompress dirRaw)
+              for name, kind, source in modules do
+                  yield CStream(name, ovbaCompress (latin1Bytes (withName name kind source))) ])
           CStream("PROJECT", latin1Bytes projectText)
           CStream("PROJECTwm", projectwm) ]
+
+/// Build a minimal source-only vbaProject.bin for one standard module (see writeProjectModules).
+let writeProject (moduleName: string) (source: string) : byte[] =
+    writeProjectModules [ moduleName, StandardModule, source ]
 
 // ===========================================================================
 // xlsx/xlsm zip integration (native)

@@ -316,33 +316,58 @@ let cellEditText (model: M.SpreadsheetModel) row col =
     // date as a date, forced text with its apostrophe.
     Rbt.Spreadsheet.Input.editTextFor model.Date1904 (M.getCell { Row = row; Col = col } model)
 
+/// The workbook's macros compiled (the macro dialog's text, one standard module), by their text.
+let private programs = Collections.Generic.Dictionary<string, Result<Rbt.Spreadsheet.MacroHost.MacroProgram, Rbt.Vb.Api.VbFailure list>>()
+let private programOf (source: string) =
+    if String.IsNullOrWhiteSpace source then None
+    else
+        match programs.TryGetValue source with
+        | true, program -> Some program
+        | _ ->
+            let program = Rbt.Spreadsheet.MacroHost.MacroProgram.Compile (Rbt.Spreadsheet.MacroHost.editedModules source)
+            programs.[source] <- program
+            Some program
+
 let applyCellEdit (st: EditorState) row col text =
     let id = st.Session.Workbook.ActiveSheet
     let addr : M.CellAddress = { Row = row; Col = col }
     let accept (cell: M.CellData) = M.validateEdit addr cell.Value st.Session.Workbook.Sheets.[id].Model |> Result.isOk
     // Worksheet_Change runs over the whole workbook, in the edit's step: undone with it.
     let afterCalculate (wb: Workbook.Workbook) =
-        let source = wb.Sheets.[id].Model.Macros
-        if not st.MacrosEnabled || not (Rbt.Spreadsheet.MacroHost.definesSub "Worksheet_Change" source) then wb
+        if not st.MacrosEnabled then wb
         else
-            let call = sprintf "Set rbtChangeTarget = Range(\"%s%d\")\nWorksheet_Change rbtChangeTarget" (M.columnToLetter col) (row + 1)
-            match Rbt.Spreadsheet.MacroHost.run Rbt.Spreadsheet.MacroHost.defaultHooks wb source (Some call) with
-            | Rbt.Spreadsheet.MacroHost.MacroDone (changed, _) -> changed
-            | Rbt.Spreadsheet.MacroHost.MacroFailed _ -> wb
+            match programOf wb.Sheets.[id].Model.Macros with
+            | Some (Result.Ok program) ->
+                match program.RunEvent(wb, Rbt.Spreadsheet.MacroHost.defaultHooks, "Worksheet_Change", Some (id, row, col, row, col)) with
+                | Some (Rbt.Spreadsheet.MacroHost.MacroDone (changed, _)) -> changed
+                | _ -> wb
+            | _ -> wb
     let changed = st.Session.EnterCell(id, addr, text, DateTime.UtcNow.Year, accept = accept, afterCalculate = afterCalculate)
     if changed then install st st.Session.Workbook
     changed
 
-/// Run macro source on the workbook: `procedure` (a Sub of it), or its own top-level statements when
-/// None. The source becomes the workbook's macros (a save writes it as its VBA project when it differs
-/// from the one opened). What the macro changes is one undo step; Error (Excel's number and description)
-/// when it stops, and then nothing of it is kept. Enables the workbook's macros.
+/// Run a macro of the source on the workbook: `procedure` (a Sub of it), else Main, else its first macro.
+/// The source becomes the workbook's macros (a save writes it as its VBA project when it differs from
+/// the one opened). What the macro changes is one undo step; Error (Excel's number and description, with
+/// where it stopped) when it stops, and then nothing of it is kept. Enables the workbook's macros.
 let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (source: string) (procedure: string option) : Result<unit, int * string> =
     st.MacrosEnabled <- true
     let start = st.Session.Workbook
     let withSource (wb: Workbook.Workbook) =
         { wb with Sheets = wb.Sheets |> Map.map (fun _ sheet -> if sheet.Model.Macros = source then sheet else { sheet with Model = { sheet.Model with Macros = source } }) }
-    match Rbt.Spreadsheet.MacroHost.run hooks start source procedure with
+    let outcome =
+        match programOf source with
+        | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There are no macros"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+        | Some (Result.Error failures) -> Rbt.Spreadsheet.MacroHost.MacroFailed (List.head failures)
+        | Some (Result.Ok program) ->
+            let name =
+                match procedure with
+                | Some name -> Some name
+                | None -> if program.Has "Main" then Some "Main" else List.tryHead program.Macros
+            match name with
+            | Some name -> program.Run(start, hooks, name)
+            | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There is no Sub to run"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+    match outcome with
     | Rbt.Spreadsheet.MacroHost.MacroDone (result, selection) ->
         let result =
             match selection with
@@ -354,11 +379,11 @@ let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (so
         st.Session.CommitApplied({ Description = "Run macro"; Workbook = withSource result })
         install st st.Session.Workbook
         Ok ()
-    | Rbt.Spreadsheet.MacroHost.MacroFailed (number, description) ->
+    | Rbt.Spreadsheet.MacroHost.MacroFailed failure ->
         if start.Sheets |> Map.exists (fun _ sheet -> sheet.Model.Macros <> source) then
             st.Session.CommitApplied({ Description = "Edit macros"; Workbook = withSource start })
             install st st.Session.Workbook
-        Error (number, description)
+        Error (failure.Number, Rbt.Vb.Api.VbFailure.format failure)
 
 let startEditing (st: EditorState) row col seed =
     let model = activeModel st
