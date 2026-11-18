@@ -119,3 +119,78 @@ let refreshCaches (valuesOf: string -> (string * float option) array option) (xm
             let current = pointCache (found.Groups.[1].Value = "numRef") (valuesOf value |> Option.defaultValue [||])
             if cache.IsMatch reference then cache.Replace(reference, current, 1)
             else reference.Replace(matched.Value, matched.Value + current)))
+
+/// The data of a series of a chart a macro made: from cells (a formula such as 'Sheet1'!$B$2:$B$9 with
+/// their values) or literal (an array assigned to Values / XValues).
+type MacroSeriesData = { Formula: string option; Points: (string * float option) array }
+
+/// A series of a macro's chart: its name, its x values or categories, its values.
+type MacroSeries = { SeriesName: string option; XData: MacroSeriesData option; YData: MacroSeriesData }
+
+let macroSeries (name: string option) (x: MacroSeriesData option) (y: MacroSeriesData) = { SeriesName = name; XData = x; YData = y }
+
+/// A chart a macro made (Shapes.AddChart, ChartObjects.Add): Excel's chart type (XlChartType), a title,
+/// a legend, its series.
+type MacroChart = { ChartType: int; Title: string option; HasLegend: bool; Series: MacroSeries list }
+
+/// The chart part of a macro's chart, for the shared renderer (and a save): scatter, line, column, bar,
+/// area and pie charts; another chart type is drawn as a clustered column chart.
+let macroChartXml (chart: MacroChart) : string =
+    let data (number: bool) (d: MacroSeriesData) =
+        match d.Formula with
+        | Some formula -> refXml number formula d.Points
+        | None ->
+            let cached = pointCache number d.Points
+            if number then cached.Replace("numCache>", "numLit>") else cached.Replace("strCache>", "strLit>")
+    let numbers (d: MacroSeriesData) = d.Points |> Array.forall (fun (_, n) -> n.IsSome)
+    let scatter = chart.ChartType = -4169 || (chart.ChartType >= 72 && chart.ChartType <= 75)
+    let kind, opening, markers =
+        match chart.ChartType with
+        | t when scatter ->
+            let style = if t = 72 || t = 73 then "smoothMarker" elif t = -4169 then "lineMarker" else "lineMarker"
+            "scatterChart", sprintf "<c:scatterStyle val=\"%s\"/><c:varyColors val=\"0\"/>" style, ""
+        | 4 | 65 | 63 | 64 | 66 | 67 -> "lineChart", "<c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>", (if chart.ChartType = 4 then "<c:marker val=\"1\"/>" else "<c:marker val=\"1\"/>")
+        | 1 | 76 | 77 -> "areaChart", "<c:grouping val=\"standard\"/><c:varyColors val=\"0\"/>", ""
+        | 5 | -4102 | 69 | 70 | -4120 -> "pieChart", "<c:varyColors val=\"1\"/>", ""
+        | 57 | 58 | 59 -> "barChart", "<c:barDir val=\"bar\"/><c:grouping val=\"clustered\"/><c:varyColors val=\"0\"/>", ""
+        | _ -> "barChart", "<c:barDir val=\"col\"/><c:grouping val=\"clustered\"/><c:varyColors val=\"0\"/>", ""
+    let series =
+        chart.Series |> List.mapi (fun index s ->
+            let name =
+                match s.SeriesName with
+                | Some text -> "<c:tx><c:v>" + escaped text + "</c:v></c:tx>"
+                | None -> "<c:tx><c:v>" + escaped (sprintf "Series%d" (index + 1)) + "</c:v></c:tx>"
+            let look =
+                if not scatter then ""
+                elif chart.ChartType = -4169 then "<c:spPr><a:ln w=\"25400\"><a:noFill/></a:ln></c:spPr>"
+                elif chart.ChartType = 75 || chart.ChartType = 73 then "<c:marker><c:symbol val=\"none\"/></c:marker>"
+                else ""
+            let x, y =
+                if scatter then
+                    (match s.XData with Some d -> "<c:xVal>" + data (numbers d) d + "</c:xVal>" | None -> ""),
+                    "<c:yVal>" + data true s.YData + "</c:yVal>"
+                else
+                    (match s.XData with Some d -> "<c:cat>" + data (numbers d) d + "</c:cat>" | None -> ""),
+                    "<c:val>" + data true s.YData + "</c:val>"
+            let smooth = if scatter then sprintf "<c:smooth val=\"%d\"/>" (if chart.ChartType = 72 || chart.ChartType = 73 then 1 else 0) else ""
+            sprintf "<c:ser><c:idx val=\"%d\"/><c:order val=\"%d\"/>%s%s%s%s%s</c:ser>" index index name look x y smooth)
+        |> String.concat ""
+    let pie = kind = "pieChart"
+    let axes = if pie then "" else "<c:axId val=\"1048576\"/><c:axId val=\"1048577\"/>"
+    let axisXml =
+        if pie then ""
+        else
+            let firstAxis =
+                if scatter then "<c:valAx><c:axId val=\"1048576\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:axPos val=\"b\"/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"1048577\"/><c:crosses val=\"autoZero\"/></c:valAx>"
+                else sprintf "<c:catAx><c:axId val=\"1048576\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:axPos val=\"%s\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"1048577\"/><c:crosses val=\"autoZero\"/></c:catAx>" (if kind = "barChart" && opening.Contains "\"bar\"" then "l" else "b")
+            firstAxis + sprintf "<c:valAx><c:axId val=\"1048577\"/><c:scaling><c:orientation val=\"minMax\"/></c:scaling><c:axPos val=\"%s\"/><c:majorGridlines/><c:numFmt formatCode=\"General\" sourceLinked=\"1\"/><c:tickLblPos val=\"nextTo\"/><c:crossAx val=\"1048576\"/><c:crosses val=\"autoZero\"/></c:valAx>" (if kind = "barChart" && opening.Contains "\"bar\"" then "b" else "l")
+    let title =
+        match chart.Title with
+        | Some text when text.Trim() <> "" -> richTitle text
+        | _ -> "<c:autoTitleDeleted val=\"1\"/>"
+    let legend = if chart.HasLegend then "<c:legend><c:legendPos val=\"r\"/><c:layout/></c:legend>" else ""
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
+    + "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\">"
+    + "<c:chart>" + title
+    + "<c:plotArea><c:layout/><c:" + kind + ">" + opening + series + markers + axes + "</c:" + kind + ">"
+    + axisXml + "</c:plotArea>" + legend + "<c:plotVisOnly val=\"1\"/></c:chart></c:chartSpace>"

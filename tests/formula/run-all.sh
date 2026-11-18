@@ -97,6 +97,7 @@ stages=(
     stage60-statistics-functions
     stage61-financial-functions
     stage62-text-array-info-functions
+    stage63-macro-showcase
     numbertext
 )
 

@@ -236,6 +236,26 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
         let rotation = format.TextRotation
         let wrap = format.WrapText
         let icon = match format.IconSet with Some icon when icon.Count > 1 -> Some icon | _ -> None
+        // "Center Across Selection": centred over the run of center-across cells to its right that
+        // hold nothing, as Excel does without merging them.
+        let acrossTo =
+            if horizontal <> "centercontinuous" then -1
+            else
+                let mutable last = col
+                let mutable next = col + 1
+                let mutable go = true
+                while go && next < model.ColCount do
+                    match getCell { Row = row; Col = next } model with
+                    | Some cell when lowerAlign cell.Format.HorizontalAlign = "centercontinuous"
+                                     && (match cell.Value with CellValue.Empty -> true | _ -> false) ->
+                        last <- next
+                        next <- next + 1
+                    | _ -> go <- false
+                last
+        // (A number centred across the selection fits in the width of the run, as Excel shows it.)
+        let fitWidth =
+            if acrossTo <= col then width
+            else width + (seq { col + 1 .. acrossTo } |> Seq.sumBy (fun c -> model.ColumnWidths |> Map.tryFind c |> Option.defaultValue model.DefaultColumnWidth))
         // The text. (A number shrunk to fit or turned is not fitted to the cell's width: shrinking
         // is what makes it fit.)
         let text =
@@ -247,7 +267,7 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
                     match measure with
                     | Some m -> Some (fun (text: string) -> m text fontPt format.FontName format.Bold format.Italic)
                     | None -> None
-                cellDisplayTextIn model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else width) format value
+                cellDisplayTextIn model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else fitWidth) format value
         let text =
             match format.DataBar, format.IconSet with
             | Some bar, _ when bar.HideValue -> ""
@@ -286,22 +306,6 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
             | "top" -> VAlignTop
             | "center" | "middle" -> VAlignMiddle
             | _ -> VAlignBottom
-        // "Center Across Selection": centred over the run of center-across cells to its right that
-        // hold nothing, as Excel does without merging them.
-        let acrossTo =
-            if horizontal <> "centercontinuous" then -1
-            else
-                let mutable last = col
-                let mutable next = col + 1
-                let mutable go = true
-                while go && next < model.ColCount do
-                    match getCell { Row = row; Col = next } model with
-                    | Some cell when lowerAlign cell.Format.HorizontalAlign = "centercontinuous"
-                                     && (match cell.Value with CellValue.Empty -> true | _ -> false) ->
-                        last <- next
-                        next <- next + 1
-                    | _ -> go <- false
-                last
         { Format = format; Table = table; Value = value; Text = text; Fill = format.BgColor; TextColor = textColor
           FontSize = fontPt; FontName = format.FontName; Bold = format.Bold; Italic = format.Italic
           Underline = format.Underline; UnderlineDouble = format.UnderlineDouble; Strikethrough = format.Strikethrough

@@ -38,6 +38,20 @@ let constants : (string * Value) list =
       "xlContinuous", 1; "xlThin", 2; "xlMedium", -4138; "xlThick", 4; "xlDash", -4115; "xlDot", -4118; "xlDouble", -4119; "xlLineStyleNone", -4142
       "xlEdgeLeft", 7; "xlEdgeTop", 8; "xlEdgeBottom", 9; "xlEdgeRight", 10; "xlInsideVertical", 11; "xlInsideHorizontal", 12
       "xlA1", 1; "xlR1C1", -4150
+      "xlXYScatter", -4169; "xlXYScatterLines", 74; "xlXYScatterLinesNoMarkers", 75; "xlXYScatterSmooth", 72; "xlXYScatterSmoothNoMarkers", 73
+      "xlLine", 4; "xlLineMarkers", 65; "xlColumnClustered", 51; "xlColumnStacked", 52; "xlBarClustered", 57; "xlPie", 5; "xlArea", 1
+      "xlColumns", 2; "xlRows", 1
+      "xlCellValue", 1; "xlExpression", 2; "xlBetween", 1; "xlNotBetween", 2; "xlEqual", 3; "xlNotEqual", 4
+      "xlGreater", 5; "xlLess", 6; "xlGreaterEqual", 7; "xlLessEqual", 8
+      "xlConditionValueNumber", 0; "xlConditionValueLowestValue", 1; "xlConditionValueHighestValue", 2
+      "xlConditionValuePercent", 3; "xlConditionValueFormula", 4; "xlConditionValuePercentile", 5
+      "xlHorizontal", -4128; "xlVertical", -4166; "xlUpward", -4171; "xlDownward", -4170
+      "xlMaximized", -4137; "xlMinimized", -4140; "xlNormal", -4143
+      "xlHairline", 1; "xlDashDot", 4; "xlDashDotDot", 5; "xlSlantDashDot", 13
+      "xlDiagonalDown", 5; "xlDiagonalUp", 6; "xlColorIndexAutomatic", -4105; "xlColorIndexNone", -4142
+      "xlThemeColorDark1", 1; "xlThemeColorLight1", 2; "xlThemeColorDark2", 3; "xlThemeColorLight2", 4
+      "xlThemeColorAccent1", 5; "xlThemeColorAccent2", 6; "xlThemeColorAccent3", 7; "xlThemeColorAccent4", 8
+      "xlThemeColorAccent5", 9; "xlThemeColorAccent6", 10; "xlThemeColorHyperlink", 11; "xlThemeColorFollowedHyperlink", 12
       "xlErrDiv0", 2007; "xlErrNA", 2042; "xlErrName", 2029; "xlErrNull", 2000; "xlErrNum", 2036; "xlErrRef", 2023; "xlErrValue", 2015 ]
     |> List.map (fun (name, value) -> name, VInteger value)
 
@@ -169,6 +183,76 @@ let private palette =
        "#3366FF"; "#33CCCC"; "#99CC00"; "#FFCC00"; "#FF9900"; "#FF6600"; "#666699"; "#969696"
        "#003366"; "#339966"; "#003300"; "#333300"; "#993300"; "#993366"; "#333399"; "#333333" |]
 
+/// The colours of Office's default theme by Excel's XlThemeColor (1-based): xlThemeColorDark1 is
+/// "Background 1" (white) and xlThemeColorLight1 "Text 1" (black), as the macro recorder names them.
+let private themeColors =
+    [| "#FFFFFF"; "#000000"; "#E7E6E6"; "#44546A"; "#4472C4"; "#ED7D31"; "#A5A5A5"; "#FFC000"; "#5B9BD5"; "#70AD47"; "#0563C1"; "#954F72" |]
+
+let private themeColor (index: int) =
+    if index >= 1 && index <= themeColors.Length then themeColors.[index - 1] else fail 5 "Invalid procedure call or argument"
+
+/// A colour lightened (TintAndShade > 0) or darkened (< 0), as Excel applies TintAndShade.
+let private tinted (amount: float) (color: string) =
+    let channel (at: int) =
+        let c = float (Convert.ToInt32(color.Substring(at, 2), 16))
+        let v = if amount >= 0.0 then c + (255.0 - c) * amount else c * (1.0 + amount)
+        int (Math.Round (max 0.0 (min 255.0 v)))
+    if color.Length < 7 || amount = 0.0 then color else sprintf "#%02X%02X%02X" (channel 1) (channel 3) (channel 5)
+
+// ---- borders: Excel's LineStyle and Weight as the styles of the file format ----
+
+let private xlContinuous = 1
+let private xlLineStyleNone = -4142
+
+/// (LineStyle, Weight) of a border style ("thin", "mediumDashed" ...).
+let private lineOfStyle (style: string) =
+    match style.ToLowerInvariant() with
+    | "hair" -> 1, 1
+    | "medium" -> 1, -4138
+    | "thick" -> 1, 4
+    | "dashed" -> -4115, 2
+    | "mediumdashed" -> -4115, -4138
+    | "dotted" -> -4118, 2
+    | "dashdot" -> 4, 2
+    | "mediumdashdot" -> 4, -4138
+    | "dashdotdot" -> 5, 2
+    | "mediumdashdotdot" -> 5, -4138
+    | "slantdashdot" -> 13, -4138
+    | "double" -> -4119, 4
+    | _ -> 1, 2
+
+/// The border style of a LineStyle and a Weight (None for xlLineStyleNone).
+let private styleOfLine (lineStyle: int) (weight: int) : string option =
+    let heavy = weight = -4138 || weight = 4
+    match lineStyle with
+    | -4142 -> None
+    | -4115 -> Some (if heavy then "mediumDashed" else "dashed")
+    | -4118 -> Some (if weight = 1 then "hair" else "dotted")
+    | 4 -> Some (if heavy then "mediumDashDot" else "dashDot")
+    | 5 -> Some (if heavy then "mediumDashDotDot" else "dashDotDot")
+    | 13 -> Some "slantDashDot"
+    | -4119 -> Some "double"
+    | _ -> Some (match weight with 1 -> "hair" | -4138 -> "medium" | 4 -> "thick" | _ -> "thin")
+
+/// A side of a cell: 0 left, 1 top, 2 bottom, 3 right, 4 diagonal down, 5 diagonal up.
+let private sideOf (f: CellFormat) (side: int) =
+    match side with
+    | 0 -> f.BorderLeft
+    | 1 -> f.BorderTop
+    | 2 -> f.BorderBottom
+    | 3 -> f.BorderRight
+    | 4 -> if f.DiagonalDown then f.BorderDiagonal else None
+    | _ -> if f.DiagonalUp then f.BorderDiagonal else None
+
+let private withSide (side: int) (border: BorderStyle option) (f: CellFormat) =
+    match side with
+    | 0 -> { f with BorderLeft = border }
+    | 1 -> { f with BorderTop = border }
+    | 2 -> { f with BorderBottom = border }
+    | 3 -> { f with BorderRight = border }
+    | 4 -> { f with DiagonalDown = border.IsSome; BorderDiagonal = (if border.IsSome then border elif f.DiagonalUp then f.BorderDiagonal else None) }
+    | _ -> { f with DiagonalUp = border.IsSome; BorderDiagonal = (if border.IsSome then border elif f.DiagonalDown then f.BorderDiagonal else None) }
+
 // ---- addresses -------------------------------------------------------------------------------------------
 
 let private columnName (col: int) =
@@ -247,10 +331,16 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let mutable hooks = initialHooks
     let mutable engine : Recalc.Engine option = None
     let mutable dirty = false
+    // The engine has not been told of writes since (a workbook without formulas): built again before it calculates.
+    let mutable stale = false
     let hints = ResizeArray<SheetId * CellAddress>()
     let mutable selection : (SheetId * int * int * int * int) option = None
+    // (Counts the changes, for a host that shows the workbook while the macro runs.)
+    let mutable version = 0
     // (Keyed by lower-cased name: Fable has no case-insensitive comparer.)
     let settingValues = Collections.Generic.Dictionary<string, Value>()
+    // The charts the run made, by their relationship id: their sheet and what they show.
+    let charts = Collections.Generic.Dictionary<string, SheetId * Rbt.Spreadsheet.ChartAuthoring.MacroChart>()
 
     let resolve (sheetId: SheetId) =
         match Map.tryFind sheetId workbook.Sheets with
@@ -261,7 +351,21 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         | _ -> ()
 
     let calculate () =
+        // A workbook without a formula has nothing to calculate after a write of values (most macros that
+        // paint or fill cells): the engine is not told of them, and is built again when a formula is written.
+        let formulaWritten () =
+            hints |> Seq.exists (fun (sheetId, address) ->
+                match Map.tryFind sheetId workbook.Sheets with
+                | Some sheet -> (match getCell address sheet.Model with Some { Value = Formula _ } -> true | _ -> false)
+                | None -> false)
+        if dirty && (match engine with Some current -> Recalc.formulaCount current = 0 | None -> false) && not (formulaWritten ()) then
+            hints.Clear()
+            dirty <- false
+            stale <- true
         if dirty then
+            if stale then
+                engine <- None
+                stale <- false
             let next =
                 match engine with
                 | Some current ->
@@ -285,18 +389,24 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         hooks <- nextHooks
         engine <- None
         dirty <- false
+        stale <- false
         hints.Clear()
         selection <- None
         settingValues.Clear()
+        charts.Clear()
     member _.Setting(name: string) =
         match settingValues.TryGetValue(name.ToLowerInvariant()) with
         | true, value -> Some value
         | _ -> None
     member _.SetSetting(name: string, value: Value) = settingValues.[name.ToLowerInvariant()] <- value
+    member _.Charts = charts
     member _.Workbook = calculate (); workbook
     member _.SheetOrder = workbook.SheetOrder
     member _.ActiveSheet = workbook.ActiveSheet
-    member _.SetActiveSheet(sheetId: SheetId) = workbook <- setActiveSheet sheetId workbook
+    member _.SetActiveSheet(sheetId: SheetId) =
+        if workbook.ActiveSheet <> sheetId then version <- version + 1
+        workbook <- setActiveSheet sheetId workbook
+    member _.Version = version
     member _.Sheet(sheetId: SheetId) =
         resolve sheetId
         match Map.tryFind sheetId workbook.Sheets with
@@ -314,19 +424,29 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
             match cell with
             | Some data -> setCell address data model
             | None -> clearCell address model
+        let next = if cell.IsSome && (row >= next.RowCount || col >= next.ColCount) then { next with RowCount = max next.RowCount (row + 1); ColCount = max next.ColCount (col + 1) } else next
         workbook <- updateSheetModel sheetId next workbook
         dirty <- true
+        version <- version + 1
         hints.Add((sheetId, address))
+    /// The sheet grown to show a cell (the grid shows RowCount x ColCount; a macro may write past them).
+    member this.Grow(sheetId: SheetId, row: int, col: int) =
+        let model = this.Model sheetId
+        if row >= model.RowCount || col >= model.ColCount then
+            workbook <- updateSheetModel sheetId { model with RowCount = max model.RowCount (row + 1); ColCount = max model.ColCount (col + 1) } workbook
     /// A change of formats, sizes or merges: no formula reads them.
     member this.ChangeModel(sheetId: SheetId, change: SpreadsheetModel -> SpreadsheetModel) =
         workbook <- updateSheetModel sheetId (change (this.Model sheetId)) workbook
+        version <- version + 1
     member this.Structure(sheetId: SheetId, edit: StructureEdit) =
         resolve sheetId
         let next, _ = applyStructureEdit sheetId edit workbook
         workbook <- next
+        version <- version + 1
         engine <- None
         dirty <- true
     member _.ChangeWorkbook(change: Workbook -> Workbook) =
+        version <- version + 1
         workbook <- change workbook
         engine <- None
         dirty <- true
@@ -349,6 +469,11 @@ let private parameterNames : Map<string * string, string list> =
       ("Range", "delete"), [ "Shift" ]
       ("Range", "insert"), [ "Shift"; "CopyOrigin" ]
       ("Range", "end"), [ "Direction" ]
+      ("Range", "borderaround"), [ "LineStyle"; "Weight"; "ColorIndex"; "Color"; "ThemeColor" ]
+      ("Range", "addcomment"), [ "Text" ]
+      ("Range", "replace"), [ "What"; "Replacement"; "LookAt"; "SearchOrder"; "MatchCase"; "MatchByte"; "SearchFormat"; "ReplaceFormat" ]
+      ("FormatConditions", "add"), [ "Type"; "Operator"; "Formula1"; "Formula2" ]
+      ("FormatConditions", "addcolorscale"), [ "ColorScaleType" ]
       ("Range", "cells"), [ "RowIndex"; "ColumnIndex" ]
       ("Range", "item"), [ "RowIndex"; "ColumnIndex" ]
       ("Sheets", "add"), [ "Before"; "After"; "Count"; "Type" ]
@@ -466,7 +591,10 @@ let private quotedSheet (name: string) =
 /// A cell's value as text entered into it would make it ("123" a number, "=A1*2" a formula).
 let private entered (book: MacroWorkbook) (sheetId: SheetId) (row: int) (col: int) (value: Value) : CellData option =
     let previous = book.Cell(sheetId, row, col)
-    let format = previous |> Option.map (fun cell -> cell.Format) |> Option.defaultValue defaultFormat
+    let format =
+        match previous with
+        | Some cell -> cell.Format
+        | None -> SheetOps.effectiveFormat (book.Model sheetId) { Row = row; Col = col }
     let comment = previous |> Option.bind (fun cell -> cell.Comment)
     let withValue v = Some { Value = v; Format = format; Comment = comment }
     match scalarOf value with
@@ -494,6 +622,76 @@ let private entered (book: MacroWorkbook) (sheetId: SheetId) (row: int) (col: in
         Some { cell with Comment = comment }
     | VArray _ -> fail 13 "Type mismatch"
     | _ -> fail 13 "Type mismatch"
+
+/// A cell's format changed; a cell the sheet does not have yet starts from its column's default style.
+let private formatCell (model: SpreadsheetModel) (address: CellAddress) (change: CellFormat -> CellFormat) =
+    match getCell address model with
+    | Some _ -> setCellFormat address change model
+    | None ->
+        let start = SheetOps.effectiveFormat model address
+        let next = change start
+        if next = defaultFormat then model else setCell address { Value = CellValue.Empty; Format = next; Comment = None } model
+
+/// The default styles of columns with those of `first` .. `last` changed (None: removed).
+let private restyledColumns (styles: ColumnStyle list) (first: int) (last: int) (change: (CellFormat -> CellFormat) option) =
+    let outside =
+        styles |> List.collect (fun style ->
+            if style.Last < first || style.First > last then [ style ]
+            else
+                [ if style.First < first then yield { style with Last = first - 1 }
+                  if style.Last > last then yield { style with First = last + 1 } ])
+    match change with
+    | None -> outside
+    | Some change ->
+        let formatOf col =
+            styles |> List.tryFind (fun style -> col >= style.First && col <= style.Last) |> Option.map (fun style -> style.Format) |> Option.defaultValue defaultFormat
+        // Runs of columns that end up with the same style.
+        let runs = ResizeArray<ColumnStyle>()
+        for col in first .. last do
+            let format = change (formatOf col)
+            if runs.Count > 0 && runs.[runs.Count - 1].Last = col - 1 && runs.[runs.Count - 1].Format = format then
+                runs.[runs.Count - 1] <- { runs.[runs.Count - 1] with Last = col }
+            else runs.Add { First = col; Last = col; Format = format; Source = -1 }
+        outside @ (runs |> Seq.filter (fun style -> style.Format <> defaultFormat) |> List.ofSeq) |> List.sortBy (fun style -> style.First)
+
+/// Font or Interior of a format kept elsewhere (a conditional format's style, DisplayFormat): its colours,
+/// bold and italic, read from `format ()` and written with `change` (None: read only).
+let private styleObject (typeName: string) (interior: bool) (format: unit -> CellFormat) (change: ((CellFormat -> CellFormat) -> unit) option) =
+    let colorOf (f: CellFormat) = if interior then f.BgColor else f.TextColor
+    let withColor (color: string option) (f: CellFormat) = if interior then { f with BgColor = color } else { f with TextColor = color }
+    let write (f: CellFormat -> CellFormat) =
+        match change with
+        | Some apply -> apply f
+        | None -> failApp (sprintf "Unable to set a property of the %s class" typeName)
+    host typeName
+        (fun name ->
+            let f = format ()
+            if eq name "Color" then Some (VInteger (colorToLong (colorOf f) |> Option.defaultValue (if interior then 16777215 else 0)))
+            elif eq name "ColorIndex" then
+                Some (VInteger (match colorOf f with
+                                | None -> if interior then -4142 else -4105
+                                | Some c -> match Array.IndexOf(palette, c.ToUpperInvariant()) with -1 -> -4105 | i -> i + 1))
+            elif eq name "Pattern" && interior then Some (VInteger (if f.BgColor.IsSome then 1 else -4142))
+            elif eq name "Bold" && not interior then Some (VBoolean f.Bold)
+            elif eq name "Italic" && not interior then Some (VBoolean f.Italic)
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
+            else unsupported typeName name)
+        (fun name value ->
+            if eq name "Color" then write (withColor (Some (longToColor (toInt value)))); true
+            elif eq name "ColorIndex" then let i = toInt value in write (withColor (if i >= 1 && i <= 56 then Some palette.[i - 1] else None)); true
+            elif eq name "ThemeColor" then let c = themeColor (toInt value) in write (withColor (Some c)); true
+            elif eq name "TintAndShade" then let t = toFloat value in write (fun f -> withColor (colorOf f |> Option.map (tinted t)) f); true
+            elif eq name "Pattern" && interior then (if toInt value = -4142 then write (withColor None)); true
+            elif eq name "Bold" && not interior then let b = toBool value in write (fun f -> { f with Bold = b }); true
+            elif eq name "Italic" && not interior then let b = toBool value in write (fun f -> { f with Italic = b }); true
+            elif eq name "PatternColorIndex" || eq name "Strikethrough" || eq name "Underline" then true
+            else unsupported typeName name)
+        (fun name _ -> unsupported typeName name)
+
+/// Excel's 3-colour scale as AddColorScale(3) makes it (red, yellow, green), and the 2-colour one.
+let private defaultColorScale (stops: int) =
+    if stops = 2 then [ { Kind = CfvoMin; Value = None }, "#F8696B"; { Kind = CfvoMax; Value = None }, "#63BE7B" ]
+    else [ { Kind = CfvoMin; Value = None }, "#F8696B"; { Kind = CfvoPercentile; Value = Some "50" }, "#FFEB84"; { Kind = CfvoMax; Value = None }, "#63BE7B" ]
 
 let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
     let rows = r.Bottom - r.Top + 1
@@ -529,18 +727,39 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 for col in r.Left .. r.Right do
                     book.SetCell(r.Sheet, row, col, cellOf row col scalar)
     let format () = cellAt r.Top r.Left |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
+    let wholeRows = r.Left = 0 && r.Right = maxCol
+    let wholeCols = r.Top = 0 && r.Bottom = maxRow
     let changeFormats (change: CellFormat -> CellFormat) =
-        book.ChangeModel(r.Sheet, fun model ->
-            let mutable m = model
-            for row in r.Top .. min r.Bottom (r.Top + 100000) do
-                for col in r.Left .. min r.Right (r.Left + 16384) do
-                    m <- setCellFormat { Row = row; Col = col } change m
-            m)
+        if wholeRows || wholeCols then
+            // Whole columns, rows or the sheet (Cells.Interior.Color = vbWhite): the cells it has and those the
+            // grid shows, and for whole columns their default style (a cell made later starts from it).
+            book.ChangeModel(r.Sheet, fun model ->
+                let mutable m = model
+                let inside (a: CellAddress) = a.Row >= r.Top && a.Row <= r.Bottom && a.Col >= r.Left && a.Col <= r.Right
+                for KeyValue(address, _) in model.Cells do
+                    if inside address then m <- formatCell m address change
+                for row in r.Top .. min r.Bottom (model.RowCount - 1) do
+                    for col in r.Left .. min r.Right (model.ColCount - 1) do
+                        let address = { Row = row; Col = col }
+                        if not (Map.containsKey address model.Cells) then m <- formatCell m address change
+                if wholeCols then { m with ColumnStyles = restyledColumns m.ColumnStyles r.Left r.Right (Some change) } else m)
+        else
+            let bottom, right = min r.Bottom (r.Top + 100000), min r.Right (r.Left + 16384)
+            book.ChangeModel(r.Sheet, fun model ->
+                let mutable m = model
+                for row in r.Top .. bottom do
+                    for col in r.Left .. right do
+                        m <- formatCell m { Row = row; Col = col } change
+                m)
+            book.Grow(r.Sheet, bottom, right)
     let alignmentName (value: Value) (horizontal: bool) =
         match toInt value with
         | -4131 -> Some "left"
         | -4152 -> Some "right"
-        | -4108 | 7 -> if horizontal then Some "center" else Some "middle"
+        | -4108 -> if horizontal then Some "center" else Some "middle"
+        | 7 -> Some "centerContinuous"
+        | 5 -> Some "fill"
+        | -4117 -> Some "distributed"
         | -4130 -> Some "justify"
         | -4160 -> Some "top"
         | -4107 -> Some "bottom"
@@ -549,6 +768,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         match name with
         | Some "left" -> -4131 | Some "right" -> -4152 | Some "center" | Some "middle" -> -4108
         | Some "justify" -> -4130 | Some "top" -> -4160 | Some "bottom" -> -4107
+        | Some "centerContinuous" -> 7 | Some "fill" -> 5 | Some "distributed" -> -4117
         | _ -> if horizontal then 1 else -4107
     let used () =
         let model = book.Model r.Sheet
@@ -603,11 +823,10 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             if address.Row >= r.Top && address.Row <= r.Bottom && address.Col >= r.Left && address.Col <= r.Right then
                 book.SetCell(r.Sheet, address.Row, address.Col, (if cell.Format = defaultFormat && cell.Comment.IsNone then None else Some { cell with Value = CellValue.Empty }))
     let clearFormats () =
+        if wholeCols then book.ChangeModel(r.Sheet, fun m -> { m with ColumnStyles = restyledColumns m.ColumnStyles r.Left r.Right None })
         for (address, cell) in book.Model(r.Sheet).Cells |> Map.toList do
             if address.Row >= r.Top && address.Row <= r.Bottom && address.Col >= r.Left && address.Col <= r.Right then
                 book.SetCell(r.Sheet, address.Row, address.Col, (if cell.Value = CellValue.Empty && cell.Comment.IsNone then None else Some { cell with Format = defaultFormat }))
-    let wholeRows = r.Left = 0 && r.Right = maxCol
-    let wholeCols = r.Top = 0 && r.Bottom = maxRow
     let copyTo (target: RangeRef) (what: int) =
         let source = [ for row in r.Top .. r.Bottom do for col in r.Left .. r.Right -> row, col, cellAt row col ]
         let dr, dc = target.Top - r.Top, target.Left - r.Left
@@ -623,6 +842,285 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                     let value = match c.Value with Formula (text, _) -> Formula (Rbt.Spreadsheet.Formula.shiftFormulaText dr dc text, CellValue.Empty) | v -> v
                     Some { c with Value = value }
             book.SetCell(target.Sheet, row + dr, col + dc, next)
+    // ---- borders: a line between two cells is one line (setting the bottom of A1 is setting the top of A2) ----
+    let formatIn (model: SpreadsheetModel) row col = getCell { Row = row; Col = col } model |> Option.map (fun c -> c.Format)
+    /// The sides Borders(index) stands for, (row, col, side) of the range's cells, each with the side of the
+    /// cell beyond it that is the same line, when there is one.
+    let bordersSides (index: int option) =
+        // (Whole rows or columns: as far as the grid goes.)
+        let model = book.Model r.Sheet
+        let bottom = if wholeCols then min r.Bottom (max r.Top (model.RowCount - 1)) else min r.Bottom (r.Top + 100000)
+        let right = if wholeRows then min r.Right (max r.Left (model.ColCount - 1)) else min r.Right (r.Left + 16384)
+        let opposite side = match side with 0 -> 3 | 1 -> 2 | 2 -> 1 | 3 -> 0 | other -> other
+        let beyond row col side = match side with 0 -> row, col - 1 | 1 -> row - 1, col | 2 -> row + 1, col | _ -> row, col + 1
+        let sides =
+            match index with
+            | None -> [ for row in r.Top .. bottom do for col in r.Left .. right do for side in 0 .. 3 -> row, col, side ]
+            | Some 7 | Some -4131 -> [ for row in r.Top .. bottom -> row, r.Left, 0 ]
+            | Some 8 | Some -4160 -> [ for col in r.Left .. right -> r.Top, col, 1 ]
+            | Some 9 | Some -4107 -> [ for col in r.Left .. right -> bottom, col, 2 ]
+            | Some 10 | Some -4152 -> [ for row in r.Top .. bottom -> row, right, 3 ]
+            | Some 11 -> [ for row in r.Top .. bottom do for col in r.Left .. right - 1 -> row, col, 3 ]
+            | Some 12 -> [ for row in r.Top .. bottom - 1 do for col in r.Left .. right -> row, col, 2 ]
+            | Some 5 -> [ for row in r.Top .. bottom do for col in r.Left .. right -> row, col, 4 ]
+            | Some 6 -> [ for row in r.Top .. bottom do for col in r.Left .. right -> row, col, 5 ]
+            | Some _ -> failApp "Unable to get the Item property of the Borders class"
+        sides |> List.map (fun (row, col, side) ->
+            let nr, nc = beyond row col side
+            (row, col, side), (if side < 4 && nr >= 0 && nc >= 0 && nr <= maxRow && nc <= maxCol then Some (nr, nc, opposite side) else None))
+    let borderIn (model: SpreadsheetModel) ((row, col, side), shared) =
+        match formatIn model row col |> Option.bind (fun f -> sideOf f side) with
+        | Some border -> Some border
+        | None -> shared |> Option.bind (fun (nr, nc, ns) -> formatIn model nr nc |> Option.bind (fun f -> sideOf f ns))
+    let changeBorders (index: int option) (update: BorderStyle option -> BorderStyle option) =
+        let sides = bordersSides index
+        book.ChangeModel(r.Sheet, fun model ->
+            let mutable m = model
+            for ((row, col, side), shared) as entry in sides do
+                let next = update (borderIn m entry)
+                m <- formatCell m { Row = row; Col = col } (withSide side next)
+                // (The cell beyond has the same line, as Excel keeps both cells' borders: A1's bottom stays
+                // when row 2 is deleted, A2's top reads what A1's bottom was set to.)
+                match shared with
+                | Some (nr, nc, ns) when next.IsSome || (formatIn m nr nc |> Option.bind (fun f -> sideOf f ns)).IsSome ->
+                    m <- formatCell m { Row = nr; Col = nc } (withSide ns next)
+                | _ -> ()
+            m)
+        book.Grow(r.Sheet, (if wholeCols then 0 else min r.Bottom (r.Top + 100000)), (if wholeRows then 0 else min r.Right (r.Left + 16384)))
+        ignore sides
+    let rec borderObject (index: int option) =
+        let read (name: string) : Value option =
+            let one (pick: BorderStyle option -> Value) =
+                let model = book.Model r.Sheet
+                match bordersSides index |> List.map (borderIn model >> pick) |> List.distinct with
+                | [ v ] -> v
+                | _ -> VNull
+            if eq name "LineStyle" || eq name "Value" then Some (one (function Some b -> VInteger (fst (lineOfStyle b.Style)) | None -> VInteger xlLineStyleNone))
+            elif eq name "Weight" then Some (one (function Some b -> VInteger (snd (lineOfStyle b.Style)) | None -> VInteger 2))
+            elif eq name "Color" then Some (one (function Some { Color = Some c } -> VInteger (colorToLong (Some c) |> Option.defaultValue 0) | _ -> VInteger 0))
+            elif eq name "ColorIndex" then
+                Some (one (function
+                    | Some { Color = Some c } -> VInteger (match Array.IndexOf(palette, c.ToUpperInvariant()) with -1 -> -4105 | i -> i + 1)
+                    | Some _ -> VInteger -4105
+                    | None -> VInteger -4142))
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
+            elif eq name "Count" && index.IsNone then Some (VInteger 6)
+            else None
+        let write (name: string) (value: Value) =
+            let styled (current: BorderStyle option) = current |> Option.defaultValue { Style = "thin"; Color = None }
+            if eq name "LineStyle" || eq name "Value" then
+                let lineStyle = match scalarOf value with VNull | VEmpty -> xlLineStyleNone | v -> toInt v
+                changeBorders index (fun current ->
+                    let weight = current |> Option.map (fun b -> snd (lineOfStyle b.Style)) |> Option.defaultValue 2
+                    styleOfLine lineStyle weight |> Option.map (fun style -> { Style = style; Color = current |> Option.bind (fun b -> b.Color) }))
+            elif eq name "Weight" then
+                let weight = toInt value
+                changeBorders index (fun current ->
+                    let lineStyle = current |> Option.map (fun b -> fst (lineOfStyle b.Style)) |> Option.defaultValue xlContinuous
+                    styleOfLine lineStyle weight |> Option.map (fun style -> { Style = style; Color = current |> Option.bind (fun b -> b.Color) }))
+            elif eq name "Color" then
+                let color = longToColor (toInt value)
+                changeBorders index (fun current -> Some { styled current with Color = Some color })
+            elif eq name "ColorIndex" then
+                let i = toInt value
+                changeBorders index (fun current -> Some { styled current with Color = (if i >= 1 && i <= 56 then Some palette.[i - 1] else None) })
+            elif eq name "ThemeColor" then
+                let color = themeColor (toInt value)
+                changeBorders index (fun current -> Some { styled current with Color = Some color })
+            elif eq name "TintAndShade" then
+                let amount = toFloat value
+                changeBorders index (Option.map (fun b -> { b with Color = b.Color |> Option.map (tinted amount) }))
+            else unsupported "Border" name
+            true
+        host (if index.IsNone then "Borders" else "Border")
+            (fun name -> match read name with Some v -> Some v | None -> unsupported (if index.IsNone then "Borders" else "Border") name)
+            write
+            (fun name args ->
+                if index.IsNone && (name = "" || eq name "_Default" || eq name "Item") && args.Length = 1 then Some (borderObjectAt (toInt args.[0]))
+                else match read name with Some v when args.Length = 0 -> Some v | _ -> unsupported "Borders" name)
+    and borderObjectAt (index: int) = borderObject (Some index)
+    // ---- notes (Range.Comment) and Range.ID ----
+    let noteOf () = getCell { Row = r.Top; Col = r.Left } (book.Model r.Sheet) |> Option.bind (fun c -> c.Comment)
+    let setNote (note: CellComment option) =
+        book.ChangeModel(r.Sheet, fun model ->
+            let address = { Row = r.Top; Col = r.Left }
+            match Map.tryFind address model.Cells, note with
+            | Some data, _ -> { model with Cells = Map.add address { data with Comment = note; Format = { data.Format with HasComment = note.IsSome } } model.Cells }
+            | None, Some _ -> { model with Cells = Map.add address { Value = CellValue.Empty; Format = { defaultFormat with HasComment = true }; Comment = note } model.Cells }
+            | None, None -> model)
+    let commentObject () =
+        let text () = noteOf () |> Option.map (fun n -> n.Text) |> Option.defaultValue ""
+        host "Comment"
+            (fun name ->
+                if eq name "Text" then Some (VString (text ()))
+                elif eq name "Author" then Some (VString (noteOf () |> Option.bind (fun n -> n.Author) |> Option.defaultValue ""))
+                elif eq name "Visible" then Some (VBoolean false)
+                elif eq name "Delete" then setNote None; Some VEmpty
+                elif eq name "Parent" then Some (rangeObject book r)
+                else unsupported "Comment" name)
+            (fun name _ -> if eq name "Visible" then true else unsupported "Comment" name)
+            (fun name args ->
+                if eq name "Text" then
+                    // Text(Text, Start, Overwrite): the note's text, replaced (or inserted at Start).
+                    if args.Length >= 1 && not (isMissing args.[0]) then
+                        let start = if args.Length >= 2 && not (isMissing args.[1]) then toInt args.[1] else 0
+                        let overwrite = if args.Length >= 3 && not (isMissing args.[2]) then toBool args.[2] else true
+                        let current = text ()
+                        let next =
+                            if start <= 0 then toText args.[0]
+                            else
+                                let at = min current.Length (start - 1)
+                                if overwrite then current.Substring(0, at) + toText args.[0] else current.Insert(at, toText args.[0])
+                        setNote (Some { (noteOf () |> Option.defaultValue (plainNote "" None)) with Text = next; Runs = [] })
+                    Some (VString (text ()))
+                elif eq name "Delete" then setNote None; Some VEmpty
+                else unsupported "Comment" name)
+    let idKey () = sprintf "__id\t%s\t%d\t%d" r.Sheet r.Top r.Left
+    // ---- conditional formats of the range (FormatConditions) ----
+    let thisRange : CellRange = { From = { Row = r.Top; Col = r.Left }; To = { Row = r.Bottom; Col = r.Right } }
+    let overlaps (cr: CellRange) = not (cr.To.Row < r.Top || cr.From.Row > r.Bottom || cr.To.Col < r.Left || cr.From.Col > r.Right)
+    let conditions () =
+        book.Model(r.Sheet).ConditionalFormats |> List.filter (fun e -> e.Ranges |> List.exists overlaps) |> List.sortBy (fun e -> e.Priority)
+    let conditionObject (id: int) =
+        let entry () =
+            match book.Model(r.Sheet).ConditionalFormats |> List.tryFind (fun e -> e.Id = id) with
+            | Some e -> e
+            | None -> failApp "Application-defined or object-defined error"
+        let update (f: ConditionalFormatRange -> ConditionalFormatRange) =
+            book.ChangeModel(r.Sheet, fun m -> { m with ConditionalFormats = m.ConditionalFormats |> List.map (fun e -> if e.Id = id then f e else e) })
+        let changeStyle (f: CellFormat -> CellFormat) = update (fun e -> { e with Format = { e.Format with Style = f e.Format.Style } })
+        let stops () = match (entry ()).Format.Rule with ColorScale stops -> stops | _ -> failApp "This condition is not a colour scale"
+        let changeStop (index: int) (f: CfThreshold * string -> CfThreshold * string) =
+            update (fun e ->
+                match e.Format.Rule with
+                | ColorScale stops -> { e with Format = { e.Format with Rule = ColorScale (stops |> List.mapi (fun i stop -> if i = index - 1 then f stop else stop)) } }
+                | _ -> e)
+        let criterion (index: int) =
+            let stop () = match List.tryItem (index - 1) (stops ()) with Some s -> s | None -> fail 9 "Subscript out of range"
+            let kindValue (kind: CfThresholdKind) =
+                match kind with CfvoNumber -> 0 | CfvoMin -> 1 | CfvoMax -> 2 | CfvoPercent -> 3 | CfvoFormula -> 4 | CfvoPercentile -> 5 | _ -> -1
+            host "ColorScaleCriterion"
+                (fun name ->
+                    let threshold, color = stop ()
+                    if eq name "Type" then Some (VInteger (kindValue threshold.Kind))
+                    elif eq name "Value" then Some (match threshold.Value with Some v -> (match Double.TryParse(v, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with | true, n -> VDouble n | _ -> VString v) | None -> VEmpty)
+                    elif eq name "FormatColor" then
+                        Some (styleObject "FormatColor" true (fun () -> { defaultFormat with BgColor = Some (snd (stop ())) })
+                                (Some (fun f -> changeStop index (fun (t, c) -> t, (f { defaultFormat with BgColor = Some c }).BgColor |> Option.defaultValue c))))
+                    else unsupported "ColorScaleCriterion" name)
+                (fun name value ->
+                    if eq name "Type" then
+                        let kind = match toInt value with 0 -> CfvoNumber | 1 -> CfvoMin | 2 -> CfvoMax | 3 -> CfvoPercent | 4 -> CfvoFormula | 5 -> CfvoPercentile | _ -> CfvoMin
+                        changeStop index (fun (t, c) -> { t with Kind = kind; Value = (if kind = CfvoMin || kind = CfvoMax then None else t.Value) }, c); true
+                    elif eq name "Value" then changeStop index (fun (t, c) -> { t with Value = Some ((toText value).TrimStart '=') }, c); true
+                    else unsupported "ColorScaleCriterion" name)
+                (fun name _ -> unsupported "ColorScaleCriterion" name)
+        host "FormatCondition"
+            (fun name ->
+                if eq name "Font" then Some (styleObject "Font" false (fun () -> (entry ()).Format.Style) (Some changeStyle))
+                elif eq name "Interior" then Some (styleObject "Interior" true (fun () -> (entry ()).Format.Style) (Some changeStyle))
+                elif eq name "Type" then Some (VInteger (match (entry ()).Format.Rule with CellIs _ -> 1 | Expression _ -> 2 | ColorScale _ -> 3 | DataBar _ | DataBarEx _ -> 4 | _ -> 1))
+                elif eq name "Priority" then Some (VInteger (entry ()).Priority)
+                elif eq name "StopIfTrue" then Some (VBoolean (entry ()).StopIfTrue)
+                elif eq name "Formula1" then Some (match (entry ()).Format.Rule with CellIs (_, f, _) | Expression f -> VString ("=" + f) | _ -> VString "")
+                elif eq name "SetFirstPriority" then book.ChangeModel(r.Sheet, SheetOps.moveConditionalFormat "SetFirstPriority" id 1); Some VEmpty
+                elif eq name "Delete" then book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" id); Some VEmpty
+                elif eq name "ColorScaleCriteria" then
+                    Some (collection "ColorScaleCriteria"
+                            (fun n -> if eq n "Count" then Some (VInteger (stops ()).Length) else unsupported "ColorScaleCriteria" n)
+                            (fun n _ -> unsupported "ColorScaleCriteria" n)
+                            (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (criterion (toInt args.[0])) else unsupported "ColorScaleCriteria" n)
+                            (fun () -> (stops ()) |> List.mapi (fun i _ -> criterion (i + 1)) |> Seq.ofList))
+                else None
+                |> function Some v -> Some v | None -> unsupported "FormatCondition" name)
+            (fun name value ->
+                if eq name "StopIfTrue" then update (fun e -> { e with StopIfTrue = toBool value }); true
+                else unsupported "FormatCondition" name)
+            (fun name args ->
+                if eq name "ColorScaleCriteria" && args.Length = 1 then Some (criterion (toInt args.[0]))
+                elif eq name "SetFirstPriority" then book.ChangeModel(r.Sheet, SheetOps.moveConditionalFormat "SetFirstPriority" id 1); Some VEmpty
+                elif eq name "Delete" then book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" id); Some VEmpty
+                else unsupported "FormatCondition" name)
+    let addCondition (rule: ConditionalFormatRule) =
+        let highest = book.SheetOrder |> List.fold (fun value id -> max value (SheetOps.highestConditionalFormatId (book.Model id))) 0
+        let id = highest + 1
+        book.ChangeModel(r.Sheet, SheetOps.addConditionalFormatWithId id [ thisRange ] false { Rule = rule; Style = defaultFormat })
+        conditionObject id
+    let formatConditions () =
+        let item (i: int) =
+            match List.tryItem (i - 1) (conditions ()) with
+            | Some e -> conditionObject e.Id
+            | None -> fail 9 "Subscript out of range"
+        let add (args: Value array) =
+            let arg i = if i < args.Length then args.[i] else VEmpty
+            let formula (v: Value) = (toText v).TrimStart '='
+            match (if isMissing (arg 0) then 1 else toInt (arg 0)) with
+            | 2 -> addCondition (Expression (formula (arg 2)))
+            | 1 ->
+                let op =
+                    match (if isMissing (arg 1) then 1 else toInt (arg 1)) with
+                    | 1 -> OpBetween | 2 -> OpNotBetween | 3 -> OpEqual | 4 -> OpNotEqual
+                    | 5 -> OpGreaterThan | 6 -> OpLessThan | 7 -> OpGreaterOrEqual | _ -> OpLessOrEqual
+                addCondition (CellIs (op, formula (arg 2), (if isMissing (arg 3) then None else Some (formula (arg 3)))))
+            | other -> failApp (sprintf "FormatConditions.Add of type %d is not supported" other)
+        collection "FormatConditions"
+            (fun name ->
+                if eq name "Count" then Some (VInteger (conditions ()).Length)
+                elif eq name "Delete" then
+                    for e in conditions () do book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" e.Id)
+                    Some VEmpty
+                else unsupported "FormatConditions" name)
+            (fun name _ -> unsupported "FormatConditions" name)
+            (fun name args ->
+                if (name = "" || eq name "Item") && args.Length = 1 then Some (item (toInt args.[0]))
+                elif eq name "Add" then Some (add args)
+                elif eq name "AddColorScale" then Some (addCondition (ColorScale (defaultColorScale (if args.Length > 0 && not (isMissing args.[0]) then toInt args.[0] else 3))))
+                elif eq name "Delete" then
+                    for e in conditions () do book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" e.Id)
+                    Some VEmpty
+                elif eq name "Count" then Some (VInteger (conditions ()).Length)
+                else unsupported "FormatConditions" name)
+            (fun () -> conditions () |> List.map (fun e -> conditionObject e.Id) |> Seq.ofList)
+    /// What the first cell shows with (DisplayFormat): its format, with a conditional format that holds on it.
+    let displayed () =
+        let model = book.Model r.Sheet
+        let address = { Row = r.Top; Col = r.Left }
+        let own = SheetOps.effectiveFormat model address
+        if model.ConditionalFormats.IsEmpty then own
+        else
+            cellAt r.Top r.Left |> ignore  // (calculated first)
+            let context = ConditionalFormatting.createContext evaluateFormulaAt (book.Model r.Sheet)
+            match ConditionalFormatting.effectAt context address with
+            | Some effect -> ConditionalFormatting.applyEffect effect own
+            | None -> own
+    let displayFormatObject () =
+        host "DisplayFormat"
+            (fun name ->
+                if eq name "Interior" then Some (styleObject "Interior" true displayed None)
+                elif eq name "Font" then Some (styleObject "Font" false displayed None)
+                elif eq name "NumberFormat" then Some (VString ((displayed ()).NumberFormat |> Option.defaultValue "General"))
+                elif eq name "HorizontalAlignment" then Some (VInteger 1)
+                else unsupported "DisplayFormat" name)
+            (fun name _ -> unsupported "DisplayFormat" name)
+            (fun name _ -> unsupported "DisplayFormat" name)
+    /// Replace(What, Replacement, LookAt, SearchOrder, MatchCase): in the values of the range's cells, each
+    /// entered again as typing would (a cell left "" is empty).
+    let replace (args: Value array) =
+        let arg i = if i < args.Length then args.[i] else VEmpty
+        let what = toText (arg 0)
+        let replacement = toText (arg 1)
+        let whole = not (isMissing (arg 2)) && toInt (arg 2) = 1
+        let matchCase = not (isMissing (arg 4)) && toBool (arg 4)
+        if what <> "" then
+            let cells = book.Model(r.Sheet).Cells |> Map.toList |> List.filter (fun (a, _) -> a.Row >= r.Top && a.Row <= r.Bottom && a.Col >= r.Left && a.Col <= r.Right)
+            for (a, cell) in cells do
+                let text = match cell.Value with Formula (f, _) -> (if f.StartsWith "=" then f else "=" + f) | v -> toText (cellValue v)
+                let next =
+                    if whole then (if String.Equals(text, what, (if matchCase then StringComparison.Ordinal else StringComparison.OrdinalIgnoreCase)) then replacement else text)
+                    elif matchCase then text.Replace(what, replacement)
+                    else Text.RegularExpressions.Regex.Replace(text, Text.RegularExpressions.Regex.Escape what, replacement.Replace("$", "$$"), Text.RegularExpressions.RegexOptions.IgnoreCase)
+                if next <> text then book.SetCell(r.Sheet, a.Row, a.Col, entered book r.Sheet a.Row a.Col (VString next))
+        VBoolean true
     let fontObject () =
         let get (name: string) =
             let f = format ()
@@ -634,6 +1132,8 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             elif eq name "Name" then Some (VString (f.FontName |> Option.defaultValue "Calibri"))
             elif eq name "Color" then Some (VDouble (float (colorToLong f.TextColor |> Option.defaultValue 0)))
             elif eq name "ColorIndex" then Some (VInteger (match f.TextColor with None -> -4105 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
+            elif eq name "FontStyle" then Some (VString (match f.Bold, f.Italic with true, true -> "Bold Italic" | true, false -> "Bold" | false, true -> "Italic" | _ -> "Regular"))
             else None
         let set (name: string) (value: Value) =
             if eq name "Bold" then changeFormats (fun f -> { f with Bold = toBool value }); true
@@ -648,6 +1148,15 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             elif eq name "ColorIndex" then
                 let i = toInt value
                 changeFormats (fun f -> { f with TextColor = (if i >= 1 && i <= 56 then Some palette.[i - 1] else None) }); true
+            elif eq name "ThemeColor" then
+                let color = themeColor (toInt value)
+                changeFormats (fun f -> { f with TextColor = Some color }); true
+            elif eq name "TintAndShade" then
+                let amount = toFloat value
+                changeFormats (fun f -> { f with TextColor = f.TextColor |> Option.map (tinted amount) }); true
+            elif eq name "FontStyle" then
+                let style = (toText value).ToLowerInvariant()
+                changeFormats (fun f -> { f with Bold = style.Contains "bold"; Italic = style.Contains "italic" }); true
             else unsupported "Font" name
         host "Font" (fun name -> match get name with Some v -> Some v | None -> unsupported "Font" name) set (fun name _ -> unsupported "Font" name)
     let interiorObject () =
@@ -656,6 +1165,8 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             if eq name "Color" then Some (VDouble (float (colorToLong f.BgColor |> Option.defaultValue 16777215)))
             elif eq name "ColorIndex" then Some (VInteger (match f.BgColor with None -> -4142 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
             elif eq name "Pattern" then Some (VInteger (if f.BgColor.IsSome then 1 else -4142))
+            elif eq name "ThemeColor" || eq name "TintAndShade" || eq name "PatternTintAndShade" then Some (VInteger 0)
+            elif eq name "PatternColorIndex" then Some (VInteger -4105)
             else unsupported "Interior" name
         let set (name: string) (value: Value) =
             if eq name "Color" then changeFormats (fun f -> { f with BgColor = Some (longToColor (toInt value)) }); true
@@ -664,6 +1175,13 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 changeFormats (fun f -> { f with BgColor = (if i >= 1 && i <= 56 then Some palette.[i - 1] else None) }); true
             elif eq name "Pattern" then
                 (if toInt value = -4142 then changeFormats (fun f -> { f with BgColor = None })); true
+            elif eq name "ThemeColor" then
+                let color = themeColor (toInt value)
+                changeFormats (fun f -> { f with BgColor = Some color }); true
+            elif eq name "TintAndShade" then
+                let amount = toFloat value
+                changeFormats (fun f -> { f with BgColor = f.BgColor |> Option.map (tinted amount) }); true
+            elif eq name "PatternColorIndex" || eq name "PatternTintAndShade" || eq name "PatternColor" || eq name "PatternThemeColor" then true
             else unsupported "Interior" name
         host "Interior" get set (fun name _ -> unsupported "Interior" name)
     let lines (vertical: bool) =
@@ -708,15 +1226,29 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "NumberFormat" || eq name "NumberFormatLocal" then Some (VString (format().NumberFormat |> Option.defaultValue "General"))
         elif eq name "Font" then Some (fontObject ())
         elif eq name "Interior" then Some (interiorObject ())
+        elif eq name "Borders" then Some (borderObject None)
+        elif eq name "FormatConditions" then Some (formatConditions ())
+        elif eq name "DisplayFormat" then Some (displayFormatObject ())
+        elif eq name "Comment" then Some (if (noteOf ()).IsSome then commentObject () else VNothing)
+        elif eq name "ClearComments" then
+            let inside (a: CellAddress) = a.Row >= r.Top && a.Row <= r.Bottom && a.Col >= r.Left && a.Col <= r.Right
+            let clear (a: CellAddress) (data: CellData) =
+                if inside a && data.Comment.IsSome then { data with Comment = None; Format = { data.Format with HasComment = false } } else data
+            book.ChangeModel(r.Sheet, fun model -> { model with Cells = model.Cells |> Map.map clear })
+            Some VEmpty
+        elif eq name "ID" then Some (book.Setting (idKey ()) |> Option.defaultValue (VString ""))
+        elif eq name "Locked" then Some (book.Setting ("__locked" + idKey ()) |> Option.defaultValue (VBoolean true))
         elif eq name "HorizontalAlignment" then Some (VInteger (alignmentValue (format().HorizontalAlign) true))
         elif eq name "VerticalAlignment" then Some (VInteger (alignmentValue (format().VerticalAlign) false))
         elif eq name "WrapText" then Some (VBoolean (format().WrapText))
         elif eq name "IndentLevel" then Some (VInteger (format().Indent))
+        elif eq name "Orientation" then
+            Some (VInteger (match format().TextRotation with 0 -> -4128 | 255 -> -4166 | d when d > 90 -> -(d - 90) | d -> d))
         elif eq name "MergeCells" then
             Some (VBoolean (book.Model(r.Sheet).MergedCells |> List.exists (fun m -> m.StartRow <= r.Top && m.EndRow >= r.Top && m.StartCol <= r.Left && m.EndCol >= r.Left)))
         elif eq name "ColumnWidth" then
             let px = book.Model(r.Sheet).ColumnWidths |> Map.tryFind r.Left |> Option.defaultValue (book.Model(r.Sheet).DefaultColumnWidth)
-            Some (VDouble (Math.Round(max 0.0 ((px - 5.0) / 7.0), 2)))
+            Some (VDouble (if px < 12.0 then Math.Round(px / 12.0, 2) else Math.Round((px - 5.0) / 7.0, 2)))
         elif eq name "RowHeight" then
             let px = book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top |> Option.defaultValue (book.Model(r.Sheet).DefaultRowHeight)
             Some (VDouble (Math.Round(px * 0.75, 2)))
@@ -751,12 +1283,37 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "VerticalAlignment" then changeFormats (fun f -> { f with VerticalAlign = alignmentName value false }); true
         elif eq name "WrapText" then changeFormats (fun f -> { f with WrapText = toBool value }); true
         elif eq name "IndentLevel" then changeFormats (fun f -> { f with Indent = toInt value }); true
+        elif eq name "Orientation" then
+            // xlHorizontal, xlVertical (stacked), xlUpward, xlDownward, or degrees (-90 .. 90).
+            let rotation =
+                match toInt value with
+                | -4128 -> 0
+                | -4166 -> 255
+                | -4171 -> 90
+                | -4170 -> 180
+                | d when d >= 0 && d <= 90 -> d
+                | d when d < 0 && d >= -90 -> 90 - d
+                | _ -> failApp "Unable to set the Orientation property of the Range class"
+            changeFormats (fun f -> { f with TextRotation = rotation }); true
         elif eq name "ColumnWidth" then
-            let px = toFloat value * 7.0 + 5.0
-            book.ChangeModel(r.Sheet, fun m -> { m with ColumnWidths = [ r.Left .. r.Right ] |> List.fold (fun acc c -> Map.add c px acc) m.ColumnWidths }); true
+            // (Excel: a width under one character is 12 px a character; from one on, 7 px each and 5 of padding.)
+            let width = toFloat value
+            let px = if width <= 0.0 then 0.0 elif width < 1.0 then Math.Round(width * 12.0) else Math.Floor((256.0 * width + 18.0) / 256.0 * 7.0) + 5.0
+            if wholeRows then
+                // Every column: the sheet's default width.
+                book.ChangeModel(r.Sheet, fun m -> { m with DefaultColumnWidth = px; ColumnWidths = Map.empty })
+            else
+                book.ChangeModel(r.Sheet, fun m -> { m with ColumnWidths = [ r.Left .. r.Right ] |> List.fold (fun acc c -> Map.add c px acc) m.ColumnWidths })
+            (if not wholeRows then book.Grow(r.Sheet, 0, r.Right))
+            true
         elif eq name "RowHeight" then
             let px = toFloat value / 0.75
-            book.ChangeModel(r.Sheet, fun m -> { m with RowHeights = [ r.Top .. min r.Bottom (r.Top + 100000) ] |> List.fold (fun acc row -> Map.add row px acc) m.RowHeights }); true
+            if wholeCols then
+                book.ChangeModel(r.Sheet, fun m -> { m with DefaultRowHeight = px; RowHeights = Map.empty })
+            else
+                book.ChangeModel(r.Sheet, fun m -> { m with RowHeights = [ r.Top .. min r.Bottom (r.Top + 100000) ] |> List.fold (fun acc row -> Map.add row px acc) m.RowHeights })
+            (if not wholeCols then book.Grow(r.Sheet, r.Bottom, 0))
+            true
         elif eq name "Hidden" then
             let hidden = toBool value
             if wholeCols then
@@ -764,6 +1321,8 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             else
                 book.ChangeModel(r.Sheet, fun m -> { m with RowHeights = [ r.Top .. r.Bottom ] |> List.fold (fun acc row -> if hidden then Map.add row 0.0 acc else Map.remove row acc) m.RowHeights })
             true
+        elif eq name "ID" then book.SetSetting(idKey (), VString (toText value)); true
+        elif eq name "Locked" || eq name "FormulaHidden" then book.SetSetting("__locked" + idKey (), VBoolean (toBool value)); true
         elif eq name "MergeCells" then
             (if toBool value then (rangeObject book r |> function VHostObject h -> h.CallMethod "Merge" [||] |> ignore | _ -> ())
              else (rangeObject book r |> function VHostObject h -> h.CallMethod "UnMerge" [||] |> ignore | _ -> ()))
@@ -869,6 +1428,25 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             book.ChangeModel(r.Sheet, fun m -> { m with MergedCells = m.MergedCells |> List.filter (fun x -> x.EndRow < r.Top || x.StartRow > r.Bottom || x.EndCol < r.Left || x.StartCol > r.Right) })
             Some VEmpty
         elif eq name "AutoFit" then Some VEmpty
+        elif eq name "Borders" && args.Length = 1 then Some (borderObject (Some (toInt args.[0])))
+        elif eq name "FormatConditions" && args.Length = 1 then
+            match formatConditions () with VHostObject h -> h.CallMethod "Item" args | _ -> None
+        elif eq name "Replace" then Some (replace args)
+        elif eq name "BorderAround" then
+            let lineStyle = if isMissing (arg 0) then xlContinuous else toInt (arg 0)
+            let weight = if isMissing (arg 1) then 2 else toInt (arg 1)
+            let color =
+                if args.Length > 3 && not (isMissing (arg 3)) then Some (longToColor (toInt (arg 3)))
+                elif args.Length > 4 && not (isMissing (arg 4)) then Some (themeColor (toInt (arg 4)))
+                elif args.Length > 2 && not (isMissing (arg 2)) then (let i = toInt (arg 2) in if i >= 1 && i <= 56 then Some palette.[i - 1] else None)
+                else None
+            let border = styleOfLine lineStyle weight |> Option.map (fun style -> { Style = style; Color = color })
+            for edge in [ 7; 8; 9; 10 ] do changeBorders (Some edge) (fun _ -> border)
+            Some (VBoolean true)
+        elif eq name "AddComment" then
+            if (noteOf ()).IsSome then failApp "Application-defined or object-defined error"
+            setNote (Some (plainNote (if args.Length > 0 && not (isMissing args.[0]) then toText args.[0] else "") None))
+            Some (commentObject ())
         elif eq name "Find" then
             let what = toText (arg 0)
             let whole = args.Length > 4 && not (isMissing (arg 4)) && toInt (arg 4) = 1
@@ -1018,6 +1596,8 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
         elif eq name "Rows" then Some (lines false)
         elif eq name "Columns" then Some (lines true)
         elif eq name "UsedRange" then Some (usedRange ())
+        elif eq name "Shapes" then Some (shapesObject book sheetId false)
+        elif eq name "ChartObjects" then Some (shapesObject book sheetId true)
         elif eq name "Visible" then Some (VInteger (if (book.Sheet sheetId).Visible then -1 elif (book.Model sheetId).VeryHidden then 2 else 0))
         elif eq name "Parent" then Some (workbookObject book)
         elif eq name "Type" then Some (VInteger -4167)
@@ -1031,6 +1611,11 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
             Some (if at > 0 then worksheetObject book order.[at - 1] else VNothing)
         elif eq name "Activate" || eq name "Select" then book.SetActiveSheet sheetId; Some VEmpty
         elif eq name "Calculate" then Some VEmpty
+        // (Protection is kept for the macro to read back; the grid does not lock the sheet.)
+        elif eq name "Protect" then book.SetSetting("__protected\t" + sheetId, VBoolean true); Some VEmpty
+        elif eq name "Unprotect" then book.SetSetting("__protected\t" + sheetId, VBoolean false); Some VEmpty
+        elif eq name "ProtectContents" || eq name "ProtectDrawingObjects" || eq name "ProtectScenarios" then
+            Some (book.Setting ("__protected\t" + sheetId) |> Option.defaultValue (VBoolean false))
         elif eq name "Delete" then
             (match deleteSheet sheetId book.Workbook with
              | Some _ -> book.ChangeWorkbook(fun wb -> deleteSheet sheetId wb |> Option.defaultValue wb)
@@ -1061,11 +1646,284 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
             | _ -> match rangeObject book whole with VHostObject h -> h.CallMethod "Cells" args | _ -> None
         elif eq name "Rows" then Some (lineRange false args)
         elif eq name "Columns" then Some (lineRange true args)
+        elif eq name "Protect" || eq name "Unprotect" then get name
+        elif (eq name "Shapes" || eq name "ChartObjects") && args.Length = 1 then
+            match shapesObject book sheetId (eq name "ChartObjects") with
+            | VHostObject h -> h.CallMethod "Item" args
+            | _ -> None
         else
             match get name with
             | Some value when args.Length = 0 -> Some value
             | _ -> unsupported "Worksheet" name
     host "Worksheet" (fun name -> match get name with Some v -> Some v | None -> unsupported "Worksheet" name) set call
+
+// ---- shapes and charts: the charts a macro makes (Shapes.AddChart, ChartObjects.Add) ----
+
+/// The objects of a sheet (Shapes; ChartObjects: its charts only): by index or name, Count, AddChart /
+/// AddChart2 / Add (a chart, drawn by the grid's chart renderer from the series the macro gives it).
+and private shapesObject (book: MacroWorkbook) (sheetId: SheetId) (chartsOnly: bool) : Value =
+    let typeName = if chartsOnly then "ChartObjects" else "Shapes"
+    let drawings () =
+        (book.Model sheetId).Drawings
+        |> List.filter (fun d -> not chartsOnly || (match d.Content with KeptObject ("chart", _) -> true | _ -> false))
+    let pointsToPixels (points: float) = points * 4.0 / 3.0
+    /// The cell a position (in points from the sheet's top left) falls in, and the offset into it, in pixels.
+    let cellAt (left: float) (top: float) =
+        let model = book.Model sheetId
+        let walk (target: float) (size: int -> float) =
+            let mutable index = 0
+            let mutable edge = 0.0
+            while edge + size index <= target && index < 16383 do
+                edge <- edge + size index
+                index <- index + 1
+            index, target - edge
+        let col, dx = walk (pointsToPixels left) (fun c -> model.ColumnWidths |> Map.tryFind c |> Option.defaultValue model.DefaultColumnWidth)
+        let row, dy = walk (pointsToPixels top) (fun r -> model.RowHeights |> Map.tryFind r |> Option.defaultValue model.DefaultRowHeight)
+        { Row = row; Col = col }, dx, dy
+    let addChart (chartType: int) (left: Value) (top: Value) (width: Value) (height: Value) =
+        let number v fallback = if isMissing v then fallback else toFloat v
+        // (Excel's default chart: 360 x 216 points; placed here at C2 when no position is given.)
+        let w, h = pointsToPixels (number width 360.0), pointsToPixels (number height 216.0)
+        let cell, dx, dy =
+            if isMissing left && isMissing top then { Row = 1; Col = 2 }, 0.0, 0.0
+            else cellAt (number left 0.0) (number top 0.0)
+        let model = book.Model sheetId
+        let id = SheetOps.nextDrawingId model
+        let used = Collections.Generic.HashSet<string>(model.AuthoredCharts |> Map.toSeq |> Seq.map fst)
+        for drawing in model.Drawings do
+            match drawing.Content with
+            | KeptObject (_, xml) -> for found in Text.RegularExpressions.Regex.Matches(xml, "rIdChart[0-9]+") do used.Add(found.Value) |> ignore
+            | _ -> ()
+        let mutable n = 1
+        while used.Contains (sprintf "rIdChart%d" n) do n <- n + 1
+        let rel = sprintf "rIdChart%d" n
+        let name = sprintf "Chart %d" id
+        let chart : Rbt.Spreadsheet.ChartAuthoring.MacroChart = { ChartType = chartType; Title = None; HasLegend = true; Series = [] }
+        let anchorXml = Rbt.Spreadsheet.ChartAuthoring.standardChartAnchorXml id rel name cell.Row cell.Col w h
+        let drawing = { Id = id; Anchor = SheetOps.pictureAnchor cell dx dy w h; Name = Some name; Description = None; Content = KeptObject ("chart", anchorXml) }
+        book.Charts.[rel] <- (sheetId, chart)
+        book.ChangeModel(sheetId, fun m -> { m with Drawings = m.Drawings @ [ drawing ]; AuthoredCharts = Map.add rel (Rbt.Spreadsheet.ChartAuthoring.macroChartXml chart) m.AuthoredCharts })
+        shapeObject book sheetId id
+    let item (index: Value) =
+        let list = drawings ()
+        match scalarOf index with
+        | VString name ->
+            match list |> List.tryFind (fun d -> d.Name |> Option.exists (eq name)) with
+            | Some d -> shapeObject book sheetId d.Id
+            | None -> failApp "The item with the specified name wasn't found."
+        | v ->
+            let i = toInt v
+            if i < 1 || i > list.Length then failApp "The index into the specified collection is out of bounds."
+            shapeObject book sheetId list.[i - 1].Id
+    collection typeName
+        (fun name ->
+            if eq name "Count" then Some (VInteger (drawings ()).Length)
+            elif eq name "AddChart" || eq name "Add" && chartsOnly then Some (addChart 51 VEmpty VEmpty VEmpty VEmpty)
+            elif eq name "AddChart2" then Some (addChart 51 VEmpty VEmpty VEmpty VEmpty)
+            else unsupported typeName name)
+        (fun name _ -> unsupported typeName name)
+        (fun name args ->
+            let arg i = if i < args.Length then args.[i] else VEmpty
+            if (name = "" || eq name "_Default" || eq name "Item") && args.Length = 1 then Some (item args.[0])
+            elif eq name "Count" then Some (VInteger (drawings ()).Length)
+            // AddChart(Type, Left, Top, Width, Height); AddChart2(Style, XlChartType, Left, Top, Width, Height); ChartObjects.Add(Left, Top, Width, Height).
+            elif eq name "AddChart" && not chartsOnly then Some (addChart (if isMissing (arg 0) then 51 else toInt (arg 0)) (arg 1) (arg 2) (arg 3) (arg 4))
+            elif eq name "AddChart2" && not chartsOnly then Some (addChart (if isMissing (arg 1) then 51 else toInt (arg 1)) (arg 2) (arg 3) (arg 4) (arg 5))
+            elif eq name "Add" && chartsOnly then Some (addChart 51 (arg 0) (arg 1) (arg 2) (arg 3))
+            else unsupported typeName name)
+        (fun () -> drawings () |> List.map (fun d -> shapeObject book sheetId d.Id) |> Seq.ofList)
+
+/// A shape of a sheet (a chart's frame, a picture, a kept object): its name, place and size, its chart.
+and private shapeObject (book: MacroWorkbook) (sheetId: SheetId) (id: int) : Value =
+    let drawing () =
+        match (book.Model sheetId).Drawings |> List.tryFind (fun d -> d.Id = id) with
+        | Some d -> d
+        | None -> failApp "The object has been deleted."
+    let relOf (d: SheetDrawing) =
+        match d.Content with
+        | KeptObject ("chart", xml) ->
+            let m = Text.RegularExpressions.Regex.Match(xml, "r:id=\"([^\"]+)\"")
+            if m.Success then Some m.Groups.[1].Value else None
+        | _ -> None
+    let change (f: SheetDrawing -> SheetDrawing) =
+        book.ChangeModel(sheetId, fun m -> { m with Drawings = m.Drawings |> List.map (fun d -> if d.Id = id then f d else d) })
+    let get (name: string) : Value option =
+        let d = drawing ()
+        if eq name "Name" then Some (VString (d.Name |> Option.defaultValue (sprintf "Object %d" id)))
+        elif eq name "Width" then Some (VDouble ((d.Anchor.Width |> Option.defaultValue 0.0) * 0.75))
+        elif eq name "Height" then Some (VDouble ((d.Anchor.Height |> Option.defaultValue 0.0) * 0.75))
+        elif eq name "Chart" then
+            match relOf d with
+            | Some rel when book.Charts.ContainsKey rel -> Some (chartObject book rel)
+            | _ -> failApp "This object has no chart the macro can change"
+        elif eq name "HasChart" then Some (VBoolean (relOf d).IsSome)
+        elif eq name "Visible" then Some (VInteger -1)
+        elif eq name "ID" then Some (VInteger id)
+        elif eq name "Delete" then
+            book.ChangeModel(sheetId, fun m ->
+                { m with Drawings = m.Drawings |> List.filter (fun x -> x.Id <> id)
+                         AuthoredCharts = match relOf d with Some rel -> Map.remove rel m.AuthoredCharts | None -> m.AuthoredCharts })
+            Some VEmpty
+        elif eq name "Select" || eq name "Activate" then Some VEmpty
+        else None
+    host "Shape"
+        (fun name -> match get name with Some v -> Some v | None -> unsupported "Shape" name)
+        (fun name value ->
+            if eq name "Name" then change (fun d -> { d with Name = Some (toText value) }); true
+            elif eq name "Width" then change (fun d -> { d with Anchor = { d.Anchor with Width = Some (toFloat value * 4.0 / 3.0) } }); true
+            elif eq name "Height" then change (fun d -> { d with Anchor = { d.Anchor with Height = Some (toFloat value * 4.0 / 3.0) } }); true
+            elif eq name "Visible" || eq name "Placement" then true
+            else unsupported "Shape" name)
+        (fun name args -> match get name with Some v when args.Length = 0 -> Some v | _ -> unsupported "Shape" name)
+
+/// A chart a macro made: its type, title, legend and series (each change draws it again).
+and private chartObject (book: MacroWorkbook) (rel: string) : Value =
+    let current () = snd book.Charts.[rel]
+    let update (f: Rbt.Spreadsheet.ChartAuthoring.MacroChart -> Rbt.Spreadsheet.ChartAuthoring.MacroChart) =
+        let sheetId, chart = book.Charts.[rel]
+        let next = f chart
+        book.Charts.[rel] <- (sheetId, next)
+        book.ChangeModel(sheetId, fun m -> { m with AuthoredCharts = Map.add rel (Rbt.Spreadsheet.ChartAuthoring.macroChartXml next) m.AuthoredCharts })
+    /// What Values / XValues are given: a range (its formula and values) or an array (literal points).
+    let dataOf (value: Value) : Rbt.Spreadsheet.ChartAuthoring.MacroSeriesData =
+        let point (v: Value) =
+            match scalarOf v with
+            | VString text ->
+                match Double.TryParse(text, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+                | true, n -> text, Some n
+                | _ -> text, None
+            | VEmpty | VNull -> "", None
+            | VError _ -> "", None
+            | VBoolean _ as b -> toText b, None
+            | other -> let n = toFloat other in n.ToString("R", Globalization.CultureInfo.InvariantCulture), Some n
+        match rangeRefOf value with
+        | Some r ->
+            let formula =
+                quotedSheet (book.Sheet r.Sheet).Name + "!" + cellAddress r.Top r.Left true true
+                + (if r.Top = r.Bottom && r.Left = r.Right then "" else ":" + cellAddress r.Bottom r.Right true true)
+            let points =
+                [| for row in r.Top .. r.Bottom do
+                     for col in r.Left .. r.Right ->
+                        match book.Cell(r.Sheet, row, col) with
+                        | Some c -> point (cellValue c.Value)
+                        | None -> "", None |]
+            { Formula = Some formula; Points = points }
+        | None ->
+            match scalarOf value with
+            | VArray array -> { Formula = None; Points = array.Data |> Array.map point }
+            | VString text when text.StartsWith "=" ->
+                // A reference as text ("=Sheet1!$B$2:$B$9").
+                match parseReference (text.TrimStart '=') with
+                | Some (sheetName, a, b, c, d) ->
+                    let target = sheetName |> Option.bind (sheetIdNamed book) |> Option.defaultValue book.ActiveSheet
+                    { Formula = Some (text.TrimStart '='); Points = [| for row in a .. c do for col in b .. d -> match book.Cell(target, row, col) with Some x -> point (cellValue x.Value) | None -> "", None |] }
+                | None -> { Formula = None; Points = [| point value |] }
+            | other -> { Formula = None; Points = [| point other |] }
+    let rec seriesObject (index: int) =
+        let pick () =
+            match List.tryItem (index - 1) (current ()).Series with
+            | Some s -> s
+            | None -> fail 9 "Subscript out of range"
+        let change (f: Rbt.Spreadsheet.ChartAuthoring.MacroSeries -> Rbt.Spreadsheet.ChartAuthoring.MacroSeries) =
+            update (fun chart -> { chart with Series = chart.Series |> List.mapi (fun i s -> if i = index - 1 then f s else s) })
+        let points (d: Rbt.Spreadsheet.ChartAuthoring.MacroSeriesData) =
+            VArray { Data = d.Points |> Array.map (fun (text, n) -> match n with Some x -> VDouble x | None -> VString text); LowerBounds = [| 1 |]; Lengths = [| d.Points.Length |] }
+        host "Series"
+            (fun name ->
+                if eq name "Values" then Some (points (pick ()).YData)
+                elif eq name "XValues" then Some ((pick ()).XData |> Option.map points |> Option.defaultValue (VArray { Data = [||]; LowerBounds = [| 1 |]; Lengths = [| 0 |] }))
+                elif eq name "Name" then Some (VString ((pick ()).SeriesName |> Option.defaultValue (sprintf "Series%d" index)))
+                elif eq name "Delete" then update (fun chart -> { chart with Series = chart.Series |> List.indexed |> List.filter (fun (i, _) -> i <> index - 1) |> List.map snd }); Some VEmpty
+                else unsupported "Series" name)
+            (fun name value ->
+                if eq name "Values" then change (fun s -> { s with YData = dataOf value }); true
+                elif eq name "XValues" then change (fun s -> { s with XData = Some (dataOf value) }); true
+                elif eq name "Name" then change (fun s -> { s with SeriesName = Some (toText value) }); true
+                elif eq name "ChartType" || eq name "MarkerStyle" || eq name "MarkerSize" || eq name "Smooth" then true
+                else unsupported "Series" name)
+            (fun name _ -> unsupported "Series" name)
+    let newSeries () =
+        update (fun chart -> { chart with Series = chart.Series @ [ Rbt.Spreadsheet.ChartAuthoring.macroSeries None None { Formula = None; Points = [||] } ] })
+        seriesObject (current ()).Series.Length
+    let seriesCollection =
+        collection "SeriesCollection"
+            (fun name ->
+                if eq name "Count" then Some (VInteger (current ()).Series.Length)
+                elif eq name "NewSeries" then Some (newSeries ())
+                else unsupported "SeriesCollection" name)
+            (fun name _ -> unsupported "SeriesCollection" name)
+            (fun name args ->
+                if (name = "" || eq name "_Default" || eq name "Item") && args.Length = 1 then
+                    match scalarOf args.[0] with
+                    | VString text ->
+                        match (current ()).Series |> List.tryFindIndex (fun s -> s.SeriesName |> Option.exists (eq text)) with
+                        | Some i -> Some (seriesObject (i + 1))
+                        | None -> fail 1004 "Invalid parameter"
+                    | v -> Some (seriesObject (toInt v))
+                elif eq name "NewSeries" then Some (newSeries ())
+                elif eq name "Count" then Some (VInteger (current ()).Series.Length)
+                else unsupported "SeriesCollection" name)
+            (fun () -> (current ()).Series |> List.mapi (fun i _ -> seriesObject (i + 1)) |> Seq.ofList)
+    /// SetSourceData(range, PlotBy): a series of each column (xlColumns 2, the default for a tall range) or
+    /// row, the first column / row the categories when it holds no numbers.
+    let setSourceData (source: Value) (plotBy: Value) =
+        match rangeRefOf source with
+        | None -> failApp "Method 'SetSourceData' of object '_Chart' failed"
+        | Some r ->
+            let rows, cols = r.Bottom - r.Top + 1, r.Right - r.Left + 1
+            let byColumns = if isMissing plotBy then rows >= cols else toInt plotBy = 2
+            let numeric row col = match book.Cell(r.Sheet, row, col) with Some { Value = v } -> (match unwrapFormulaValue v with Number _ -> true | _ -> false) | None -> false
+            let text row col = match book.Cell(r.Sheet, row, col) with Some c -> toText (cellValue c.Value) | None -> ""
+            let range top left bottom right = rangeObject book { r with Top = top; Left = left; Bottom = bottom; Right = right }
+            let series =
+                if byColumns then
+                    let header = rows > 1 && not (numeric r.Top (r.Right))
+                    let firstRow = if header then r.Top + 1 else r.Top
+                    let labels = cols > 1 && not (seq { firstRow .. r.Bottom } |> Seq.exists (fun row -> numeric row r.Left))
+                    let firstCol = if labels then r.Left + 1 else r.Left
+                    [ for col in firstCol .. r.Right ->
+                        Rbt.Spreadsheet.ChartAuthoring.macroSeries (if header then Some (text r.Top col) else None)
+                            (if labels then Some (dataOf (range firstRow r.Left r.Bottom r.Left)) else None)
+                            (dataOf (range firstRow col r.Bottom col)) ]
+                else
+                    let header = cols > 1 && not (numeric r.Bottom r.Left)
+                    let firstCol = if header then r.Left + 1 else r.Left
+                    let labels = rows > 1 && not (seq { firstCol .. r.Right } |> Seq.exists (fun col -> numeric r.Top col))
+                    let firstRow = if labels then r.Top + 1 else r.Top
+                    [ for row in firstRow .. r.Bottom ->
+                        Rbt.Spreadsheet.ChartAuthoring.macroSeries (if header then Some (text row r.Left) else None)
+                            (if labels then Some (dataOf (range r.Top firstCol r.Top r.Right)) else None)
+                            (dataOf (range row firstCol row r.Right)) ]
+            update (fun chart -> { chart with Series = series })
+    let titleObject () =
+        host "ChartTitle"
+            (fun name -> if eq name "Text" || eq name "Caption" then Some (VString ((current ()).Title |> Option.defaultValue "")) else unsupported "ChartTitle" name)
+            (fun name value -> if eq name "Text" || eq name "Caption" then update (fun c -> { c with Title = Some (toText value) }); true else true)
+            (fun name _ -> unsupported "ChartTitle" name)
+    let get (name: string) : Value option =
+        if eq name "ChartType" then Some (VInteger (current ()).ChartType)
+        elif eq name "HasLegend" then Some (VBoolean (current ()).HasLegend)
+        elif eq name "HasTitle" then Some (VBoolean (current ()).Title.IsSome)
+        elif eq name "ChartTitle" then Some (titleObject ())
+        elif eq name "SeriesCollection" then Some seriesCollection
+        elif eq name "Name" then Some (VString rel)
+        elif eq name "Refresh" || eq name "Select" || eq name "Activate" then Some VEmpty
+        else None
+    host "Chart"
+        (fun name -> match get name with Some v -> Some v | None -> unsupported "Chart" name)
+        (fun name value ->
+            if eq name "ChartType" then update (fun c -> { c with ChartType = toInt value }); true
+            elif eq name "HasLegend" then update (fun c -> { c with HasLegend = toBool value }); true
+            elif eq name "HasTitle" then update (fun c -> { c with Title = (if toBool value then Some (c.Title |> Option.defaultValue "Chart Title") else None) }); true
+            elif eq name "ChartStyle" || eq name "PlotBy" then true
+            else unsupported "Chart" name)
+        (fun name args ->
+            let arg i = if i < args.Length then args.[i] else VEmpty
+            if eq name "SeriesCollection" then
+                if args.Length = 0 then Some seriesCollection
+                else match seriesCollection with VHostObject h -> h.CallMethod "Item" args | _ -> None
+            elif eq name "SetSourceData" then setSourceData (arg 0) (arg 1); Some VEmpty
+            else match get name with Some v when args.Length = 0 -> Some v | _ -> unsupported "Chart" name)
 
 and private sheetsObject (book: MacroWorkbook) : Value =
     let item (index: Value) =
@@ -1254,6 +2112,60 @@ let private intersect (a: RangeRef) (b: RangeRef) =
         let top, left, bottom, right = max a.Top b.Top, max a.Left b.Left, min a.Bottom b.Bottom, min a.Right b.Right
         if top > bottom || left > right then None else Some { a with Top = top; Left = left; Bottom = bottom; Right = right }
 
+/// The window of the workbook (ActiveWindow): gridlines, headings, zoom, frozen panes and scrolling of the active sheet.
+let private windowObject (book: MacroWorkbook) =
+    let model () = book.Model book.ActiveSheet
+    let change f = book.ChangeModel(book.ActiveSheet, f)
+    let get (name: string) =
+        if eq name "DisplayGridlines" then Some (VBoolean (model ()).ShowGridLines)
+        elif eq name "DisplayHeadings" then Some (VBoolean (model ()).ShowHeaders)
+        elif eq name "DisplayFormulas" then Some (VBoolean (model ()).ShowFormulas)
+        elif eq name "DisplayZeros" then Some (VBoolean (model ()).ShowZeros)
+        elif eq name "Zoom" then Some (VDouble (Math.Round((model ()).Zoom * 100.0)))
+        elif eq name "FreezePanes" then Some (VBoolean ((model ()).FrozenRows > 0 || (model ()).FrozenCols > 0))
+        elif eq name "SplitRow" then Some (VInteger (model ()).FrozenRows)
+        elif eq name "SplitColumn" then Some (VInteger (model ()).FrozenCols)
+        elif eq name "ScrollRow" || eq name "ScrollColumn" then Some (book.Setting ("Window" + name) |> Option.defaultValue (VInteger 1))
+        elif eq name "WindowState" then Some (book.Setting "WindowState" |> Option.defaultValue (VInteger -4137))
+        elif eq name "Caption" then Some (VString book.Hooks.FileName)
+        elif eq name "ActiveSheet" then Some (worksheetObject book book.ActiveSheet)
+        elif eq name "ActiveCell" || eq name "Selection" || eq name "VisibleRange" then None
+        elif eq name "SmallScroll" || eq name "LargeScroll" || eq name "Activate" then Some VEmpty
+        else None
+    let set (name: string) (value: Value) =
+        if eq name "DisplayGridlines" then change (fun m -> { m with ShowGridLines = toBool value }); true
+        elif eq name "DisplayHeadings" then change (fun m -> { m with ShowHeaders = toBool value }); true
+        elif eq name "DisplayFormulas" then change (fun m -> { m with ShowFormulas = toBool value }); true
+        elif eq name "DisplayZeros" then change (fun m -> { m with ShowZeros = toBool value }); true
+        elif eq name "Zoom" then
+            (match scalarOf value with
+             | VBoolean _ -> ()
+             | v -> let z = toFloat v in change (fun m -> { m with Zoom = (max 10.0 (min 400.0 z)) / 100.0 }))
+            true
+        elif eq name "FreezePanes" then
+            if toBool value then
+                // Above and to the left of the active cell, as Excel freezes them.
+                let row, col =
+                    match book.Selection with
+                    | Some (sheet, top, left, _, _) when sheet = book.ActiveSheet -> top, left
+                    | _ -> match (model ()).Selection with SingleCell (r, c) -> r, c | Range (r0, c0, _, _) -> r0, c0
+                change (fun m -> { m with FrozenRows = row; FrozenCols = col })
+            else change (fun m -> { m with FrozenRows = 0; FrozenCols = 0 })
+            true
+        elif eq name "SplitRow" then change (fun m -> { m with FrozenRows = toInt value }); true
+        elif eq name "SplitColumn" then change (fun m -> { m with FrozenCols = toInt value }); true
+        elif eq name "ScrollRow" || eq name "ScrollColumn" || eq name "WindowState" || eq name "Split" || eq name "Caption"
+             || eq name "DisplayWorkbookTabs" || eq name "DisplayHorizontalScrollBar" || eq name "DisplayVerticalScrollBar" then
+            book.SetSetting((if eq name "ScrollRow" || eq name "ScrollColumn" then "Window" + name else name), value); true
+        else unsupported "Window" name
+    host "Window"
+        (fun name -> match get name with Some v -> Some v | None -> unsupported "Window" name)
+        set
+        (fun name args ->
+            match get name with
+            | Some value -> Some value
+            | None -> unsupported "Window" name)
+
 let private applicationObject (book: MacroWorkbook) =
     let activeRange () =
         match book.Selection with
@@ -1278,6 +2190,7 @@ let private applicationObject (book: MacroWorkbook) =
             Some (activeRange () |> Option.map (fun r -> rangeObject book { r with Bottom = r.Top; Right = r.Left }) |> Option.defaultValue VNothing)
         elif eq name "WorksheetFunction" then Some (worksheetFunctionObject book)
         elif eq name "Names" then Some (namesObject book)
+        elif eq name "ActiveWindow" then Some (windowObject book)
         elif eq name "Version" then Some (VString "16.0")
         elif eq name "Name" then Some (VString "Microsoft Excel")
         elif eq name "Application" then Some (VString "Microsoft Excel")
@@ -1328,7 +2241,14 @@ let private applicationObject (book: MacroWorkbook) =
                 match rangeRefOf args.[0] with
                 | Some r -> book.SetActiveSheet r.Sheet; book.Selection <- Some (r.Sheet, r.Top, r.Left, r.Bottom, r.Right); Some VEmpty
                 | None -> Some VEmpty
-            elif eq name "OnTime" || eq name "Wait" then Some VEmpty
+            elif eq name "Wait" then
+                // (A run a slice at a time waits until then: MacroProgram.WaitMs; a run to the end does not.)
+                let target = if args.Length > 0 then toFloat args.[0] else 0.0
+                let now = (DateTime.Now - DateTime(1899, 12, 30)).TotalDays
+                let until = if target < 1.0 then Math.Floor now + target else target
+                book.SetSetting("__waitUntil", VDouble until)
+                Some (VBoolean true)
+            elif eq name "OnTime" then Some VEmpty
             elif eq name "InputBox" then
                 let prompt = if args.Length > 0 then toText args.[0] else ""
                 let title = if args.Length > 1 && not (isMissing args.[1]) then toText args.[1] else "Microsoft Excel"
@@ -1338,16 +2258,35 @@ let private applicationObject (book: MacroWorkbook) =
             else
                 match get name with
                 | Some value when args.Length = 0 -> Some value
-                | _ ->
-                    // Application.<function>: a worksheet function that hands back its error as an Error
-                    // value (Application.Match of a missing value is CVErr(xlErrNA)) instead of raising.
+                | _ when args.Length > 0 ->
+                    // Application.Max(...), Application.Text(...): the worksheet function, its error as an Error value.
                     let formula = name.ToUpperInvariant() + "(" + String.Join(",", args |> Array.map (formulaArgument book)) + ")"
                     match evaluate book formula with
                     | VError 2029 -> unsupported "Application" name
-                    | result -> Some result)
+                    | value -> Some value
+                | _ -> unsupported "Application" name)
 
 /// A range object of the workbook (an event's Target).
 let private rangeValue (book: MacroWorkbook) (r: RangeRef) = rangeObject book r
+
+/// The hooks of the VBA engine's run-time library for a run on the workbook.
+let private runtimeHooksOf (book: MacroWorkbook) : Rbt.Vb.Values.RuntimeHooks =
+    { Print = (fun text -> book.Hooks.Output text)
+      MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
+      InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
+      CreateObject = (fun _ -> None)
+      Environ = (fun _ -> "") }
+
+/// `VBA.RGB(...)`, `VBA.Len(...)`, `VBA.vbRed`: the VBA library by its name, as Excel's references give
+/// it to macros (the engine's built-in functions and constants).
+let private vbaLibrary (book: MacroWorkbook) =
+    host "VBA"
+        (fun name ->
+            match Rbt.Vb.Builtins.tryConstant name with
+            | Some value -> Some value
+            | None -> Some (Rbt.Vb.Builtins.callBuiltin (runtimeHooksOf book) false (name.ToLowerInvariant()) [||]))
+        (fun name _ -> unsupported "VBA" name)
+        (fun name args -> Some (Rbt.Vb.Builtins.callBuiltin (runtimeHooksOf book) false (name.ToLowerInvariant()) (args |> Array.map scalarOf)))
 
 /// The objects a macro starts from, by name: Application and the globals Excel puts in scope (ActiveSheet,
 /// Range, Cells, Worksheets, Selection, ...), and the xl* constants.
@@ -1381,6 +2320,7 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
       "ThisWorkbook", workbookObject book
       "ActiveSheet", viaApp "ActiveSheet"
       "ActiveCell", viaApp "ActiveCell"
+      "ActiveWindow", viaApp "ActiveWindow"
       "Selection", viaApp "Selection"
       "Worksheets", viaApp "Worksheets"
       "Sheets", viaApp "Sheets"
@@ -1389,6 +2329,7 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
       "Rows", viaSheet "Rows"
       "Columns", viaSheet "Columns"
       "Names", namesObject book
+      "VBA", vbaLibrary book
       "WorksheetFunction", worksheetFunctionObject book
       "Evaluate", host "Evaluate" (fun n -> unsupported "Evaluate" n) (fun _ _ -> false) (fun n args -> if (n = "" || eq n "_Default") && args.Length = 1 then Some (evaluateArgument book (toText args.[0])) else unsupported "Evaluate" n)
       "Intersect", host "Intersect" (fun n -> unsupported "Intersect" n) (fun _ _ -> false) (fun n args -> if n = "" || eq n "_Default" then appHost.CallMethod "Intersect" args else unsupported "Intersect" n)
@@ -1396,6 +2337,24 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
       // (DoEvents: the engine has no event loop to yield to.)
       "DoEvents", host "DoEvents" (fun _ -> Some (VInteger 0)) (fun _ _ -> false) (fun _ _ -> Some (VInteger 0)) ]
     @ constants
+
+/// Sheet1, Sheet2 ...: a sheet by its code name, as Excel gives every module (`Sheet1.Range("A1")`). A
+/// sheet's own module of that name is the project's; the others are Excel's default code names, the sheets
+/// in order.
+let private codeNameGlobals (book: MacroWorkbook) (modules: Rbt.Vb.Api.ModuleSource list) : (string * Value) list =
+    let taken = modules |> List.map (fun m -> m.Name.ToLowerInvariant()) |> Set.ofList
+    [ for index in 1 .. 64 do
+        let name = sprintf "Sheet%d" index
+        if not (taken.Contains (name.ToLowerInvariant())) then
+            let sheet () =
+                match List.tryItem (index - 1) book.SheetOrder with
+                | Some id -> (match worksheetObject book id with VHostObject h -> h | _ -> failwith "sheet")
+                | None -> fail 424 "Object required"
+            yield name,
+                  host "Worksheet"
+                    (fun member' -> (sheet ()).GetMember member')
+                    (fun member' value -> (sheet ()).SetMember member' value)
+                    (fun member' args -> (sheet ()).CallMethod member' args) ]
 
 // ---- running macros ---------------------------------------------------------------------------------------------
 
@@ -1424,12 +2383,25 @@ let moduleKind (source: string) : ModuleKind =
 
 /// A module of the project, its name from its VB_Name (else the stream's name).
 let macroModule (streamName: string) (source: string) : ModuleSource =
+    // (A module exported from the VBA editor - a .cls - starts with VERSION 1.0 CLASS / BEGIN ... END.)
+    let source =
+        let lines = source.Replace("\r\n", "\n").Split('\n')
+        let first = lines |> Array.tryFindIndex (fun line -> line.Trim() <> "" && not (line.TrimStart().StartsWith "'"))
+        match first with
+        | Some at when lines.[at].Trim().StartsWith("VERSION ", StringComparison.OrdinalIgnoreCase) ->
+            let mutable index = at + 1
+            if index < lines.Length && lines.[index].Trim().Equals("BEGIN", StringComparison.OrdinalIgnoreCase) then
+                while index < lines.Length && not (lines.[index].Trim().Equals("END", StringComparison.OrdinalIgnoreCase)) do index <- index + 1
+                index <- index + 1
+            String.concat "\n" (Array.concat [ lines.[.. at - 1]; Array.create (index - at) ""; lines.[index ..] ])
+        | _ -> source
     let header = ModuleSource.parseHeader source
     { Name = header.Name |> Option.defaultValue streamName; Kind = moduleKind source; Source = source }
 
 /// A workbook's VBA project compiled against Excel's object model, with its module-level state kept
 /// between runs (as Excel keeps it while the workbook is open). One run at a time.
 type MacroProgram private (project: Project, book: MacroWorkbook, session: Session) =
+    let mutable lastFrame = -1
     let hooksOf (book: MacroWorkbook) : RuntimeHooks =
         { Print = (fun text -> book.Hooks.Output text)
           MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
@@ -1460,13 +2432,16 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
               Environ = (fun _ -> "") }
         let options =
             ProjectOptions.vba
-            |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book))
+            |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book @ codeNameGlobals book modules))
             |> ProjectOptions.withHooks runtime
-        match Project.compile options modules with
+        match (try Project.compile options modules
+               with e -> Result.Error [ { Kind = Compile; Number = 0; Description = "The VBA engine could not compile the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
         | Result.Error failures -> Result.Error failures
         | Result.Ok project ->
             // (Module-level code runs once, on a blank workbook: Excel's modules have none to speak of.)
-            match Session.Create(project, defaultInstructionLimit) with
+            // (An engine that throws on a project - bytecode it does not accept - fails it as a compile error.)
+            match (try Session.Create(project, defaultInstructionLimit)
+                   with e -> Result.Error { Kind = Compile; Number = 0; Description = "The VBA engine could not load the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }) with
             | Result.Ok session -> Result.Ok (MacroProgram(project, book, session))
             | Result.Error failure -> Result.Error [ failure ]
 
@@ -1485,6 +2460,7 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
     /// Begin running `name` with arguments on the workbook; drive it with `Step`, end with `Result`.
     member _.Begin(workbook: Workbook, hooks: MacroHooks, name: string, args: Value list) : Result<unit, VbFailure> =
         book.Reset(workbook, hooks)
+        lastFrame <- book.Version
         session.SetHooks(hooksOf book)
         session.Call(name, args)
     /// Begin an Immediate-window line (`?expr`, `Print expr`, statements) on the workbook.
@@ -1493,6 +2469,22 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
         session.SetHooks(hooksOf book)
         session.Immediate(line, ?moduleName = moduleName)
     member _.Step(maxInstructions: int) = session.Step maxInstructions
+    /// The workbook so far, when it changed since the last frame and the screen is on (ScreenUpdating).
+    member _.Frame() : Workbook option =
+        match book.Setting "ScreenUpdating" with
+        | Some (VBoolean false) -> None
+        | _ ->
+            if book.Version = lastFrame then None
+            else
+                lastFrame <- book.Version
+                Some book.Workbook
+    /// How much longer Application.Wait asked to wait, in milliseconds (0: not waiting).
+    member _.WaitMs() : float =
+        match book.Setting "__waitUntil" with
+        | Some (VDouble until) ->
+            let left = (until - (DateTime.Now - DateTime(1899, 12, 30)).TotalDays) * 86400000.0
+            if left <= 0.0 then book.SetSetting("__waitUntil", VEmpty); 0.0 else left
+        | _ -> 0.0
     member _.Cancel() = session.Cancel()
     member _.Location = session.Location
     member _.IsRunning = session.IsRunning

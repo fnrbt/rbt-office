@@ -1099,7 +1099,9 @@ signatures), whatever is edited in the cells. Its macros run on the grid through
 | `MacrosEnabled` | | `boolean` | Whether macros may run. Off for every workbook opened: the host asks the user, as Excel's "Enable content". |
 | `EnableMacros()` | | `Promise<{ ok, number?, description? }>` | Lets the macros run, and runs `Workbook_Open` (or `Auto_Open`) once, as opening the workbook in Excel with content enabled would; its result as `RunMacro`'s. |
 | `SetMacroHooks(hooks)` | `{ messageBox?(prompt, buttons, title): number, inputBox?(prompt, title, default): string \| null, output?(text) }` or null | | Where `MsgBox`, `InputBox` and `Debug.Print` go. `messageBox` returns VBA's answer (vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4). Without hooks: the browser's alert / confirm / prompt and the console. |
-| `RunMacro(name)` | a Sub without arguments | `Promise<{ ok: true } \| { ok: false, number, description, module, procedure, line }>` | Runs it on the workbook. What it changes is one undo step and marks the workbook changed; a macro that stops on an error keeps nothing and returns Excel's `Err.Number` / `Err.Description`. The selection it leaves (`Range("B3").Select`) becomes the grid's. Throws when macros are not enabled or the workbook has none. |
+| `RunMacro(name)` | a Sub without arguments | `Promise<{ ok: true } \| { ok: false, number, description, module, procedure, line }>` | Runs it on the workbook, a slice at a time: between slices the grid shows what the macro has done so far (as Excel repaints while a macro runs; not while it has `Application.ScreenUpdating = False`), and `Application.Wait` waits. Meanwhile the grid is read-only and another `RunMacro` throws. What it changes is one undo step, at its end, and marks the workbook changed; a macro that stops on an error keeps nothing (the grid shows the workbook as it was) and returns Excel's `Err.Number` / `Err.Description`. The selection it leaves (`Range("B3").Select`) becomes the grid's. No limit on its instructions: `StopMacro` stops it. Throws when macros are not enabled or the workbook has none. |
+| `StopMacro()` | | | Stops the macro `RunMacro` is running, as Esc does in Excel: it ends with error 18 and nothing of it is kept. |
+| `MacroRunning` | | `boolean` | Whether a macro is running. |
 | `RunMacroLine(line)` | `?expression`, `Print expression` or statements | `Promise`, as `RunMacro` | An Immediate-window line on the workbook (a value it asks for goes to the output); one undo step. A workbook without macros has an empty project for it. |
 | `SetMacroModule(name, code)` | a module's name, its code as the editor shows it (without Attribute lines) | `Promise` of the problems, as `GetMacroProblems` | Replaces the module's code (adds a standard module of that name when there is none) and compiles the project again. A save then writes the project from the modules. |
 | `GetMacroOutput()` | | `string[]` | What macros printed and how the VBA editor's runs ended (errors with their module, procedure and line), newest last. |
@@ -1111,7 +1113,18 @@ any sheet (`Value` - typed, 2-D arrays for blocks -, `Value2`, `Formula`, `Text`
 `End`, `CurrentRegion`, `EntireRow` / `EntireColumn`, `UsedRange`, `ClearContents` / `Clear` / `ClearFormats`,
 `Delete` / `Insert`, `Copy` / `PasteSpecial`, `Merge` / `UnMerge`, `Find`, `Select` / `Activate`), `Names`,
 `Selection`, `ActiveCell`, `WorksheetFunction.<any function>` and `Evaluate` (the grid's formula engine),
-`Intersect`, `Union` (as one block), the `xl*` constants, `RGB`, `MsgBox`, `InputBox`, `Debug.Print`.
+`Intersect`, `Union` (as one block), the `xl*` constants, `RGB`, `MsgBox`, `InputBox`, `Debug.Print`;
+`Borders` / `Borders(xlEdge...)` / `BorderAround` (a line between two cells is one line, as Excel keeps it),
+`Comment` / `AddComment` / `ClearComments`, `ID`, `Locked`, `Orientation`, `ThemeColor` / `TintAndShade`,
+`FormatConditions` (`Add` for cell-value and expression rules with their `Font` / `Interior`, `AddColorScale`
+with `ColorScaleCriteria`, `Delete`, `SetFirstPriority`), `DisplayFormat`, `Replace`, `Shapes` / `ChartObjects`
+(`AddChart`, `AddChart2`, `Add`; `Chart` with `ChartType`, `HasLegend`, `HasTitle`, `ChartTitle`,
+`SeriesCollection` / `NewSeries`, a series' `Values` / `XValues` / `Name` from ranges or arrays, `SetSourceData`),
+`ActiveWindow` (`DisplayGridlines`, `DisplayHeadings`, `Zoom`, `FreezePanes`, `ScrollRow`), `Application.<worksheet
+function>` (an error as an Error value), `VBA.<function>`, the sheets by their code names (`Sheet1`), `Protect`.
+Formats of whole columns, rows or the sheet go to the cells the grid shows (and whole columns' default style);
+`Columns.ColumnWidth` / `Rows.RowHeight` of the whole sheet set its default size. A macro that paints past the
+grid's last row or column grows the grid.
 A value written is entered as typing would enter it (`"123"` a number, `"=A1*2"` a formula), and formulas
 are calculated before the macro reads again. A member Excel has and the object model does not raises
 error 438, as Excel does for an object without it. Events: `Workbook_Open` of the workbook's module
