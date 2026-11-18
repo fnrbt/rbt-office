@@ -1488,6 +1488,15 @@ type Spreadsheet(container: Element) as this =
         let lastRow = max caretRow roomUsedRow
         let rows = if model.RowCount - (lastRow + 1) < 50 then min 1048576 (lastRow + 1 + 100) else model.RowCount
         let cols = if model.ColCount - (caretCol + 1) < 10 then min 16384 (caretCol + 1 + 26) else model.ColCount
+        // (Narrow columns: as many as fill the view, as Excel's sheet always does.)
+        let cols =
+            let mutable n = 0
+            let mutable right = 0.0
+            let reach = scrollLeft + containerWidth - rowHeaderWidth
+            while n < 16384 && (n < cols || right < reach) do
+                right <- right + (model.ColumnWidths |> Map.tryFind n |> Option.defaultValue model.DefaultColumnWidth)
+                n <- n + 1
+            max cols n
         if rows > model.RowCount || cols > model.ColCount then
             if (rows > model.RowCount && caretRow > roomUsedRow) || cols > model.ColCount then
                 let id = sheetKeyForRoom ()
@@ -4052,7 +4061,9 @@ type Spreadsheet(container: Element) as this =
             setStyle node.Label "cursor" (if readOnly then "default" else "pointer")
             match node.Button with
             | Some button ->
-                setCssText button ("opacity:" + (if filtered then "1.0" else "0.5") + ";display:" + (if readOnly || hosted then "none" else "flex"))
+                // (A column too narrow for its letter and the button keeps the letter, unless it is filtered.)
+                let narrow = w < 44.0 && not filtered
+                setCssText button ("opacity:" + (if filtered then "1.0" else "0.5") + ";display:" + (if readOnly || hosted || narrow then "none" else "flex"))
             | None -> ()
             setStyle node.Handle "display" (if readOnly then "none" else "block")
 
