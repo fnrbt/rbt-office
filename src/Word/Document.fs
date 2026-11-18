@@ -4592,33 +4592,49 @@ let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBl
             blockIds |> List.iteri (fun index blockId -> selectedBlockIndexes.[blockId] <- index)
             // Classify each containing table once, not once per selected cell.
             let mutable plainCellCache: Dictionary<BlockId, HashSet<BlockId>> option = None
+            let collectPlainCells (paragraphs: HashSet<BlockId>) (table: TableBlock) =
+                let rec collect (table: TableBlock) =
+                    for row in table.Rows do
+                        for cell in row.Cells do
+                            if cell.EnclosingControls |> List.exists (fun layer -> controlIsPlainText layer.Xml) then
+                                for paragraph in cell.Content do
+                                    paragraphs.Add paragraph.Id |> ignore
+                            for nested in cell.NestedTables do collect nested
+                collect table
+            // (Many paragraphs: the paragraphs of plain-text cells of every table, gathered once. Finding
+            // each paragraph's block walks the document up to it: formatting all of a long document
+            // was quadratic - 0.8 s of the 1.3 s of making a 9 000-block document bold.)
+            let mutable allPlainCells: HashSet<BlockId> = null
             let inPlainTextCell paragraphId =
-                match locateBlock doc paragraphId with
-                | ValueSome (struct (_, Table table)) ->
-                    let cache =
-                        match plainCellCache with
-                        | Some cache -> cache
-                        | None ->
-                            let cache = Dictionary<BlockId, HashSet<BlockId>>()
-                            plainCellCache <- Some cache
-                            cache
-                    let paragraphs =
-                        match Portable.Dict.tryFind table.Id cache with
-                        | ValueSome paragraphs -> paragraphs
-                        | _ ->
-                            let paragraphs = HashSet<BlockId>()
-                            let rec collect (table: TableBlock) =
-                                for row in table.Rows do
-                                    for cell in row.Cells do
-                                        if cell.EnclosingControls |> List.exists (fun layer -> controlIsPlainText layer.Xml) then
-                                            for paragraph in cell.Content do
-                                                paragraphs.Add paragraph.Id |> ignore
-                                        for nested in cell.NestedTables do collect nested
-                            collect table
-                            cache.[table.Id] <- paragraphs
-                            paragraphs
-                    paragraphs.Contains paragraphId
-                | _ -> false
+                if blockCount > 32 then
+                    if isNull allPlainCells then
+                        let paragraphs = HashSet<BlockId>()
+                        for block in doc.Blocks do
+                            match block with
+                            | Table table -> collectPlainCells paragraphs table
+                            | _ -> ()
+                        allPlainCells <- paragraphs
+                    allPlainCells.Contains paragraphId
+                else
+                    match locateBlock doc paragraphId with
+                    | ValueSome (struct (_, Table table)) ->
+                        let cache =
+                            match plainCellCache with
+                            | Some cache -> cache
+                            | None ->
+                                let cache = Dictionary<BlockId, HashSet<BlockId>>()
+                                plainCellCache <- Some cache
+                                cache
+                        let paragraphs =
+                            match Portable.Dict.tryFind table.Id cache with
+                            | ValueSome paragraphs -> paragraphs
+                            | _ ->
+                                let paragraphs = HashSet<BlockId>()
+                                collectPlainCells paragraphs table
+                                cache.[table.Id] <- paragraphs
+                                paragraphs
+                        paragraphs.Contains paragraphId
+                    | _ -> false
 
             Some (fun finished formatFn ->
                 let formatParagraph (para: ParagraphBlock) =
