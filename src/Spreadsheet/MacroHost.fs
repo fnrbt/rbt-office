@@ -52,7 +52,9 @@ let constants : (string * Value) list =
       "xlThemeColorDark1", 1; "xlThemeColorLight1", 2; "xlThemeColorDark2", 3; "xlThemeColorLight2", 4
       "xlThemeColorAccent1", 5; "xlThemeColorAccent2", 6; "xlThemeColorAccent3", 7; "xlThemeColorAccent4", 8
       "xlThemeColorAccent5", 9; "xlThemeColorAccent6", 10; "xlThemeColorHyperlink", 11; "xlThemeColorFollowedHyperlink", 12
+      "xlDisabled", 0; "xlInterrupt", 1; "xlErrorHandler", 2
       "xlErrDiv0", 2007; "xlErrNA", 2042; "xlErrName", 2029; "xlErrNull", 2000; "xlErrNum", 2036; "xlErrRef", 2023; "xlErrValue", 2015 ]
+    @ MacroShapes.constants
     |> List.map (fun (name, value) -> name, VLong value)
 
 // ---- values --------------------------------------------------------------------------------------------
@@ -334,6 +336,19 @@ let defaultHooks = Rbt.Spreadsheet.MacroApi.defaultHooks
 let private noMacroHooks = defaultHooks
 
 /// The workbook a run reads and writes. A read after a write sees the formulas calculated again.
+/// The cell a position on a sheet (points from its top left) falls in, and the offset into it, in pixels.
+let cellAtPoints (model: SpreadsheetModel) (left: float) (top: float) =
+    let walk (target: float) (size: int -> float) =
+        let mutable index = 0
+        let mutable edge = 0.0
+        while edge + size index <= target && index < 16383 do
+            edge <- edge + size index
+            index <- index + 1
+        index, target - edge
+    let col, dx = walk (max 0.0 left * 4.0 / 3.0) (fun c -> model.ColumnWidths |> Map.tryFind c |> Option.defaultValue model.DefaultColumnWidth)
+    let row, dy = walk (max 0.0 top * 4.0 / 3.0) (fun r -> model.RowHeights |> Map.tryFind r |> Option.defaultValue model.DefaultRowHeight)
+    { Row = row; Col = col }, dx, dy
+
 type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let mutable workbook = initial
     let mutable hooks = initialHooks
@@ -349,6 +364,10 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let settingValues = Collections.Generic.Dictionary<string, Value>()
     // The charts the run made, by their relationship id: their sheet and what they show.
     let charts = Collections.Generic.Dictionary<string, SheetId * Rbt.Spreadsheet.ChartAuthoring.MacroChart>()
+    // The shapes the run drew (MacroShapes), by sheet and drawing id; those changed since their XML was written.
+    let shapes = Collections.Generic.Dictionary<SheetId * int, MacroShapes.ShapeNode>()
+    let staleShapes = Collections.Generic.HashSet<SheetId * int>()
+    let mutable shapeIds = 100000
 
     let resolve (sheetId: SheetId) =
         match Map.tryFind sheetId workbook.Sheets with
@@ -402,13 +421,40 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         selection <- None
         settingValues.Clear()
         charts.Clear()
+        shapes.Clear()
+        staleShapes.Clear()
     member _.Setting(name: string) =
         match settingValues.TryGetValue(name.ToLowerInvariant()) with
         | true, value -> Some value
         | _ -> None
     member _.SetSetting(name: string, value: Value) = settingValues.[name.ToLowerInvariant()] <- value
     member _.Charts = charts
-    member _.Workbook = calculate (); workbook
+    member _.Shapes = shapes
+    /// An id for a shape inside a group (the drawing's own ids number the sheet's objects).
+    member _.NextShapeId() = shapeIds <- shapeIds + 1; shapeIds
+    /// A drawn shape changed: its XML is written again before the workbook is next read.
+    member _.ShapeChanged(sheetId: SheetId, id: int) =
+        staleShapes.Add((sheetId, id)) |> ignore
+        version <- version + 1
+    member this.FlushShapes() =
+        if staleShapes.Count > 0 then
+            let pending = List.ofSeq staleShapes
+            staleShapes.Clear()
+            for (sheetId, id) in pending do
+                match shapes.TryGetValue((sheetId, id)) with
+                | true, node ->
+                    let model = this.Model sheetId
+                    let l, t, w, h = MacroShapes.frame node
+                    let cell, dx, dy = cellAtPoints model l t
+                    let xml = MacroShapes.anchorXml node cell.Row cell.Col dx dy
+                    let anchor = SheetOps.pictureAnchor cell dx dy (max 1.0 (w * 4.0 / 3.0)) (max 1.0 (h * 4.0 / 3.0))
+                    let drawn = { Id = id; Anchor = anchor; Name = Some node.Name; Description = None; Content = KeptObject ("shape", xml) }
+                    let next =
+                        if model.Drawings |> List.exists (fun d -> d.Id = id) then model.Drawings |> List.map (fun d -> if d.Id = id then drawn else d)
+                        else model.Drawings @ [ drawn ]
+                    workbook <- updateSheetModel sheetId { model with Drawings = next } workbook
+                | _ -> ()
+    member this.Workbook = calculate (); this.FlushShapes (); workbook
     member _.SheetOrder = workbook.SheetOrder
     member _.ActiveSheet = workbook.ActiveSheet
     member _.SetActiveSheet(sheetId: SheetId) =
@@ -1267,6 +1313,23 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "RowHeight" then
             let px = book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top |> Option.defaultValue (book.Model(r.Sheet).DefaultRowHeight)
             Some (VDouble (Math.Round(px * 0.75, 2)))
+        // Left, Top, Width, Height: in points from the sheet's top left (where a shape over these cells goes).
+        elif eq name "Left" || eq name "Top" || eq name "Width" || eq name "Height" then
+            let model = book.Model(r.Sheet)
+            // (The sum of sizes of a run of columns or rows: the default for each, with the ones set apart.)
+            let span (sizes: Map<int, float>) (fallback: float) (first: int) (last: int) =
+                if last < first then 0.0
+                else
+                    let mutable total = float (last - first + 1) * fallback
+                    for KeyValue (index, size) in sizes do
+                        if index >= first && index <= last then total <- total + size - fallback
+                    total
+            let px =
+                if eq name "Left" then span model.ColumnWidths model.DefaultColumnWidth 0 (r.Left - 1)
+                elif eq name "Top" then span model.RowHeights model.DefaultRowHeight 0 (r.Top - 1)
+                elif eq name "Width" then span model.ColumnWidths model.DefaultColumnWidth r.Left r.Right
+                else span model.RowHeights model.DefaultRowHeight r.Top r.Bottom
+            Some (VDouble (px * 0.75))
         elif eq name "Hidden" then
             Some (VBoolean (if wholeCols then book.Model(r.Sheet).ColumnWidths |> Map.tryFind r.Left = Some 0.0 else book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top = Some 0.0))
         elif eq name "Areas" then Some (collection "Areas" (fun n -> if eq n "Count" then Some (VLong 1) else unsupported "Areas" n) (fun n _ -> unsupported "Areas" n) (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (rangeObject book r) else unsupported "Areas" n) (fun () -> Seq.singleton (rangeObject book r)))
@@ -1310,6 +1373,13 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 | d when d < 0 && d >= -90 -> 90 - d
                 | _ -> failApp "Unable to set the Orientation property of the Range class"
             changeFormats (fun f -> { f with TextRotation = rotation }); true
+        // Range.Name = "x": a workbook name for these cells (Names.Add).
+        elif eq name "Name" then
+            let refersTo = quotedSheet (book.Sheet r.Sheet).Name + "!" + cellAddress r.Top r.Left true true + (if r.Top = r.Bottom && r.Left = r.Right then "" else ":" + cellAddress r.Bottom r.Right true true)
+            let text = toText value
+            match definedNameProblem text with
+            | Some problem -> failApp problem
+            | None -> book.ChangeWorkbook(setDefinedName None text refersTo None); true
         elif eq name "ColumnWidth" then
             // (Excel: a width under one character is 12 px a character; from one on, 7 px each and 5 of padding.)
             let width = toFloat value
@@ -1345,7 +1415,12 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         else unsupported "Range" name
     let call (name: string) (args: Value array) : Value option =
         let arg i = if i < args.Length then args.[i] else VEmpty
-        if (name = "" || eq name "_Default" || eq name "Item" || eq name "Cells") && args.Length >= 1 then
+        // Rows(i) / Columns(i): a row or column of the range (past its end too, as Excel).
+        if (eq name "Rows" || eq name "Columns") && args.Length = 1 then
+            match lines (eq name "Columns") with
+            | VHostObject h -> h.CallMethod "Item" args
+            | _ -> None
+        elif (name = "" || eq name "_Default" || eq name "Item" || eq name "Cells") && args.Length >= 1 then
             // Cells(row, col) and Item(index): relative to the range, by rows then columns.
             if args.Length >= 2 && not (isMissing args.[1]) then
                 let row = r.Top + toInt args.[0] - 1
@@ -1614,6 +1689,8 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
         elif eq name "Shapes" then Some (shapesObject book sheetId false)
         elif eq name "ChartObjects" then Some (shapesObject book sheetId true)
         elif eq name "Visible" then Some (VLong (if (book.Sheet sheetId).Visible then -1 elif (book.Model sheetId).VeryHidden then 2 else 0))
+        elif eq name "DisplayPageBreaks" then Some (VBoolean false)
+        elif eq name "EnableCalculation" then Some (VBoolean true)
         elif eq name "Parent" then Some (workbookObject book)
         elif eq name "Type" then Some (VLong -4167)
         elif eq name "Next" then
@@ -1645,6 +1722,7 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
             | None ->
                 if sheetNameTaken (Some sheetId) newName book.Workbook then failApp "That name is already taken. Try a different one."
                 book.ChangeWorkbook(renameSheetEverywhere sheetId newName); true
+        elif eq name "DisplayPageBreaks" || eq name "EnableCalculation" || eq name "EnableSelection" || eq name "ScrollArea" then true
         elif eq name "Visible" then
             let v = match scalarOf value with VBoolean b -> (if b then -1 else 0) | other -> toInt other
             book.ChangeWorkbook(fun wb ->
@@ -1719,17 +1797,69 @@ and private shapesObject (book: MacroWorkbook) (sheetId: SheetId) (chartsOnly: b
         book.Charts.[rel] <- (sheetId, chart)
         book.ChangeModel(sheetId, fun m -> { m with Drawings = m.Drawings @ [ drawing ]; AuthoredCharts = Map.add rel (Rbt.Spreadsheet.ChartAuthoring.macroChartXml chart) m.AuthoredCharts })
         shapeObject book sheetId id
-    let item (index: Value) =
+    let objectOf (d: SheetDrawing) =
+        match book.Shapes.TryGetValue((sheetId, d.Id)) with
+        | true, node -> drawnShapeObject book sheetId node
+        | _ -> shapeObject book sheetId d.Id
+    let nameOf (d: SheetDrawing) =
+        match book.Shapes.TryGetValue((sheetId, d.Id)) with
+        | true, node -> Some node.Name
+        | _ -> d.Name
+    let find (index: Value) =
         let list = drawings ()
         match scalarOf index with
         | VString name ->
-            match list |> List.tryFind (fun d -> d.Name |> Option.exists (eq name)) with
-            | Some d -> shapeObject book sheetId d.Id
+            match list |> List.tryFind (fun d -> nameOf d |> Option.exists (eq name)) with
+            | Some d -> d
             | None -> failApp "The item with the specified name wasn't found."
         | v ->
             let i = toInt v
             if i < 1 || i > list.Length then failApp "The index into the specified collection is out of bounds."
-            shapeObject book sheetId list.[i - 1].Id
+            list.[i - 1]
+    let item (index: Value) = objectOf (find index)
+    /// A new shape at the front: numbered as the sheet's next object, named as Excel names it ("Oval 3").
+    let draw (node: MacroShapes.ShapeNode) (baseName: string) =
+        let id = SheetOps.nextDrawingId (book.Model sheetId)
+        node.Id <- id
+        if node.Name = "" then node.Name <- sprintf "%s %d" baseName id
+        book.Shapes.[(sheetId, id)] <- node
+        book.ShapeChanged(sheetId, id)
+        book.FlushShapes()
+        drawnShapeObject book sheetId node
+    let number (v: Value) = if isMissing v then 0.0 else toFloat v
+    let addShape (autoShapeType: int) left top width height =
+        let preset, baseName = MacroShapes.presetOf autoShapeType
+        let node = MacroShapes.ShapeNode(0, "", "autoshape")
+        node.Preset <- preset
+        node.AutoShapeType <- autoShapeType
+        node.Left <- number left; node.Top <- number top; node.Width <- number width; node.Height <- number height
+        draw node baseName
+    let addTextbox left top width height =
+        let node = MacroShapes.ShapeNode(0, "", "textbox")
+        node.Left <- number left; node.Top <- number top; node.Width <- number width; node.Height <- number height
+        node.FillColor <- 0xFFFFFF
+        node.LineColor <- 0xBFBFBF
+        node.LineWeight <- 0.75
+        node.TextColor <- 0
+        node.TextAlign <- "l"
+        node.TextAnchor <- "t"
+        draw node "TextBox"
+    let addLine x1 y1 x2 y2 =
+        let x1, y1, x2, y2 = number x1, number y1, number x2, number y2
+        let node = MacroShapes.ShapeNode(0, "", "line")
+        node.Left <- min x1 x2; node.Top <- min y1 y2; node.Width <- abs (x2 - x1); node.Height <- abs (y2 - y1)
+        node.FlipH <- x2 < x1
+        node.FlipV <- y2 < y1
+        node.LineColor <- 0xC47244
+        node.LineWeight <- 0.75
+        draw node "Straight Connector"
+    /// Shapes.Range(index or names): the shapes it names, as a ShapeRange.
+    let range (index: Value) =
+        let picked =
+            match scalarOf index with
+            | VArray a -> a.Data |> Array.toList |> List.map find
+            | _ -> [ find index ]
+        shapeRangeObject book sheetId (picked |> List.map (fun d -> d.Id))
     collection typeName
         (fun name ->
             if eq name "Count" then Some (VLong (drawings ()).Length)
@@ -1745,8 +1875,15 @@ and private shapesObject (book: MacroWorkbook) (sheetId: SheetId) (chartsOnly: b
             elif eq name "AddChart" && not chartsOnly then Some (addChart (if isMissing (arg 0) then 51 else toInt (arg 0)) (arg 1) (arg 2) (arg 3) (arg 4))
             elif eq name "AddChart2" && not chartsOnly then Some (addChart (if isMissing (arg 1) then 51 else toInt (arg 1)) (arg 2) (arg 3) (arg 4) (arg 5))
             elif eq name "Add" && chartsOnly then Some (addChart 51 (arg 0) (arg 1) (arg 2) (arg 3))
+            // AddShape(Type, Left, Top, Width, Height); AddTextbox(Orientation, Left, Top, Width, Height); AddLine(BeginX, BeginY, EndX, EndY).
+            elif eq name "AddShape" && not chartsOnly then Some (addShape (toInt (arg 0)) (arg 1) (arg 2) (arg 3) (arg 4))
+            elif (eq name "AddTextbox" || eq name "AddLabel") && not chartsOnly then Some (addTextbox (arg 1) (arg 2) (arg 3) (arg 4))
+            elif (eq name "AddLine" || eq name "AddConnector") && not chartsOnly then
+                if eq name "AddConnector" then Some (addLine (arg 1) (arg 2) (arg 3) (arg 4)) else Some (addLine (arg 0) (arg 1) (arg 2) (arg 3))
+            elif eq name "Range" && args.Length = 1 then Some (range args.[0])
+            elif eq name "SelectAll" then Some VEmpty
             else unsupported typeName name)
-        (fun () -> drawings () |> List.map (fun d -> shapeObject book sheetId d.Id) |> Seq.ofList)
+        (fun () -> drawings () |> List.map objectOf |> Seq.ofList)
 
 /// A shape of a sheet (a chart's frame, a picture, a kept object): its name, place and size, its chart.
 and private shapeObject (book: MacroWorkbook) (sheetId: SheetId) (id: int) : Value =
@@ -1790,6 +1927,326 @@ and private shapeObject (book: MacroWorkbook) (sheetId: SheetId) (id: int) : Val
             elif eq name "Visible" || eq name "Placement" then true
             else unsupported "Shape" name)
         (fun name args -> match get name with Some v when args.Length = 0 -> Some v | _ -> unsupported "Shape" name)
+
+/// A colour of a shape's fill, line or text (ColorFormat): RGB, or a theme colour (ObjectThemeColor).
+and private colorFormatObject (get: unit -> int) (set: int -> unit) : Value =
+    // (The Office theme's colours, as MsoThemeColorIndex numbers them.)
+    let themeColor (index: int) =
+        match index with
+        | 1 | 13 -> Some 0x000000 | 2 | 14 -> Some 0xFFFFFF | 3 | 15 -> Some 0x546A44 | 4 | 16 -> Some 0xE1E7E7
+        | 5 -> Some 0xC47244 | 6 -> Some 0x317DED | 7 -> Some 0xA5A5A5 | 8 -> Some 0x00C0FF | 9 -> Some 0xD59B5B | 10 -> Some 0x47AD70
+        | _ -> None
+    host "ColorFormat"
+        (fun name ->
+            if eq name "RGB" || name = "" then Some (VLong (get ()))
+            elif eq name "ObjectThemeColor" || eq name "SchemeColor" || eq name "TintAndShade" || eq name "Brightness" then Some (VLong 0)
+            elif eq name "Type" then Some (VLong 1)
+            else unsupported "ColorFormat" name)
+        (fun name value ->
+            if eq name "RGB" || name = "" then set (toInt value); true
+            elif eq name "ObjectThemeColor" || eq name "SchemeColor" then
+                (match themeColor (toInt value) with Some color -> set color | None -> ()); true
+            elif eq name "TintAndShade" || eq name "Brightness" then true
+            else unsupported "ColorFormat" name)
+        (fun name _ -> unsupported "ColorFormat" name)
+
+/// A shape the macro drew (Shapes.AddShape, AddLine, AddTextbox, Duplicate, Group): what Excel's Shape has
+/// of it - place, size, rotation, fill, line, text, its group's members. A change to a group changes them.
+and private drawnShapeObject (book: MacroWorkbook) (sheetId: SheetId) (node: MacroShapes.ShapeNode) : Value =
+    let rec rootOf (n: MacroShapes.ShapeNode) = match n.Parent with Some p -> rootOf p | None -> n
+    let changed () =
+        let root = rootOf node
+        if not (book.Shapes.ContainsKey((sheetId, root.Id))) then failApp "The object has been deleted."
+        book.ShapeChanged(sheetId, root.Id)
+    let leaves () = MacroShapes.all node |> Seq.filter (fun n -> n.Kind <> "group") |> List.ofSeq
+    let first () = match leaves () with n :: _ -> n | [] -> node
+    let eachLeaf (f: MacroShapes.ShapeNode -> unit) = (for n in leaves () do f n); changed ()
+    let tri (b: bool) = VLong (if b then -1 else 0)
+    let isRoot () = node.Parent.IsNone
+    let reorder (command: int) =
+        if isRoot () then
+            book.ChangeModel(sheetId, fun m ->
+                let mine, others = m.Drawings |> List.partition (fun d -> d.Id = node.Id)
+                let index = m.Drawings |> List.findIndex (fun d -> d.Id = node.Id)
+                let next =
+                    match command with
+                    | 0 -> others @ mine
+                    | 1 -> mine @ others
+                    | 2 -> let at = min others.Length (index + 1) in List.take at others @ mine @ List.skip at others
+                    | _ -> let at = max 0 (index - 1) in List.take at others @ mine @ List.skip at others
+                { m with Drawings = next })
+    let delete () =
+        match node.Parent with
+        | Some parent ->
+            parent.Members.Remove node |> ignore
+            changed ()
+        | None ->
+            book.Shapes.Remove((sheetId, node.Id)) |> ignore
+            book.ChangeModel(sheetId, fun m -> { m with Drawings = m.Drawings |> List.filter (fun d -> d.Id <> node.Id) })
+    let duplicate () =
+        let root = rootOf node
+        let copy = MacroShapes.copy (fun () -> book.NextShapeId()) node
+        let id = SheetOps.nextDrawingId (book.Model sheetId)
+        copy.Id <- id
+        let stem = Text.RegularExpressions.Regex.Replace(node.Name, " [0-9]+$", "")
+        copy.Name <- sprintf "%s %d" stem id
+        copy.Parent <- None
+        ignore root
+        book.Shapes.[(sheetId, id)] <- copy
+        book.ShapeChanged(sheetId, id)
+        book.FlushShapes()
+        drawnShapeObject book sheetId copy
+    let ungroup () =
+        if node.Kind <> "group" || not (isRoot ()) then failApp "Ungroup method of Shape class failed"
+        book.Shapes.Remove((sheetId, node.Id)) |> ignore
+        book.ChangeModel(sheetId, fun m -> { m with Drawings = m.Drawings |> List.filter (fun d -> d.Id <> node.Id) })
+        let ids =
+            [ for m in List.ofSeq node.Members do
+                let id = SheetOps.nextDrawingId (book.Model sheetId)
+                m.Id <- id
+                m.Parent <- None
+                book.Shapes.[(sheetId, id)] <- m
+                book.ShapeChanged(sheetId, id)
+                book.FlushShapes()
+                yield id ]
+        shapeRangeObject book sheetId ids
+    let textFont () =
+        host "Font"
+            (fun name ->
+                let n = first ()
+                if eq name "Bold" then Some (VBoolean n.TextBold)
+                elif eq name "Italic" then Some (VBoolean n.TextItalic)
+                elif eq name "Size" then Some (VDouble n.TextSize)
+                elif eq name "Color" then Some (VLong n.TextColor)
+                elif eq name "Name" then Some (VString "Calibri")
+                elif eq name "Fill" then Some (host "FillFormat" (fun name -> if eq name "ForeColor" then Some (colorFormatObject (fun () -> (first ()).TextColor) (fun c -> eachLeaf (fun n -> n.TextColor <- c))) else unsupported "FillFormat" name) (fun _ _ -> true) (fun name _ -> unsupported "FillFormat" name))
+                else unsupported "Font" name)
+            (fun name value ->
+                if eq name "Bold" then eachLeaf (fun n -> n.TextBold <- toBool value); true
+                elif eq name "Italic" then eachLeaf (fun n -> n.TextItalic <- toBool value); true
+                elif eq name "Size" then eachLeaf (fun n -> n.TextSize <- toFloat value); true
+                elif eq name "Color" then eachLeaf (fun n -> n.TextColor <- toInt value); true
+                elif eq name "Name" || eq name "Underline" || eq name "ColorIndex" then true
+                else unsupported "Font" name)
+            (fun name _ -> unsupported "Font" name)
+    let characters () =
+        host "Characters"
+            (fun name ->
+                if eq name "Text" || eq name "Caption" || name = "" then Some (VString (first ()).Text)
+                elif eq name "Font" then Some (textFont ())
+                elif eq name "Count" then Some (VLong (first ()).Text.Length)
+                else unsupported "Characters" name)
+            (fun name value ->
+                if eq name "Text" || eq name "Caption" || name = "" then eachLeaf (fun n -> n.Text <- toText value); true
+                else unsupported "Characters" name)
+            (fun name _ -> unsupported "Characters" name)
+    let textFrame (two: bool) =
+        let typeName = if two then "TextFrame2" else "TextFrame"
+        let textRange () =
+            host "TextRange"
+                (fun name ->
+                    if eq name "Text" || name = "" then Some (VString (first ()).Text)
+                    elif eq name "Font" then Some (textFont ())
+                    elif eq name "Characters" then Some (characters ())
+                    else unsupported "TextRange" name)
+                (fun name value -> if eq name "Text" || name = "" then eachLeaf (fun n -> n.Text <- toText value); true else unsupported "TextRange" name)
+                (fun name _ -> if eq name "Characters" then Some (characters ()) else unsupported "TextRange" name)
+        let align (value: int) = match value with -4131 | 1 -> "l" | -4152 | 3 -> "r" | _ -> "ctr"
+        let anchor (value: int) = match value with -4160 | 1 -> "t" | -4107 | 4 -> "b" | _ -> "ctr"
+        host typeName
+            (fun name ->
+                if eq name "Characters" then Some (characters ())
+                elif eq name "TextRange" then Some (textRange ())
+                elif eq name "HasText" then Some (tri ((first ()).Text <> ""))
+                elif eq name "HorizontalAlignment" then Some (VLong (match (first ()).TextAlign with "l" -> -4131 | "r" -> -4152 | _ -> -4108))
+                elif eq name "VerticalAlignment" then Some (VLong (match (first ()).TextAnchor with "t" -> -4160 | "b" -> -4107 | _ -> -4108))
+                else unsupported typeName name)
+            (fun name value ->
+                if eq name "HorizontalAlignment" then eachLeaf (fun n -> n.TextAlign <- align (toInt value)); true
+                elif eq name "VerticalAlignment" || eq name "VerticalAnchor" then eachLeaf (fun n -> n.TextAnchor <- anchor (toInt value)); true
+                elif eq name "AutoSize" || eq name "WordWrap" || eq name "Orientation" || name.StartsWith "Margin" then true
+                else unsupported typeName name)
+            (fun name args ->
+                if eq name "Characters" then Some (characters ())
+                else unsupported typeName name)
+    let fillOrLine (isLine: bool) =
+        let typeName = if isLine then "LineFormat" else "FillFormat"
+        let colorOf () = let n = first () in if isLine then n.LineColor else n.FillColor
+        let setColor c = eachLeaf (fun n -> if isLine then (n.LineColor <- c; n.LineVisible <- true) else (n.FillColor <- c; n.FillVisible <- true))
+        host typeName
+            (fun name ->
+                let n = first ()
+                if eq name "ForeColor" || eq name "BackColor" then Some (colorFormatObject colorOf setColor)
+                elif eq name "Visible" then Some (tri (if isLine then n.LineVisible else n.FillVisible))
+                elif eq name "Transparency" then Some (VDouble (if isLine then 0.0 else n.FillTransparency))
+                elif eq name "Weight" && isLine then Some (VDouble n.LineWeight)
+                elif eq name "Solid" then eachLeaf (fun n -> if not isLine then n.FillVisible <- true); Some VEmpty
+                elif eq name "DashStyle" || eq name "Style" then Some (VLong 1)
+                else unsupported typeName name)
+            (fun name value ->
+                if eq name "Visible" then eachLeaf (fun n -> if isLine then n.LineVisible <- toBool value else n.FillVisible <- toBool value); true
+                elif eq name "Transparency" then eachLeaf (fun n -> if not isLine then n.FillTransparency <- toFloat value); true
+                elif eq name "Weight" && isLine then eachLeaf (fun n -> n.LineWeight <- toFloat value); true
+                elif eq name "DashStyle" || eq name "Style" || eq name "BeginArrowheadStyle" || eq name "EndArrowheadStyle" then true
+                else unsupported typeName name)
+            (fun name _ ->
+                if eq name "Solid" then eachLeaf (fun n -> if not isLine then n.FillVisible <- true); Some VEmpty
+                else unsupported typeName name)
+    let get (name: string) : Value option =
+        let l, t, w, h = MacroShapes.frame node
+        if eq name "Name" then Some (VString node.Name)
+        elif eq name "Left" then Some (VDouble l)
+        elif eq name "Top" then Some (VDouble t)
+        elif eq name "Width" then Some (VDouble w)
+        elif eq name "Height" then Some (VDouble h)
+        elif eq name "Rotation" then Some (VDouble node.Rotation)
+        elif eq name "Visible" then Some (tri node.Visible)
+        elif eq name "ID" then Some (VLong node.Id)
+        elif eq name "Type" then Some (VLong (match node.Kind with "group" -> 6 | "line" -> 9 | "textbox" -> 17 | _ -> 1))
+        elif eq name "AutoShapeType" then Some (VLong (if node.Kind = "autoshape" then node.AutoShapeType else -2))
+        elif eq name "HorizontalFlip" then Some (tri node.FlipH)
+        elif eq name "VerticalFlip" then Some (tri node.FlipV)
+        elif eq name "HasChart" then Some (VBoolean false)
+        elif eq name "OnAction" then Some (VString node.OnAction)
+        elif eq name "Fill" then Some (fillOrLine false)
+        elif eq name "Line" then Some (fillOrLine true)
+        elif eq name "TextFrame" then Some (textFrame false)
+        elif eq name "TextFrame2" then Some (textFrame true)
+        elif eq name "ZOrderPosition" then
+            let r = rootOf node
+            Some (VLong (1 + ((book.Model sheetId).Drawings |> List.findIndex (fun d -> d.Id = r.Id))))
+        elif eq name "GroupItems" then
+            if node.Kind <> "group" then failApp "This member can only be accessed for a group."
+            Some (collection "GroupShapes"
+                    (fun name -> if eq name "Count" then Some (VLong node.Members.Count) else unsupported "GroupShapes" name)
+                    (fun name _ -> unsupported "GroupShapes" name)
+                    (fun name args ->
+                        if (name = "" || eq name "Item") && args.Length = 1 then
+                            match scalarOf args.[0] with
+                            | VString n ->
+                                match node.Members |> Seq.tryFind (fun m -> eq m.Name n) with
+                                | Some m -> Some (drawnShapeObject book sheetId m)
+                                | None -> failApp "The item with the specified name wasn't found."
+                            | v ->
+                                let i = toInt v
+                                if i < 1 || i > node.Members.Count then failApp "The index into the specified collection is out of bounds."
+                                Some (drawnShapeObject book sheetId node.Members.[i - 1])
+                        elif eq name "Count" then Some (VLong node.Members.Count)
+                        else unsupported "GroupShapes" name)
+                    (fun () -> node.Members |> Seq.map (drawnShapeObject book sheetId) |> List.ofSeq |> Seq.ofList))
+        elif eq name "ParentGroup" then
+            match node.Parent with
+            | Some p -> Some (drawnShapeObject book sheetId p)
+            | None -> failApp "This member can only be accessed for a group."
+        elif eq name "Duplicate" then Some (duplicate ())
+        elif eq name "Delete" then delete (); Some VEmpty
+        elif eq name "Ungroup" then Some (ungroup ())
+        elif eq name "Select" || eq name "Activate" then Some VEmpty
+        elif eq name "LockAspectRatio" || eq name "Shadow" then Some (VLong 0)
+        else None
+    host "Shape"
+        (fun name -> match get name with Some v -> Some v | None -> unsupported "Shape" name)
+        (fun name value ->
+            if eq name "Name" then node.Name <- toText value; changed (); true
+            elif eq name "Left" then MacroShapes.setLeft node (toFloat value); changed (); true
+            elif eq name "Top" then MacroShapes.setTop node (toFloat value); changed (); true
+            elif eq name "Width" then MacroShapes.setSize node (Some (toFloat value)) None; changed (); true
+            elif eq name "Height" then MacroShapes.setSize node None (Some (toFloat value)); changed (); true
+            elif eq name "Rotation" then MacroShapes.setRotation node (toFloat value); changed (); true
+            elif eq name "Visible" then node.Visible <- toBool value; changed (); true
+            elif eq name "OnAction" then node.OnAction <- toText value; changed (); true
+            elif eq name "AutoShapeType" then
+                let preset, _ = MacroShapes.presetOf (toInt value)
+                eachLeaf (fun n -> n.AutoShapeType <- toInt value; n.Preset <- preset); true
+            elif eq name "LockAspectRatio" || eq name "Placement" || eq name "Shadow" || eq name "Locked" then true
+            else unsupported "Shape" name)
+        (fun name args ->
+            let arg i = if i < args.Length then args.[i] else VEmpty
+            if eq name "IncrementLeft" then MacroShapes.translate node (toFloat (arg 0)) 0.0; changed (); Some VEmpty
+            elif eq name "IncrementTop" then MacroShapes.translate node 0.0 (toFloat (arg 0)); changed (); Some VEmpty
+            elif eq name "IncrementRotation" then MacroShapes.setRotation node (node.Rotation + toFloat (arg 0)); changed (); Some VEmpty
+            elif eq name "ScaleWidth" || eq name "ScaleHeight" then
+                MacroShapes.scale node (toFloat (arg 0)) (if isMissing (arg 2) then 0 else toInt (arg 2)) (eq name "ScaleWidth")
+                changed ()
+                Some VEmpty
+            elif eq name "Flip" then
+                let l, t, w, h = MacroShapes.frame node
+                if toInt (arg 0) = 0 then
+                    for n in MacroShapes.all node do if n.Kind <> "group" then n.FlipH <- not n.FlipH
+                    MacroShapes.scaleAbout node (l + w / 2.0) (t + h / 2.0) -1.0 1.0
+                else
+                    for n in MacroShapes.all node do if n.Kind <> "group" then n.FlipV <- not n.FlipV
+                    MacroShapes.scaleAbout node (l + w / 2.0) (t + h / 2.0) 1.0 -1.0
+                // (scaleAbout by -1 leaves a negative size: the frame is put back the right way round.)
+                for n in MacroShapes.all node do
+                    if n.Width < 0.0 then (n.Left <- n.Left + n.Width; n.Width <- -n.Width)
+                    if n.Height < 0.0 then (n.Top <- n.Top + n.Height; n.Height <- -n.Height)
+                changed ()
+                Some VEmpty
+            elif eq name "ZOrder" then reorder (toInt (arg 0)); Some VEmpty
+            else
+                match get name with
+                | Some v when args.Length = 0 -> Some v
+                | _ -> unsupported "Shape" name)
+
+/// Shapes.Range(...): several of a sheet's shapes - Group makes one shape of them; a property set is set on each.
+and private shapeRangeObject (book: MacroWorkbook) (sheetId: SheetId) (ids: int list) : Value =
+    let nodes () =
+        ids |> List.map (fun id ->
+            match book.Shapes.TryGetValue((sheetId, id)) with
+            | true, node -> Some node
+            | _ -> None)
+    let objects () =
+        ids |> List.map (fun id ->
+            match book.Shapes.TryGetValue((sheetId, id)) with
+            | true, node -> drawnShapeObject book sheetId node
+            | _ -> shapeObject book sheetId id)
+    let group () =
+        let members = nodes ()
+        if members |> List.exists Option.isNone || members.Length < 2 then failApp "Group method of ShapeRange class failed"
+        let members = members |> List.choose id
+        for m in members do book.Shapes.Remove((sheetId, m.Id)) |> ignore
+        book.ChangeModel(sheetId, fun model -> { model with Drawings = model.Drawings |> List.filter (fun d -> not (List.contains d.Id ids)) })
+        let groupNode = MacroShapes.ShapeNode(0, "", "group")
+        for m in members do
+            // (Inside a group a shape is numbered apart from the sheet's objects.)
+            for n in MacroShapes.all m do n.Id <- book.NextShapeId()
+            m.Parent <- Some groupNode
+            groupNode.Members.Add m
+        let id = SheetOps.nextDrawingId (book.Model sheetId)
+        groupNode.Id <- id
+        groupNode.Name <- sprintf "Group %d" id
+        book.Shapes.[(sheetId, id)] <- groupNode
+        book.ShapeChanged(sheetId, id)
+        book.FlushShapes()
+        drawnShapeObject book sheetId groupNode
+    let each (f: IHostObject -> unit) =
+        for o in objects () do match o with VHostObject h -> f h | _ -> ()
+    let firstObject () = match objects () with VHostObject h :: _ -> h | _ -> failApp "The index into the specified collection is out of bounds."
+    collection "ShapeRange"
+        (fun name ->
+            if eq name "Count" then Some (VLong ids.Length)
+            elif eq name "Group" then Some (group ())
+            elif eq name "Delete" then each (fun h -> h.GetMember "Delete" |> ignore); Some VEmpty
+            elif eq name "Select" then Some VEmpty
+            else (firstObject ()).GetMember name)
+        (fun name value -> each (fun h -> h.SetMember name value |> ignore); true)
+        (fun name args ->
+            if (name = "" || eq name "Item") && args.Length = 1 then
+                let i = toInt args.[0]
+                let all = objects ()
+                if i < 1 || i > all.Length then failApp "The index into the specified collection is out of bounds."
+                Some all.[i - 1]
+            elif eq name "Group" then Some (group ())
+            elif args.Length = 0 then
+                if eq name "Count" then Some (VLong ids.Length)
+                elif eq name "Delete" then each (fun h -> h.GetMember "Delete" |> ignore); Some VEmpty
+                else (firstObject ()).GetMember name
+            else
+                let mutable result = None
+                each (fun h -> result <- h.CallMethod name args)
+                result)
+        (fun () -> objects () |> Seq.ofList)
 
 /// A chart a macro made: its type, title, legend and series (each change draws it again).
 and private chartObject (book: MacroWorkbook) (rel: string) : Value =

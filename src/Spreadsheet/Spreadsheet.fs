@@ -1240,11 +1240,11 @@ type Spreadsheet(container: Element) as this =
                             | false, _ -> None))
                    Slicer = slicers }
         | _ ->
-            if Map.isEmpty sheet.AuthoredCharts then None
-            else Some { Theme = SpreadsheetCharts.defaultTheme
-                        Chart = authored SpreadsheetCharts.defaultTheme
-                        Picture = (fun _ -> None)
-                        Slicer = (fun _ _ _ _ _ -> None) }
+            // (A sheet of no file: the charts and shapes a macro or the user made, in the default theme.)
+            Some { Theme = SpreadsheetCharts.defaultTheme
+                   Chart = authored SpreadsheetCharts.defaultTheme
+                   Picture = (fun _ -> None)
+                   Slicer = (fun _ _ _ _ _ -> None) }
     /// A block of cells of a sheet (by name) as a chart reads it; None when the sheet is not there.
     let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =
         match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
@@ -1335,8 +1335,9 @@ type Spreadsheet(container: Element) as this =
             | _ -> None
         match kept with
         | Some known -> Some known
-        // (An object of no file part is not drawn: there is nothing to lay out later.)
-        | None when Map.isEmpty model.AuthoredCharts && xlsxSource.IsNone -> Some None
+        // (An object of no file part is not drawn: there is nothing to lay out later - but a shape a macro
+        // drew is all in its XML.)
+        | None when Map.isEmpty model.AuthoredCharts && xlsxSource.IsNone && (match drawing.Content with KeptObject ("shape", _) -> false | _ -> true) -> Some None
         | None ->
             if not layOut then None
             else

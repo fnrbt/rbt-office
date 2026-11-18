@@ -32,6 +32,7 @@
     <Compile Include="ChartAuthoring.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="MacroApi.fs" />
+    <Compile Include="MacroShapes.fs" />
     <Compile Include="MacroHost.fs" />
     <Compile Include="MacroProject.fs" />
     <Compile Include="Layout.fs" />
