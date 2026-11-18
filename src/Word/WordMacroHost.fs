@@ -92,7 +92,7 @@ let private hexOfLong (value: int) =
 
 let private longOfHex (text: string) : int option =
     let t = text.Trim().TrimStart('#')
-    if t.Length = 6 && t |> Seq.forall Uri.IsHexDigit then
+    if t.Length = 6 && t |> Seq.forall (fun ch -> Char.IsDigit ch || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')) then
         let r = Convert.ToInt32(t.Substring(0, 2), 16)
         let g = Convert.ToInt32(t.Substring(2, 2), 16)
         let b = Convert.ToInt32(t.Substring(4, 2), 16)
@@ -205,6 +205,10 @@ let constants : (string * Value) list =
       "wdTextureNone", 0; "wdTextureSolid", 1000
       // tables
       "wdWord8TableBehavior", 0; "wdWord9TableBehavior", 1
+      "wdTableFormatNone", 0; "wdTableFormatSimple1", 1; "wdTableFormatSimple2", 2; "wdTableFormatSimple3", 3
+      "wdTableFormatClassic1", 4; "wdTableFormatClassic2", 5; "wdTableFormatClassic3", 6; "wdTableFormatClassic4", 7
+      "wdTableFormatColorful1", 8; "wdTableFormatColorful2", 9; "wdTableFormatColorful3", 10; "wdTableFormatColumns1", 11
+      "wdTableFormatGrid1", 16; "wdTableFormatList1", 24; "wdTableFormat3DEffects1", 32; "wdTableFormatContemporary", 35; "wdTableFormatElegant", 36; "wdTableFormatProfessional", 37
       "wdAutoFitFixed", 0; "wdAutoFitContent", 1; "wdAutoFitWindow", 2
       "wdCellAlignVerticalTop", 0; "wdCellAlignVerticalCenter", 1; "wdCellAlignVerticalBottom", 3
       "wdAlignRowLeft", 0; "wdAlignRowCenter", 1; "wdAlignRowRight", 2
@@ -233,7 +237,12 @@ type Mark = ParagraphMark | CellMark | RowMark
 
 /// A paragraph of the story (Para "" for an end-of-row mark): where its text starts, how long it is, the
 /// mark after it, and the table cell (table id, 0-based row and column) it is in ("" for the body).
-type Segment = { Para: string; Start: int; Length: int; Mark: Mark; Table: string; Row: int; Col: int }
+type Segment =
+    { Para: string; Start: int; Length: int; Mark: Mark; Table: string; Row: int; Col: int
+      /// 1 for a paragraph that starts with a page break (Chr(12) before its text, as Word has it), else 0.
+      Lead: int }
+    /// Where the paragraph's text starts (after its page break).
+    member s.TextStart = s.Start + s.Lead
 
 type Story = {
     Segments: Segment array
@@ -247,12 +256,18 @@ let private buildStory (doc: Document) : Story =
     let text = Text.StringBuilder()
     let add (para: ParagraphBlock option) mark table row col =
         let start = text.Length
+        // (A page break the paragraph starts with is a character of the story: Chr(12).)
+        let lead =
+            match para with
+            | Some p when p.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore p.Metadata -> 1
+            | _ -> 0
+        if lead = 1 then text.Append('\f') |> ignore
         let length =
             match para with
             | Some p -> let s = TB.toString p.Buffer in text.Append(s) |> ignore; s.Length
             | None -> 0
         text.Append(match mark with ParagraphMark -> '\r' | CellMark -> '\a' | RowMark -> '\b') |> ignore
-        segments.Add { Para = (match para with Some p -> p.Id | None -> ""); Start = start; Length = length; Mark = mark; Table = table; Row = row; Col = col }
+        segments.Add { Para = (match para with Some p -> p.Id | None -> ""); Start = start; Length = length; Mark = mark; Table = table; Row = row; Col = col; Lead = lead }
     for block in doc.Blocks do
         match block with
         | Paragraph p | Heading (_, p) -> add (Some p) ParagraphMark "" -1 -1
@@ -280,7 +295,7 @@ let private locate (story: Story) (pos: int) =
         if segs.[mid].Start <= pos then lo <- mid else hi <- mid - 1
     lo
 
-let private segmentEnd (seg: Segment) = seg.Start + seg.Length + 1
+let private segmentEnd (seg: Segment) = seg.TextStart + seg.Length + 1
 
 // ---- words and sentences ----------------------------------------------------------------------------------
 
@@ -295,11 +310,15 @@ let private wordSpans (text: string) : (int * int) array =
     while i < n do
         let c = text.[i]
         let mutable j = i + 1
-        if c = '\r' || c = '\a' || c = '\b' then ()
+        if c = '\r' || c = '\a' || c = '\b' || c = '\t' then ()
         elif isWordChar c then
             while j < n && (isWordChar text.[j] || ((text.[j] = '\'' || text.[j] = '’') && j + 1 < n && isWordChar text.[j + 1])) do j <- j + 1
             while j < n && text.[j] = ' ' do j <- j + 1
+        elif c = ' ' then
+            while j < n && text.[j] = ' ' do j <- j + 1
         else
+            // (A run of punctuation is one word to Word: "++", "%)".)
+            while j < n && not (isWordChar text.[j]) && text.[j] <> ' ' && text.[j] <> '\t' && text.[j] <> '\r' && text.[j] <> '\a' && text.[j] <> '\b' && text.[j] <> '\f' do j <- j + 1
             while j < n && text.[j] = ' ' do j <- j + 1
         spans.Add((i, j))
         i <- j
@@ -382,6 +401,9 @@ let private builtInStyles : NamedStyle list =
       { plainStyle with
           Id = "ListParagraph"; Name = Some "List Paragraph"; IndentLeft = Some (pxOfPt 36.0); ContextualSpacing = Some true; UiPriority = Some 34 }
       { plainStyle with
+          Id = "Caption"; Name = Some "caption"; Text = Some (textOf (Some 9.0) None (Some "#44546A")); TextItalic = Some true
+          SpacingAfter = Some 10.0; LineSpacing = Some 1.0; LineSpacingRule = Some "auto"; UiPriority = Some 35 }
+      { plainStyle with
           Id = "NoSpacing"; Name = Some "No Spacing"; SpacingAfter = Some 0.0; LineSpacing = Some 1.0; LineSpacingRule = Some "auto"; UiPriority = Some 1 }
       { plainStyle with
           Id = "Strong"; Name = Some "Strong"; StyleType = "character"; BasedOn = Some "DefaultParagraphFont"; Next = None
@@ -421,6 +443,7 @@ let private headingLevelOf (style: NamedStyle) =
 let private styleDisplayName (style: NamedStyle) =
     match style.Name with
     | Some name when name.StartsWith("heading ", StringComparison.OrdinalIgnoreCase) -> "Heading " + name.Substring 8
+    | Some name when name.Length > 0 && Char.IsLower name.[0] -> string (Char.ToUpperInvariant name.[0]) + name.Substring 1
     | Some name -> name
     | None -> style.Id
 
@@ -519,7 +542,7 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
     member this.PositionOf(blockId: string, offset: int) =
         let st = this.Story
         match st.Segments |> Array.tryFind (fun s -> s.Para = blockId) with
-        | Some seg -> seg.Start + max 0 (min seg.Length offset)
+        | Some seg -> seg.TextStart + max 0 (min seg.Length offset)
         | None -> 0
 
     /// The model's position of a story position (an end-of-row mark is the end of its row's last cell).
@@ -530,7 +553,7 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
         if seg.Para = "" then
             let rec back j = if j < 0 then { BlockId = ""; Offset = 0 } elif st.Segments.[j].Para <> "" then { BlockId = st.Segments.[j].Para; Offset = st.Segments.[j].Length } else back (j - 1)
             back (i - 1)
-        else { BlockId = seg.Para; Offset = max 0 (min seg.Length (pos - seg.Start)) }
+        else { BlockId = seg.Para; Offset = max 0 (min seg.Length (pos - seg.TextStart)) }
 
     member this.Paragraph(id: string) = findParagraph doc id
 
@@ -598,6 +621,11 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                 let first = locate st s
                 let last = locate st (e - 1)
                 let segs = st.Segments.[first .. last]
+                // (A page break deleted: the paragraph no longer starts with one.)
+                for seg in segs do
+                    if seg.Lead = 1 && seg.Start >= s && seg.Start < e then
+                        this.UpdateParagraph(seg.Para, fun p ->
+                            { p with Metadata = { p.Metadata with PageBreakBefore = false; Explicit = p.Metadata.Explicit &&& ~~~ParagraphExplicit.PageBreakRunBefore } })
                 let place (seg: Segment) = seg.Table, seg.Row, seg.Col
                 let crossesCells =
                     segs |> Array.exists (fun seg -> seg.Mark <> ParagraphMark && segmentEnd seg <= e)
@@ -606,12 +634,14 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                     // (Cells keep their marks: what is deleted is the text in them.)
                     for seg in Array.rev segs do
                         if seg.Para <> "" then
-                            let a = max s seg.Start - seg.Start
-                            let b = min e (seg.Start + seg.Length) - seg.Start
+                            let a = max s seg.TextStart - seg.TextStart
+                            let b = min e (seg.TextStart + seg.Length) - seg.TextStart
                             if b > a then this.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.delete a (b - a) p.Buffer })
                 elif first = last then
                     let seg = segs.[0]
-                    this.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.delete (s - seg.Start) (e - s) p.Buffer })
+                    let a = max 0 (s - seg.TextStart)
+                    let b = max a (e - seg.TextStart)
+                    this.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.delete a (b - a) p.Buffer })
                 else
                     let a = this.ModelPosition s
                     let b = this.ModelPosition e
@@ -638,6 +668,7 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
         let text = text.Replace("\r\n", "\r").Replace('\n', '\r').Replace("\a", "").Replace("\b", "")
         if text = "" then 0
         else
+            let totalBefore = this.Story.Total
             let target = this.ModelPosition(min pos (this.Story.Total - 1))
             if target.BlockId = "" then notAvailable "no paragraph to insert into"
             let mutable para = target.BlockId
@@ -669,20 +700,38 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                         match this.NextStyle((findParagraph doc newId |> Option.bind (fun p -> p.Metadata.Style))) with
                         | Some style -> this.ApplyParagraphStyle(newId, style, None)
                         | None -> ()
-                    if pageBreak then this.UpdateParagraph(newId, fun p -> { p with Metadata = { p.Metadata with PageBreakBefore = true } })
+                    if pageBreak then
+                        // (Word's page break is a paragraph of its own, Chr(12) and a paragraph mark; the
+                        // model's is an empty paragraph that starts with the break: the one split off here.)
+                        this.UpdateParagraph(para, fun p ->
+                            { p with Metadata = { p.Metadata with PageBreakBefore = true; Explicit = p.Metadata.Explicit ||| ParagraphExplicit.PageBreakRunBefore } })
                     para <- newId
                     off <- 0
                 | _ -> notAvailable "the paragraph cannot be split here"
             let piece = Text.StringBuilder()
             for ch in text do
-                if ch = '\r' || ch = '\f' then
+                if ch = '\r' then
                     flush (piece.ToString())
                     piece.Clear() |> ignore
-                    split (ch = '\f')
+                    split false
+                elif ch = '\f' then
+                    flush (piece.ToString())
+                    piece.Clear() |> ignore
+                    // (At the start of a paragraph the break goes before it; elsewhere the paragraph is split
+                    // first. Right after a table Word keeps an empty paragraph before the break.)
+                    let afterTable =
+                        let rec look (blocks: Block list) =
+                            match blocks with
+                            | Table _ :: ((Paragraph p | Heading (_, p)) :: _) when p.Id = para -> true
+                            | _ :: rest -> look rest
+                            | [] -> false
+                        look doc.Blocks
+                    if off > 0 || afterTable then split false
+                    split true
                 else piece.Append ch |> ignore
             flush (piece.ToString())
             story <- None
-            text.Length
+            this.Story.Total - totalBefore
 
     /// Replace [start, end) with `text`; the range it then takes. The last paragraph mark stays (a range
     /// at the very end inserts before it).
@@ -698,11 +747,16 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
     /// Character formatting of [start, end) (and of the paragraph marks in it).
     member this.Format(start: int, finish: int, change: TB.TextStyle -> TB.TextStyle) =
         for seg in this.SegmentsIn(start, finish) do
+            if seg.Mark = RowMark && seg.Start >= start && seg.Start < finish then
+                // (An end-of-row mark has formatting of its own: over what its table was given.)
+                let key = sprintf "table:%s:%d" seg.Table seg.Row
+                let inherited = match markStyles.TryGetValue ("table:" + seg.Table) with | true, f -> f | _ -> id
+                markStyles.[key] <- (match markStyles.TryGetValue key with | true, f -> f >> change | _ -> inherited >> change)
             if seg.Para <> "" && finish > start then
-                let a = max start seg.Start - seg.Start
-                let b = min finish (seg.Start + seg.Length) - seg.Start
+                let a = max start seg.TextStart - seg.TextStart
+                let b = min finish (seg.TextStart + seg.Length) - seg.TextStart
                 if b > a then this.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.applyStyle a (b - a) change p.Buffer })
-                let mark = seg.Start + seg.Length
+                let mark = seg.TextStart + seg.Length
                 if mark >= start && mark < finish then
                     markStyles.[seg.Para] <- (match markStyles.TryGetValue seg.Para with | true, f -> f >> change | _ -> change)
 
@@ -710,8 +764,8 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
     member this.MapText(start: int, finish: int, map: string -> int -> char) =
         for seg in this.SegmentsIn(start, finish) do
             if seg.Para <> "" then
-                let a = max start seg.Start - seg.Start
-                let b = min finish (seg.Start + seg.Length) - seg.Start
+                let a = max start seg.TextStart - seg.TextStart
+                let b = min finish (seg.TextStart + seg.Length) - seg.TextStart
                 if b > a then this.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.mapCharacters a (b - a) map p.Buffer })
         words <- None
         story <- None
@@ -738,11 +792,20 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                 else
                     let i = locate st seg.Start
                     if i > 0 then st.Segments.[i - 1].Para else ""
-            let seg = if seg.Para = "" then { seg with Para = para; Length = 0 } else seg
+            if seg.Para = "" && seg.Mark = RowMark then
+                match (if para = "" then None else findParagraph doc para) with
+                | Some p ->
+                    let mark =
+                        match markStyles.TryGetValue (sprintf "table:%s:%d" seg.Table seg.Row) with
+                        | true, f -> f TB.defaultStyle
+                        | _ -> match markStyles.TryGetValue ("table:" + seg.Table) with | true, f -> f TB.defaultStyle | _ -> TB.defaultStyle
+                    result.Add(resolve { p with Metadata = { p.Metadata with Style = None } } mark)
+                | None -> ()
+            else
             match (if seg.Para = "" then None else findParagraph doc seg.Para) with
             | Some p ->
-                let a = max start seg.Start - seg.Start
-                let b = min finish (seg.Start + seg.Length) - seg.Start
+                let a = max start seg.TextStart - seg.TextStart
+                let b = min finish (seg.TextStart + seg.Length) - seg.TextStart
                 if seg.Length = 0 || a >= seg.Length then
                     // (The paragraph mark: the formatting text typed there gets.)
                     let last = p.Buffer.Runs |> List.tryPick (function TB.Text tr -> Some tr.Style | _ -> None) |> Option.defaultValue TB.defaultStyle
@@ -810,6 +873,7 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                         Style = styleId; SpacingBefore = None; SpacingAfter = None; LineSpacing = None; LineSpacingRule = None
                         IndentLeft = None; IndentRight = None; FirstLineIndent = None; ContextualSpacing = None
                         Alignment = Left; ExplicitAlignment = false; KeepNext = None; KeepLines = None
+                        ListStyle = NoList; ListLevel = 0
                         Explicit = m.Explicit &&& ~~~paragraphFlags } }
         let mutable found = false
         let blocks =
@@ -1188,7 +1252,18 @@ type private ShadingTarget =
 let private shadingObject (book: MacroDocument) (target: ShadingTarget) : Value =
     let readColor () =
         match target with
-        | ParagraphShading ids -> ids () |> List.tryHead |> Option.bind book.Paragraph |> Option.bind (fun p -> p.Metadata.BackgroundColor)
+        | ParagraphShading ids ->
+            match ids () |> List.tryHead with
+            | Some id ->
+                match book.Paragraph id |> Option.bind (fun p -> p.Metadata.BackgroundColor) with
+                | Some color -> Some color
+                | None ->
+                    // (A paragraph in a table cell shows the cell's shading, and Word reports it.)
+                    let st = book.Story
+                    match st.Segments |> Array.tryFind (fun seg -> seg.Para = id && seg.Table <> "") with
+                    | Some seg -> cellOf book { TableId = seg.Table; Row = seg.Row; Col = seg.Col } |> Option.bind (fun c -> c.BackgroundColor)
+                    | None -> None
+            | None -> None
         | CellShading cells -> cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.BackgroundColor)
     let setColor (color: string option) =
         match target with
@@ -1393,6 +1468,7 @@ let private applyTableStyle (book: MacroDocument) (tableId: string) (name: strin
     let all color = { Top = line color; Right = line color; Bottom = line color; Left = line color; InsideH = line color; InsideV = line color }
     let none = { Top = None; Right = None; Bottom = None; Left = None; InsideH = None; InsideV = None }
     let header = "header"
+    let plainGrid = lower = "table grid" || lower = "tablegrid"
     let paint (headerFill: string option) (headerText: string option) (band: string option) (borders: TableBorders) =
         let dark = accent = "#000000"
         mapTable book tableId (fun t ->
@@ -1406,9 +1482,25 @@ let private applyTableStyle (book: MacroDocument) (tableId: string) (name: strin
                             else None
                         { row with IsHeader = (r = 0) || row.IsHeader; Cells = row.Cells |> List.map (fun c -> { c with BackgroundColor = fill; Shading = None }) }) })
         ignore dark
-        // The header row's text: bold (white on a dark fill).
-        let s, e = rowSpan book tableId 0
-        book.Format(s, e, fun st -> { TB.withExplicitBold true st with Color = (match headerText with Some c -> Some c | None -> st.Color) })
+        // (Word's table styles set their paragraphs' spacing: none after, single lines.)
+        let ts, te = tableSpan book tableId
+        book.MapParagraphs(ts, te, fun m ->
+            { m with SpacingAfter = Some 0.0; LineSpacing = Some 1.0; LineSpacingRule = Some "auto" }
+            |> withFlag ParagraphExplicit.SpacingAfter true |> withFlag ParagraphExplicit.LineSpacing true)
+        // The header row's text bold (white on a dark fill), and the first column's (Word's styles have
+        // "Header Row" and "First Column" on); Table Grid has neither. (Cell by cell: the end-of-row marks
+        // are not of the style.)
+        if not plainGrid then
+            match tableOf book tableId with
+            | Some t ->
+                t.Rows |> List.iteri (fun r row ->
+                    for c in 0 .. row.Cells.Length - 1 do
+                        if r = 0 || c = 0 then
+                            let cs, ce = cellSpan book { TableId = tableId; Row = r; Col = c }
+                            book.Format(cs, ce, fun st ->
+                                if r = 0 then { TB.withExplicitBold true st with Color = (match headerText with Some c -> Some c | None -> st.Color) }
+                                else TB.withExplicitBold true st))
+            | None -> ()
         ignore header
     if lower = "table grid" || lower = "tablegrid" then paint None None None (all "#000000"); true
     elif lower.StartsWith "grid table 4" || lower.StartsWith "medium grid" then
@@ -1681,7 +1773,7 @@ let private moveBy (book: MacroDocument) (unit: int) (pos: int) (count: int) =
 
 let private statistics (book: MacroDocument) (s: int) (e: int) (kind: int) =
     let text = book.Story.Text.Substring(s, max 0 (e - s))
-    let wordCount = text.Split([| ' '; '\r'; '\a'; '\b'; '\t'; '\n'; '\f' |], StringSplitOptions.RemoveEmptyEntries) |> Array.filter (fun w -> w |> Seq.exists Char.IsLetterOrDigit) |> Array.length
+    let wordCount = text.Split([| ' '; '\r'; '\a'; '\b'; '\t'; '\n'; '\f' |], StringSplitOptions.RemoveEmptyEntries) |> Array.length
     match kind with
     | 0 -> wordCount
     | 1 | 4 -> book.SegmentsIn(s, e) |> List.filter (fun seg -> seg.Mark <> RowMark && (seg.Length > 0 || seg.Mark = ParagraphMark)) |> List.length
@@ -1782,6 +1874,13 @@ and private rangeCall (book: MacroDocument) (r: LiveRange) (name: string) (args:
         let text = toText (defaultArg (arg args 0) (VString ""))
         let total = book.Story.Total
         let at = min r.End (total - 1)
+        // (A cell's or a row's range: the text goes before its end-of-cell mark.)
+        let at =
+            let text = book.Story.Text
+            let mutable p = at
+            if r.End < total then
+                while p > r.Start && p > 0 && (text.[p - 1] = '\a' || text.[p - 1] = '\b') do p <- p - 1
+            p
         let s0 = min r.Start at
         let _, e = book.Replace(at, at, text, r)
         // (A range that took in the last paragraph mark still does.)
@@ -1948,7 +2047,11 @@ and private paragraphFormatObject (book: MacroDocument) (ids: unit -> string lis
                     ids () |> List.choose (fun id -> book.Paragraph id |> Option.bind (fun p -> paragraphRead (styleOf id) name p.Metadata))
                 match values |> List.distinct with
                 | [ v ] -> Some v
-                | [] -> paragraphRead noFallback name defaultMetadata
+                | [] ->
+                    // (An end-of-row mark: the default paragraph style's format.)
+                    let doc = book.Document
+                    let normal = WordStyles.forBlockInDocument doc (Paragraph (newEmptyParagraph ()))
+                    paragraphRead { Fallback = Some normal; Level = None } name defaultMetadata
                 | _ -> Some (VInteger wdUndefined))
         (fun name value ->
             match name with
@@ -1997,8 +2100,17 @@ and private listFormatObject (book: MacroDocument) (r: LiveRange) : Value =
             | _ -> false)
         (fun name _ ->
             match name with
-            | "applybulletdefault" -> apply (Some Bullet); Some VEmpty
-            | "applynumberdefault" -> apply (Some Numbered); Some VEmpty
+            | "applybulletdefault" | "applynumberdefault" ->
+                // (Word gives list paragraphs the List Paragraph style.)
+                let style = book.FindStyle "List Paragraph"
+                let ids = book.ParagraphIdsIn(r.Start, r.End)
+                let removing = ids |> List.forall (fun id -> book.Paragraph id |> Option.exists (fun p -> p.Metadata.ListStyle <> NoList))
+                if not removing then
+                    for id in ids do
+                        match book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style) with
+                        | None | Some "Normal" -> book.ApplyParagraphStyle(id, style |> Option.map (fun s -> s.Id), None)
+                        | Some _ -> ()
+                apply (Some (if name = "applybulletdefault" then Bullet else Numbered)); Some VEmpty
             | "removenumbers" -> apply None; Some VEmpty
             | "listindent" | "listoutdent" ->
                 for id in book.ParagraphIdsIn(r.Start, r.End) do
@@ -2020,14 +2132,7 @@ and private spansObject (book: MacroDocument) (typeName: string) (bounds: unit -
     collectionObject typeName items (fun _ -> None) noSet noCall
 
 and private paragraphObject (book: MacroDocument) (r: LiveRange) : Value =
-    let ids () =
-        match book.ParagraphIdsIn(r.Start, r.End) with
-        | [] ->
-            // (An end-of-row mark: the format of its row's last paragraph.)
-            let st = book.Story
-            let i = locate st r.Start
-            if i > 0 && st.Segments.[i - 1].Para <> "" then [ st.Segments.[i - 1].Para ] else []
-        | found -> found
+    let ids () = book.ParagraphIdsIn(r.Start, r.End)
     let format = paragraphFormatObject book ids
     let formatHost = match format with VHostObject h -> h | _ -> failwith "format"
     makeObject "Paragraph"
@@ -2195,7 +2300,35 @@ and private tableObject (book: MacroDocument) (tableId: string) : Value =
             | "autofitbehavior" ->
                 if intArg args 0 0 = 2 then mapTable book tableId (fun t -> { t with PreferredWidth = Some { Kind = PercentWidth; Value = Some 5000.0 } })
                 Some VEmpty
-            | "autoformat" -> Some VEmpty
+            | "autoformat" ->
+                // (Word's table formats of Word 97 - wdTableFormatColorful2 and the like - as built-in styles.)
+                let format = intArg args 0 0
+                let style =
+                    match format with
+                    | 0 -> None
+                    | 9 ->
+                        // (Word 2019's Colorful 2: a dark red header row in white bold italic, pale yellow
+                        // rows, the first column bold italic, no borders but the bottom.)
+                        mapTable book tableId (fun t ->
+                            let line = Some ({ Style = Some "single"; Color = Some "#000000"; Width = Some (12.0 / 6.0) } : TableBorder)
+                            { t with
+                                Borders = Some { emptyTableBorders with Bottom = line }
+                                Rows = t.Rows |> List.mapi (fun r row -> { row with Cells = row.Cells |> List.map (fun c -> { c with BackgroundColor = Some (if r = 0 then "#800000" else "#FFFFCC"); Shading = None }) }) })
+                        let s0, e0 = rowSpan book tableId 0
+                        book.Format(s0, e0, fun st -> { TB.withExplicitItalic true (TB.withExplicitBold true st) with Color = Some "#FFFFFF" })
+                        match tableOf book tableId with
+                        | Some t ->
+                            for r in 1 .. t.Rows.Length - 1 do
+                                let cs, ce = cellSpan book { TableId = tableId; Row = r; Col = 0 }
+                                book.Format(cs, ce, fun st -> TB.withExplicitItalic true (TB.withExplicitBold true st))
+                        | None -> ()
+                        None
+                    | 1 | 2 | 3 -> Some "Plain Table 1"
+                    | 8 | 9 | 10 -> Some (sprintf "Grid Table 5 Dark - Accent %d" (format - 7))
+                    | 4 | 5 | 6 | 7 -> Some "List Table 3"
+                    | _ -> Some "Grid Table 4 - Accent 1"
+                style |> Option.iter (fun name -> applyTableStyle book tableId name |> ignore)
+                Some VEmpty
             | "delete" ->
                 let s, e = tableSpan book tableId
                 book.SetStructure { book.Document with Blocks = book.Document.Blocks |> List.filter (function Table t -> t.Id <> tableId | _ -> true) }
@@ -2377,7 +2510,7 @@ and private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : s
     let st = book.Story
     let seg = st.Segments.[locate st at]
     if seg.Table <> "" then notAvailable "a table inside a table cell"
-    let offset = at - seg.Start
+    let offset = at - seg.TextStart
     // The paragraph the table goes before.
     let paraId =
         if offset > 0 && offset <= seg.Length then
@@ -2406,7 +2539,9 @@ and private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : s
     let blocks = blocks |> List.mapi (fun i b -> if i = index then table else b)
     book.SetStructure { doc with Blocks = blocks }
     match table with
-    | Table t -> for row in t.Rows do for cell in row.Cells do for p in cell.Content do book.InheritMark(paraId, p.Id)
+    | Table t ->
+        for row in t.Rows do for cell in row.Cells do for p in cell.Content do book.InheritMark(paraId, p.Id)
+        book.InheritMark(paraId, "table:" + t.Id)
     | _ -> ()
     match table with Table t -> t.Id | _ -> ""
 
@@ -2417,7 +2552,7 @@ and private convertToTable (book: MacroDocument) (r: LiveRange) (args: Value arr
         | Some v -> (match toInt v with 0 -> "\r" | 1 -> "\t" | 2 -> "," | n -> string (char n))
         | None -> "\t"
     let paras = book.SegmentsIn(r.Start, max r.Start (r.End - 1)) |> List.filter (fun s -> s.Para <> "" && s.Table = "")
-    let lines = paras |> List.map (fun s -> book.Story.Text.Substring(s.Start, s.Length))
+    let lines = paras |> List.map (fun s -> book.Story.Text.Substring(s.TextStart, s.Length))
     let cells = lines |> List.map (fun l -> l.Split([| separator |], StringSplitOptions.None))
     let cols = max (intArg args 2 0) (cells |> List.map Array.length |> List.fold max 1)
     let rows = cells.Length
@@ -2605,7 +2740,7 @@ and private selectionObject (book: MacroDocument) : Value =
         collapsedAt e
         book.PendingAt <- e
     let lineStart p = let st = book.Story in st.Segments.[locate st p].Start
-    let lineEnd p = let st = book.Story in let seg = st.Segments.[locate st p] in seg.Start + seg.Length
+    let lineEnd p = let st = book.Story in let seg = st.Segments.[locate st p] in seg.TextStart + seg.Length
     makeObject "Selection"
         (fun name ->
             match name with
@@ -2771,8 +2906,8 @@ and private bookmarksObject (book: MacroDocument) (within: LiveRange option) : V
                 | None -> ()
                 let seg = book.Story.Segments.[locate book.Story s]
                 if seg.Para <> "" then
-                    let a = s - seg.Start
-                    let b = min (seg.Start + seg.Length) e - seg.Start
+                    let a = s - seg.TextStart
+                    let b = min (seg.TextStart + seg.Length) e - seg.TextStart
                     let id = string (book.NextBookmarkId())
                     book.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.setBookmark a (max 0 (b - a)) id name' p.Buffer })
                 match infos () |> List.tryFind (fun (info, _, _) -> eq info.Name name') with

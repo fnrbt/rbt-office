@@ -361,5 +361,28 @@ check "convert: header fill" (table15.Rows.[0].Cells.[0].BackgroundColor) (Some 
 check "convert: after" (bodyTexts d15) [ ""; "Item one"; "Item two" ]
 check "convert: bullet" ((paras d15 |> List.last).Metadata.ListStyle) Doc.Bullet
 
+// ---- the showcase macros (tests/macros/word-showcase): each Main runs on Word's blank document --------
+// (Their results were compared with Word 2019's on the VM: tools/word-parity/macro-parity.sh.)
+let blank =
+    match Rbt.Word.Docx.loadBytesNative (IO.File.ReadAllBytes(IO.Path.Combine(__SOURCE_DIRECTORY__, "../macros/word-blank.docx"))) with
+    | Some d -> d
+    | None -> failwith "word-blank.docx"
+let showcase = IO.Path.Combine(__SOURCE_DIRECTORY__, "../macros/word-showcase")
+for file in IO.Directory.GetFiles(showcase, "*.bas") |> Array.sort do
+    let name = IO.Path.GetFileNameWithoutExtension file
+    let code = snd (Rbt.Word.WordMacroHost.splitHeader (IO.File.ReadAllText file))
+    let watch = Diagnostics.Stopwatch.StartNew()
+    match runOn blank code "Main" with
+    | Ok d -> check (sprintf "showcase %s: runs" name) (Doc.allParagraphs d |> List.isEmpty |> not) true
+    | Error text -> check (sprintf "showcase %s: runs" name) text "ok"
+    if watch.ElapsedMilliseconds > 20000L then printfn "     (showcase %s took %d ms)" name watch.ElapsedMilliseconds
+
+let calendar =
+    runOn blank (snd (Rbt.Word.WordMacroHost.splitHeader (IO.File.ReadAllText(IO.Path.Combine(showcase, "month-calendar.bas"))))) "Main" |> ok "calendar"
+let calendarTables = calendar.Blocks |> List.choose (function Doc.Table t -> Some t | _ -> None)
+check "calendar: three months" calendarTables.Length 3
+check "calendar: weekend shading" (calendarTables.Head.Rows.[1].Cells |> List.map (fun c -> c.BackgroundColor)) [ None; None; None; None; None; Some "#DEEBF7"; Some "#DEEBF7" ]
+check "calendar: page breaks as Word makes them" (Doc.allParagraphs calendar |> List.filter (fun p -> p.Metadata.PageBreakBefore) |> List.length) 2
+
 printfn "word macros: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

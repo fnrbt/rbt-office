@@ -48,7 +48,15 @@ def main():
             differences += 1
             continue
         names = fields_for(w[0]) or [f"f{k}" for k in range(max(len(w), len(o)))]
+        in_table = w[0] == "p" and len(w) > 10 and norm(w[10]) == "-1"
         for k in range(1, max(len(w), len(o))):
+            # (Word's Paragraph.Shading in a table cell is not the cell's: an empty cell says -1, an
+            # end-of-row mark the colour of a cell of its row. Not compared.)
+            if in_table and k < len(names) and names[k] == "shading":
+                continue
+            # (A theme colour is a large negative number in Word, 0xD...; ours are resolved RGB.)
+            if k < len(names) and names[k] in ("color", "rangeColor", "shading") and k < len(w) and w[k].lstrip("-").isdigit() and int(w[k]) < -16777216:
+                continue
             a = norm(w[k]) if k < len(w) else ""
             b = norm(o[k]) if k < len(o) else ""
             if a != b:

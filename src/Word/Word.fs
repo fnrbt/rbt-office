@@ -28,6 +28,30 @@ module API =
         referenceHash value &&& (slotCount - 1)
 
 
+    /// The VBA macros of the document on display (a .docm's project), and whether the host let them run:
+    /// off until enableMacros, as Word's "Enable Content". The project - with the VBA engine and Word's
+    /// object model (WordMacroProject.fs) - is loaded only when macros are enabled, run or edited.
+    type MacroState() =
+        member val Project : WordMacroApi.IWordMacroProject option = None with get, set
+        member val Load : JS.Promise<WordMacroApi.IWordMacroProject> option = None with get, set
+        member val Enabled = false with get, set
+        /// Document_Open / AutoOpen ran (once, when the macros were enabled).
+        member val Opened = false with get, set
+        /// A module was edited: a save writes the project from the modules.
+        member val Edited = false with get, set
+        member val Hooks : WordMacroApi.MacroHooks option = None with get, set
+        /// What macros printed and how runs ended (the VBA editor's output).
+        member val Log = ResizeArray<string>() with get
+        /// The document the project is of (a document installed later has its own).
+        member val Origin : obj = null with get, set
+        member this.Reset() =
+            this.Project <- None
+            this.Load <- None
+            this.Enabled <- false
+            this.Opened <- false
+            this.Edited <- false
+            this.Log.Clear()
+
     /// Editor instance
     type Editor = {
         Handler: Inp.InputHandler
@@ -58,6 +82,7 @@ module API =
         mutable LoadFailure: string option
         /// Which faces of the document the host cannot set text in yet (see setFontAvailability).
         Fonts: Viewer.FontTracker
+        Macros: MacroState
     } with
         member this.Doc = this.Handler.Document
 
@@ -234,6 +259,9 @@ module API =
         Ren.beginProgressiveLayout editor.Handler.RenderContext
         Inp.loadDocument editor.Handler newDoc
         editor.Whole <- newDoc
+        // (Another document: its macros, if any, come with it.)
+        editor.Macros.Reset()
+        editor.Macros.Origin <- box newDoc
         // Input.loadDocument replaced the session and its saved baseline.
 
     let private loadDocument (editor: Editor) newDoc = loadDocumentOf editor newDoc None
@@ -779,6 +807,7 @@ module API =
             LoadWaiters = ResizeArray()
             LoadFailure = None
             Fonts = Viewer.FontTracker()
+            Macros = MacroState()
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
         handler.RenderContext.Progress.OnScrollAdjusted <- fun () -> notifyScrollAdjusted editor
@@ -3993,9 +4022,200 @@ module API =
         // One export for save and for callers: Docx.exportDocumentPackage knows the
         // document's styles and so leaves inherited formatting out of header/footer runs too.
         let snapshot = editor.Handler.Session.CaptureSave()
-        let package = Docx.exportDocumentPackage snapshot.Document
-        package?Unchanged <- snapshot.Unchanged
+        // (A project whose modules were edited is saved from them: the document keeps it as its
+        // vbaProject.bin.)
+        let edited =
+            match editor.Macros.Project with
+            | Some project when editor.Macros.Edited && not project.Modules.IsEmpty -> Some (project.ProjectBytes())
+            | _ -> None
+        let document = match edited with Some bytes -> WordMacroApi.withProjectBytes bytes snapshot.Document | None -> snapshot.Document
+        let package = Docx.exportDocumentPackage document
+        package?Unchanged <- snapshot.Unchanged && edited.IsNone
         package
+
+    // ---- macros (VBA) ----------------------------------------------------------------------------
+
+    [<Emit("window.alert($0)")>]
+    let private alertBox (_: string) : unit = jsNative
+    [<Emit("window.confirm($0)")>]
+    let private confirmBox (_: string) : bool = jsNative
+    [<Emit("window.prompt($0, $1)")>]
+    let private promptBox (_: string) (_: string) : string = jsNative
+    [<Emit("console.log($0)")>]
+    let private consoleLog (_: string) : unit = jsNative
+    [<Emit("$0($1, $2, $3)")>]
+    let private callHook3 (_: obj) (_: obj) (_: obj) (_: obj) : obj = jsNative
+    [<Emit("$0($1)")>]
+    let private callHook1 (_: obj) (_: obj) : unit = jsNative
+    [<Emit("($0 === null || $0 === undefined)")>]
+    let private isNullish (_: obj) : bool = jsNative
+
+    /// MsgBox / InputBox / Debug.Print with the browser's own dialogs, until a host gives its own
+    /// (setMacroHooks). MsgBox's answer is VBA's: vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4.
+    let private browserMacroHooks : WordMacroApi.MacroHooks =
+        { MessageBox = fun prompt buttons title ->
+            let text = if title = "" || title = "Microsoft Word" then prompt else title + "\n\n" + prompt
+            match buttons &&& 7 with
+            | 0 -> alertBox text; 1
+            | 1 -> if confirmBox text then 1 else 2
+            | 3 | 4 -> if confirmBox text then 6 else 7
+            | 5 -> if confirmBox text then 4 else 2
+            | _ -> if confirmBox text then 4 else 3
+          InputBox = fun prompt _ defaultText ->
+            let answer = promptBox prompt defaultText
+            if isNull answer then None else Some answer
+          Output = consoleLog
+          FileName = "Document1.docm" }
+
+    /// The VBA engine and Word's object model (WordMacroProject.fs): fetched when macros are first enabled,
+    /// run or edited - the editor never imports it otherwise, so a document that runs no macro does not
+    /// load it.
+    [<Emit("import(\"./WordMacroProject.js\").then(m => m.openProject($0))")>]
+    let private loadMacroProject (_doc: Doc.Document) : JS.Promise<WordMacroApi.IWordMacroProject> = jsNative
+
+    let private macroHooksOf (editor: Editor) = defaultArg editor.Macros.Hooks browserMacroHooks
+
+    /// Whether the document on display has VBA macros (known without loading them: a .docm's project).
+    let hasMacros (editor: Editor) : bool =
+        WordMacroApi.hasProject editor.Whole || (editor.Macros.Project |> Option.exists (fun p -> not p.Modules.IsEmpty))
+
+    /// Load the document's macros, with the VBA engine (fetched the first time). getMacros,
+    /// getMacroModules and getMacroProblems answer from what is loaded; the members that run them load first.
+    let loadMacros (editor: Editor) : JS.Promise<unit> =
+        let state = editor.Macros
+        let loaded =
+            match state.Project, state.Load with
+            | Some project, _ -> Fable.Core.JS.Constructors.Promise.resolve project
+            | None, Some pending -> pending
+            | None, None ->
+                let origin = state.Origin
+                ensureLoaded editor
+                let pending =
+                    (loadMacroProject editor.Whole).``then``(fun (project: WordMacroApi.IWordMacroProject) ->
+                        // (A document installed meanwhile has its own.)
+                        if obj.ReferenceEquals(origin, state.Origin) && state.Project.IsNone then state.Project <- Some project
+                        project)
+                state.Load <- Some pending
+                pending
+        loaded.``then``(fun _ -> ())
+
+    /// The macros a user can run (Word's Macros dialog): public Subs without required arguments, in order;
+    /// those of ThisDocument as `ThisDocument.Name`. Empty until loadMacros.
+    let getMacros (editor: Editor) : string array =
+        match editor.Macros.Project with
+        | Some project -> List.toArray project.Macros
+        | None -> [||]
+
+    /// The modules of the project: [{ name, kind ("standard" | "class" | "document"), source, code }]
+    /// (`code` without the Attribute lines). Empty until loadMacros.
+    let getMacroModules (editor: Editor) : obj array =
+        match editor.Macros.Project with
+        | Some project -> [| for m in project.Modules -> createObj [ "name" ==> m.Name; "kind" ==> m.Kind; "source" ==> m.Source; "code" ==> m.Code ] |]
+        | None -> [||]
+
+    /// What keeps the project from compiling: [{ module, line, column, description }] (none when it compiles).
+    let getMacroProblems (editor: Editor) : obj array =
+        match editor.Macros.Project with
+        | Some project -> [| for f in project.Problems -> createObj [ "module" ==> f.Module; "line" ==> f.Line; "column" ==> f.Column; "description" ==> f.Description ] |]
+        | None -> [||]
+
+    /// Whether macros may run (enableMacros). Off for every document opened, as Word's "Enable Content".
+    let getMacrosEnabled (editor: Editor) : bool = editor.Macros.Enabled
+
+    /// Where MsgBox, InputBox and Debug.Print go: { messageBox(prompt, buttons, title) -> VBA's answer,
+    /// inputBox(prompt, title, default) -> text or null, output(text), fileName }. Missing members keep the
+    /// browser's dialogs and the console; null restores them.
+    let setMacroHooks (editor: Editor) (hooks: obj) : unit =
+        if isNullish hooks then editor.Macros.Hooks <- None
+        else
+            let fn (key: string) = let f = hooks?(key) in if isNullish f then None else Some f
+            editor.Macros.Hooks <-
+                Some { browserMacroHooks with
+                        MessageBox = (match fn "messageBox" with Some f -> (fun p b t -> let r = callHook3 f (box p) (box b) (box t) in if isNullish r then 1 else unbox<int> r) | None -> browserMacroHooks.MessageBox)
+                        InputBox = (match fn "inputBox" with Some f -> (fun p t d -> let r = callHook3 f (box p) (box t) (box d) in if isNullish r then None else Some (string r)) | None -> browserMacroHooks.InputBox)
+                        Output = (match fn "output" with Some f -> (fun text -> callHook1 f (box text)) | None -> browserMacroHooks.Output)
+                        FileName = (match fn "fileName" with Some f -> string f | None -> browserMacroHooks.FileName) }
+
+    /// Run on the document as it is now (the body: not while a header, footer or note is edited) and
+    /// commit what the macro made as one undo step.
+    let private runLoaded (editor: Editor) (description: string) (run: WordMacroApi.IWordMacroProject -> Doc.Document -> WordMacroApi.MacroHooks -> WordMacroApi.MacroOutcome) : obj =
+        let state = editor.Macros
+        match state.Project with
+        | None -> createObj [ "ok" ==> false; "number" ==> 0; "description" ==> "The macros are not loaded" ]
+        | Some project ->
+            ensureLoaded editor
+            if editor.Handler.Story.IsSome then
+                createObj [ "ok" ==> false; "number" ==> 4605; "description" ==> "Macros run on the document's body: leave the header, footer or note first" ]
+            else
+                let start = editor.Doc
+                let hooks = macroHooksOf editor
+                let hooks = { hooks with Output = (fun text -> state.Log.Add text; hooks.Output text) }
+                match run project start hooks with
+                | WordMacroApi.MacroDone result ->
+                    if not (obj.ReferenceEquals(result, start)) then Inp.applyEdit editor.Handler description result
+                    createObj [ "ok" ==> true ]
+                | WordMacroApi.MacroFailed f ->
+                    state.Log.Add f.Text
+                    createObj [ "ok" ==> false; "number" ==> f.Number; "description" ==> f.Description; "module" ==> f.Module; "procedure" ==> f.Procedure; "line" ==> f.Line ]
+
+    let private runWhenLoaded (editor: Editor) (memberName: string) (description: string) run : JS.Promise<obj> =
+        if not editor.Macros.Enabled then failwith (memberName + ": macros are not enabled (enableMacros)")
+        match editor.Macros.Project with
+        | Some _ -> Fable.Core.JS.Constructors.Promise.resolve (runLoaded editor description run)
+        | None -> (loadMacros editor).``then``(fun () -> runLoaded editor description run)
+
+    /// Let the document's macros run (loading them); runs its ThisDocument.Document_Open or AutoOpen once,
+    /// as opening the document in Word with content enabled would. Resolves to its result, as runMacro's.
+    let enableMacros (editor: Editor) : JS.Promise<obj> =
+        editor.Macros.Enabled <- true
+        (loadMacros editor).``then``(fun () ->
+            let state = editor.Macros
+            if state.Opened then createObj [ "ok" ==> true ]
+            else
+                state.Opened <- true
+                let opening =
+                    match state.Project with
+                    | Some project when project.Has "ThisDocument.Document_Open" -> Some "ThisDocument.Document_Open"
+                    | Some project when project.Has "AutoOpen" -> Some "AutoOpen"
+                    | _ -> None
+                match opening with
+                | Some name -> runLoaded editor name (fun project start hooks -> project.Run(start, hooks, name))
+                | None -> createObj [ "ok" ==> true ])
+
+    /// Run a macro of the document by name (one of getMacros, or any Sub, as `Name` or `Module.Name`).
+    /// What it changes is one undo step; nothing of a macro that stops on an error is kept. Resolves to
+    /// { ok: true } or { ok: false, number, description, module, procedure, line }. Throws when macros
+    /// are not enabled.
+    let runMacro (editor: Editor) (name: string) : JS.Promise<obj> =
+        runWhenLoaded editor "runMacro" ("Macro " + name) (fun project start hooks -> project.Run(start, hooks, name))
+
+    /// Run a line as the VBA editor's Immediate window does (`?expression`, `Print expression`, or
+    /// statements) on the document: what it changes is one undo step. Resolves as runMacro.
+    let runMacroLine (editor: Editor) (line: string) : JS.Promise<obj> =
+        if editor.Macros.Enabled then editor.Macros.Log.Add("> " + line)
+        runWhenLoaded editor "runMacroLine" "Immediate" (fun project start hooks -> project.Immediate(start, hooks, line))
+
+    /// Replace the code of a module (the code as the VBA editor shows it, without its Attribute lines; a
+    /// module the project does not have is added, as a standard module) and compile the project again;
+    /// its macros run from the new code, and a save writes the project from the modules. Resolves to the
+    /// problems, as getMacroProblems.
+    let setMacroModule (editor: Editor) (name: string) (code: string) : JS.Promise<obj array> =
+        if System.String.IsNullOrWhiteSpace name then failwith "setMacroModule: the module needs a name"
+        (loadMacros editor).``then``(fun () ->
+            let state = editor.Macros
+            match state.Project with
+            | None -> [||]
+            | Some project ->
+                let edited = project.WithModule(name, code)
+                state.Project <- Some edited
+                state.Edited <- true
+                let problems = getMacroProblems editor
+                state.Log.Add(if problems.Length = 0 then sprintf "%s: compiled" name else sprintf "%s: %d problem(s)" name problems.Length)
+                for f in edited.Problems do state.Log.Add f.Text
+                problems)
+
+    /// What macros printed and how the VBA editor's runs ended, newest last.
+    let getMacroOutput (editor: Editor) : string array = editor.Macros.Log.ToArray()
 
     /// Test rope operations
     let testRope () =
@@ -4224,6 +4444,18 @@ module API =
             "setHeaderFooterImageText" ==> setHeaderFooterImageText
             "setCurrentSectionHeaderFooterText" ==> setCurrentSectionHeaderFooterText
             "exportDocumentPackage" ==> exportDocumentPackage
+            "hasMacros" ==> hasMacros
+            "loadMacros" ==> loadMacros
+            "getMacros" ==> getMacros
+            "getMacroModules" ==> getMacroModules
+            "getMacroProblems" ==> getMacroProblems
+            "getMacrosEnabled" ==> getMacrosEnabled
+            "enableMacros" ==> enableMacros
+            "setMacroHooks" ==> setMacroHooks
+            "runMacro" ==> runMacro
+            "runMacroLine" ==> runMacroLine
+            "setMacroModule" ==> setMacroModule
+            "getMacroOutput" ==> getMacroOutput
             "insertTextBox" ==> insertTextBox
             "moveShape" ==> moveShape
             "selectShape" ==> selectShape
