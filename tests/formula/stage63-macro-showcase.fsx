@@ -177,5 +177,21 @@ check "an engine exception is a compile error, not a crash" unloadable "a compil
 let exported = M.macroModule "Counter" "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  'True\nEND\nAttribute VB_Name = \"Counter\"\nAttribute VB_PredeclaredId = False\nAttribute VB_Exposed = False\nPublic N As Long\n"
 check "an exported class: its kind and name, the header skipped" (exported.Kind, exported.Name, exported.Source.Contains "VERSION") (Rbt.Vb.Api.Class, "Counter", false)
 
+// ---- a workbook without formulas is not recalculated after each write; one written later calculates ----
+let later = run """
+Sub Main()
+    Dim i
+    For i = 1 To 50: Cells(i, 1).Value = Cells(i, 1).Value + i: Next
+    Range("B1").Formula = "=SUM(A1:A50)"
+    Range("A1").Value = 101
+    Range("B2").Value = Range("B1").Value
+    Range("B1").ClearContents
+    Range("A2").Value = 7
+    Range("B3").Formula = "=A2*2"
+    Range("B4").Value = Range("B3").Value
+End Sub"""
+check "a formula written after values sees them, and what is written after it" (valueAt later (1, 1)) (Number 1375.0)
+check "and again after the only formula went" (valueAt later (3, 1)) (Number 14.0)
+
 printfn "Stage 63 macro showcase tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

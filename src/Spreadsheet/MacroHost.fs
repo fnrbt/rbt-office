@@ -313,6 +313,8 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let mutable hooks = initialHooks
     let mutable engine : Recalc.Engine option = None
     let mutable dirty = false
+    // The engine has not been told of writes since (a workbook without formulas): built again before it calculates.
+    let mutable stale = false
     let hints = ResizeArray<SheetId * CellAddress>()
     let mutable selection : (SheetId * int * int * int * int) option = None
     // (Counts the changes, for a host that shows the workbook while the macro runs.)
@@ -331,7 +333,21 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         | _ -> ()
 
     let calculate () =
+        // A workbook without a formula has nothing to calculate after a write of values (most macros that
+        // paint or fill cells): the engine is not told of them, and is built again when a formula is written.
+        let formulaWritten () =
+            hints |> Seq.exists (fun (sheetId, address) ->
+                match Map.tryFind sheetId workbook.Sheets with
+                | Some sheet -> (match getCell address sheet.Model with Some { Value = Formula _ } -> true | _ -> false)
+                | None -> false)
+        if dirty && (match engine with Some current -> Recalc.formulaCount current = 0 | None -> false) && not (formulaWritten ()) then
+            hints.Clear()
+            dirty <- false
+            stale <- true
         if dirty then
+            if stale then
+                engine <- None
+                stale <- false
             let next =
                 match engine with
                 | Some current ->
@@ -355,6 +371,7 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         hooks <- nextHooks
         engine <- None
         dirty <- false
+        stale <- false
         hints.Clear()
         selection <- None
         settingValues.Clear()

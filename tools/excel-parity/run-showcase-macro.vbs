@@ -13,7 +13,8 @@ entry = "Main" : before = ""
 If UBound(parts) >= 1 Then entry = parts(1)
 If UBound(parts) >= 2 Then before = parts(2)
 Set x = CreateObject("Excel.Application")
-x.Visible = False : x.DisplayAlerts = False
+' (Visible: a macro that sets ActiveWindow.Zoom needs a window; an invisible Excel has none and stops on error 91.)
+x.Visible = True : x.DisplayAlerts = False
 x.AutomationSecurity = 1  ' msoAutomationSecurityLow: the workbook's macros may run
 Set wb = x.Workbooks.Open(inPath)
 status = ""
@@ -28,7 +29,16 @@ elapsed = Timer - started
 Set out = fso.CreateTextFile(outPath, True, True)
 out.WriteLine "status" & vbTab & status & vbTab & FormatNumber(elapsed, 2)
 Set s = x.ActiveSheet
-For Each c In s.UsedRange.Cells
+' (Each cell is a few COM calls: a large picture is sampled - every cell of a range of up to 4000, else a
+' diagonal grid of about 4000 cells - so the dump ends within the task's time.)
+' (Within A1:GR250: a sheet formatted whole has a used range of every cell.)
+Set area = x.Intersect(s.UsedRange, s.Range("A1:GR250"))
+total = area.Cells.Count
+stepSize = 1
+If total > 4000 Then stepSize = Int(total / 4000) + 1
+If stepSize > 1 Then out.WriteLine "sampled" & vbTab & stepSize & vbTab & "-"
+For Each c In area.Cells
+  If stepSize = 1 Or ((c.Row * 7 + c.Column) Mod stepSize) = 0 Then
   v = c.Value2
   If VarType(v) = 10 Then
     t = c.Text
@@ -39,6 +49,7 @@ For Each c In s.UsedRange.Cells
   End If
   If c.Interior.Pattern = -4142 Then f = "-" Else f = CStr(c.Interior.Color)
   If t <> "" Or f <> "-" Then out.WriteLine c.Address(False, False) & vbTab & t & vbTab & f
+  End If
 Next
 out.Close
 wb.Close False

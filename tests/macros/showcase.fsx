@@ -17,7 +17,7 @@
 //   ' Entry: Main             the Sub to run (default Main)
 //   ' Input: 7                what InputBox answers (one line per call, the last one repeats)
 //   ' Limit: 900000000        its instruction limit (default 600 million)
-//   ' Before: Seed            a Sub run first (what a user would set up by hand, in a <name>.Setup.bas)
+//   ' Before: Seed            a Sub run first (what a user would set up by hand, in a <name>.Prep.bas)
 // A macro "is" the files <name>.bas / <name>.<module>.bas / <name>.<class>.cls; a file whose name starts
 // with "_" is left out.
 
