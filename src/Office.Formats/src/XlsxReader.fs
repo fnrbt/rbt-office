@@ -2071,8 +2071,8 @@ module Xlsx =
                     else
                         match fSi with
                         | Some si ->
-                            match ctx.SharedFormulas.TryGetValue si with
-                            | true, (masterRow, masterCol, masterText) ->
+                            match Portable.Dict.tryFind si ctx.SharedFormulas with
+                            | ValueSome (masterRow, masterCol, masterText) ->
                                 Some (shiftFormulaRefs masterText (rowIndex - masterRow) (colIndex - masterCol)), None
                             | _ -> None, None
                         | None -> None, None
@@ -2326,9 +2326,9 @@ module Xlsx =
           HasInline = false }
 
     let private scanColumnName (scan: RowScan) (index: int) : string =
-        match scan.ColumnNames.TryGetValue index with
-        | true, name -> name
-        | false, _ ->
+        match Portable.Dict.tryFind index scan.ColumnNames with
+        | ValueSome name -> name
+        | ValueNone ->
             let name = indexToColumnLetters index
             scan.ColumnNames.[index] <- name
             name
@@ -3003,9 +3003,9 @@ module Xlsx =
             sb.ToString()
 
     let private nativeColumnName (columnsByIndex: System.Collections.Generic.Dictionary<int, string>) index =
-        match columnsByIndex.TryGetValue index with
-        | true, value -> value
-        | false, _ ->
+        match Portable.Dict.tryFind index columnsByIndex with
+        | ValueSome value -> value
+        | ValueNone ->
             let value = indexToColumnLetters index
             columnsByIndex.[index] <- value
             value
@@ -5358,12 +5358,12 @@ module SlicerParts =
         let parts = System.Collections.Generic.Dictionary<string, byte[]>()
         for path, data in workbook.Preserved.Parts do parts.[path] <- data
         let parsed (path: string) : XmlNode option =
-            match parts.TryGetValue path with
-            | true, data ->
+            match Portable.Dict.tryFind path parts with
+            | ValueSome data ->
                 let text = System.Text.Encoding.UTF8.GetString data
                 (try XmlDsl.tryScan text (System.Collections.Generic.HashSet<string>()) with _ -> None)
                 |> Option.orElseWith (fun () -> try Some (XmlDsl.parse text) with _ -> None)
-            | false, _ -> None
+            | ValueNone -> None
         let targetsOf (relationships: (string * string * string * bool) list) (kind: string) =
             relationships
             |> List.choose (fun (_, relType, target, isExternal) ->
@@ -6452,18 +6452,18 @@ let private parseWorkbookFiltered loadAll sheetName (archive: ZipArchive) : Fabl
     let source = {
         Exists = fun path -> (ZipInterop.tryFindFile archive path).IsSome
         Text = fun path ->
-            match cache.TryGetValue path with
-            | true, text -> Some text
+            match Portable.Dict.tryFind path cache with
+            | ValueSome text -> Some text
             | _ ->
-                match byteCache.TryGetValue path with
-                | true, bytes ->
+                match Portable.Dict.tryFind path byteCache with
+                | ValueSome bytes ->
                     let text = textOfBytes bytes
                     cache.[path] <- text
                     Some text
                 | _ -> None
         Bytes = fun path ->
-            match byteCache.TryGetValue path with
-            | true, bytes -> Some bytes
+            match Portable.Dict.tryFind path byteCache with
+            | ValueSome bytes -> Some bytes
             | _ -> None
     }
     let fetchBytes () : Fable.Core.JS.Promise<unit> =

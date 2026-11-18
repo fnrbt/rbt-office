@@ -36,7 +36,7 @@ let private gatherVerticalMergeContent (rows: TableRow list) : TableRow list =
                             nextRow <- nextRow + 1
                         | _ -> more <- false
                     while gathered.Count > 0 && TextBuffer.isWhiteSpace gathered.[gathered.Count - 1].Buffer do
-                        gathered.RemoveAt (gathered.Count - 1)
+                        Portable.Stack.dropLast gathered
                     if gathered.Count > 0 then
                         cells.[rowIndex].[cellIndex] <- { cell with Content = cell.Content @ List.ofSeq gathered }
         rows |> List.mapi (fun index row -> { row with Cells = List.ofArray cells.[index] })

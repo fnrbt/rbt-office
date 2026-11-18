@@ -435,6 +435,7 @@ dotnet build Office.slnx -m:1 -nr:false # all 15 supported projects; no sibling 
 pnpm run build                       # 8 x "Fable compilation finished"
 ```
 Browser harnesses, run per branch before merging: `tools/word-browser/{run,perf}.mjs`, `tools/docx-roundtrip/roundtrip.mjs`, `tools/xlsx-browser/{run,perf}.mjs`.
+Shared F# that is slow only in Fable output (stack pops, TryGetValue, String.Replace, sprintf, stepped ranges, curried functions in options): `docs/portable-fsharp.md` and the `Portable` module (`src/Office.Formats/src/Portable.fs`); `PROFILE_OUT=file.json` with a harness's `--profile` saves the CPU profile, `tools/fable-cost/fable-cost.mjs` attributes its Fable-library time to F# functions.
 The profiles report exclusions explicitly: core excludes native/browser; native excludes core/browser. `--skip-build` is an explicit freshness opt-out and propagates to formula tests. Missing mandatory suites/fixtures fail before builds; office-format suites must be registered in the runner. Browser release gates run against an installed tarball, not the source `dist`. For a shared machine, serialize heavy commands with `flock /tmp/rbt-office-heavy.lock`; the runners default to two .NET processors and disabled MSBuild node reuse.
 
 ### Release

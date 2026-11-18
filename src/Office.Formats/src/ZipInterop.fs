@@ -45,7 +45,7 @@ let resolveTarget (baseDir: string) (target: string) : string =
     let parts = ResizeArray<string>()
     for segment in full.Split('/') do
         if segment = ".." then
-            if parts.Count > 0 then parts.RemoveAt(parts.Count - 1)
+            if parts.Count > 0 then Portable.Stack.dropLast parts
         elif segment <> "" && segment <> "." then
             parts.Add segment
     System.String.Join("/", parts)

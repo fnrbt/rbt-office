@@ -1033,8 +1033,8 @@ let copyBlocksWithNewIds (newId: string -> BlockId) (blocks: Block list) : Block
     let groups = Dictionary<string, string>()
     let remap group =
         group |> Option.map (fun group ->
-            match groups.TryGetValue group with
-            | true, found -> found
+            match Portable.Dict.tryFind group groups with
+            | ValueSome found -> found
             | _ ->
                 let fresh = newId "control"
                 groups.[group] <- fresh
@@ -1256,9 +1256,9 @@ let private blockHolds (blockId: string) (block: Block) =
 let locateBlock (doc: Document) (blockId: string) : struct (int * Block) voption =
     let hint =
         lock blockPlaces (fun () ->
-            match blockPlaces.TryGetValue blockId with
-            | true, index -> index
-            | false, _ -> -1)
+            match Portable.Dict.tryFind blockId blockPlaces with
+            | ValueSome index -> index
+            | ValueNone -> -1)
     let mutable result = ValueNone
     if hint >= 0 then
         // The blocks from a few before the hint to a few after it.
@@ -1675,8 +1675,8 @@ let private iterContentControlParagraphs visit (doc: Document) =
         // Replacing the middle of a control splits its physical XML wrapper,
         // even when the remaining paragraphs retain the original group ID.
         let physicalKey =
-            match continuations.TryGetValue key with
-            | true, struct (previous, physicalKey) when previous >= position - 1 -> physicalKey
+            match Portable.Dict.tryFind key continuations with
+            | ValueSome struct (previous, physicalKey) when previous >= position - 1 -> physicalKey
             | _ -> key + "@" + string position
         continuations.[key] <- struct (position, physicalKey)
         visit physicalKey id tag alias xml para
@@ -1736,8 +1736,8 @@ let private contentControlRanges (doc: Document) =
     let ranges = ResizeArray<ContentControlRange>()
     let grouped = Dictionary<string, ContentControlRange>()
     iterContentControlParagraphs (fun key id tag alias _ para ->
-        match grouped.TryGetValue key with
-        | true, found -> found.Last <- para
+        match Portable.Dict.tryFind key grouped with
+        | ValueSome found -> found.Last <- para
         | _ ->
             let resolvedTag = tag |> Option.defaultValue "content-control"
             let resolvedAlias = alias |> Option.defaultValue (tag |> Option.defaultValue id)
@@ -1757,8 +1757,8 @@ let private contentControlMembershipsWhere (keep: string option -> bool) (doc: D
     let memberships = Dictionary<BlockId, HashSet<string>>()
     iterContentControlParagraphs (fun key _ _ _ xml para ->
       if keep xml then
-        match memberships.TryGetValue para.Id with
-        | true, members -> members.Add key |> ignore
+        match Portable.Dict.tryFind para.Id memberships with
+        | ValueSome members -> members.Add key |> ignore
         | _ ->
             let members = HashSet<string>()
             members.Add key |> ignore
@@ -3891,9 +3891,9 @@ let private selectionAfterEdits (edits: Dictionary<BlockId, ResizeArray<struct (
     | Some sel ->
         let adjust (position: Position) =
             let moved =
-                match edits.TryGetValue position.BlockId with
-                | true, paragraphEdits -> offsetAfterEdits paragraphEdits position.Offset
-                | false, _ -> position.Offset
+                match Portable.Dict.tryFind position.BlockId edits with
+                | ValueSome paragraphEdits -> offsetAfterEdits paragraphEdits position.Offset
+                | ValueNone -> position.Offset
             let bounded =
                 match findParagraph doc position.BlockId with
                 | Some para -> max 0 (min (TextBuffer.length para.Buffer) moved)
@@ -4086,9 +4086,9 @@ let refreshFieldsWithPageMap pageMap doc =
             let format =
                 fieldNumberFormat code
                 |> Option.defaultWith (fun () ->
-                    match sectionFormats.Value.TryGetValue blockId with
-                    | true, sectionFormat -> sectionFormat
-                    | false, _ -> "decimal")
+                    match Portable.Dict.tryFind blockId sectionFormats.Value with
+                    | ValueSome sectionFormat -> sectionFormat
+                    | ValueNone -> "decimal")
             formatPageNumber format (fieldPage blockId startOffset)
         | Some (_, "PAGEREF" :: bookmarkName :: _) -> string (bookmarkPage bookmarkName)
         | Some (_, "NUMPAGES" :: _) -> string pageMap.PageCount
@@ -4592,39 +4592,55 @@ let private selectionFormatter (doc: Document) : ((unit -> bool) -> (ParagraphBl
             blockIds |> List.iteri (fun index blockId -> selectedBlockIndexes.[blockId] <- index)
             // Classify each containing table once, not once per selected cell.
             let mutable plainCellCache: Dictionary<BlockId, HashSet<BlockId>> option = None
+            let collectPlainCells (paragraphs: HashSet<BlockId>) (table: TableBlock) =
+                let rec collect (table: TableBlock) =
+                    for row in table.Rows do
+                        for cell in row.Cells do
+                            if cell.EnclosingControls |> List.exists (fun layer -> controlIsPlainText layer.Xml) then
+                                for paragraph in cell.Content do
+                                    paragraphs.Add paragraph.Id |> ignore
+                            for nested in cell.NestedTables do collect nested
+                collect table
+            // (Many paragraphs: the paragraphs of plain-text cells of every table, gathered once. Finding
+            // each paragraph's block walks the document up to it: formatting all of a long document
+            // was quadratic - 0.8 s of the 1.3 s of making a 9 000-block document bold.)
+            let mutable allPlainCells: HashSet<BlockId> = null
             let inPlainTextCell paragraphId =
-                match locateBlock doc paragraphId with
-                | ValueSome (struct (_, Table table)) ->
-                    let cache =
-                        match plainCellCache with
-                        | Some cache -> cache
-                        | None ->
-                            let cache = Dictionary<BlockId, HashSet<BlockId>>()
-                            plainCellCache <- Some cache
-                            cache
-                    let paragraphs =
-                        match cache.TryGetValue table.Id with
-                        | true, paragraphs -> paragraphs
-                        | _ ->
-                            let paragraphs = HashSet<BlockId>()
-                            let rec collect (table: TableBlock) =
-                                for row in table.Rows do
-                                    for cell in row.Cells do
-                                        if cell.EnclosingControls |> List.exists (fun layer -> controlIsPlainText layer.Xml) then
-                                            for paragraph in cell.Content do
-                                                paragraphs.Add paragraph.Id |> ignore
-                                        for nested in cell.NestedTables do collect nested
-                            collect table
-                            cache.[table.Id] <- paragraphs
-                            paragraphs
-                    paragraphs.Contains paragraphId
-                | _ -> false
+                if blockCount > 32 then
+                    if isNull allPlainCells then
+                        let paragraphs = HashSet<BlockId>()
+                        for block in doc.Blocks do
+                            match block with
+                            | Table table -> collectPlainCells paragraphs table
+                            | _ -> ()
+                        allPlainCells <- paragraphs
+                    allPlainCells.Contains paragraphId
+                else
+                    match locateBlock doc paragraphId with
+                    | ValueSome (struct (_, Table table)) ->
+                        let cache =
+                            match plainCellCache with
+                            | Some cache -> cache
+                            | None ->
+                                let cache = Dictionary<BlockId, HashSet<BlockId>>()
+                                plainCellCache <- Some cache
+                                cache
+                        let paragraphs =
+                            match Portable.Dict.tryFind table.Id cache with
+                            | ValueSome paragraphs -> paragraphs
+                            | _ ->
+                                let paragraphs = HashSet<BlockId>()
+                                collectPlainCells paragraphs table
+                                cache.[table.Id] <- paragraphs
+                                paragraphs
+                        paragraphs.Contains paragraphId
+                    | _ -> false
 
             Some (fun finished formatFn ->
                 let formatParagraph (para: ParagraphBlock) =
-                    match selectedBlockIndexes.TryGetValue para.Id with
-                    | false, _ -> para
-                    | true, i ->
+                    match Portable.Dict.tryFind para.Id selectedBlockIndexes with
+                    | ValueNone -> para
+                    | ValueSome i ->
                         let bufferLen = TextBuffer.length para.Buffer
 
                         // Determine range to format within this block
@@ -6205,8 +6221,8 @@ let private applyListDialogCore (allocateId: unit -> string) (change: ListDialog
                             { m with ListId = Some (allocateId ()); ListSourceId = m.ListSourceId |> Option.orElse m.ListId
                                      ListRestart = true; ListStart = start; ListStartOverrides = snapshots; ListLevels = levels }
             mapEditableParagraphs (fun paragraph ->
-                match replacements.TryGetValue paragraph.Id with
-                | true, metadata -> { paragraph with Metadata = metadata }
+                match Portable.Dict.tryFind paragraph.Id replacements with
+                | ValueSome metadata -> { paragraph with Metadata = metadata }
                 | _ -> paragraph) doc
     let ids = System.Collections.Generic.Dictionary<ListStyle * string option, string>()
     let update (m: BlockMetadata) =
@@ -6221,8 +6237,8 @@ let private applyListDialogCore (allocateId: unit -> string) (change: ListDialog
                 else
                     let key = m.ListStyle, (if m.ListStyle = NoList then None else m.ListId)
                     let id =
-                        match ids.TryGetValue key with
-                        | true, id -> id
+                        match Portable.Dict.tryFind key ids with
+                        | ValueSome id -> id
                         | _ -> let id = allocateId () in ids.[key] <- id; id
                     let source = if m.ListStyle = NoList then None else m.ListSourceId |> Option.orElse m.ListId
                     let chosen = change.Marker |> Option.defaultValue (if kind = Bullet then "•" else "decimal")

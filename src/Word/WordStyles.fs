@@ -781,9 +781,9 @@ let selectionFormat (doc: Document) : SelectionFormat =
                         match block with
                         | Heading (level, para) -> headings.[para.Id] <- level
                         | _ -> ()
-                match headings.TryGetValue id with
-                | true, level -> Some level
-                | false, _ -> None
+                match Portable.Dict.tryFind id headings with
+                | ValueSome level -> Some level
+                | ValueNone -> None
             else
                 match findBlock doc id with
                 | Some (Heading (level, _)) -> Some level
@@ -798,16 +798,16 @@ let selectionFormat (doc: Document) : SelectionFormat =
                 match para.Metadata.Style with
                 | None -> context.DefaultParagraphStyle
                 | Some styleId ->
-                    match styleFormats.TryGetValue styleId with
-                    | true, known -> known
-                    | false, _ ->
+                    match Portable.Dict.tryFind styleId styleFormats with
+                    | ValueSome known -> known
+                    | ValueNone ->
                         let found = forBlockInContext context (Paragraph para)
                         styleFormats.[styleId] <- found
                         found
         let isVisibleStyle (styleId: string) =
-            match visibleStyles.TryGetValue styleId with
-            | true, known -> known
-            | false, _ ->
+            match Portable.Dict.tryFind styleId visibleStyles with
+            | ValueSome known -> known
+            | ValueNone ->
                 let visible =
                     not (isInternalStyleId styleId)
                     && (match Map.tryFind ("paragraph", styleId) context.Styles with

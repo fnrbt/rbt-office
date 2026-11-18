@@ -34,8 +34,8 @@ let rec private scalarOf (value: Value) =
     match value with
     | VRef (values, index) when index >= 0 && index < values.Length -> scalarOf values.[index]
     | VFieldRef (instance, field) ->
-        match instance.Fields.TryGetValue field with
-        | true, inner -> scalarOf inner
+        match Portable.Dict.tryFind field instance.Fields with
+        | ValueSome inner -> scalarOf inner
         | _ -> VEmpty
     | VHostObject host ->
         match host.GetMember "_Default" with
@@ -689,8 +689,8 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                         let wasEmpty = TB.length p.Buffer = 0
                         let buffer = TB.insert at piece p.Buffer
                         let buffer =
-                            match markStyles.TryGetValue p.Id with
-                            | true, f when wasEmpty -> TB.applyStyle 0 piece.Length f buffer
+                            match Portable.Dict.tryFind p.Id markStyles with
+                            | ValueSome f when wasEmpty -> TB.applyStyle 0 piece.Length f buffer
                             | _ -> buffer
                         { p with Buffer = buffer })
                     off <- off + piece.Length
@@ -701,8 +701,8 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                 | Some sel when sel.Focus.BlockId <> para ->
                     doc <- next
                     let newId = sel.Focus.BlockId
-                    match markStyles.TryGetValue para with
-                    | true, f -> markStyles.[newId] <- f
+                    match Portable.Dict.tryFind para markStyles with
+                    | ValueSome f -> markStyles.[newId] <- f
                     | _ -> ()
                     if atEnd then
                         match this.NextStyle((findParagraph doc newId |> Option.bind (fun p -> p.Metadata.Style))) with
@@ -804,8 +804,8 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
                 match (if para = "" then None else findParagraph doc para) with
                 | Some p ->
                     let mark =
-                        match markStyles.TryGetValue (sprintf "table:%s:%d" seg.Table seg.Row) with
-                        | true, f -> f TB.defaultStyle
+                        match Portable.Dict.tryFind (sprintf "table:%s:%d" seg.Table seg.Row) markStyles with
+                        | ValueSome f -> f TB.defaultStyle
                         | _ -> match markStyles.TryGetValue ("table:" + seg.Table) with | true, f -> f TB.defaultStyle | _ -> TB.defaultStyle
                     result.Add(resolve { p with Metadata = { p.Metadata with Style = None } } mark)
                 | None -> ()
@@ -852,8 +852,8 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
 
     /// A new paragraph's mark has the formatting of another's (text typed into it gets it).
     member _.InheritMark(fromId: string, toId: string) =
-        match markStyles.TryGetValue fromId with
-        | true, f -> markStyles.[toId] <- f
+        match Portable.Dict.tryFind fromId markStyles with
+        | ValueSome f -> markStyles.[toId] <- f
         | _ -> ()
 
     member this.ChangeStyle(id: string, change: NamedStyle -> NamedStyle) =
@@ -1033,12 +1033,12 @@ let rec private readFont (font: FontState) (p: FontProperty) : Value =
         | [ value ] -> value
         | _ -> VLong wdUndefined
     | SpecFont spec ->
-        match spec.TryGetValue (fontKey p) with
-        | true, v -> v
+        match Portable.Dict.tryFind (fontKey p) spec with
+        | ValueSome v -> v
         | _ -> VLong wdUndefined
     | CaretFont r ->
-        match book.Pending.TryGetValue (fontKey p) with
-        | true, v -> v
+        match Portable.Dict.tryFind (fontKey p) book.Pending with
+        | ValueSome v -> v
         | _ -> readFont { font with Target = RangeFont r } p
     | StyleFont id ->
         let named = book.Document.Styles |> List.tryFind (fun s -> s.Id = id)
@@ -1527,8 +1527,8 @@ let private readParagraphFormat (format: ParagraphFormatState) (p: ParagraphProp
             p.Read { Fallback = Some normal; Level = None } defaultMetadata
         | _ -> VLong wdUndefined
     | SpecParagraphs spec ->
-        match spec.TryGetValue (paragraphKey p) with
-        | true, v -> v
+        match Portable.Dict.tryFind (paragraphKey p) spec with
+        | ValueSome v -> v
         | _ -> VLong wdUndefined
     | StyleParagraphs id ->
         let s = book.Document.Styles |> List.tryFind (fun x -> x.Id = id)

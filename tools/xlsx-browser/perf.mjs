@@ -333,7 +333,7 @@ try {
             if (profile !== name) return run();
             await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 500 }); await cdp.send('Profiler.start');
             const result = await run();
-            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const self = new Map();
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));

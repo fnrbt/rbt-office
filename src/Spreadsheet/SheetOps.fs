@@ -355,12 +355,12 @@ let hyperlinkAt (model: SpreadsheetModel) (addr: CellAddress) : SheetHyperlink o
         // position in the list; single cells are the common case and are
         // looked at first when no range holds the cell.)
         let fromWide = if index.Wide.Length = 0 then None else index.Wide |> Array.tryFindBack (fun link -> cellRangeContains addr link.Range)
-        match index.Single.TryGetValue (float addr.Row * 16384.0 + float addr.Col) with
-        | true, single ->
+        match Portable.Dict.tryFind (float addr.Row * 16384.0 + float addr.Col) index.Single with
+        | ValueSome single ->
             (match fromWide with
              | Some wide when (model.Hyperlinks |> List.findIndexBack (fun link -> obj.ReferenceEquals(link, wide))) > (model.Hyperlinks |> List.findIndexBack (fun link -> obj.ReferenceEquals(link, single))) -> Some wide
              | _ -> Some single)
-        | false, _ -> fromWide
+        | ValueNone -> fromWide
 
 // ---------------------------------------------------------------------------
 // Number format codes
@@ -1508,8 +1508,8 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
                                         wrappedLineCount line (width - cellPadX - cellIndentPx format) text
                                     else text.Replace("\r\n", "\n").Split('\n').Length
                                 float lines * cellLineHeightPx format
-                        match needed.TryGetValue addr.Row with
-                        | true, known when known >= height -> ()
+                        match Portable.Dict.tryFind addr.Row needed with
+                        | ValueSome known when known >= height -> ()
                         | _ -> needed.[addr.Row] <- height
     // (A span of a million rows: the rows with a size or a cell of their own; the others have the default already.)
     let rowsToSet =
@@ -1521,9 +1521,9 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
     [ for row in rowsToSet do
         if not (isAxisHidden true row model) then
             let height =
-                match needed.TryGetValue row with
-                | true, height -> max autoRowHeightPx height
-                | false, _ -> autoRowHeightPx
+                match Portable.Dict.tryFind row needed with
+                | ValueSome height -> max autoRowHeightPx height
+                | ValueNone -> autoRowHeightPx
             yield row, min maxRowHeightPx height ]
 
 /// Apply sizes (index, size) to rows / columns.
@@ -1558,17 +1558,17 @@ let spillRangeAt (addr: CellAddress) (model: SpreadsheetModel) : (CellAddress * 
             spillRanges.Clear()
             for KeyValue (ghost, anchor) in model.Spill do
                 let range =
-                    match spillRanges.TryGetValue anchor with
-                    | true, known -> known
-                    | false, _ -> { From = anchor; To = anchor }
+                    match Portable.Dict.tryFind anchor spillRanges with
+                    | ValueSome known -> known
+                    | ValueNone -> { From = anchor; To = anchor }
                 spillRanges.[anchor] <-
                     { From = { Row = min range.From.Row ghost.Row; Col = min range.From.Col ghost.Col }
                       To = { Row = max range.To.Row ghost.Row; Col = max range.To.Col ghost.Col } }
             spillRangesFor <- box model.Spill
         let anchor = match Map.tryFind addr model.Spill with Some anchor -> anchor | None -> addr
-        match spillRanges.TryGetValue anchor with
-        | true, range -> Some (anchor, range)
-        | false, _ -> None
+        match Portable.Dict.tryFind anchor spillRanges with
+        | ValueSome range -> Some (anchor, range)
+        | ValueNone -> None
 
 /// Whether the summary of a group comes after it (rows: below, columns: to
 /// the right; Excel's default) or before it: the sheet's `outlinePr`.

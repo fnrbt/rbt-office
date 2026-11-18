@@ -73,8 +73,8 @@ let rec private scalarOf (value: Value) =
     match value with
     | VRef (values, index) when index >= 0 && index < values.Length -> scalarOf values.[index]
     | VFieldRef (instance, field) ->
-        match instance.Fields.TryGetValue field with
-        | true, inner -> scalarOf inner
+        match Portable.Dict.tryFind field instance.Fields with
+        | ValueSome inner -> scalarOf inner
         | _ -> VEmpty
     | VHostObject host ->
         // An object used as a value: its default property (a Range's Value).
@@ -434,8 +434,8 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         shapes.Clear()
         staleShapes.Clear()
     member _.Setting(name: string) =
-        match settingValues.TryGetValue(name.ToLowerInvariant()) with
-        | true, value -> Some value
+        match Portable.Dict.tryFind (name.ToLowerInvariant()) settingValues with
+        | ValueSome value -> Some value
         | _ -> None
     member _.SetSetting(name: string, value: Value) = settingValues.[name.ToLowerInvariant()] <- value
     member _.Charts = charts

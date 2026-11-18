@@ -1248,8 +1248,8 @@ module Host =
                                 let anchorOrder = match orderByBlock.TryGetValue anchorBlock with true, value -> value | _ -> -1
                                 if focusOrder >= anchorOrder then focusBlock, focusOffset else anchorBlock, anchorOffset
                     let currentOrder =
-                        match orderByBlock.TryGetValue blockId with
-                        | true, value -> value
+                        match Portable.Dict.tryFind blockId orderByBlock with
+                        | ValueSome value -> value
                         | _ -> -1
                     let currentIndex =
                         if currentOrder < 0 then None
@@ -1257,8 +1257,8 @@ module Host =
                             matches
                             |> Array.tryFindIndex (fun item ->
                                 let matchOrder =
-                                    match orderByBlock.TryGetValue (unbox<string> item?BlockId) with
-                                    | true, value -> value
+                                    match Portable.Dict.tryFind (unbox<string> item?BlockId) orderByBlock with
+                                    | ValueSome value -> value
                                     | _ -> -1
                                 matchOrder > currentOrder
                                 || (matchOrder = currentOrder && unbox<int> item?Start >= endOffset))

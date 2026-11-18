@@ -84,8 +84,8 @@ let private sourceElementAt (ctx: PackageContext) (at: int) : XmlDsl.XmlNode opt
                 let index = XmlDsl.tryScan ctx.SourceBodyXml (System.Collections.Generic.HashSet<string>()) |> Option.map indexOfElements |> Option.defaultValue (System.Collections.Generic.Dictionary())
                 ctx.SourceElements <- Some index
                 index
-        match index.TryGetValue at with
-        | true, node -> Some node
+        match Portable.Dict.tryFind at index with
+        | ValueSome node -> Some node
         | _ -> None
 /// The element a paragraph of the model is of (its SourceAt), as it was read.
 let private sourceParagraphOf (ctx: PackageContext) (para: EditorParagraph) : XmlDsl.XmlNode option =
@@ -298,8 +298,8 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
     let targets = System.Collections.Generic.Dictionary<int, XmlDsl.XmlNode * ResizeArray<XmlPatch.ElementEdit>>()
     let edit (node: XmlDsl.XmlNode) (change: XmlPatch.ElementEdit) =
         let at = (XmlPatch.span node).Start
-        match targets.TryGetValue at with
-        | true, (_, edits) -> edits.Add change
+        match Portable.Dict.tryFind at targets with
+        | ValueSome (_, edits) -> edits.Add change
         | _ -> targets.[at] <- (node, ResizeArray [ change ])
     // (A child of an element by its local name, with the name it has there.)
     let childNamed (node: XmlDsl.XmlNode) (local: string) = XmlPatch.elements node |> List.tryFind (fun kid -> XmlPatch.localName kid = local)
@@ -394,8 +394,8 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
     // The rows.
     let keptRows = Set.ofList (sourceRowsOf known table)
     for at in takenOutOf known.TableChildren nodes.ContainsKey keptRows.Contains do
-        match nodes.TryGetValue at with
-        | true, node -> edit node (takenOut ctx xml node)
+        match Portable.Dict.tryFind at nodes with
+        | ValueSome node -> edit node (takenOut ctx xml node)
         | _ -> ()
     [ for row in table.Rows do
         match sourceOfRow row.SourceRow with
@@ -426,8 +426,8 @@ let private patchedTableXml (ctx: PackageContext) (hyperlinks: Map<string, strin
                 | Some headEdits when cellsInPlace ->
                     for change in headEdits do edit rowNode change
                     for cellAt in takenOutOf knownRow.RowChildren nodes.ContainsKey (fun cellAt -> List.contains cellAt keptCells) do
-                        match nodes.TryGetValue cellAt with
-                        | true, node -> edit node (takenOut ctx xml node)
+                        match Portable.Dict.tryFind cellAt nodes with
+                        | ValueSome node -> edit node (takenOut ctx xml node)
                         | _ -> ()
                     placeNew (Some knownRow.RowChildren)
                         [ for cell in cells do
@@ -746,8 +746,8 @@ let private planBody (ctx: PackageContext) (container: BlockContainer) (xml: str
             let mutable anySource = false
             while position < items.Length do
                 let chunk = chunkOfItem.[position]
-                match carriedBefore.TryGetValue position with
-                | true, marks ->
+                match Portable.Dict.tryFind position carriedBefore with
+                | ValueSome marks ->
                     flush ()
                     segments.Add (CarriedMarks (List.ofSeq marks))
                 | _ -> ()

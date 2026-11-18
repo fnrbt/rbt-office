@@ -416,9 +416,9 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
             let bounds = System.Collections.Generic.Dictionary<CellAddress, CellAddress>()
             for KeyValue (cell, anchor) in model.Spill do
                 if cell.Row >= anchor.Row && cell.Col >= anchor.Col then
-                    match bounds.TryGetValue anchor with
-                    | true, corner -> bounds.[anchor] <- { Row = max corner.Row cell.Row; Col = max corner.Col cell.Col }
-                    | false, _ -> bounds.[anchor] <- cell
+                    match Portable.Dict.tryFind anchor bounds with
+                    | ValueSome corner -> bounds.[anchor] <- { Row = max corner.Row cell.Row; Col = max corner.Col cell.Col }
+                    | ValueNone -> bounds.[anchor] <- cell
             let rangeText (anchor: CellAddress) (corner: CellAddress) =
                 let first = formatCellRef anchor.Row anchor.Col
                 if corner = anchor then first else first + ":" + formatCellRef corner.Row corner.Col
@@ -858,9 +858,9 @@ module Import =
                 | _ -> -1
             if index < 0 then defaultFormat
             else
-                match styleCache.TryGetValue index with
-                | true, cached -> cached
-                | false, _ ->
+                match Portable.Dict.tryFind index styleCache with
+                | ValueSome cached -> cached
+                | ValueNone ->
                     let converted = format wb.Styles.[index]
                     styleCache.[index] <- converted
                     converted
@@ -1063,9 +1063,9 @@ module Import =
                 ({ First = column.Index - 1
                    Last = column.MaxIndex - 1
                    Format =
-                    (match styleCache.TryGetValue index with
-                     | true, cached -> cached
-                     | false, _ -> format wb.Styles.[index])
+                    (match Portable.Dict.tryFind index styleCache with
+                     | ValueSome cached -> cached
+                     | ValueNone -> format wb.Styles.[index])
                    Source = position } : ColumnStyle))
         // What-if data tables: the cells of the range hold the file's results.
         let dataTables =
@@ -1640,9 +1640,9 @@ module Export =
     let private newFormatCache () : FormatCache = Collections.Generic.Dictionary<CellFormat, XlsxWriter.XlsxCellFormat>(HashIdentity.Reference)
 
     let private cachedFormat (cache: FormatCache) (f: CellFormat) : XlsxWriter.XlsxCellFormat =
-        match cache.TryGetValue f with
-        | true, converted -> converted
-        | false, _ ->
+        match Portable.Dict.tryFind f cache with
+        | ValueSome converted -> converted
+        | ValueNone ->
             let converted = format f
             cache.[f] <- converted
             converted
@@ -1876,9 +1876,9 @@ module Export =
                     let previous =
                         if sameCells then Some data
                         else
-                            match previousCells.TryGetValue position with
-                            | true, found -> Some found
-                            | false, _ -> None
+                            match Portable.Dict.tryFind position previousCells with
+                            | ValueSome found -> Some found
+                            | ValueNone -> None
                     let untouched =
                         match previous with
                         // (A cell that moved is written where it is now, with what it holds now.)
@@ -1917,16 +1917,16 @@ module Export =
                         let written = writtenCell ()
                         let basedOn = kept.Format.SourceXf.Value
                         let known =
-                            match basedOnFormats.TryGetValue basedOn with
-                            | true, known -> known
-                            | false, _ ->
+                            match Portable.Dict.tryFind basedOn basedOnFormats with
+                            | ValueSome known -> known
+                            | ValueNone ->
                                 let known = Collections.Generic.Dictionary<XlsxWriter.XlsxCellFormat, XlsxWriter.XlsxCellFormat>(HashIdentity.Reference)
                                 basedOnFormats.[basedOn] <- known
                                 known
                         let format =
-                            match known.TryGetValue written.Format with
-                            | true, format -> format
-                            | false, _ ->
+                            match Portable.Dict.tryFind written.Format known with
+                            | ValueSome format -> format
+                            | ValueNone ->
                                 let format = { written.Format with BasedOnXf = Some basedOn }
                                 known.[written.Format] <- format
                                 format
@@ -2418,9 +2418,9 @@ module Export =
         else
             let sb = Text.StringBuilder()
             let renamed (name: string) =
-                match renames.TryGetValue (name.ToUpperInvariant()) with
-                | true, next -> next
-                | false, _ -> name
+                match Portable.Dict.tryFind (name.ToUpperInvariant()) renames with
+                | ValueSome next -> next
+                | ValueNone -> name
             /// The qualifier as it is written for the names it holds (one, or the two ends of a 3-D reference).
             let written (qualifier: string) (wasQuoted: bool) : string =
                 if qualifier.StartsWith "[" then (if wasQuoted then "'" + qualifier.Replace("'", "''") + "'" else qualifier)
@@ -2558,9 +2558,9 @@ module Export =
                 if close < 0 then xml
                 else
                     let name = xmlTextDecoded (tag.Substring(start, close - start))
-                    match renames.TryGetValue (name.ToUpperInvariant()) with
-                    | true, next -> xml.Substring(0, tagAt + start) + (xmlTextEncoded next).Replace("\"", "&quot;") + xml.Substring(tagAt + close)
-                    | false, _ -> xml
+                    match Portable.Dict.tryFind (name.ToUpperInvariant()) renames with
+                    | ValueSome next -> xml.Substring(0, tagAt + start) + (xmlTextEncoded next).Replace("\"", "&quot;") + xml.Substring(tagAt + close)
+                    | ValueNone -> xml
 
     let private isChartPart (path: string) =
         path.StartsWith "xl/charts/" && path.EndsWith ".xml" && path.IndexOf "/_rels/" < 0
@@ -3308,11 +3308,11 @@ module Export =
                                             let sheet = if quoted.Length >= 2 && quoted.StartsWith "'" && quoted.EndsWith "'" then quoted.Substring(1, quoted.Length - 2).Replace("''", "'") else quoted
                                             if deletedTabs |> List.exists (fun gone -> gone.Equals(sheet, StringComparison.OrdinalIgnoreCase)) then ""
                                             else
-                                                match renames.TryGetValue (sheet.ToUpperInvariant()) with
-                                                | true, next ->
+                                                match Portable.Dict.tryFind (sheet.ToUpperInvariant()) renames with
+                                                | ValueSome next ->
                                                     let named = if quoted = sheet then next else "'" + next.Replace("'", "''") + "'"
                                                     found.Value.Replace(name.Value, "<c:name>" + xmlTextEncoded (full.Substring(0, close + 1) + named + full.Substring bang) + "</c:name>")
-                                                | false, _ -> found.Value))
+                                                | ValueNone -> found.Value))
                         let follows (path: string) (data: byte[]) : byte[] =
                             if isChartPart path then
                                 let text = Text.Encoding.UTF8.GetString data
@@ -3339,9 +3339,9 @@ module Export =
                             PivotCacheSources =
                                 preserved.PivotCacheSources
                                 |> List.map (fun (path, sheet, range) ->
-                                    match renames.TryGetValue (sheet.ToUpperInvariant()) with
-                                    | true, next -> path, next, range
-                                    | false, _ -> path, sheet, range) }
+                                    match Portable.Dict.tryFind (sheet.ToUpperInvariant()) renames with
+                                    | ValueSome next -> path, next, range
+                                    | ValueNone -> path, sheet, range) }
                 // The parts of the sheets that go back as they were read, and the
                 // styles and shared strings they index.
                 let preserved =

@@ -161,7 +161,7 @@ let private browserTextWidth (text: string) (fontSize: float) (fontName: string)
 /// (A name is all a family can be here: nothing that ends the declaration.)
 let private cellFontFamily (fontName: string option) : string =
     match fontName with
-    | Some family when family <> "" -> "'" + family.Replace("'", "").Replace(";", "").Replace("\\", "") + "', Arial, sans-serif"
+    | Some family when family <> "" -> "'" + (family |> Portable.Str.replace "'" "" |> Portable.Str.replace ";" "" |> Portable.Str.replace "\\" "") + "', Arial, sans-serif"
     | _ -> "Arial, sans-serif"
 
 /// Whether the browser has a font family (its text is not drawn in the next family of the list).
@@ -207,9 +207,6 @@ let private cellTextWidthPx (text: string) (fontPx: float) (family: string) (bol
 let private cellTextWidth (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
     cellTextWidthPx text (SheetOps.pointsToPx fontPt * drawnFontScale fontName) (cellFontFamily fontName) bold italic
 
-/// The grid's measure of a cell's text for its look (`Paint.cellLook`): the width it is drawn at.
-let private gridTextMeasurer : SpreadsheetLayout.TextMeasurer option =
-    Some (fun (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool) -> cellTextWidth text fontPt fontName bold italic)
 
 // ---- macros in the browser -------------------------------------------------------------------------
 [<Emit("window.alert($0)")>]
@@ -836,15 +833,15 @@ type Spreadsheet(container: Element) as this =
         let key = procedure.ToLowerInvariant()
         if schedule then
             let timers =
-                match macroTimers.TryGetValue key with
-                | true, found -> found
+                match Portable.Dict.tryFind key macroTimers with
+                | ValueSome found -> found
                 | _ -> let created = ResizeArray() in macroTimers.[key] <- created; created
             let id = ref 0
             id.Value <- setTimeoutMs (fun () -> timers.Remove id.Value |> ignore; runMacroWhenIdle procedure) (int (min 2147483647.0 delayMs))
             timers.Add id.Value
         else
-            match macroTimers.TryGetValue key with
-            | true, timers -> (for id in timers do clearTimeoutId id); timers.Clear()
+            match Portable.Dict.tryFind key macroTimers with
+            | ValueSome timers -> (for id in timers do clearTimeoutId id); timers.Clear()
             | _ -> ()
     let bindMacroKey (key: string) (procedure: string option) =
         let name = parseOnKey key
@@ -1001,9 +998,9 @@ type Spreadsheet(container: Element) as this =
                 lookedUpCells.Clear()
                 lookedUpIn <- box model.Cells
             let key = float row * 16384.0 + float col
-            match lookedUpCells.TryGetValue key with
-            | true, known -> known
-            | false, _ ->
+            match Portable.Dict.tryFind key lookedUpCells with
+            | ValueSome known -> known
+            | ValueNone ->
                 let found = getCell { Row = row; Col = col } model
                 lookedUpCells.[key] <- found
                 found
@@ -1281,12 +1278,12 @@ type Spreadsheet(container: Element) as this =
                         | None ->
                             target id
                             |> Option.bind (fun path ->
-                                match chartModels.TryGetValue path with
-                                | true, known -> known
-                                | false, _ ->
+                                match Portable.Dict.tryFind path chartModels with
+                                | ValueSome known -> known
+                                | ValueNone ->
                                     let read =
-                                        match parts.TryGetValue path with
-                                        | true, data ->
+                                        match Portable.Dict.tryFind path parts with
+                                        | ValueSome data ->
                                             // Always parse the original part: structural and sheet edits are
                                             // applied once, from the imported baseline, without changing its bytes.
                                             let sheetIndex =
@@ -1310,22 +1307,22 @@ type Spreadsheet(container: Element) as this =
                                                 match SpreadsheetCharts.parseChartWith baselineNames theme originalXml, parsed with
                                                 | Some original, Some current -> Some (SpreadsheetCharts.markChangedReferences original current)
                                                 | _ -> parsed
-                                        | false, _ -> None
+                                        | ValueNone -> None
                                     chartModels.[path] <- read
                                     read))
                    Picture =
                     (fun id ->
                         target id
                         |> Option.bind (fun path ->
-                            match parts.TryGetValue path with
-                            | true, data ->
+                            match Portable.Dict.tryFind path parts with
+                            | ValueSome data ->
                                 let extension = (match path.LastIndexOf '.' with -1 -> "" | at -> path.Substring(at + 1).ToLowerInvariant())
                                 let contentType =
                                     match extension with
                                     | "png" -> "image/png" | "jpg" | "jpeg" -> "image/jpeg" | "gif" -> "image/gif" | "svg" -> "image/svg+xml" | "bmp" -> "image/bmp" | "webp" -> "image/webp"
                                     | _ -> ""
                                 if contentType = "" then None else Some (pictureUrl data contentType)
-                            | false, _ -> None))
+                            | ValueNone -> None))
                    Slicer = slicers }
         | _ ->
             // (A sheet of no file: the charts and shapes a macro or the user made, in the default theme.)
@@ -1416,8 +1413,8 @@ type Spreadsheet(container: Element) as this =
         let key = string activeSheetIndex + ":" + string drawing.Id
         // (An object that is not drawn is kept as such - no SVG: a slicer is not looked at again either.)
         let kept =
-            match drawnObjects.TryGetValue key with
-            | true, (knownXml, knownWidth, knownHeight, svg, reads)
+            match Portable.Dict.tryFind key drawnObjects with
+            | ValueSome (knownXml, knownWidth, knownHeight, svg, reads)
                 when knownWidth = width && knownHeight = height && (obj.ReferenceEquals(knownXml, xml) || knownXml = xml) && Array.forall chartBlockStands reads ->
                 Some (if isNull svg then None else Some (svg, reads))
             | _ -> None
@@ -1523,8 +1520,8 @@ type Spreadsheet(container: Element) as this =
             model <- { model with RowCount = max model.RowCount rows; ColCount = max model.ColCount cols }
         elif roomBefore.Count > 0 then
             let id = sheetKeyForRoom ()
-            match roomBefore.TryGetValue id with
-            | true, (rowsBefore, colsBefore) ->
+            match Portable.Dict.tryFind id roomBefore with
+            | ValueSome (rowsBefore, colsBefore) ->
                 // What is in view stays (the scroll position is not pulled back).
                 let metrics = SpreadsheetLayout.metricsOf model
                 let viewRow = SpreadsheetLayout.indexAtOffset metrics.RowPrefix metrics.RowCount (scrollTop + containerHeight - headerHeight)
@@ -2804,8 +2801,8 @@ type Spreadsheet(container: Element) as this =
     let sheetMatches (search: HostSearch) (index: int) : (CellAddress * string) list =
         let sheetModel = sheetModelAt index
         let id = sheetIdForIndex index
-        match searchCache.TryGetValue id with
-        | true, (cells, found) when obj.ReferenceEquals(cells, sheetModel.Cells) -> found
+        match Portable.Dict.tryFind id searchCache with
+        | ValueSome (cells, found) when obj.ReferenceEquals(cells, sheetModel.Cells) -> found
         | _ ->
             let found = SheetOps.findInSheet search.Finder search.Request.Options search.Request.Range sheetModel
             searchCache.[id] <- (box sheetModel.Cells, found)
@@ -3468,8 +3465,8 @@ type Spreadsheet(container: Element) as this =
             let family = family.Trim()
             let name = family.ToLowerInvariant()
             let fromSystem =
-                match systemFamilies.TryGetValue name with
-                | true, known -> known
+                match Portable.Dict.tryFind name systemFamilies with
+                | ValueSome known -> known
                 | _ ->
                     let known = fontFamilyAvailable family
                     systemFamilies.[name] <- known
@@ -3491,7 +3488,10 @@ type Spreadsheet(container: Element) as this =
         let cell = node.Element
         // (`cellData` is what the cell holds; the look applies the sheet's view options.)
         let storedData = cellData
-        let look = SpreadsheetPaint.cellLook model row col cellData gridTextMeasurer w
+        // (The measurer as a lambda here, not one kept in a module value: Fable keeps a function
+        // value stored in an option curried and wraps it again - uncurry5, a WeakMap entry - every
+        // time it is passed; a lambda written at the call is passed as it is.)
+        let look = SpreadsheetPaint.cellLook model row col cellData (Some (fun text fontPt fontName bold italic -> cellTextWidth text fontPt fontName bold italic)) w
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -4177,8 +4177,8 @@ type Spreadsheet(container: Element) as this =
                     let pane = (if r < frozenRows then 1 else 0) + (if c < frozenCols then 2 else 0)
                     let x = paneX pane (rowHeaderWidth + colPrefix.[c])
                     let y = paneY pane (headerHeight + rowPrefix.[r])
-                    match cellNodes.TryGetValue key with
-                    | true, node ->
+                    match Portable.Dict.tryFind key cellNodes with
+                    | ValueSome node ->
                         if node.Seen <> generation then
                             node.Seen <- generation
                             let placed = node.Epoch = styleEpoch && node.X = x && node.Y = y && node.W = w && node.H = h && node.Pane = pane
@@ -4196,11 +4196,11 @@ type Spreadsheet(container: Element) as this =
                                     || not (obj.ReferenceEquals(node.NearCorner, near above before))
                                 if not placed || merged || node.Wide || not (obj.ReferenceEquals(node.Data, dataRef)) || nearChanged () then
                                     drawCell layer node r c x y w h pane data
-                    | false, _ ->
+                    | ValueNone ->
                         let node =
                             if freeCellNodes.Count > 0 then
                                 let last = freeCellNodes.[freeCellNodes.Count - 1]
-                                freeCellNodes.RemoveAt (freeCellNodes.Count - 1)
+                                Portable.Stack.dropLast freeCellNodes
                                 last
                             else
                                 let element = createElement "div"
@@ -4230,9 +4230,9 @@ type Spreadsheet(container: Element) as this =
                 for row = r0 to r1 do
                     if rowPrefix.[row + 1] > rowPrefix.[row] then
                         let sources =
-                            match overflowSources.TryGetValue row with
-                            | true, known -> known
-                            | false, _ ->
+                            match Portable.Dict.tryFind row overflowSources with
+                            | ValueSome known -> known
+                            | ValueNone ->
                                 let isText (data: CellData) = match unwrapFormulaValue data.Value with CellValue.String text -> text <> "" | _ -> false
                                 let find (start: int) (step: int) =
                                     let mutable col = start
@@ -4276,13 +4276,13 @@ type Spreadsheet(container: Element) as this =
                 let place (index: int) =
                     if prefix.[index + 1] > prefix.[index] then
                         let node =
-                            match nodes.TryGetValue index with
-                            | true, node -> node
-                            | false, _ ->
+                            match Portable.Dict.tryFind index nodes with
+                            | ValueSome node -> node
+                            | ValueNone ->
                                 let node =
                                     if free.Count > 0 then
                                         let last = free.[free.Count - 1]
-                                        free.RemoveAt (free.Count - 1)
+                                        Portable.Stack.dropLast free
                                         last
                                     else create ()
                                 nodes.[index] <- node
@@ -4856,7 +4856,7 @@ type Spreadsheet(container: Element) as this =
                 axis false
                 while outlineNodes.Count > used do
                     detach outlineNodes.[outlineNodes.Count - 1]
-                    outlineNodes.RemoveAt (outlineNodes.Count - 1)
+                    Portable.Stack.dropLast outlineNodes
 
     /// A press of a button of the outline strips: a group's +/- or a level button.
     and pressOutline (node: Element) =
@@ -5107,12 +5107,12 @@ type Spreadsheet(container: Element) as this =
                              + ";text-align:center;cursor:pointer;user-select:none;overflow:hidden;white-space:nowrap;z-index:8")
         while filterButtonNodes.Count > buttons do
             detach filterButtonNodes.[filterButtonNodes.Count - 1]
-            filterButtonNodes.RemoveAt (filterButtonNodes.Count - 1)
+            Portable.Stack.dropLast filterButtonNodes
         // The circles of CircleInvalid: a red ellipse around each cell, in the cell's pane.
         let circled =
-            match invalidCircles.TryGetValue activeSheetIndex with
-            | true, cells -> cells
-            | false, _ -> [||]
+            match Portable.Dict.tryFind activeSheetIndex invalidCircles with
+            | ValueSome cells -> cells
+            | ValueNone -> [||]
         let mutable used = 0
         for cell in circled do
             if used < 2000 && cell.Row < rowCount && cell.Col < colCount then
@@ -5136,7 +5136,7 @@ type Spreadsheet(container: Element) as this =
                          + ";box-sizing:border-box;border:2px solid #E00000;border-radius:50%;pointer-events:none;z-index:6")
         while circleNodes.Count > used do
             detach circleNodes.[circleNodes.Count - 1]
-            circleNodes.RemoveAt (circleNodes.Count - 1)
+            Portable.Stack.dropLast circleNodes
         // Notes: the validation notice, else the input message of the selected cell.
         let note (target: Element) (title: string) (message: string) (x: float) (y: float) (background: string) (border: string) =
             setCssText target
@@ -10450,8 +10450,8 @@ type Spreadsheet(container: Element) as this =
             | _ -> activeSheetIndex
         let sheet = if sheetAt = activeSheetIndex then model else sheetModelAt sheetAt
         let criteriaOf (col: int) (criteria: FilterCriteria) : obj =
-            match filterGiven.TryGetValue (sprintf "%s|%d" (sheetIdForIndex sheetAt) col) with
-            | true, (set, given) when set = criteria -> Host.cloneGiven given
+            match Portable.Dict.tryFind (sprintf "%s|%d" (sheetIdForIndex sheetAt) col) filterGiven with
+            | ValueSome (set, given) when set = criteria -> Host.cloneGiven given
             | _ -> Host.filterToObj criteria
         match sheet.AutoFilter with
         | None -> null

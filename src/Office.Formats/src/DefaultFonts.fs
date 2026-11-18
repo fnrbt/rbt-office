@@ -82,8 +82,8 @@ let private loads = Collections.Generic.Dictionary<string, JS.Promise<byte[]>>()
 
 let private load (baseUrl: string) (file: string) =
     let key = baseUrl + "\n" + file
-    match loads.TryGetValue key with
-    | true, pending -> pending
+    match Portable.Dict.tryFind key loads with
+    | ValueSome pending -> pending
     | _ ->
         let pending = onFailure (fetchFont baseUrl file) (fun () -> loads.Remove key |> ignore)
         loads.[key] <- pending

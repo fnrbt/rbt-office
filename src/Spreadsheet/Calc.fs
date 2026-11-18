@@ -87,7 +87,7 @@ let private exprUsesSpillRef (expr: Expr) =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | SpillRef _ -> found <- true
         | UnaryOp (_, inner) -> stack.Add inner
@@ -283,15 +283,15 @@ let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
     let formulaCells = ResizeArray<SheetCell>()
     let addIndexed (indexBySheet: Dictionary<SheetId, Dictionary<int, ResizeArray<SheetCell>>>) sheetId key cell =
         let index =
-            match indexBySheet.TryGetValue sheetId with
-            | true, existing -> existing
-            | false, _ ->
+            match Portable.Dict.tryFind sheetId indexBySheet with
+            | ValueSome existing -> existing
+            | ValueNone ->
                 let created = Dictionary<int, ResizeArray<SheetCell>>()
                 indexBySheet.[sheetId] <- created
                 created
-        match index.TryGetValue key with
-        | true, cells -> cells.Add cell
-        | false, _ ->
+        match Portable.Dict.tryFind key index with
+        | ValueSome cells -> cells.Add cell
+        | ValueNone ->
             let cells = ResizeArray<SheetCell>()
             cells.Add cell
             index.[key] <- cells
@@ -343,28 +343,28 @@ let rebuildCalcChain (workbook: Workbook) (engine: CalcEngine): CalcEngine =
                     let colCount = rect.C1 - rect.C0 + 1
                     if rowCount <= colCount then
                         let formulaRowsBySheet = formulaRowsIndex ()
-                        match formulaRowsBySheet.TryGetValue rect.Sheet with
-                        | true, rowIndex ->
+                        match Portable.Dict.tryFind rect.Sheet formulaRowsBySheet with
+                        | ValueSome rowIndex ->
                             for row in rect.R0 .. rect.R1 do
-                                match rowIndex.TryGetValue row with
-                                | true, candidates ->
+                                match Portable.Dict.tryFind row rowIndex with
+                                | ValueSome candidates ->
                                     for formulaCell in candidates do
                                         if formulaCell.Cell.Col >= rect.C0 && formulaCell.Cell.Col <= rect.C1 then
                                             emit formulaCell
-                                | false, _ -> ()
-                        | false, _ -> ()
+                                | ValueNone -> ()
+                        | ValueNone -> ()
                     else
                         let formulaColsBySheet = formulaColsIndex ()
-                        match formulaColsBySheet.TryGetValue rect.Sheet with
-                        | true, colIndex ->
+                        match Portable.Dict.tryFind rect.Sheet formulaColsBySheet with
+                        | ValueSome colIndex ->
                             for col in rect.C0 .. rect.C1 do
-                                match colIndex.TryGetValue col with
-                                | true, candidates ->
+                                match Portable.Dict.tryFind col colIndex with
+                                | ValueSome candidates ->
                                     for formulaCell in candidates do
                                         if formulaCell.Cell.Row >= rect.R0 && formulaCell.Cell.Row <= rect.R1 then
                                             emit formulaCell
-                                | false, _ -> ()
-                        | false, _ -> ()
+                                | ValueNone -> ()
+                        | ValueNone -> ()
         | None -> ()
     match topologicalSort formulaCells iterDeps with
     | Some chain -> { engine with CalcChain = chain }

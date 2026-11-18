@@ -130,7 +130,7 @@ let formulaHelpAt (text: string) (caret: int) : (FunctionHelp * int) option =
                         if startName < endName then text.Substring(startName + 1, endName - startName)
                         else ""
                     frames.Add((name, 0))
-                elif c = ')' && frames.Count > 0 then frames.RemoveAt(frames.Count - 1)
+                elif c = ')' && frames.Count > 0 then Portable.Stack.dropLast frames
                 elif c = ',' && frames.Count > 0 && arrayDepth = 0 then
                     let name, index = frames.[frames.Count - 1]
                     frames.[frames.Count - 1] <- (name, index + 1)
@@ -361,17 +361,17 @@ let private upperName (name: string) =
 
 /// The catalog's entry of a function a module provides (loaded or not).
 let catalogEntry (name: string) : Rbt.Spreadsheet.FunctionCatalog.Entry option =
-    match catalogByName.TryGetValue (upperName name) with
-    | true, entry -> Some entry
-    | false, _ -> None
+    match Portable.Dict.tryFind (upperName name) catalogByName with
+    | ValueSome entry -> Some entry
+    | ValueNone -> None
 
 /// Is this one of the functions a host answers (`providerFunctionSpecs`)?
 let isProviderFunction (name: string) = providerSpecByName.ContainsKey (upperName name)
 
 let private catalogFlag (flag: int) (name: string) =
-    match catalogByName.TryGetValue (upperName name) with
-    | true, entry -> entry.Flags &&& flag <> 0
-    | false, _ -> false
+    match Portable.Dict.tryFind (upperName name) catalogByName with
+    | ValueSome entry -> entry.Flags &&& flag <> 0
+    | ValueNone -> false
 
 // ---------------------------------------------------------------------------
 // AST
@@ -1216,9 +1216,9 @@ let private parsedFormulas = Dictionary<string, Result<Expr, string>>()
 let parseFormula (input: string) : Result<Expr, string> =
     if isNull input then parseFormulaText input
     else
-        match parsedFormulas.TryGetValue input with
-        | true, known -> known
-        | false, _ ->
+        match Portable.Dict.tryFind input parsedFormulas with
+        | ValueSome known -> known
+        | ValueNone ->
             let parsed = parseFormulaText input
             if parsedFormulas.Count > 200000 then parsedFormulas.Clear()
             parsedFormulas.[input] <- parsed
@@ -1260,9 +1260,9 @@ let resolveNameExpr (name: string) (currentSheet: Rbt.Spreadsheet.Workbook.Sheet
         resolvedNamesOf <- Rbt.Spreadsheet.Workbook.weakRefOf (box workbook.Names)
         resolvedNames.Clear()
     let key = (match currentSheet with Some sheet -> sheet | None -> "") + "|" + name
-    match resolvedNames.TryGetValue key with
-    | true, known -> known
-    | false, _ ->
+    match Portable.Dict.tryFind key resolvedNames with
+    | ValueSome known -> known
+    | ValueNone ->
         let resolved = resolveNameExprUncached name currentSheet workbook
         resolvedNames.[key] <- resolved
         resolved
@@ -1454,7 +1454,7 @@ let referencesInExpr (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     while stack.Count > 0 do
         let last = stack.Count - 1
         let struct (seen, e) = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match e with
         | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ | MissingArg -> ()
         | TableRef sel ->
@@ -1515,7 +1515,7 @@ let referencesQualified (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     while stack.Count > 0 do
         let last = stack.Count - 1
         let struct (seen, e) = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match e with
         | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ | MissingArg -> ()
         | TableRef sel ->
@@ -1601,7 +1601,7 @@ and referencesRangedAt (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     while stack.Count > 0 do
         let last = stack.Count - 1
         let struct (seen, e) = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         let addArea sid sr sc er ec =
             if int64 (er - sr + 1) * int64 (ec - sc + 1) > int64 rangeDepThreshold then
                 rects.Add { Sheet = sid; R0 = sr; C0 = sc; R1 = er; C1 = ec }
@@ -1702,7 +1702,7 @@ let iterReferenceAreas (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     while stack.Count > 0 do
         let last = stack.Count - 1
         let struct (seen, e) = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match e with
         | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ | MissingArg -> ()
         | TableRef sel ->
@@ -2365,7 +2365,7 @@ let private lambdaBodyUsesOnlySimpleArithmetic (paramName: string) (expr: Expr) 
     while ok && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
 
         match expr with
         | Number _ | Str _ | Bool _ | ErrorLit _ -> ()
@@ -2407,7 +2407,7 @@ let containsVolatile (expr: Expr) : bool =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | Function (name, args) ->
             if equalsOrdinalIgnoreCase name "RAND"
@@ -2435,7 +2435,7 @@ let private containsFunctionNamed (targetName: string) (expr: Expr) =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | Function (name, args) ->
             if equalsOrdinalIgnoreCase name targetName then
@@ -3016,7 +3016,7 @@ let exprUsesSubtotal (e: Expr) : bool =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | Function (n, _) when equalsOrdinalIgnoreCase n "SUBTOTAL" || equalsOrdinalIgnoreCase n "AGGREGATE" ->
             found <- true
@@ -4103,9 +4103,9 @@ let private arrayFunctionNames =
 /// (Asked for every function call of every formula: what was found for a name, as it is written, is kept.)
 let private arrayFunctionKnown = Dictionary<string, bool>()
 let isArrayFunction (name: string) =
-    match arrayFunctionKnown.TryGetValue name with
-    | true, known -> known
-    | false, _ ->
+    match Portable.Dict.tryFind name arrayFunctionKnown with
+    | ValueSome known -> known
+    | ValueNone ->
         let found = arrayFunctionNames |> Array.exists (equalsOrdinalIgnoreCase name)
         if arrayFunctionKnown.Count > 4096 then arrayFunctionKnown.Clear()
         arrayFunctionKnown.[name] <- found
@@ -4214,16 +4214,16 @@ let private functionSignatures : Dictionary<string, FunctionSignature> =
 
 /// The registered signature of a function (name matched case-insensitively).
 let functionSignature (name: string) : FunctionSignature voption =
-    match functionSignatures.TryGetValue name with
-    | true, signature -> ValueSome signature
-    | false, _ ->
+    match Portable.Dict.tryFind name functionSignatures with
+    | ValueSome signature -> ValueSome signature
+    | ValueNone ->
         // Formula text usually carries upper-case names; fold case only on a miss.
         let upper = name.ToUpperInvariant()
         if obj.ReferenceEquals(upper, name) || upper = name then ValueNone
         else
-            match functionSignatures.TryGetValue upper with
-            | true, signature -> ValueSome signature
-            | false, _ -> ValueNone
+            match Portable.Dict.tryFind upper functionSignatures with
+            | ValueSome signature -> ValueSome signature
+            | ValueNone -> ValueNone
 
 let paramKindAt (signature: FunctionSignature) (index: int) : ParamKind =
     if index < signature.Fixed.Length then signature.Fixed.[index]
@@ -4283,7 +4283,7 @@ let private isArrayExprCore (openRanges: bool) (dynamicReferences: bool) (e: Exp
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | Function (name, _) when isArrayFunction name -> found <- true
         // OFFSET/INDIRECT and the reference operators may yield a multi-cell range.
@@ -4839,17 +4839,17 @@ let tryFunctionDef (name: string) : FunctionDef option =
 #if !FABLE_COMPILER
     ensureAllInstalled ()
 #endif
-    match registeredFunctions.TryGetValue (upperName name) with
-    | true, def -> Some def
-    | false, _ -> None
+    match Portable.Dict.tryFind (upperName name) registeredFunctions with
+    | ValueSome def -> Some def
+    | ValueNone -> None
 
 /// Is the module installed?
 let isFunctionModuleInstalled (moduleName: string) =
 #if !FABLE_COMPILER
     ensureAllInstalled ()
 #endif
-    match moduleStates.TryGetValue moduleName with
-    | true, 2 -> true
+    match Portable.Dict.tryFind moduleName moduleStates with
+    | ValueSome 2 -> true
     | _ -> false
 
 /// Start loading a module (browser; on .NET they are all installed). `ready`
@@ -4893,9 +4893,9 @@ let requestFunctions (names: string seq) (ready: unit -> unit) : unit =
 /// A function met while evaluating whose module is not installed: load it and
 /// tell the listeners when it is.
 let private requestFunctionWhileEvaluating (moduleName: string) =
-    match moduleStates.TryGetValue moduleName with
-    | true, _ -> ()   // loading already (or installed)
-    | false, _ -> loadFunctionModule moduleName notifyFunctionsArrived
+    match Portable.Dict.tryFind moduleName moduleStates with
+    | ValueSome _ -> ()   // loading already (or installed)
+    | ValueNone -> loadFunctionModule moduleName notifyFunctionsArrived
 
 let private isFormulaNameStart (c: char) = Char.IsLetter c || c = '_' || c = '\\'
 let private isFormulaNameChar (c: char) = Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\\'
@@ -4982,9 +4982,9 @@ let setHostInfo (field: string) (value: string option) : unit =
     | None -> hostInfoFields.Remove key |> ignore
 
 let hostInfo (field: string) : string option =
-    match hostInfoFields.TryGetValue (upperName field) with
-    | true, text -> Some text
-    | false, _ -> None
+    match Portable.Dict.tryFind (upperName field) hostInfoFields with
+    | ValueSome text -> Some text
+    | ValueNone -> None
 
 let private appendValueKey (sb: Text.StringBuilder) (value: CellValue) =
     match unwrapFormulaValue value with
@@ -4999,11 +4999,11 @@ let private appendValueKey (sb: Text.StringBuilder) (value: CellValue) =
 /// #BUSY! while it has not answered, the function's error without a provider.
 let callProvider (call: ProviderCall) : CellValue[][] =
     let key = upperName call.Name
-    match providers.TryGetValue key with
-    | false, _ ->
+    match Portable.Dict.tryFind key providers with
+    | ValueNone ->
         let error = match providerSpecByName.TryGetValue key with | true, (e, _) -> e | _ -> Err.name
         [| [| CellValue.Error error |] |]
-    | true, provider ->
+    | ValueSome provider ->
         let sb = Text.StringBuilder(key).Append('|')
         for argument in call.Arguments do
             sb.Append(argument.Length).Append('x').Append(if argument.Length > 0 then argument.[0].Length else 0).Append('[') |> ignore
@@ -5011,9 +5011,9 @@ let callProvider (call: ProviderCall) : CellValue[][] =
                 for value in row do appendValueKey sb value
             sb.Append(']') |> ignore
         let resultKey = sb.ToString()
-        match providerResults.TryGetValue resultKey with
-        | true, result -> result
-        | false, _ ->
+        match Portable.Dict.tryFind resultKey providerResults with
+        | ValueSome result -> result
+        | ValueNone ->
             if providerPending.Contains resultKey then [| [| CellValue.Error Err.busy |] |]
             else
                 let mutable invoking = true
@@ -5021,8 +5021,8 @@ let callProvider (call: ProviderCall) : CellValue[][] =
                 let answer (result: CellValue[][]) =
                     let result = if isNull result || result.Length = 0 || result.[0].Length = 0 then [| [| CellValue.Empty |] |] else result
                     // (An answer of a provider taken away or replaced since is dropped.)
-                    match providers.TryGetValue key with
-                    | true, current when obj.ReferenceEquals(current, provider) ->
+                    match Portable.Dict.tryFind key providers with
+                    | ValueSome current when obj.ReferenceEquals(current, provider) ->
                         providerResults.[resultKey] <- result
                         providerPending.Remove resultKey |> ignore
                         if not invoking then notifyFunctionsArrived ()
@@ -5030,9 +5030,9 @@ let callProvider (call: ProviderCall) : CellValue[][] =
                 (try provider.Invoke call answer
                  with _ -> answer [| [| CellValue.Error Err.connect |] |])
                 invoking <- false
-                match providerResults.TryGetValue resultKey with
-                | true, result -> result
-                | false, _ -> [| [| CellValue.Error Err.busy |] |]
+                match Portable.Dict.tryFind resultKey providerResults with
+                | ValueSome result -> result
+                | ValueNone -> [| [| CellValue.Error Err.busy |] |]
 
 /// Does an expression call a function that `test` accepts?
 let private callsFunctionWhere (test: string -> bool) (expr: Expr) : bool =
@@ -5041,7 +5041,7 @@ let private callsFunctionWhere (test: string -> bool) (expr: Expr) : bool =
     let mutable found = false
     while not found && stack.Count > 0 do
         let current = stack.[stack.Count - 1]
-        stack.RemoveAt(stack.Count - 1)
+        Portable.Stack.dropLast stack
         match current with
         | Function (name, args) ->
             if test name then found <- true
@@ -5090,7 +5090,7 @@ let rec eval (expr: Expr) (ctx: EvalContext) : CellValue =
                 else
                     namesBeingEvaluated.Add key
                     try eval e ctx
-                    finally namesBeingEvaluated.RemoveAt(namesBeingEvaluated.Count - 1)
+                    finally Portable.Stack.dropLast namesBeingEvaluated
             | None -> err Err.name
     | CellRef r -> readCell r model workbook
     | RangeRef (a, b) when isOpenRange a b && ctx.CurrentCell.IsSome ->
@@ -6175,7 +6175,7 @@ and evalArray (expr: Expr) (ctx: EvalContext) : ArrVal =
             else
                 namesBeingEvaluated.Add key
                 try evalArray e ctx
-                finally namesBeingEvaluated.RemoveAt(namesBeingEvaluated.Count - 1)
+                finally Portable.Stack.dropLast namesBeingEvaluated
         | Some e -> scalar (eval e ctx)
         | None -> scalar (err Err.name)
     | UnaryOp (op, inner) -> evalArray inner ctx |> Array.map (Array.map (applyUnary op))
@@ -8455,13 +8455,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         let popResult () =
                             let last = results.Count - 1
                             let result = results.[last]
-                            results.RemoveAt last
+                            Portable.Stack.dropLast results
                             result
 
                         while frames.Count > 0 do
                             let last = frames.Count - 1
                             let struct (kind, expr, op) = frames.[last]
-                            frames.RemoveAt last
+                            Portable.Stack.dropLast frames
 
                             match kind with
                             | 1 ->
@@ -8518,13 +8518,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         let popResult () =
                             let last = results.Count - 1
                             let result = results.[last]
-                            results.RemoveAt last
+                            Portable.Stack.dropLast results
                             result
 
                         while frames.Count > 0 do
                             let last = frames.Count - 1
                             let struct (kind, expr, op) = frames.[last]
-                            frames.RemoveAt last
+                            Portable.Stack.dropLast frames
 
                             match kind with
                             | 1 ->
@@ -8684,13 +8684,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let popResult () =
                 let last = results.Count - 1
                 let result = results.[last]
-                results.RemoveAt last
+                Portable.Stack.dropLast results
                 result
 
             while frames.Count > 0 do
                 let last = frames.Count - 1
                 let struct (kind, expr, op) = frames.[last]
-                frames.RemoveAt last
+                Portable.Stack.dropLast frames
 
                 match kind with
                 | 1 ->
@@ -8734,13 +8734,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let popResult () =
                 let last = results.Count - 1
                 let result = results.[last]
-                results.RemoveAt last
+                Portable.Stack.dropLast results
                 result
 
             while frames.Count > 0 do
                 let last = frames.Count - 1
                 let struct (kind, expr, op) = frames.[last]
-                frames.RemoveAt last
+                Portable.Stack.dropLast frames
 
                 match kind with
                 | 1 ->
@@ -8858,7 +8858,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -8985,7 +8985,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -9150,7 +9150,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -9211,7 +9211,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (numerator, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "*" || op = "/" ->
@@ -9553,7 +9553,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -9604,7 +9604,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (numerator, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "*" || op = "/" ->
@@ -10078,7 +10078,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -10137,7 +10137,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (numerator, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "*" || op = "/" ->
@@ -10388,7 +10388,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (factor, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "+" || op = "-" ->
@@ -10447,7 +10447,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     while not unsupported && ValueOption.isNone firstErr && stack.Count > 0 do
                         let last = stack.Count - 1
                         let struct (numerator, expr) = stack.[last]
-                        stack.RemoveAt last
+                        Portable.Stack.dropLast stack
 
                         match expr with
                         | BinOp (left, op, right) when op = "*" || op = "/" ->
@@ -11416,7 +11416,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | None -> best <- Some (k, v)
                                 | Some (_, bv) -> if (match cmp v bv with Some c -> (if matchMode = -1 then c > 0 else c < 0) | None -> false) then best <- Some (k, v)
                         if searchMode = -1 || searchMode = -2 then
-                            for k in la.Count - 1 .. -1 .. 0 do visit k
+                            for k = la.Count - 1 downto 0 do visit k
                         else
                             for k in 0 .. la.Count - 1 do visit k
                         best |> Option.map fst
@@ -14519,9 +14519,9 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
     if formulaCells.Count = 0 then model else
         let formulaByAddress = Dictionary<CellAddress, FormulaCell>(formulaCells.Count)
         let addIndexed (index: Dictionary<int, ResizeArray<CellAddress>>) key addr =
-            match index.TryGetValue key with
-            | true, cells -> cells.Add addr
-            | false, _ ->
+            match Portable.Dict.tryFind key index with
+            | ValueSome cells -> cells.Add addr
+            | ValueNone ->
                 let cells = ResizeArray<CellAddress>()
                 cells.Add addr
                 index.[key] <- cells
@@ -14562,27 +14562,27 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 if rowCount <= colCount then
                     let formulaRows = formulaRowsIndex ()
                     for row in sr .. er do
-                        match formulaRows.TryGetValue row with
-                        | true, candidates ->
+                        match Portable.Dict.tryFind row formulaRows with
+                        | ValueSome candidates ->
                             for addr in candidates do
                                 if addr.Col >= sc && addr.Col <= ec then
                                     refs.Add addr
-                        | false, _ -> ()
+                        | ValueNone -> ()
                 else
                     let formulaCols = formulaColsIndex ()
                     for col in sc .. ec do
-                        match formulaCols.TryGetValue col with
-                        | true, candidates ->
+                        match Portable.Dict.tryFind col formulaCols with
+                        | ValueSome candidates ->
                             for addr in candidates do
                                 if addr.Row >= sr && addr.Row <= er then
                                     refs.Add addr
-                        | false, _ -> ()
+                        | ValueNone -> ()
             let stack = ResizeArray<struct (Set<string> * Expr)>()
             stack.Add(struct (Set.empty, expr))
             while stack.Count > 0 do
                 let last = stack.Count - 1
                 let struct (seen, e) = stack.[last]
-                stack.RemoveAt last
+                Portable.Stack.dropLast stack
                 match e with
                 | Number _ | Str _ | Bool _ | ErrorLit _ | ArrayLit _ | MissingArg -> ()
                 | TableRef sel ->
@@ -14635,9 +14635,9 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 cyclic.Add activeStack.[i] |> ignore
 
         let depsFor addr =
-            match dependencies.TryGetValue addr with
-            | true, deps -> deps
-            | false, _ -> Array.empty
+            match Portable.Dict.tryFind addr dependencies with
+            | ValueSome deps -> deps
+            | ValueNone -> Array.empty
 
         let enter (stack: Stack<struct (CellAddress * CellAddress array * int)>) addr =
             let mutable cycleStart = 0
@@ -14655,7 +14655,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 let struct (addr, deps, index) = stack.Pop()
                 if index >= deps.Length then
                     activeIndex.Remove addr |> ignore
-                    activeStack.RemoveAt(activeStack.Count - 1)
+                    Portable.Stack.dropLast activeStack
                     order.Add addr
                 else
                     stack.Push(struct (addr, deps, index + 1))
@@ -14669,8 +14669,8 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 updatedCells <- Map.add addr { fc.Cell with Value = nextValue } updatedCells
                 changed <- true
         for addr in order do
-            match formulaByAddress.TryGetValue addr with
-            | true, fc ->
+            match Portable.Dict.tryFind addr formulaByAddress with
+            | ValueSome fc ->
                 match fc.ParseError with
                 | Some parseError ->
                     ignore parseError
@@ -14684,7 +14684,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                     let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
                     let result = evalFormulaCell fc.Expr ctx (match fc.Cell.Value with CellValue.Formula (_, cached) -> cached | _ -> CellValue.Empty)
                     applyFormulaResult addr fc result
-            | false, _ -> ()
+            | ValueNone -> ()
         // OFFSET / INDIRECT pick their precedents while evaluating, so the
         // ordering above cannot place them after the cells they read: one of
         // them may have run before its target was recalculated. Re-evaluate
@@ -14700,9 +14700,9 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
             let dependents = Dictionary<CellAddress, ResizeArray<CellAddress>>()
             for KeyValue(addr, deps) in dependencies do
                 for dep in deps do
-                    match dependents.TryGetValue dep with
-                    | true, list -> list.Add addr
-                    | false, _ ->
+                    match Portable.Dict.tryFind dep dependents with
+                    | ValueSome list -> list.Add addr
+                    | ValueNone ->
                         let list = ResizeArray<CellAddress>()
                         list.Add addr
                         dependents.[dep] <- list
@@ -14711,9 +14711,9 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
             while pending.Count > 0 do
                 let addr = pending.Pop()
                 if affected.Add addr then
-                    match dependents.TryGetValue addr with
-                    | true, list -> for dependent in list do pending.Push dependent
-                    | false, _ -> ()
+                    match Portable.Dict.tryFind addr dependents with
+                    | ValueSome list -> for dependent in list do pending.Push dependent
+                    | ValueNone -> ()
             let mutable settling = true
             let mutable rounds = 0
             while settling && rounds < 3 do
@@ -14721,8 +14721,8 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                 rounds <- rounds + 1
                 for addr in order do
                     if affected.Contains addr && not (cyclic.Contains addr) && not (Set.contains addr blockedAnchors) then
-                        match formulaByAddress.TryGetValue addr with
-                        | true, fc when fc.ParseError.IsNone ->
+                        match Portable.Dict.tryFind addr formulaByAddress with
+                        | ValueSome fc when fc.ParseError.IsNone ->
                             let updated = { model with Cells = updatedCells }
                             let ctx = { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
                             let nextValue = CellValue.Formula (fc.Formula, evalFormulaCell fc.Expr ctx (match fc.Cell.Value with CellValue.Formula (_, cached) -> cached | _ -> CellValue.Empty))
@@ -14742,7 +14742,7 @@ let containsArrayFunction (e: Expr) : bool =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | Function (name, _) when isArrayFunction name -> found <- true
         | Function (_, args) ->
@@ -14770,7 +14770,7 @@ let private spillsInOneWalk (dynamicReferences: bool) (e: Expr) : bool =
         let last = stack.Count - 1
         let expr = stack.[last]
         let deep = deepStack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         deepStack.RemoveAt last
         match expr with
         | Function (name, args) ->
@@ -14859,7 +14859,7 @@ let containsThreeDReference (e: Expr) : bool =
     while not found && stack.Count > 0 do
         let last = stack.Count - 1
         let expr = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match expr with
         | CellRef r | SpillRef r -> if isThreeDSheet r.Sheet then found <- true
         | RangeRef (a, _) -> if isThreeDSheet a.Sheet then found <- true
@@ -14880,9 +14880,9 @@ let private maySpillByText = Dictionary<string, bool>()
 let private formulaTextMaySpill (formula: string) =
     if isNull formula then false
     else
-        match maySpillByText.TryGetValue formula with
-        | true, known -> known
-        | false, _ ->
+        match Portable.Dict.tryFind formula maySpillByText with
+        | ValueSome known -> known
+        | ValueNone ->
             let found =
                 formula.IndexOf ':' >= 0 || formula.IndexOf '{' >= 0 || formula.IndexOf '#' >= 0 || formula.IndexOf '[' >= 0
                 || (let upper = formula.ToUpperInvariant()
@@ -14966,18 +14966,18 @@ let private spillArraysCore (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
     if readsSpillRanges then
         previousSpill
         |> Map.iter (fun spilled anchor ->
-            match previousByAnchor.TryGetValue anchor with
-            | true, cells -> cells.Add spilled
-            | false, _ ->
+            match Portable.Dict.tryFind anchor previousByAnchor with
+            | ValueSome cells -> cells.Add spilled
+            | ValueNone ->
                 let cells = ResizeArray<CellAddress>()
                 cells.Add spilled
                 previousByAnchor.[anchor] <- cells)
     for (addr, cell, formula, expr) in anchors do
         // (Its own array is not there yet: a formula that refers to its own spill range reads its cell alone.)
         if readsSpillRanges then
-            match previousByAnchor.TryGetValue addr with
-            | true, cells -> for spilled in cells do viewSpill <- Map.remove spilled viewSpill
-            | false, _ -> ()
+            match Portable.Dict.tryFind addr previousByAnchor with
+            | ValueSome cells -> for spilled in cells do viewSpill <- Map.remove spilled viewSpill
+            | ValueNone -> ()
         let updated = { model with Cells = updatedCells; Spill = (if readsSpillRanges then viewSpill else spillMap) }
         let arr = evalArray expr { Model = updated; Workbook = workbook; Sheet = currentSheet; CurrentCell = Some addr }
         let nr = arr.Length

@@ -303,8 +303,8 @@ let private splicedRuns (context: WriterContext) (source: SpliceSource) (origina
     for run, _, _ in pieces do
         match run.SourceRun with
         | Some at when currentCount.[at] > 1 ->
-            match originalRuns.TryGetValue at with
-            | true, list when list.Count = 1 && list.[0] = run -> asRead.Add run |> ignore
+            match Portable.Dict.tryFind at originalRuns with
+            | ValueSome list when list.Count = 1 && list.[0] = run -> asRead.Add run |> ignore
             | _ -> ()
         | _ -> ()
     // What the model writes of a run: the marks before it (a bookmark's start ...), the run, the marks after it.
@@ -450,20 +450,20 @@ let private splicedRuns (context: WriterContext) (source: SpliceSource) (origina
                  // or when the runs it was are of one format and hold the text it holds (a tab, text, a break): its
                  // formatting alone is what can have changed.
                  let sameText =
-                     match originalRuns.TryGetValue at with
-                     | true, list when currentCount.[at] = 1 ->
+                     match Portable.Dict.tryFind at originalRuns with
+                     | ValueSome list when currentCount.[at] = 1 ->
                          (match alike false list, alike false [ runObj ] with
                           | [ (_, before) ], [ (_, after) ] -> before = after
                           | _ -> false)
                      | _ -> false
                  // (A run split - a part of it formatted -: each part is the run with its own change, and text.)
                  let was =
-                     match originalRuns.TryGetValue at with
-                     | true, list when list.Count = 1 -> Some list.[0]
-                     | true, list when sameText -> Some list.[0]
+                     match Portable.Dict.tryFind at originalRuns with
+                     | ValueSome list when list.Count = 1 -> Some list.[0]
+                     | ValueSome list when sameText -> Some list.[0]
                      // (A run the model held as several of one format - a tab, text, a break - split: each part the
                      // run with the change of format made in it, and the model's content.)
-                     | true, list when (alike false list).Length = 1 -> Some list.[0]
+                     | ValueSome list when (alike false list).Length = 1 -> Some list.[0]
                      | _ -> None
                  // (Whether the run is one of several the model held it as, and is not all of them now.)
                  let ofSeveral = not sameText && (match originalRuns.TryGetValue at with | true, list -> list.Count > 1 | _ -> false)
@@ -471,8 +471,8 @@ let private splicedRuns (context: WriterContext) (source: SpliceSource) (origina
                  // (A run of a paragraph joined to this one is not an item of its layout: it is written in the model's wrapping.)
                  let wrappedAsBefore =
                      XmlPatch.isItemOf source.Layout at &&
-                     match originalRuns.TryGetValue at with
-                     | true, list when list.Count > 0 -> list |> Seq.forall (fun model -> wrapping model = now)
+                     match Portable.Dict.tryFind at originalRuns with
+                     | ValueSome list when list.Count > 0 -> list |> Seq.forall (fun model -> wrapping model = now)
                      | _ -> false
                  // (The parts of a run that was split after the first are in its place after it.)
                  let place, wrap =
@@ -517,7 +517,7 @@ let private splicedRuns (context: WriterContext) (source: SpliceSource) (origina
                                      | None -> bytes
                          yield place, wrap bytes
                      else
-                         covered.RemoveAt (covered.Count - 1)
+                         Portable.Stack.dropLast covered
                          yield place, wrap inner
                  // A field whose result was typed into (its code as it was): its runs as read, its one result run
                  // written as the model's parts of the result - each that run with the part's formatting and text.

@@ -230,9 +230,9 @@ let private loadedCells (model: SpreadsheetModel) : Map<CellAddress, CellData> =
 /// its name as written - asked of Formula once per name.
 let private functionTraits = Dictionary<string, int>()
 let private traitsOf (name: string) =
-    match functionTraits.TryGetValue name with
-    | true, known -> known
-    | false, _ ->
+    match Portable.Dict.tryFind name functionTraits with
+    | ValueSome known -> known
+    | ValueNone ->
         let call = Function (name, [])
         let traits = if containsDynamicReference call then 2 elif containsVolatile call then 1 else 0
         let upper = name.ToUpperInvariant()
@@ -252,7 +252,7 @@ let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: She
     while stack.Count > 0 do
         let last = stack.Count - 1
         let current = stack.[last]
-        stack.RemoveAt last
+        Portable.Stack.dropLast stack
         match current with
         | CellRef r | SpillRef r | RangeRef (r, _) ->
             match r.Sheet with
@@ -272,9 +272,9 @@ let rec private classifyWith (engine: Engine) (workbook: Workbook) (sheetId: She
             traits <- traits ||| 16
             let upper = name.ToUpperInvariant()
             let key = sheetId + "|" + upper
-            match engine.NameTraits.TryGetValue key with
-            | true, known -> traits <- traits ||| known
-            | false, _ ->
+            match Portable.Dict.tryFind key engine.NameTraits with
+            | ValueSome known -> traits <- traits ||| known
+            | ValueNone ->
                 if not (Set.contains upper seen) then
                     let ofName =
                         match resolveNameExpr name (Some sheetId) workbook with
@@ -290,42 +290,42 @@ let private classify (engine: Engine) (workbook: Workbook) (sheetId: SheetId) (e
     classifyWith engine workbook sheetId Set.empty expr
 
 let private sheetState (engine: Engine) (sheetId: SheetId) : SheetState =
-    match engine.Sheets.TryGetValue sheetId with
-    | true, state -> state
-    | false, _ ->
+    match Portable.Dict.tryFind sheetId engine.Sheets with
+    | ValueSome state -> state
+    | ValueNone ->
         let state = SheetState sheetId
         engine.Sheets.[sheetId] <- state
         state
 
 let private nodeAt (sheet: SheetState) (row: int) (col: int) : Node =
     let key = keyOf row col
-    match sheet.Nodes.TryGetValue key with
-    | true, node -> node
-    | false, _ ->
+    match Portable.Dict.tryFind key sheet.Nodes with
+    | ValueSome node -> node
+    | ValueNone ->
         let node = Node(sheet, row, col)
         sheet.Nodes.[key] <- node
         node
 
 let private addToBucket (index: Dictionary<int, ResizeArray<RangeGroup>>) (key: int) (group: RangeGroup) =
-    match index.TryGetValue key with
-    | true, groups -> groups.Add group
-    | false, _ ->
+    match Portable.Dict.tryFind key index with
+    | ValueSome groups -> groups.Add group
+    | ValueNone ->
         let groups = ResizeArray<RangeGroup>()
         groups.Add group
         index.[key] <- groups
 
 let private removeFromBucket (index: Dictionary<int, ResizeArray<RangeGroup>>) (key: int) (group: RangeGroup) =
-    match index.TryGetValue key with
-    | true, groups ->
+    match Portable.Dict.tryFind key index with
+    | ValueSome groups ->
         groups.Remove group |> ignore
         if groups.Count = 0 then index.Remove key |> ignore
-    | false, _ -> ()
+    | ValueNone -> ()
 
 let private groupAt (sheet: SheetState) (r0: int) (c0: int) (r1: int) (c1: int) : RangeGroup =
     let key = string r0 + ":" + string c0 + ":" + string r1 + ":" + string c1
-    match sheet.Groups.TryGetValue key with
-    | true, group -> group
-    | false, _ ->
+    match Portable.Dict.tryFind key sheet.Groups with
+    | ValueSome group -> group
+    | ValueNone ->
         let group = RangeGroup(sheet, r0, c0, r1, c1, key)
         sheet.Groups.[key] <- group
         let rows = r1 - r0 + 1
@@ -571,12 +571,12 @@ let private addReadersMarked (mark: int) (sheet: SheetState) (row: int) (col: in
             if row >= group.R0 && row <= group.R1 && col >= group.C0 && col <= group.C1 then
                 let owners = group.Owners
                 for owner = 0 to owners.Count - 1 do add owners.[owner]
-    match sheet.ByRow.TryGetValue row with
-    | true, groups -> inGroups groups
-    | false, _ -> ()
-    match sheet.ByCol.TryGetValue col with
-    | true, groups -> inGroups groups
-    | false, _ -> ()
+    match Portable.Dict.tryFind row sheet.ByRow with
+    | ValueSome groups -> inGroups groups
+    | ValueNone -> ()
+    match Portable.Dict.tryFind col sheet.ByCol with
+    | ValueSome groups -> inGroups groups
+    | ValueNone -> ()
     if sheet.Wide.Count > 0 then inGroups sheet.Wide
 
 /// The formulas that read a cell: on its own, or in a range.
@@ -599,9 +599,9 @@ let private ghostsOf (state: SheetState) (spill: Map<CellAddress, CellAddress>) 
         state.Ghosts.Clear()
         for KeyValue (cell, anchor) in spill do
             let key = float anchor.Row * 16384.0 + float anchor.Col
-            match state.Ghosts.TryGetValue key with
-            | true, cells -> cells.Add cell
-            | false, _ ->
+            match Portable.Dict.tryFind key state.Ghosts with
+            | ValueSome cells -> cells.Add cell
+            | ValueNone ->
                 let cells = ResizeArray<CellAddress>()
                 cells.Add cell
                 state.Ghosts.[key] <- cells
@@ -664,8 +664,8 @@ type private TreeWalk (tree: obj) =
     member _.Top = nodes.[nodes.Count - 1]
     member _.TopClosed = closed.[closed.Count - 1]
     member _.Drop () =
-        nodes.RemoveAt (nodes.Count - 1)
-        closed.RemoveAt (closed.Count - 1)
+        Portable.Stack.dropLast nodes
+        Portable.Stack.dropLast closed
     /// The closed subtree on top in its three parts.
     member this.Open () =
         let node = this.Top
@@ -790,8 +790,8 @@ let private sameSurroundings (engine: Engine) (edited: Workbook) =
     && known.Iteration = edited.Iteration
     && known.Sheets.Count = edited.Sheets.Count
     && (edited.Sheets |> Map.forall (fun sheetId sheet ->
-            match engine.Sheets.TryGetValue sheetId with
-            | true, state when not (isNull (box state.Model)) ->
+            match Portable.Dict.tryFind sheetId engine.Sheets with
+            | ValueSome state when not (isNull (box state.Model)) ->
                 let before = state.Model
                 let after = sheet.Model
                 obj.ReferenceEquals(before, after)
@@ -820,16 +820,16 @@ type private SortedRows(sorted: RowsSorted) =
     /// Where what stood at a cell before the sort stands now.
     member _.TargetRow (row: int) (col: int) =
         if col >= sorted.Left && col <= sorted.Right then
-            match targetOf.TryGetValue row with
-            | true, target -> target
-            | false, _ -> row
+            match Portable.Dict.tryFind row targetOf with
+            | ValueSome target -> target
+            | ValueNone -> row
         else row
     /// Where what stands at a cell now stood before the sort.
     member _.SourceRow (row: int) (col: int) =
         if col >= sorted.Left && col <= sorted.Right then
-            match sourceOf.TryGetValue row with
-            | true, source -> source
-            | false, _ -> row
+            match Portable.Dict.tryFind row sourceOf with
+            | ValueSome source -> source
+            | ValueNone -> row
         else row
     /// Whether a range holds a moved cell.
     member _.Meets (r0: int) (c0: int) (r1: int) (c1: int) =
@@ -977,8 +977,8 @@ let private rewire (engine: Engine) (edited: Workbook) (changes: ResizeArray<Cel
     let going = ResizeArray<Node>()
     for change in changes do
         let formulaAfter = formulaOf change.After
-        match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
-        | true, node when node.IsFormula && (isNull formulaAfter || node.Formula <> formulaAfter) -> going.Add node
+        match Portable.Dict.tryFind (keyOf change.Row change.Col) change.State.Nodes with
+        | ValueSome node when node.IsFormula && (isNull formulaAfter || node.Formula <> formulaAfter) -> going.Add node
         | _ -> ()
     unwireMany engine going
     for change in changes do
@@ -986,9 +986,9 @@ let private rewire (engine: Engine) (edited: Workbook) (changes: ResizeArray<Cel
         let formulaAfter = formulaOf change.After
         if not (isNull formulaAfter) then
             let node =
-                match state.Nodes.TryGetValue (keyOf change.Row change.Col) with
-                | true, node when node.IsFormula && node.Formula = formulaAfter -> node
-                | true, node when node.IsFormula ->
+                match Portable.Dict.tryFind (keyOf change.Row change.Col) state.Nodes with
+                | ValueSome node when node.IsFormula && node.Formula = formulaAfter -> node
+                | ValueSome node when node.IsFormula ->
                     unwire engine node
                     wire engine edited state change.Row change.Col formulaAfter
                 | _ -> wire engine edited state change.Row change.Col formulaAfter
@@ -1160,8 +1160,8 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
     let mutable tables = not (obj.ReferenceEquals(known.Tables, edited.Tables) || known.Tables = edited.Tables)
     let mutable visibility = false
     for KeyValue (sheetId, sheet) in edited.Sheets do
-        match engine.Sheets.TryGetValue sheetId with
-        | true, state when not (isNull (box state.Model)) ->
+        match Portable.Dict.tryFind sheetId engine.Sheets with
+        | ValueSome state when not (isNull (box state.Model)) ->
             if state.Name <> sheet.Name then renamed.Add state
             let before = state.Model
             let after = sheet.Model
@@ -1257,7 +1257,7 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
                 let mutable found = false
                 while not found && stack.Count > 0 do
                     let current = stack.[stack.Count - 1]
-                    stack.RemoveAt (stack.Count - 1)
+                    Portable.Stack.dropLast stack
                     match current with
                     | NameRef name -> if changedNames.Contains (name.ToUpperInvariant()) then found <- true
                     | UnaryOp (_, inner) -> stack.Add inner
@@ -1287,7 +1287,7 @@ let private surroundingsOf (engine: Engine) (edited: Workbook) : Surroundings =
                 let mutable found = false
                 while not found && stack.Count > 0 do
                     let current = stack.[stack.Count - 1]
-                    stack.RemoveAt (stack.Count - 1)
+                    Portable.Stack.dropLast stack
                     match current with
                     | NameRef name -> if followerNames.Contains (name.ToUpperInvariant()) then found <- true
                     | UnaryOp (_, inner) -> stack.Add inner
@@ -1415,9 +1415,9 @@ let private expandNode (engine: Engine) (pass: int) (reached: ResizeArray<Node>)
                 | true, ghosts ->
                     for ghost in ghosts do
                         let explicit =
-                            match node.Sheet.Nodes.TryGetValue (keyOf ghost.Row ghost.Col) with
-                            | true, ghostNode -> ghostNode.Dependents
-                            | false, _ -> null
+                            match Portable.Dict.tryFind (keyOf ghost.Row ghost.Col) node.Sheet.Nodes with
+                            | ValueSome ghostNode -> ghostNode.Dependents
+                            | ValueNone -> null
                         addReadersMarked mark node.Sheet ghost.Row ghost.Col explicit outs
                 | false, _ -> ()
                 node.KeptOuts <- null
@@ -1503,8 +1503,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         let sorts = Dictionary<SheetId, SortedRows>()
         if mode = 0 then
             for KeyValue (sheetId, sheet) in edited.Sheets do
-                match engine.Sheets.TryGetValue sheetId with
-                | true, state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
+                match Portable.Dict.tryFind sheetId engine.Sheets with
+                | ValueSome state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
                     let sorted = sortBetween state.Model sheet.Model
                     if not (isNull (box sorted)) then sorts.[sheetId] <- sorted
                 | _ -> ()
@@ -1524,9 +1524,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             if obj.ReferenceEquals(state, heldState) then heldModel
             else
                 let model =
-                    match models.TryGetValue state.Id with
-                    | true, model -> model
-                    | false, _ ->
+                    match Portable.Dict.tryFind state.Id models with
+                    | ValueSome model -> model
+                    | ValueNone ->
                         // (A formula is evaluated in its sheet, not in the sheet's stand-in.)
                         let model = resolveSheet (Map.find state.Id workbook.Sheets).Model
                         models.[state.Id] <- model
@@ -1546,16 +1546,16 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             heldModel <- updated
         /// The sheet's spill map as the pass has it now (a sheet that is not loaded has none to speak of).
         let spillOf (state: SheetState) : Map<CellAddress, CellAddress> =
-            match models.TryGetValue state.Id with
-            | true, model -> model.Spill
-            | false, _ ->
+            match Portable.Dict.tryFind state.Id models with
+            | ValueSome model -> model.Spill
+            | ValueNone ->
                 match Map.tryFind state.Id workbook.Sheets with
                 | Some sheet -> loadedSpill sheet.Model
                 | None -> Map.empty
         let cellsOf (state: SheetState) : Map<CellAddress, CellData> =
-            match models.TryGetValue state.Id with
-            | true, model -> model.Cells
-            | false, _ ->
+            match Portable.Dict.tryFind state.Id models with
+            | ValueSome model -> model.Cells
+            | ValueNone ->
                 match Map.tryFind state.Id workbook.Sheets with
                 | Some sheet -> loadedCells sheet.Model
                 | None -> Map.empty
@@ -1618,7 +1618,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     let mutable found = false
                     while not found && stack.Count > 0 do
                         let current = stack.[stack.Count - 1]
-                        stack.RemoveAt (stack.Count - 1)
+                        Portable.Stack.dropLast stack
                         match current with
                         | NameRef name -> if names.Contains (name.ToUpperInvariant()) then found <- true
                         | UnaryOp (_, inner) -> stack.Add inner
@@ -1652,8 +1652,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     for node in state.Nodes.Values do
                         if node.IsFormula && node.Traits &&& 256 <> 0 then toRewire node
             for KeyValue (sheetId, move) in surroundings.Moves do
-                match engine.Sheets.TryGetValue sheetId with
-                | true, state ->
+                match Portable.Dict.tryFind sheetId engine.Sheets with
+                | ValueSome state ->
                     let note (reader: Node) = if reader.IsFormula then moveReaders.Add (struct (reader, reader.WireStamp))
                     for node in state.Nodes.Values do
                         if (if move.OnRows then node.Row else node.Col) >= move.At then
@@ -1661,15 +1661,15 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     for group in state.Groups.Values do
                         if (if move.OnRows then group.R1 else group.C1) >= move.At then
                             for owner in group.Owners do note owner
-                | false, _ -> ()
+                | ValueNone -> ()
             // (Rows or columns moved: the cells of the sheet are not compared one by one -
             // whatever reads the sheet is calculated. When it was one insertion or
             // deletion, less is: see below, after the formulas that follow the rows.)
             for sheetId in surroundings.Structural do
                 if not (surroundings.Moves.ContainsKey sheetId) then
-                    match engine.Sheets.TryGetValue sheetId with
-                    | true, state -> readersOf state toSeed
-                    | false, _ -> ()
+                    match Portable.Dict.tryFind sheetId engine.Sheets with
+                    | ValueSome state -> readersOf state toSeed
+                    | ValueNone -> ()
             if surroundings.NamesChanged || surroundings.SheetsChanged then engine.NameTraits.Clear()
             // They leave the graph together (see `unwireMany`) and are put back one by one.
             let going = ResizeArray<Node>()
@@ -1680,8 +1680,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             let wireAgain (evaluate: bool) (state: SheetState) (row: int) (col: int) =
                 match Map.tryFind state.Id edited.Sheets with
                 | Some sheet ->
-                    match state.Nodes.TryGetValue (keyOf row col) with
-                    | true, node when node.IsFormula ->
+                    match Portable.Dict.tryFind (keyOf row col) state.Nodes with
+                    | ValueSome node when node.IsFormula ->
                         // (The formula as the edit left it; of a sheet that is not converted, as it was.)
                         let text =
                             if isLoaded sheet.Model then
@@ -1713,8 +1713,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                         wire engine edited state addr.Row addr.Col formula |> ignore
                 | _ -> ()
             for struct (state, row, col) in seedKeys do
-                match state.Nodes.TryGetValue (keyOf row col) with
-                | true, node when node.IsFormula ->
+                match Portable.Dict.tryFind (keyOf row col) state.Nodes with
+                | ValueSome node when node.IsFormula ->
                     reach node
                     node.NeedsEval <- true
                 | _ -> ()
@@ -1745,16 +1745,16 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                      | None -> ValueNone)
                 | None -> ValueNone
             | _ ->
-                match sorts.TryGetValue change.State.Id with
-                | true, sorted when sorted.Moved change.Row change.Col ->
+                match Portable.Dict.tryFind change.State.Id sorts with
+                | ValueSome sorted when sorted.Moved change.Row change.Col ->
                     match Map.tryFind { Row = sorted.SourceRow change.Row change.Col; Col = change.Col } (loadedCells change.State.Model) with
                     | Some cell -> ValueSome cell
                     | None -> ValueNone
                 | _ -> change.Before
         /// A changed formula that only followed the cells it reads (they moved) and gives the value it gave.
         let followed (node: Node) (change: CellChange) (was: CellData voption) : bool =
-            match sorts.TryGetValue change.State.Id with
-            | true, sorted ->
+            match Portable.Dict.tryFind change.State.Id sorts with
+            | ValueSome sorted ->
                 // (Moved by the sort, as a copy: it gives what it gave when what it reads moved with it.
                 // With iterative calculation it is calculated: wired again, it is not known to be on a
                 // circular reference that is calculated at every edit.)
@@ -1792,8 +1792,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
         // now, as it is wired before the formulas that moved are wired again.
         let sortReaders = ResizeArray<struct (Node * int)>()
         for KeyValue (sheetId, sorted) in sorts do
-            match engine.Sheets.TryGetValue sheetId with
-            | true, state ->
+            match Portable.Dict.tryFind sheetId engine.Sheets with
+            | ValueSome state ->
                 let note (reader: Node) = if reader.IsFormula then sortReaders.Add (struct (reader, reader.WireStamp))
                 for node in state.Nodes.Values do
                     if node.Dependents.Count > 0 && sorted.Moved node.Row node.Col then
@@ -1801,7 +1801,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 for group in state.Groups.Values do
                     if sorted.Meets group.R0 group.C0 group.R1 group.C1 then
                         for owner in group.Owners do note owner
-            | false, _ -> ()
+            | ValueNone -> ()
         /// Changed formulas of a sorted sheet: whether they are calculated is `followed`'s to say,
         /// also of one that kept its wiring (it moved where the same text stood: `=B5*2` in row 5).
         let sortDecided = HashSet<Node>(HashIdentity.Reference)
@@ -1818,9 +1818,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             (fun change ->
                 // What reads the cell sees another value.
                 let explicit =
-                    match change.State.Nodes.TryGetValue (keyOf change.Row change.Col) with
-                    | true, node -> node.Dependents
-                    | false, _ -> null
+                    match Portable.Dict.tryFind (keyOf change.Row change.Col) change.State.Nodes with
+                    | ValueSome node -> node.Dependents
+                    | ValueNone -> null
                 readers.Clear()
                 addReaders engine change.State change.Row change.Col explicit readers
                 for reader in readers do
@@ -1847,9 +1847,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             /// Formulas that show #SPILL! (or may), by sheet: a cell changed or given up in their way lays them out again.
             let blockedBySheet = Dictionary<SheetId, ResizeArray<Node>>()
             let noteBlocked (node: Node) =
-                match blockedBySheet.TryGetValue node.Sheet.Id with
-                | true, nodes -> if not (nodes.Contains node) then nodes.Add node
-                | false, _ ->
+                match Portable.Dict.tryFind node.Sheet.Id blockedBySheet with
+                | ValueSome nodes -> if not (nodes.Contains node) then nodes.Add node
+                | ValueNone ->
                     let nodes = ResizeArray<Node>()
                     nodes.Add node
                     blockedBySheet.[node.Sheet.Id] <- nodes
@@ -1860,13 +1860,13 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 | _ -> ()
             /// The blocked formulas whose array reaches a cell (as far as its size is known).
             let blockedOver (state: SheetState) (row: int) (col: int) (onNode: Node -> unit) =
-                match blockedBySheet.TryGetValue state.Id with
-                | true, nodes ->
+                match Portable.Dict.tryFind state.Id blockedBySheet with
+                | ValueSome nodes ->
                     for node in nodes do
                         if node.Row <= row && node.Col <= col && not (node.Row = row && node.Col = col)
                            && (node.ExtentRows < 0 || (row < node.Row + node.ExtentRows && col < node.Col + node.ExtentCols)) then
                             onNode node
-                | false, _ -> ()
+                | ValueNone -> ()
             let seedSpill (node: Node) =
                 reach node
                 node.NeedsSpill <- true
@@ -1887,8 +1887,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             if anySpill then
                 // Spilled cells that are another formula's now, or nobody's.
                 for KeyValue (sheetId, sheet) in edited.Sheets do
-                    match engine.Sheets.TryGetValue sheetId with
-                    | true, state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
+                    match Portable.Dict.tryFind sheetId engine.Sheets with
+                    | ValueSome state when not (isNull (box state.Model)) && not (obj.ReferenceEquals(state.Model, sheet.Model)) ->
                         let held = loadedSpill state.Model
                         let now = loadedSpill sheet.Model
                         if not (obj.ReferenceEquals(held, now)) && not (Map.isEmpty held && Map.isEmpty now) then
@@ -1952,9 +1952,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             let sheetPlaces = Dictionary<SheetId, int>()
             let sheetPlace (sheetId: SheetId) =
                 if sheetPlaces.Count = 0 then edited.SheetOrder |> List.iteri (fun place id -> sheetPlaces.[id] <- place)
-                match sheetPlaces.TryGetValue sheetId with
-                | true, place -> place
-                | false, _ -> System.Int32.MaxValue
+                match Portable.Dict.tryFind sheetId sheetPlaces with
+                | ValueSome place -> place
+                | ValueNone -> System.Int32.MaxValue
             let mutable cyclicCount = 0
             // Precedents chosen while evaluating: see the doc comment.
             let hasDynamic = engine.Dynamic.Count > 0
@@ -2097,9 +2097,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     let cellReaders = ResizeArray<Node>()
                     let readersChanged (state: SheetState) (cell: CellAddress) =
                         let explicit =
-                            match state.Nodes.TryGetValue (keyOf cell.Row cell.Col) with
-                            | true, cellNode -> cellNode.Dependents
-                            | false, _ -> null
+                            match Portable.Dict.tryFind (keyOf cell.Row cell.Col) state.Nodes with
+                            | ValueSome cellNode -> cellNode.Dependents
+                            | ValueNone -> null
                         cellReaders.Clear()
                         addReaders engine state cell.Row cell.Col explicit cellReaders
                         for reader in cellReaders do evalLater reader
@@ -2142,9 +2142,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                             | Some owner when owner = addr -> ()
                                             | Some owner ->
                                                 let ownerLive =
-                                                    match state.Nodes.TryGetValue (keyOf owner.Row owner.Col) with
-                                                    | true, ownerNode -> ownerNode.IsFormula && ownerNode.Spills
-                                                    | false, _ -> false
+                                                    match Portable.Dict.tryFind (keyOf owner.Row owner.Col) state.Nodes with
+                                                    | ValueSome ownerNode -> ownerNode.IsFormula && ownerNode.Spills
+                                                    | ValueNone -> false
                                                 if ownerLive && (owner.Row < addr.Row || (owner.Row = addr.Row && owner.Col < addr.Col)) then blocked <- true
                                             | None ->
                                                 match Map.tryFind target cells with
@@ -2171,9 +2171,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                                 | Some owner when owner = addr -> ()
                                                 | Some owner ->
                                                     // Taken from the array of a formula further down / right: that one is blocked now.
-                                                    match ghosts.TryGetValue (keyOf owner.Row owner.Col) with
-                                                    | true, theirs -> theirs.Remove target |> ignore
-                                                    | false, _ -> ()
+                                                    match Portable.Dict.tryFind (keyOf owner.Row owner.Col) ghosts with
+                                                    | ValueSome theirs -> theirs.Remove target |> ignore
+                                                    | ValueNone -> ()
                                                     spill <- Map.add target addr spill
                                                     layoutChanged <- true
                                                     spillLater (nodeAt state owner.Row owner.Col)
@@ -2337,9 +2337,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 for sheetId in touched do
                     let model = models.[sheetId]
                     // (The formula index of the sheet goes on to its recalculated cells.)
-                    match cellsAtStart.TryGetValue sheetId with
-                    | true, before -> inheritFormulaIndex before model.Cells
-                    | false, _ -> ()
+                    match Portable.Dict.tryFind sheetId cellsAtStart with
+                    | ValueSome before -> inheritFormulaIndex before model.Cells
+                    | ValueNone -> ()
                     let projected = invalidateFilterProjection model
                     if not (obj.ReferenceEquals(model, projected)) then
                         workbook <- updateSheetModel sheetId projected workbook

@@ -890,9 +890,9 @@ let private noteBodyOf (context: NoteLayoutContext) (noteType: string) (id: stri
                 if body.Kind.IsNone then bodies.[noteBodyKey body.NoteType body.Id] <- body
             context.NoteBodies <- Some bodies
             bodies
-    match bodies.TryGetValue (noteBodyKey noteType id) with
-    | true, body -> Some body
-    | false, _ -> None
+    match Portable.Dict.tryFind (noteBodyKey noteType id) bodies with
+    | ValueSome body -> Some body
+    | ValueNone -> None
 
 /// The settings a note is laid out with by itself: an unpaged page, the width
 /// of the page's text. (Its text starts below a top margin as deep as a page's
@@ -977,9 +977,9 @@ let private layOutNote (context: NoteLayoutContext) (settings: LayoutSettings) (
             // Block by block (a table's cells together).
             let byId = Dictionary<BlockId, ResizeArray<BlockLayout>>()
             for layout in raw do
-                match byId.TryGetValue layout.BlockId with
-                | true, list -> list.Add layout
-                | false, _ ->
+                match Portable.Dict.tryFind layout.BlockId byId with
+                | ValueSome list -> list.Add layout
+                | ValueNone ->
                     let list = ResizeArray<BlockLayout>()
                     list.Add layout
                     byId.[layout.BlockId] <- list
@@ -988,9 +988,9 @@ let private layOutNote (context: NoteLayoutContext) (settings: LayoutSettings) (
                 match block with
                 | Paragraph para
                 | Heading (_, para) ->
-                    match byId.TryGetValue para.Id with
-                    | true, list -> units.Add (List.ofSeq list, true)
-                    | false, _ -> ()
+                    match Portable.Dict.tryFind para.Id byId with
+                    | ValueSome list -> units.Add (List.ofSeq list, true)
+                    | ValueNone -> ()
                 | Table table ->
                     let ids = HashSet<BlockId>(tableParagraphsInOrder table |> List.map (fun para -> para.Id))
                     let cells = raw |> List.filter (fun layout -> ids.Contains layout.BlockId)
@@ -1040,9 +1040,9 @@ let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: str
         let text =
             match noteTextsSeen with
             | Some texts ->
-                match texts.TryGetValue (noteBodyKey noteType id) with
-                | true, seen -> seen
-                | false, _ -> text
+                match Portable.Dict.tryFind (noteBodyKey noteType id) texts with
+                | ValueSome seen -> seen
+                | ValueNone -> text
             | None -> text
         let key = noteBodyKey noteType id + "\u0001" + string width
         if context.NoteBusy.Contains key then None
@@ -1050,8 +1050,8 @@ let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: str
             // (The body is what the note shows while the reference's text is the body's: setNote replaces it.)
             let body = noteBodyOf context noteType id |> Option.filter (fun body -> body.Text = text && not body.Blocks.IsEmpty)
             let noteSettings = noteRecordSettings settings
-            match context.NoteRecords.TryGetValue key with
-            | true, record when record.RecordText = text
+            match Portable.Dict.tryFind key context.NoteRecords with
+            | ValueSome record when record.RecordText = text
                                 && record.RecordFromBody = body.IsSome
                                 && (match body with Some body -> obj.ReferenceEquals(record.RecordBlocks, body.Blocks) | None -> true)
                                 && obj.ReferenceEquals(record.RecordStyles, context.NoteDoc.Styles)
@@ -3209,14 +3209,14 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
     let mutable unused = -1
     let mutable slot = 0
     while found.IsNone && slot < slots do
-        match memo.MemoEntries.TryGetValue (slotKey slot) with
-        | true, entry ->
+        match Portable.Dict.tryFind (slotKey slot) memo.MemoEntries with
+        | ValueSome entry ->
             if obj.ReferenceEquals(entry.MemoBuffer, para.Buffer)
                && sameOrEqual entry.MemoRawMetadata para.Metadata
                && sameOrEqual entry.MemoParagraphStyle paragraphStyle then
                 found <- Some entry
             elif unused < 0 && entry.MemoGeneration <> memo.Generation then unused <- slot
-        | false, _ -> if empty < 0 then empty <- slot
+        | ValueNone -> if empty < 0 then empty <- slot
         slot <- slot + 1
     match found with
     | Some entry ->
@@ -3706,9 +3706,9 @@ let private listCountersBeforeRow (numbering: TableListNumbering) (row: TableRow
     match numbering.BeforeRow with
     | None -> ValueNone
     | Some beforeRow ->
-        match beforeRow.TryGetValue row with
-        | true, counters -> ValueSome counters
-        | false, _ -> ValueSome Map.empty
+        match Portable.Dict.tryFind row beforeRow with
+        | ValueSome counters -> ValueSome counters
+        | ValueNone -> ValueSome Map.empty
 
 /// The vertical merges of one table that cover more than one row. The content
 /// of such a cell lives in its w:vMerge="restart" cell but belongs to all the
@@ -3963,8 +3963,8 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                     let nestedSpanning (nestedRow: TableRow) =
                         match nestedMerges with
                         | Some merges ->
-                            match merges.SpanningCells.TryGetValue nestedRow with
-                            | true, flags -> flags
+                            match Portable.Dict.tryFind nestedRow merges.SpanningCells with
+                            | ValueSome flags -> flags
                             | _ -> noSpanningCells
                         | None -> noSpanningCells
                     let nestedExtra =
@@ -4070,8 +4070,8 @@ let internal measureTableRowWithStyleUsingMetrics (scope: TableMeasureScope) (se
     | Some state ->
         let merges = state.Merges
         let spanningFor (tableRow: TableRow) =
-            match merges.SpanningCells.TryGetValue tableRow with
-            | true, flags -> flags
+            match Portable.Dict.tryFind tableRow merges.SpanningCells with
+            | ValueSome flags -> flags
             | _ -> noSpanningCells
         let rowLocalSettings = {
             settings with
@@ -4086,8 +4086,8 @@ let internal measureTableRowWithStyleUsingMetrics (scope: TableMeasureScope) (se
                     measureTableRowWithStyleAtDepth 0 scope.ScopeMemo (listCountersBeforeRow scope.ScopeNumbering tableRow) (spanningFor tableRow) 0.0 rowLocalSettings measureText measureRange tableBlock columnMetrics outerLeft tableLeftOffset tableRow 0.0 0.0 paragraphStyleForParagraph effectiveBufferForParagraph)
             state.Extra <- verticalMergeExtraHeights merges rowLocal
             state.RowLocal <- rowLocal
-        match merges.RowIndexes.TryGetValue row with
-        | true, rowIndex ->
+        match Portable.Dict.tryFind row merges.RowIndexes with
+        | ValueSome rowIndex ->
             let extra = state.Extra.[rowIndex]
             let isRowLocal =
                 rowY = 0.0 && tableContinuationHeaderHeight = 0.0
@@ -4979,7 +4979,7 @@ let private pageFootnoteRecords (settings: LayoutSettings) (pageIndex: int) (not
     notes
     |> List.mapi (fun noteIndex (id, text) ->
         noteRecordFor settings "footnote" id text
-        |> Option.map (fun record -> sprintf "%s%d_%d" footnoteBlockIdPrefix pageIndex noteIndex, id, record))
+        |> Option.map (fun record -> footnoteBlockIdPrefix + string pageIndex + "_" + string noteIndex, id, record))
     |> List.choose id
 
 /// Lay out one page's footnotes in the reserved area at the bottom of the
@@ -5264,12 +5264,12 @@ let private changedFootnotes (before: PackageData) (after: PackageData) : HashSe
             if body.NoteType = "footnote" && body.Kind.IsNone then known.[body.Id] <- body
         for body in after.Notes do
             if body.NoteType = "footnote" && body.Kind.IsNone then
-                match known.TryGetValue body.Id with
-                | true, old ->
+                match Portable.Dict.tryFind body.Id known with
+                | ValueSome old ->
                     if not (obj.ReferenceEquals(old, body)) && not (obj.ReferenceEquals(old.Blocks, body.Blocks) && old.Text = body.Text && old.HasMark = body.HasMark && old.MarkStyle = body.MarkStyle) then
                         changed.Add body.Id |> ignore
                     known.Remove body.Id |> ignore
-                | false, _ -> changed.Add body.Id |> ignore
+                | ValueNone -> changed.Add body.Id |> ignore
         for KeyValue (id, _) in known do changed.Add id |> ignore
     changed
 
@@ -5312,8 +5312,8 @@ let private changedFootnoteBlocks (record: PassRecord) (doc: Document) =
 let private tryPassRecord (memo: ParagraphLayoutMemo option) (slot: string) (settings: LayoutSettings) (columns: SectionColumns option) startPage (startY: float) (pageTop: float) (nextPageTop: float) nonUniform balanced collapsesEnd (initial: PassCheckpoint) (doc: Document) =
     match memo with
     | Some memo when slot <> "" ->
-        match memo.MemoPasses.TryGetValue slot with
-        | true, record
+        match Portable.Dict.tryFind slot memo.MemoPasses with
+        | ValueSome record
             when record.PassStartPage = startPage
                  && record.PassStartY = startY
                  && record.PassPageTop = pageTop
@@ -5346,8 +5346,8 @@ let private footnoteLayoutsForPageKept (slot: string) (memo: ParagraphLayoutMemo
     | None -> footnoteLayoutsForPage settings pageIndex pageContentBottom notes
     | Some memo ->
         let records = pageFootnoteRecords settings pageIndex notes |> List.map (fun (_, _, record) -> record)
-        match memo.MemoFootnoteAreas.TryGetValue key with
-        | true, area when area.AreaMaxWidth = maxWidth && area.AreaContentBottom = pageContentBottom
+        match Portable.Dict.tryFind key memo.MemoFootnoteAreas with
+        | ValueSome area when area.AreaMaxWidth = maxWidth && area.AreaContentBottom = pageContentBottom
                           && sameOrEqual area.AreaNotes notes && sameOrEqual area.AreaSettings settings
                           && area.AreaRecords.Length = records.Length
                           && List.forall2 (fun (a: NoteLayoutRecord) b -> obj.ReferenceEquals(a, b)) area.AreaRecords records -> area.AreaLayouts
@@ -5419,14 +5419,14 @@ let private bodyBottoms (layouts: seq<BlockLayout>) (pageOf: float -> int) : int
                         for line in layout.Lines do
                             let page = pageOf line.Y
                             let bottom = line.Y + line.Height
-                            match bottoms.TryGetValue page with
-                            | true, known when known >= bottom -> ()
+                            match Portable.Dict.tryFind page bottoms with
+                            | ValueSome known when known >= bottom -> ()
                             | _ -> bottoms.[page] <- bottom
                 known <- Some bottoms
                 bottoms
-        match bottoms.TryGetValue pageIndex with
-        | true, bottom -> bottom
-        | false, _ -> System.Double.NegativeInfinity
+        match Portable.Dict.tryFind pageIndex bottoms with
+        | ValueSome bottom -> bottom
+        | ValueNone -> System.Double.NegativeInfinity
 
 let private layoutDocumentPassKept
         (slot: string)
@@ -5598,9 +5598,9 @@ let private layoutDocumentPassKept
             match block, wrappingAnchorOf block with
             | TextBox textBox, Some anchorId ->
                 if isNull found then found <- Dictionary<BlockId, ResizeArray<TextBoxBlock>>()
-                match found.TryGetValue anchorId with
-                | true, boxes -> boxes.Add textBox
-                | false, _ ->
+                match Portable.Dict.tryFind anchorId found with
+                | ValueSome boxes -> boxes.Add textBox
+                | ValueNone ->
                     let boxes = ResizeArray<TextBoxBlock>()
                     boxes.Add textBox
                     found.[anchorId] <- boxes
@@ -5609,8 +5609,8 @@ let private layoutDocumentPassKept
     let withAnchoredBoxes (anchorId: BlockId) (atY: float) (obstacles: FloatingObstacle list) (placed: PlacedFloatingBox list) : struct (FloatingObstacle list * PlacedFloatingBox list) =
         if isNull anchoredBoxes then struct (obstacles, placed)
         else
-            match anchoredBoxes.TryGetValue anchorId with
-            | true, boxes ->
+            match Portable.Dict.tryFind anchorId anchoredBoxes with
+            | ValueSome boxes ->
                 let page : WordLayout.Floating.AnchorPage =
                     { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
                       MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom }
@@ -5626,7 +5626,7 @@ let private layoutDocumentPassKept
                          else (obstacleX, obstacleTop, obstacleWidth, obstacleHeight)) :: obstacles
                     placed <- box :: placed
                 struct (obstacles, placed)
-            | false, _ -> struct (obstacles, placed)
+            | ValueNone -> struct (obstacles, placed)
 
     let addTextBoxObstacle (textBox: TextBoxBlock) =
         let rawFloatingBox = WordLayout.Floating.textBoxCanvasBox settings.PaddingLeft settings.PaddingTop textBox
@@ -6862,8 +6862,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                             | None -> build ()
                             | Some memo ->
                                 let key = remaining.Id + "\u0001" + string consumedOffset
-                                match memo.MemoContinuations.TryGetValue key with
-                                | true, (source, sourceCut, known) when obj.ReferenceEquals(source, remaining.Buffer) && sourceCut = cut
+                                match Portable.Dict.tryFind key memo.MemoContinuations with
+                                | ValueSome (source, sourceCut, known) when obj.ReferenceEquals(source, remaining.Buffer) && sourceCut = cut
                                                                         && sameOrEqual known.Metadata continuationMetadata -> known
                                 | _ ->
                                     let rest = build ()
@@ -6923,8 +6923,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     let rowLayouts = Array.init bands.Length (fun _ -> ResizeArray<BlockLayout>())
                     let mutable lastRow = 0
                     for sl in subLayouts do
-                        match rowOf.TryGetValue sl.BlockId with
-                        | true, rowIndex when rowIndex < bands.Length -> lastRow <- rowIndex
+                        match Portable.Dict.tryFind sl.BlockId rowOf with
+                        | ValueSome rowIndex when rowIndex < bands.Length -> lastRow <- rowIndex
                         | _ -> ()
                         rowLayouts.[lastRow].Add sl
                     let top rowIndex = fst bands.[rowIndex] + delta
@@ -7091,7 +7091,7 @@ type PageInfo = {
 /// (With the properties of the paragraph that ends each section - none for
 /// the final one. The blocks are walked once, with every layout pass: the
 /// final section's blocks are the rest of the document's list, not a copy.)
-let private splitIntoSectionsWithEnds (doc: Document) =
+let private splitIntoSectionsWithEndsUncached (doc: Document) =
     let result = ResizeArray<Block list * SectionColumns option * SectionPageSetup option * string option * bool>()
     let ends = ResizeArray<BlockMetadata option>()
     let mutable sectionStart = doc.Blocks
@@ -7113,6 +7113,25 @@ let private splitIntoSectionsWithEnds (doc: Document) =
     result.Add(sectionStart, doc.PageSetup.Columns, None, doc.PageSetup.SectionStart, true)
     ends.Add None
     resizeArrayToList result, ends.ToArray()
+
+/// The last split, by the document's block list and page setup: a long document is laid out in
+/// many passes (the front first, then the rest in slices), each splitting the same blocks again -
+/// a walk of the whole list per pass. (One immutable entry, replaced whole: a reader on another
+/// thread sees an old entry or the new one, never half of one.)
+type private SectionSplit(blocks: Block list, pageSetup: PageSetup, split: (Block list * SectionColumns option * SectionPageSetup option * string option * bool) list * BlockMetadata option array) =
+    member _.Blocks = blocks
+    member _.PageSetup = pageSetup
+    member _.Split = split
+
+let mutable private lastSectionSplit : SectionSplit = Unchecked.defaultof<SectionSplit>
+
+let private splitIntoSectionsWithEnds (doc: Document) =
+    let last = lastSectionSplit
+    if not (isNull (box last)) && obj.ReferenceEquals(last.Blocks, doc.Blocks) && obj.ReferenceEquals(last.PageSetup, doc.PageSetup) then last.Split
+    else
+        let split = splitIntoSectionsWithEndsUncached doc
+        lastSectionSplit <- SectionSplit(doc.Blocks, doc.PageSetup, split)
+        split
 
 let private splitIntoSections (doc: Document) = fst (splitIntoSectionsWithEnds doc)
 
@@ -7174,9 +7193,9 @@ let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (
         | Some memo ->
             let keep placed =
                 memo.MemoPlaced.[slot] <- { PlacedSource = source; PlacedOffset = offset; PlacedShift = shift; PlacedLayouts = placed }
-            match memo.MemoPlaced.TryGetValue slot with
-            | true, known when known.PlacedOffset = offset && known.PlacedShift = shift && obj.ReferenceEquals(known.PlacedSource, source) -> known.PlacedLayouts, true
-            | true, known when known.PlacedOffset = offset && known.PlacedShift = shift ->
+            match Portable.Dict.tryFind slot memo.MemoPlaced with
+            | ValueSome known when known.PlacedOffset = offset && known.PlacedShift = shift && obj.ReferenceEquals(known.PlacedSource, source) -> known.PlacedLayouts, true
+            | ValueSome known when known.PlacedOffset = offset && known.PlacedShift = shift ->
                 // An edit in the section: the layouts it kept at the start and at the end are moved already.
                 let before = known.PlacedSource
                 let placed = Array.zeroCreate<BlockLayout> source.Length
@@ -7406,8 +7425,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
                     match memo with
                     | None -> own |> List.map (shiftBlockX shift)
                     | Some memo ->
-                        match memo.MemoPlacedNotes.TryGetValue pageIndex with
-                        | true, (source, knownShift, known) when knownShift = shift && obj.ReferenceEquals(source, own) -> known
+                        match Portable.Dict.tryFind pageIndex memo.MemoPlacedNotes with
+                        | ValueSome (source, knownShift, known) when knownShift = shift && obj.ReferenceEquals(source, own) -> known
                         | _ ->
                             let moved = own |> List.map (shiftBlockX shift)
                             memo.MemoPlacedNotes.[pageIndex] <- (own, shift, moved)
@@ -7463,8 +7482,16 @@ let private sectionsUpTo (limit: int) (sections: (Block list * SectionColumns op
     let mutable left = max 1 limit
     for (blocks, columns, geometry, breakType, isFinal) in sections do
         if left > 0 then
-            let count = List.length blocks
-            if count <= left then
+            // (The length when it is at most `left`, else -1: the walk stops at the limit, not at
+            // the end of a long document's one section, with every pass.)
+            let count =
+                let mutable n = 0
+                let mutable rest = blocks
+                while n <= left && not rest.IsEmpty do
+                    n <- n + 1
+                    rest <- rest.Tail
+                if n <= left then n else -1
+            if count >= 0 then
                 kept.Add (blocks, columns, geometry, breakType, isFinal)
                 left <- left - count
             else

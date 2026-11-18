@@ -1446,9 +1446,9 @@ module API =
         | false, _ -> None
 
     let private tryFindDictionary key (dictionary: Dictionary<'K, 'V>) =
-        match dictionary.TryGetValue key with
-        | true, value -> Some value
-        | false, _ -> None
+        match Portable.Dict.tryFind key dictionary with
+        | ValueSome value -> Some value
+        | ValueNone -> None
 
     let private maxVisualColumns (table: Doc.TableBlock) =
         let mutable maxColumns = 0
@@ -1550,9 +1550,9 @@ module API =
         for row in table.Rows do
             for cell in row.Cells do
                 for para in cell.Content do
-                    match layoutById.TryGetValue para.Id with
-                    | true, layout -> firstActualContentY <- min firstActualContentY layout.Y
-                    | false, _ -> ()
+                    match Portable.Dict.tryFind para.Id layoutById with
+                    | ValueSome layout -> firstActualContentY <- min firstActualContentY layout.Y
+                    | ValueNone -> ()
 
         if System.Double.IsPositiveInfinity firstActualContentY then
             None
@@ -1602,9 +1602,9 @@ module API =
         let segments = ResizeArray<obj>()
 
         let paragraphEndY (para: Doc.ParagraphBlock) =
-            match layoutsById.TryGetValue para.Id with
-            | true, layout -> Some (layout.Y + layout.Height)
-            | false, _ -> None
+            match Portable.Dict.tryFind para.Id layoutsById with
+            | ValueSome layout -> Some (layout.Y + layout.Height)
+            | ValueNone -> None
 
         for block in editor.Doc.Blocks do
             match block with
@@ -2075,9 +2075,9 @@ module API =
 
         let nextPageLine page =
             let value =
-                match pageLineCounts.TryGetValue page with
-                | true, count -> count + 1
-                | false, _ -> 1
+                match Portable.Dict.tryFind page pageLineCounts with
+                | ValueSome count -> count + 1
+                | ValueNone -> 1
             pageLineCounts.[page] <- value
             value
 

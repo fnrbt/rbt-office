@@ -279,24 +279,24 @@ let private buildLayoutIndex settings includeBodyLines (estimatedLayouts: int) (
     let bodyLinesByPage = Dictionary<int, ResizeArray<MeasuredLine>>()
 
     let addLine page line =
-        match bodyLinesByPage.TryGetValue page with
-        | true, lines -> lines.Add line
-        | false, _ ->
+        match Portable.Dict.tryFind page bodyLinesByPage with
+        | ValueSome lines -> lines.Add line
+        | ValueNone ->
             let lines = ResizeArray<MeasuredLine>()
             lines.Add line
             bodyLinesByPage.[page] <- lines
 
     for layout in layouts do
-        match byBlock.TryGetValue layout.BlockId with
-        | true, blockLayouts -> blockLayouts.Add layout
-        | false, _ ->
-            match byId.TryGetValue layout.BlockId with
-            | true, previousLayout ->
+        match Portable.Dict.tryFind layout.BlockId byBlock with
+        | ValueSome blockLayouts -> blockLayouts.Add layout
+        | ValueNone ->
+            match Portable.Dict.tryFind layout.BlockId byId with
+            | ValueSome previousLayout ->
                 let blockLayouts = ResizeArray<BlockLayout>(2)
                 blockLayouts.Add previousLayout
                 blockLayouts.Add layout
                 byBlock.[layout.BlockId] <- blockLayouts
-            | false, _ -> ()
+            | ValueNone -> ()
         byId.[layout.BlockId] <- layout
 
         if layout.BlockId.StartsWith footnoteBlockIdPrefix then
@@ -310,17 +310,17 @@ let private buildLayoutIndex settings includeBodyLines (estimatedLayouts: int) (
     { ById = byId; ByBlock = byBlock; Footnotes = footnotes; Endnotes = endnotes; BodyLinesByPage = bodyLinesByPage }
 
 let private tryLayout id (index: LayoutIndex) =
-    match index.ById.TryGetValue id with
-    | true, layout -> Some layout
-    | false, _ -> None
+    match Portable.Dict.tryFind id index.ById with
+    | ValueSome layout -> Some layout
+    | ValueNone -> None
 
 let private tryFirstBlockLayout id (index: LayoutIndex) =
-    match index.ByBlock.TryGetValue id with
-    | true, layouts when layouts.Count > 0 -> Some layouts.[0]
+    match Portable.Dict.tryFind id index.ByBlock with
+    | ValueSome layouts when layouts.Count > 0 -> Some layouts.[0]
     | _ ->
-        match index.ById.TryGetValue id with
-        | true, layout -> Some layout
-        | false, _ -> None
+        match Portable.Dict.tryFind id index.ById with
+        | ValueSome layout -> Some layout
+        | ValueNone -> None
 
 let private minResizeArray (values: ResizeArray<float>) =
     if values.Count = 0 then None
@@ -665,9 +665,9 @@ let private borderJoinCoordinateKey value =
 
 let private addBorderJoinSegment (index: Dictionary<int, ResizeArray<Rbt.BorderGrid.Segment>>) coordinate segment =
     let key = borderJoinCoordinateKey coordinate
-    match index.TryGetValue key with
-    | true, values -> values.Add segment
-    | false, _ ->
+    match Portable.Dict.tryFind key index with
+    | ValueSome values -> values.Add segment
+    | ValueNone ->
         let values = ResizeArray()
         values.Add segment
         index.[key] <- values
@@ -686,9 +686,9 @@ let private indexedPerpendicularHalfWidth (segmentsByCoordinate: Dictionary<int,
     let key = borderJoinCoordinateKey coordinate
     let mutable maxWidth = 0.0
     for delta in -1 .. 1 do
-        match segmentsByCoordinate.TryGetValue(key + delta) with
-        | false, _ -> ()
-        | true, candidates ->
+        match Portable.Dict.tryFind (key + delta) segmentsByCoordinate with
+        | ValueNone -> ()
+        | ValueSome candidates ->
             for candidate in candidates do
                 if covers candidate then
                     maxWidth <- max maxWidth (candidate.Stroke.Width / 2.0)
@@ -727,9 +727,9 @@ let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: Rbt.Bord
             let mutable continues = false
             let alongKey = borderJoinCoordinateKey along
             for delta in -1 .. 1 do
-                match crossing.TryGetValue(alongKey + delta) with
-                | false, _ -> ()
-                | true, candidates ->
+                match Portable.Dict.tryFind (alongKey + delta) crossing with
+                | ValueNone -> ()
+                | ValueSome candidates ->
                     for candidate in candidates do
                         let fixedAt, first, second = if horizontal then candidate.X1, candidate.Y1, candidate.Y2 else candidate.Y1, candidate.X1, candidate.X2
                         if abs (fixedAt - along) < borderJoinEpsilon && coversCoordinate across first second then
@@ -737,9 +737,9 @@ let private tableBorderJoinCaps (index: TableBorderJoinIndex) (segment: Rbt.Bord
                             if max first second > across + borderJoinEpsilon then after <- widerStroke after candidate.Stroke
             let acrossKey = borderJoinCoordinateKey across
             for delta in -1 .. 1 do
-                match own.TryGetValue(acrossKey + delta) with
-                | false, _ -> ()
-                | true, candidates ->
+                match Portable.Dict.tryFind (acrossKey + delta) own with
+                | ValueNone -> ()
+                | ValueSome candidates ->
                     for candidate in candidates do
                         if not (obj.ReferenceEquals(candidate, segment)) then
                             let fixedAt, first, second = if horizontal then candidate.Y1, candidate.X1, candidate.X2 else candidate.X1, candidate.Y1, candidate.Y2
@@ -939,9 +939,9 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
         && painted.[upper].PaintPage = painted.[lower].PaintPage
         && abs (painted.[upper].PaintY + painted.[upper].PaintHeight - painted.[lower].PaintY) < 1.0
     let covering (rowIndex: int) (column: int) =
-        match rowCells.TryGetValue rowIndex with
-        | true, cells -> cells |> Seq.tryFind (fun cell -> cell.StartColumn <= column && column < cell.StartColumn + cell.ColumnSpan)
-        | false, _ -> None
+        match Portable.Dict.tryFind rowIndex rowCells with
+        | ValueSome cells -> cells |> Seq.tryFind (fun cell -> cell.StartColumn <= column && column < cell.StartColumn + cell.ColumnSpan)
+        | ValueNone -> None
     let segments = Array.zeroCreate<Rbt.BorderGrid.Segment list> painted.Count
     for index in 0 .. painted.Count - 1 do
         let fragment = painted.[index]
@@ -1355,15 +1355,15 @@ let markupMarkerCommands (members: Dictionary<BlockId, HashSet<string>>) (settin
     | Some selection ->
         let selected = HashSet<string>()
         for blockId in [ selection.Anchor.BlockId; selection.Focus.BlockId ] do
-            match members.TryGetValue blockId with
-            | true, groups -> for group in groups do selected.Add group |> ignore
+            match Portable.Dict.tryFind blockId members with
+            | ValueSome groups -> for group in groups do selected.Add group |> ignore
             | _ -> ()
         if selected.Count = 0 then []
         else
             let commands = ResizeArray<PaintCommand>()
             for layout in layouts do
-                match members.TryGetValue layout.BlockId with
-                | true, groups when groups |> Seq.exists selected.Contains ->
+                match Portable.Dict.tryFind layout.BlockId members with
+                | ValueSome groups when groups |> Seq.exists selected.Contains ->
                     let blockX = settings.PaddingLeft + layout.Indent
                     let blockWidth = max 1.0 layout.AvailableWidth
                     commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
@@ -2343,9 +2343,9 @@ let private overlapShifts (settings: LayoutSettings) measureText measureRange (s
     shifts
 
 let private shiftOf (shifts: Dictionary<BlockId, float>) (textBox: TextBoxBlock) =
-    match shifts.TryGetValue textBox.Id with
-    | true, shift -> shift
-    | false, _ -> 0.0
+    match Portable.Dict.tryFind textBox.Id shifts with
+    | ValueSome shift -> shift
+    | ValueNone -> 0.0
 
 /// A text box as a drawing of its page.
 let private textBoxDrawing (settings: LayoutSettings) fontFamily measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (shift: float) (textBox: TextBoxBlock) : Drawing =
@@ -2412,9 +2412,9 @@ let private repeatedBlockCommands (settings: LayoutSettings) fontFamily measureT
                 let anchorTop =
                     match textBox.AnchorBlockId with
                     | Some anchorId ->
-                        match tops.TryGetValue anchorId with
-                        | true, top -> Some top
-                        | false, _ -> None
+                        match Portable.Dict.tryFind anchorId tops with
+                        | ValueSome top -> Some top
+                        | ValueNone -> None
                     | None -> None
                 match page, anchorTop with
                 | Some info, Some _ -> drawings.Add (textBoxDrawing settings fontFamily measureText measureRange styleContext [| info |] anchorTop 0.0 textBox)
@@ -2605,8 +2605,8 @@ let private headerFooterCommandsByPage (cache: HeaderFooterCache option) (settin
             let known =
                 match cache with
                 | Some cache ->
-                    match cache.HeaderFooterPages.TryGetValue pageIndex with
-                    | true, entry
+                    match Portable.Dict.tryFind pageIndex cache.HeaderFooterPages with
+                    | ValueSome entry
                         when obj.ReferenceEquals(entry.PageHeaders, headers) && obj.ReferenceEquals(entry.PageFooters, footers)
                              && entry.PageHeaderY = headerY && entry.PageFooterY = footerY
                              && entry.PageNumber = pageNumber && entry.PageCount = (if running then pageCount else 0) && entry.PageFieldsKey = fieldsKey -> Some entry.PageCommands
@@ -2779,9 +2779,9 @@ let storyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Do
                         | TextBox _ -> false))
                 |> Option.bind firstParagraphIdOf
                 |> Option.bind (fun id ->
-                    match tops.TryGetValue id with
-                    | true, top -> Some top
-                    | false, _ -> None)
+                    match Portable.Dict.tryFind id tops with
+                    | ValueSome top -> Some top
+                    | ValueNone -> None)
             match anchorTop with
             | Some _ ->
                 let struct (x, y, height) = textBoxPlace settings measureText measureRange styleContext [| page |] anchorTop 0.0 textBox
@@ -2826,9 +2826,9 @@ let bodyShapeRects (settings: LayoutSettings) measureText measureRange (doc: Doc
                     | TextBox _ -> false))
             |> Option.bind firstParagraphIdOf
             |> Option.bind (fun id ->
-                match tops.TryGetValue id with
-                | true, top -> Some top
-                | false, _ -> None)
+                match Portable.Dict.tryFind id tops with
+                | ValueSome top -> Some top
+                | ValueNone -> None)
         let shifts = overlapShifts settings measureText measureRange styleContext pageArray anchorTopOf shapes
         shapes
         |> List.map (fun textBox ->
@@ -3097,12 +3097,12 @@ let private clipCommandToBand (top: float) (bottom: float) (command: PaintComman
 /// not in such a section (or its paragraphs have no layout).
 let private columnTableFragmentCommands (settings: LayoutSettings) measureText measureRange (doc: Document) (index: LayoutIndex) (tableBlock: TableBlock) : (PaintCommand list * float) option =
     let actualLayouts (blockId: BlockId) : BlockLayout list =
-        match index.ByBlock.TryGetValue blockId with
-        | true, layouts -> List.ofSeq layouts
-        | false, _ ->
-            match index.ById.TryGetValue blockId with
-            | true, layout -> [ layout ]
-            | false, _ -> []
+        match Portable.Dict.tryFind blockId index.ByBlock with
+        | ValueSome layouts -> List.ofSeq layouts
+        | ValueNone ->
+            match Portable.Dict.tryFind blockId index.ById with
+            | ValueSome layout -> [ layout ]
+            | ValueNone -> []
     // The strip the table was laid out on: as wide as a column of its section. (Held against
     // the layouts - the cells are as wide there as they were laid out - so that a document of
     // which only the start is laid out, whose sections are not all known, is painted the same.)
@@ -3195,15 +3195,15 @@ let private addTableTextCommands (settings: LayoutSettings) fontFamily measureTe
             let tableCellBaselineOffset =
                 if WordLayout.Table.rowCellSpacing WordLayout.canvasScale table row > 0.0 then spacedTableCellBaselineOffset else 0.0
             for para in cell.Content do
-                match index.ByBlock.TryGetValue para.Id with
-                | true, paraLayouts ->
+                match Portable.Dict.tryFind para.Id index.ByBlock with
+                | ValueSome paraLayouts ->
                     for paraLayout in paraLayouts do
                         addParagraphCommandsWithBaselineOffset tableCellBaselineOffset settings fontFamily measureText measureRange commands paraLayout
-                | false, _ ->
-                    match index.ById.TryGetValue para.Id with
-                    | true, paraLayout ->
+                | ValueNone ->
+                    match Portable.Dict.tryFind para.Id index.ById with
+                    | ValueSome paraLayout ->
                         addParagraphCommandsWithBaselineOffset tableCellBaselineOffset settings fontFamily measureText measureRange commands paraLayout
-                    | false, _ -> ()
+                    | ValueNone -> ()
             for nestedTable in List.rev cell.NestedTables do
                 frames.Push(TableTextTable nestedTable)
 
@@ -3239,14 +3239,14 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
                                     match segment with
                                     | TextSegment (_, _, x, _, _) -> segXs.Add x
                                     | _ -> ()
-                        match index.ByBlock.TryGetValue para.Id with
-                        | true, paraLayouts ->
+                        match Portable.Dict.tryFind para.Id index.ByBlock with
+                        | ValueSome paraLayouts ->
                             for layout in paraLayouts do
                                 addNestedLayout layout
-                        | false, _ ->
-                            match index.ById.TryGetValue para.Id with
-                            | true, layout -> addNestedLayout layout
-                            | false, _ -> ()
+                        | ValueNone ->
+                            match Portable.Dict.tryFind para.Id index.ById with
+                            | ValueSome layout -> addNestedLayout layout
+                            | ValueNone -> ()
             // Where each row of the nested table really is: the first line of
             // its cells. A cell's layout starts at its row's top, and its first
             // line a fixed distance below that - unless the row was moved to
@@ -3266,12 +3266,12 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
                                     firstLines.Add line.Y
                                     firstLineOffsets.Add (line.Y - layout.Y)
                                 | [] -> ()
-                            match index.ByBlock.TryGetValue para.Id with
-                            | true, paraLayouts -> (match paraLayouts |> Seq.tryHead with Some layout -> consider layout | None -> ())
-                            | false, _ ->
-                                match index.ById.TryGetValue para.Id with
-                                | true, layout -> consider layout
-                                | false, _ -> ()
+                            match Portable.Dict.tryFind para.Id index.ByBlock with
+                            | ValueSome paraLayouts -> (match paraLayouts |> Seq.tryHead with Some layout -> consider layout | None -> ())
+                            | ValueNone ->
+                                match Portable.Dict.tryFind para.Id index.ById with
+                                | ValueSome layout -> consider layout
+                                | ValueNone -> ()
                         | [] -> ()
                     minResizeArray firstLines)
             let rowTops =
@@ -3315,9 +3315,9 @@ let private addNoteTableCommands (settings: LayoutSettings) measureText measureR
         match noteOfLayoutId layout.BlockId, noteParagraphIdOfLayoutId layout.BlockId with
         | Some (kind, id), Some own ->
             let key = noteAreaSlotOfLayoutId layout.BlockId + "\u0001" + kind + "\u0001" + id
-            match shown.TryGetValue key with
-            | true, list -> list.Add { layout with BlockId = own }
-            | false, _ ->
+            match Portable.Dict.tryFind key shown with
+            | ValueSome list -> list.Add { layout with BlockId = own }
+            | ValueNone ->
                 let list = ResizeArray<BlockLayout>()
                 list.Add { layout with BlockId = own }
                 shown.[key] <- list
@@ -3353,8 +3353,8 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
         let footnoteTopByPage = Dictionary<int, float>()
         for layout in footnotes do
             let page = pageOfY settings layout.Y
-            match footnoteTopByPage.TryGetValue page with
-            | true, topY when topY <= layout.Y -> ()
+            match Portable.Dict.tryFind page footnoteTopByPage with
+            | ValueSome topY when topY <= layout.Y -> ()
             | _ -> footnoteTopByPage.[page] <- layout.Y
         for KeyValue(_, topY) in footnoteTopByPage do
             let separatorX = settings.PaddingLeft
@@ -3370,8 +3370,8 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
         let endnoteTopByPage = Dictionary<int, float>()
         for layout in endnotes do
             let page = pageOfY settings layout.Y
-            match endnoteTopByPage.TryGetValue page with
-            | true, topY when topY <= layout.Y -> ()
+            match Portable.Dict.tryFind page endnoteTopByPage with
+            | ValueSome topY when topY <= layout.Y -> ()
             | _ -> endnoteTopByPage.[page] <- layout.Y
         let mutable startPage = System.Int32.MaxValue
         for KeyValue(page, _) in endnoteTopByPage do
@@ -3450,11 +3450,11 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                 match tryFirstBlockLayout para.Id index with
                 | None -> ()
                 | Some layout ->
-                    match index.ByBlock.TryGetValue para.Id with
-                    | true, paraLayouts ->
+                    match Portable.Dict.tryFind para.Id index.ByBlock with
+                    | ValueSome paraLayouts ->
                         for paraLayout in paraLayouts do
                             addParagraphCommandsKept settings fontFamily measureText measureRange commands paraLayout
-                    | false, _ ->
+                    | ValueNone ->
                         addParagraphCommandsKept settings fontFamily measureText measureRange commands layout
                     currentY <- layout.Y + layout.Height
                     if para.Metadata.PageBreakAfter || (para.Metadata.SectionBreak.IsSome && sectionPageBreaks.Value.Contains para.Id) then
@@ -3477,9 +3477,9 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
             let contentTop = info.Top + info.MarginTop
             let contentBottom = info.Top + info.Height - info.MarginBottom
             let pageBottom =
-                match index.BodyLinesByPage.TryGetValue page with
-                | false, _ -> contentTop
-                | true, lines ->
+                match Portable.Dict.tryFind page index.BodyLinesByPage with
+                | ValueNone -> contentTop
+                | ValueSome lines ->
                     let mutable bottom = contentTop
                     for line in lines do
                         if line.Y >= info.Top - 0.5 && line.Y < info.Top + info.Height then
@@ -3923,8 +3923,8 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
             match textBox.AnchorBlockId with
             | None -> System.Double.NaN
             | Some anchorId ->
-                match blockIndexById.Value.TryGetValue anchorId with
-                | true, index when slices.SliceStarts.[index + 1] > slices.SliceStarts.[index] -> layouts.[slices.SliceStarts.[index]].Y
+                match Portable.Dict.tryFind anchorId blockIndexById.Value with
+                | ValueSome index when slices.SliceStarts.[index + 1] > slices.SliceStarts.[index] -> layouts.[slices.SliceStarts.[index]].Y
                 | _ -> System.Double.NaN
         let pageArray = lazy (List.toArray pages)
         // (How far the shapes that may not overlap are moved: see overlapShifts.)

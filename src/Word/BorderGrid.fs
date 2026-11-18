@@ -194,9 +194,9 @@ module BorderGrid =
         let groupOrder = ResizeArray<float>()
         for candidate in candidates do
             if candidate.Horizontal = horizontal then
-                match groups.TryGetValue candidate.Fixed with
-                | true, group -> group.Add candidate
-                | false, _ ->
+                match Portable.Dict.tryFind candidate.Fixed groups with
+                | ValueSome group -> group.Add candidate
+                | ValueNone ->
                     let group = ResizeArray<Candidate>()
                     group.Add candidate
                     groups.[candidate.Fixed] <- group

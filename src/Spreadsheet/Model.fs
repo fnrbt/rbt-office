@@ -2289,15 +2289,15 @@ let currentRegion (addr: CellAddress) (model: SpreadsheetModel) : CellRange opti
     let filled = System.Collections.Generic.Dictionary<int, ResizeArray<int>>()
     for KeyValue(cell, data) in model.Cells do
         if data.Value <> Empty then
-            match filled.TryGetValue cell.Row with
-            | true, cols -> cols.Add cell.Col
+            match Portable.Dict.tryFind cell.Row filled with
+            | ValueSome cols -> cols.Add cell.Col
             | _ ->
                 let cols = ResizeArray<int>()
                 cols.Add cell.Col
                 filled.[cell.Row] <- cols
     let rowHas (row: int) (left: int) (right: int) =
-        match filled.TryGetValue row with
-        | true, cols ->
+        match Portable.Dict.tryFind row filled with
+        | ValueSome cols ->
             let mutable found = false
             let mutable i = 0
             while not found && i < cols.Count do
@@ -3323,7 +3323,7 @@ let private lookIndexOf (table: Table) (elements: TableStyles.TableStyleElement 
                 { Table = table; Period = period; Heads = heads; Totals = totals; Width = width
                   Looks = Array.create (slots * width) None; Known = Array.create (slots * width) false }
             tableLookIndexes.Insert(0, index)
-            if tableLookIndexes.Count > 32 then tableLookIndexes.RemoveAt(tableLookIndexes.Count - 1)
+            if tableLookIndexes.Count > 32 then Portable.Stack.dropLast tableLookIndexes
             index
 
 /// The look the style of a table gives the 0-indexed cell of the table (`tableCellLook`), with what
@@ -3738,8 +3738,8 @@ let moveRowBlocks (left: int) (right: int) (sourceOf: System.Collections.Generic
             values.[kept] <- value
             kept <- kept + 1
         let segment (row: int) =
-            match segmentOf.TryGetValue row with
-            | true, index -> starts.[index], starts.[index + 1] - 1
+            match Portable.Dict.tryFind row segmentOf with
+            | ValueSome index -> starts.[index], starts.[index + 1] - 1
             | _ -> 0, -1
         // (A moved entry takes the key of the entry that stood where it lands, when there was one.)
         let mutable cursor = 0
@@ -3750,8 +3750,8 @@ let moveRowBlocks (left: int) (right: int) (sourceOf: System.Collections.Generic
             else { Row = row; Col = col }
         for row in destinations do
             let first, last = segment row
-            match sourceOf.TryGetValue row with
-            | true, source ->
+            match Portable.Dict.tryFind row sourceOf with
+            | ValueSome source ->
                 for i in first .. last do
                     let key = entryKey<CellAddress> entries i
                     if key.Col < left then keep key (entryValue<'T> entries i)
@@ -5169,9 +5169,9 @@ let private buildMergeIndex (merges: MergedCell list) : MergeIndex =
         if merge.EndRow - merge.StartRow > 4096 then tall.Insert(0, merge)
         else
             for row in merge.StartRow .. merge.EndRow do
-                match byRow.TryGetValue row with
-                | true, existing -> byRow.[row] <- merge :: existing
-                | false, _ -> byRow.[row] <- [ merge ]
+                match Portable.Dict.tryFind row byRow with
+                | ValueSome existing -> byRow.[row] <- merge :: existing
+                | ValueNone -> byRow.[row] <- [ merge ]
     { Source = merges; ByRow = byRow; Tall = List.ofSeq tall }
 
 let private mergeIndexOf (merges: MergedCell list) : MergeIndex =
@@ -5191,9 +5191,9 @@ let findMergedCell (addr: CellAddress) (model: SpreadsheetModel): MergedCell opt
     | merges ->
         let index = mergeIndexOf merges
         let inRow =
-            match index.ByRow.TryGetValue addr.Row with
-            | true, candidates -> candidates |> List.tryFind (fun merge -> addr.Col >= merge.StartCol && addr.Col <= merge.EndCol)
-            | false, _ -> None
+            match Portable.Dict.tryFind addr.Row index.ByRow with
+            | ValueSome candidates -> candidates |> List.tryFind (fun merge -> addr.Col >= merge.StartCol && addr.Col <= merge.EndCol)
+            | ValueNone -> None
         match inRow, index.Tall with
         | found, [] -> found
         | None, tall -> tall |> List.tryFind (fun merge -> isInMergedRange addr merge)
