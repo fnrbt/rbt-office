@@ -2732,9 +2732,9 @@ let private guidesOf (lists: XmlDsl.XmlNode list) (width: float) (height: float)
           "cd2", 10800000.0; "cd4", 5400000.0; "cd8", 2700000.0; "3cd4", 16200000.0; "3cd8", 8100000.0; "5cd8", 13500000.0; "7cd8", 18900000.0 ] do
         values.[name] <- value
     let valueOf (token: string) : float =
-        match values.TryGetValue token with
-        | true, value -> value
-        | false, _ -> number token |> Option.defaultValue 0.0
+        match Portable.Dict.tryFind token values with
+        | ValueSome value -> value
+        | ValueNone -> number token |> Option.defaultValue 0.0
     // (Angles of the formulas are in 60000ths of a degree.)
     let radians (angle: float) = angle / 60000.0 * Math.PI / 180.0
     for list in lists do

@@ -147,9 +147,9 @@ let private countsOf (ctx: Context) (rule: PreparedRule) : Dictionary<string, in
         iterRuleCells ctx rule (fun value ->
             match valueKey value with
             | Some key ->
-                match counts.TryGetValue key with
-                | true, n -> counts.[key] <- n + 1
-                | false, _ -> counts.[key] <- 1
+                match Portable.Dict.tryFind key counts with
+                | ValueSome n -> counts.[key] <- n + 1
+                | ValueNone -> counts.[key] <- 1
             | None -> ())
         rule.Counts <- Some counts
         counts

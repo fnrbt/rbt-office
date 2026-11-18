@@ -603,9 +603,9 @@ let create (canvas: HTMLCanvasElement) (initialDoc: Doc.Document) (onChange: Doc
         let indexed = obj.ReferenceEquals(lines, visualLinesKnown)
         let mutable i =
             if indexed then
-                match visualLineStarts.TryGetValue position.BlockId with
-                | true, start -> start
-                | false, _ -> lines.Length
+                match Portable.Dict.tryFind position.BlockId visualLineStarts with
+                | ValueSome start -> start
+                | ValueNone -> lines.Length
             else 0
         let mutable searching = true
         while searching && i < lines.Length do

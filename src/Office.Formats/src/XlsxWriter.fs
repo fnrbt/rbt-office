@@ -774,17 +774,17 @@ let private collectStyles (workbook: XlsxWorkbookOut) =
     let xfIndex = System.Collections.Generic.Dictionary<XfKey, int>(HashIdentity.Structural)
     let byIdentity = System.Collections.Generic.Dictionary<XlsxCellFormat, int>(HashIdentity.Reference)
     let indexOfKey (key: XfKey) =
-        match xfIndex.TryGetValue key with
-        | true, index -> index
-        | false, _ ->
+        match Portable.Dict.tryFind key xfIndex with
+        | ValueSome index -> index
+        | ValueNone ->
             let index = xfList.Count
             xfList.Add key
             xfIndex.[key] <- index
             index
     let styleIdOf (format: XlsxCellFormat) =
-        match byIdentity.TryGetValue format with
-        | true, index -> index
-        | false, _ ->
+        match Portable.Dict.tryFind format byIdentity with
+        | ValueSome index -> index
+        | ValueNone ->
             let index = indexOfKey (xfKey format)
             byIdentity.[format] <- index
             index
@@ -832,18 +832,18 @@ let private collectSharedStrings (workbook: XlsxWorkbookOut) : SharedStringKey l
     let rich = System.Collections.Generic.Dictionary<SharedStringKey, int>(HashIdentity.Structural)
     let indexOf (text: string) (runs: XlsxRichRun list) : int =
         if runs.IsEmpty then
-            match plain.TryGetValue text with
-            | true, index -> index
-            | false, _ ->
+            match Portable.Dict.tryFind text plain with
+            | ValueSome index -> index
+            | ValueNone ->
                 let index = items.Count
                 items.Add { Text = text; Runs = [] }
                 plain.[text] <- index
                 index
         else
             let key = { Text = text; Runs = runs }
-            match rich.TryGetValue key with
-            | true, index -> index
-            | false, _ ->
+            match Portable.Dict.tryFind key rich with
+            | ValueSome index -> index
+            | ValueNone ->
                 let index = items.Count
                 items.Add key
                 rich.[key] <- index
@@ -1138,9 +1138,9 @@ let private dataTableXml (table: XlsxReader.DataTableFormula) =
 /// Column letters by index, made once per column.
 let private columnLetterCache = System.Collections.Generic.Dictionary<int, string>()
 let private columnLetters (col: int) =
-    match columnLetterCache.TryGetValue col with
-    | true, letters -> letters
-    | false, _ ->
+    match Portable.Dict.tryFind col columnLetterCache with
+    | ValueSome letters -> letters
+    | ValueNone ->
         let letters = columnToLetter col
         columnLetterCache.[col] <- letters
         letters
@@ -1433,16 +1433,16 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
         let mutable group = 0
         for index in 0 .. cells.Length - 1 do
             let first = cells.[index]
-            match formulaAt.TryGetValue (key first.Row first.Col) with
-            | true, known when known = index && not (sharedFormulas.ContainsKey index) ->
+            match Portable.Dict.tryFind (key first.Row first.Col) formulaAt with
+            | ValueSome known when known = index && not (sharedFormulas.ContainsKey index) ->
                 let text = formulaOf index
                 let run (dRow: int) (dCol: int) =
                     let members = ResizeArray<int>()
                     let mutable going = true
                     while going do
                         let step = members.Count + 1
-                        match formulaAt.TryGetValue (key (first.Row + step * dRow) (first.Col + step * dCol)) with
-                        | true, next when not (sharedFormulas.ContainsKey next)
+                        match Portable.Dict.tryFind (key (first.Row + step * dRow) (first.Col + step * dCol)) formulaAt with
+                        | ValueSome next when not (sharedFormulas.ContainsKey next)
                                           && formulaOf next = XlsxReader.Xlsx.shiftFormulaRefs text (step * dRow) (step * dCol) -> members.Add next
                         | _ -> going <- false
                     members
@@ -1496,15 +1496,15 @@ let private rowsXml (styles: StyleBook) (sharedIndex: string -> XlsxRichRun list
         | None -> ()
         match carry with
         | Some carry ->
-            match carry.Attributes.TryGetValue row with
-            | true, attributes -> sb.Append(attributes) |> ignore
-            | false, _ -> ()
+            match Portable.Dict.tryFind row carry.Attributes with
+            | ValueSome attributes -> sb.Append(attributes) |> ignore
+            | ValueNone -> ()
         | None -> ()
         sb.Append('>') |> ignore
         while cellAt < cells.Length && cells.[cellAt].Row = row do
-            match sharedFormulas.TryGetValue cellAt with
-            | true, formulaXml -> appendFormulaCellXml sb styles sharedIndex rowText cells.[cellAt] formulaXml
-            | false, _ -> appendCellXml sb styles sharedIndex dataTables arrayFormulas rowText cells.[cellAt]
+            match Portable.Dict.tryFind cellAt sharedFormulas with
+            | ValueSome formulaXml -> appendFormulaCellXml sb styles sharedIndex rowText cells.[cellAt] formulaXml
+            | ValueNone -> appendCellXml sb styles sharedIndex dataTables arrayFormulas rowText cells.[cellAt]
             cellAt <- cellAt + 1
         sb.Append("</row>") |> ignore
     sb.ToString()
@@ -2027,9 +2027,9 @@ let private tablePlacement (workbook: XlsxWorkbookOut) : (string * int option) l
             // (A changed table of the file: written as its part, changed. One table per part.)
             match table.SourcePart with
             | Some path when parts.ContainsKey path ->
-                match claimed.TryGetValue path with
-                | true, owner -> if obj.ReferenceEquals (owner, table) then Some path else None
-                | false, _ -> claimed.[path] <- table; Some path
+                match Portable.Dict.tryFind path claimed with
+                | ValueSome owner -> if obj.ReferenceEquals (owner, table) then Some path else None
+                | ValueNone -> claimed.[path] <- table; Some path
             | _ -> None
     for sheet in workbook.Sheets do
         for table in sheet.Tables do
@@ -2314,12 +2314,12 @@ let private patchedCommentsXml (fileXml: string) (runs: ((int * int) * (string *
         let elements =
             wanted
             |> List.map (fun (cell, text, author, reference) ->
-                match found.TryGetValue reference with
-                | true, index ->
+                match Portable.Dict.tryFind reference found with
+                | ValueSome index ->
                     let knownRef, _, _, comment = known.[index]
                     if knownRef = reference then XmlPatch.bytesOf part.Text comment
                     else XmlPatch.apply order (XmlPatch.at part comment) [ XmlPatch.SetAttribute ("ref", reference) ]
-                | false, _ ->
+                | ValueNone ->
                     // A changed note in a cell the file has a note in keeps what the file's element
                     // says of it (`shapeId`, `xr:uid`), and its runs what the file's runs say beyond
                     // what a sheet holds (`<color indexed>`, `<family>`, `<charset>`): a run with the
@@ -2770,8 +2770,8 @@ let private sheetPatchPlan (dxfCount: int) (sheet: XlsxSheetOut) (patch: XlsxRea
                 let mutable cellsSound = true
                 let scanRow (row: int) =
                     if cellsSound && not (rowCells.ContainsKey row) then
-                        match byNumber.TryGetValue row with
-                        | true, node when not (isSelfClosed node) ->
+                        match Portable.Dict.tryFind row byNumber with
+                        | ValueSome node when not (isSelfClosed node) ->
                             match XmlPatch.whole part node with
                             | Some whole ->
                                 let placed =
@@ -2866,9 +2866,9 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
     let wanted = System.Collections.Generic.HashSet<float>()
     let change (row: int) (col: int) (mode: int) =
         if wanted.Add (key row col) then
-            match changedRows.TryGetValue row with
-            | true, known -> known.Add ((col, mode))
-            | false, _ ->
+            match Portable.Dict.tryFind row changedRows with
+            | ValueSome known -> known.Add ((col, mode))
+            | ValueNone ->
                 let known = ResizeArray<int * int>()
                 known.Add ((col, mode))
                 changedRows.[row] <- known
@@ -2898,13 +2898,13 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
     let goes (cell: XmlDsl.XmlNode) = if XmlPatch.attribute cell "t" = Some "s" then sharedGone <- sharedGone + 1
     // A cell of the sheet as it is now ("" for none).
     let cellXml (row: int) (col: int) =
-        match outs.TryGetValue (key row col) with
-        | true, cell ->
+        match Portable.Dict.tryFind (key row col) outs with
+        | ValueSome cell ->
             let sb = StringBuilder()
             appendCellXml sb styles sharedIndex dataTables arrayFormulas (string (row + 1)) cell
             if sb.Length > 0 then written row col
             sb.ToString()
-        | false, _ -> ""
+        | ValueNone -> ""
     // The file's cell holding the formula its group shares from now on.
     let rehomed (row: int) (col: int) (cell: XmlDsl.XmlNode) : XmlPatch.ElementEdit list =
         match plan.Rehome.TryGetValue (key row col), outs.TryGetValue (key row col) with
@@ -2918,11 +2918,11 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
     let cellEdits (row: int) (col: int) (mode: int) (cell: XmlDsl.XmlNode) : XmlPatch.ElementEdit list =
         if mode = 2 then rehomed row col cell
         else
-            match outs.TryGetValue (key row col) with
-            | false, _ ->
+            match Portable.Dict.tryFind (key row col) outs with
+            | ValueNone ->
                 goes cell
                 [ XmlPatch.Replaced "" ]
-            | true, out ->
+            | ValueSome out ->
                 match mode = 1, out.Value with
                 | true, XlsxFormula (_, cached) when (XmlPatch.child "f" cell).IsSome ->
                     // The formula is the file's (shared, array ...): only its result is new.
@@ -2945,9 +2945,9 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
     let rowEdits = System.Collections.Generic.Dictionary<int, ResizeArray<XmlPatch.ElementEdit>>()
     let editRow (node: XmlDsl.XmlNode) (edits: XmlPatch.ElementEdit list) =
         let start = (XmlPatch.span node).Start
-        match rowEdits.TryGetValue start with
-        | true, known -> known.AddRange edits
-        | false, _ -> rowEdits.[start] <- ResizeArray<XmlPatch.ElementEdit>(edits)
+        match Portable.Dict.tryFind start rowEdits with
+        | ValueSome known -> known.AddRange edits
+        | ValueNone -> rowEdits.[start] <- ResizeArray<XmlPatch.ElementEdit>(edits)
     let appended = ResizeArray<XmlPatch.ElementEdit>()
     let noChanges = ResizeArray<int * int>()
     let touched = System.Collections.Generic.HashSet<int>(changedRows.Keys)
@@ -2957,8 +2957,8 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
         let changes = match changedRows.TryGetValue row with | true, known -> known | false, _ -> noChanges
         let rowPatch = match rowPatches.TryGetValue row with | true, known -> Some known | false, _ -> None
         let sorted = changes.ToArray() |> Array.sortBy fst
-        match byNumber.TryGetValue row with
-        | true, node ->
+        match Portable.Dict.tryFind row byNumber with
+        | ValueSome node ->
             let attributes =
                 match rowPatch with
                 | Some known -> rowAttributes (XmlPatch.attributes node) known |> List.map (fun (name, value) -> attributeEdit name value)
@@ -2993,7 +2993,7 @@ let private sheetDataEdits (styles: StyleBook) (sharedIndex: string -> XlsxRichR
                         j <- j + 1
                 if pending.Length > 0 then edits.Add (XmlPatch.Append (pending.ToString()))
                 editRow node (List.ofSeq edits)
-        | false, _ ->
+        | ValueNone ->
             // A new row (as the sheet has it), before the first row of the file after it.
             let inner = sorted |> Array.map (fun (col, _) -> cellXml row col) |> String.concat ""
             let attributes =
@@ -3312,9 +3312,9 @@ let private rowCarryOf (fileStyles: bool) (moves: SheetMoves option) (sourceXml:
                     let own = XmlPatch.attributeBytes part.Text row |> List.filter (fun (name, _) -> name <> "r" && name <> "spans")
                     let rest = own |> List.map snd |> String.concat ""
                     let attributes, auto, heightless =
-                        match known.TryGetValue rest with
-                        | true, found -> found
-                        | false, _ ->
+                        match Portable.Dict.tryFind rest known with
+                        | ValueSome found -> found
+                        | ValueNone ->
                             let height = XmlPatch.attribute row "ht" |> Option.bind tryParseNumber
                             let custom = isOn (XmlPatch.attribute row "customHeight")
                             let kept =
@@ -4043,8 +4043,8 @@ let private reachableKeptParts (workbook: XlsxWorkbookOut) (themePath: string op
         let path = pending.Dequeue()
         if parts.ContainsKey path && seen.Add path then
             let relsPath = PartPath.relationshipsOf path
-            match parts.TryGetValue relsPath with
-            | true, relsData ->
+            match Portable.Dict.tryFind relsPath parts with
+            | ValueSome relsData ->
                 seen.Add relsPath |> ignore
                 for rel in OpcXml.relationshipsOrEmpty (System.Text.Encoding.UTF8.GetString relsData) do
                     if not rel.External && rel.Target <> "" then pending.Enqueue (OpcXml.targetPath (PartPath.directory path) rel)
@@ -4178,9 +4178,9 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                     match builtInNumFmtId code with
                     | Some id -> id
                     | None ->
-                        match numFmtIds.TryGetValue code with
-                        | true, id -> id
-                        | false, _ ->
+                        match Portable.Dict.tryFind code numFmtIds with
+                        | ValueSome id -> id
+                        | ValueNone ->
                             let id = nextNumFmt
                             nextNumFmt <- nextNumFmt + 1
                             numFmtIds.[code] <- id
@@ -4189,9 +4189,9 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
             let fontIdOf (key: XfKey) =
                 if key.Font = defaultFontKey then 0
                 else
-                    match fontIds.TryGetValue key.Font with
-                    | true, id -> id
-                    | false, _ ->
+                    match Portable.Dict.tryFind key.Font fontIds with
+                    | ValueSome id -> id
+                    | ValueNone ->
                         let id = fontCount + newFonts.Count
                         fontIds.[key.Font] <- id
                         newFonts.Add (fontXml key.Font)
@@ -4200,9 +4200,9 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                 match key.Fill with
                 | None -> 0
                 | Some color ->
-                    match fillIds.TryGetValue color with
-                    | true, id -> id
-                    | false, _ ->
+                    match Portable.Dict.tryFind color fillIds with
+                    | ValueSome id -> id
+                    | ValueNone ->
                         let id = fillCount + newFills.Count
                         fillIds.[color] <- id
                         newFills.Add (fillXml key.Fill)
@@ -4210,17 +4210,17 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
             let borderIdOf (key: XfKey) =
                 if key.Border = defaultBorderKey then 0
                 else
-                    match borderIds.TryGetValue key.Border with
-                    | true, id -> id
-                    | false, _ ->
+                    match Portable.Dict.tryFind key.Border borderIds with
+                    | ValueSome id -> id
+                    | ValueNone ->
                         let id = borderCount + newBorders.Count
                         borderIds.[key.Border] <- id
                         newBorders.Add (borderXml key.Border)
                         id
             let indexOfKey (key: XfKey) =
-                match xfIndex.TryGetValue key with
-                | true, index -> index
-                | false, _ ->
+                match Portable.Dict.tryFind key xfIndex with
+                | ValueSome index -> index
+                | ValueNone ->
                     let numFmtId = numFmtIdOf key
                     let fontId = fontIdOf key
                     let fillId = fillIdOf key
@@ -4291,9 +4291,9 @@ let private inPlaceStyles (workbook: XlsxWorkbookOut) (stylesXml: string) : (Sty
                 match format.SourceXf with
                 | Some index when index >= 0 && index < xfCount -> index
                 | _ ->
-                    match byIdentity.TryGetValue format with
-                    | true, index -> index
-                    | false, _ ->
+                    match Portable.Dict.tryFind format byIdentity with
+                    | ValueSome index -> index
+                    | ValueNone ->
                         let key = xfKey format
                         let index =
                             match format.BasedOnXf |> Option.bind (fun basedOn -> derivedIndex basedOn key) with
@@ -4397,9 +4397,9 @@ let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: 
         let mutable count = texts.Length
         let indexOf (text: string) (textRuns: XlsxRichRun list) : int =
             if textRuns.IsEmpty then
-                match plain.TryGetValue text with
-                | true, index -> index
-                | false, _ ->
+                match Portable.Dict.tryFind text plain with
+                | ValueSome index -> index
+                | ValueNone ->
                     let index = count
                     count <- count + 1
                     appendSharedStringItem added { Text = text; Runs = [] }
@@ -4407,9 +4407,9 @@ let private inPlaceSharedStrings (workbook: XlsxWorkbookOut) (sharedStringsXml: 
                     index
             else
                 let key = { Text = text; Runs = textRuns }
-                match rich.TryGetValue key with
-                | true, index -> index
-                | false, _ ->
+                match Portable.Dict.tryFind key rich with
+                | ValueSome index -> index
+                | ValueNone ->
                     let index = count
                     count <- count + 1
                     appendSharedStringItem added key
@@ -4863,8 +4863,8 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         // (Its notes, when they changed: in the comments part and the VML drawing; the part itself
         // says nothing of them but that it has a drawing of that kind.)
         let legacy =
-            match notePlans.TryGetValue i with
-            | true, notes ->
+            match Portable.Dict.tryFind i notePlans with
+            | ValueSome notes ->
                 let newComments, newVml = noteParts.[i]
                 let gone (path: string option) = match path with Some path -> List.contains path notes.Gone | None -> false
                 if not (gone notes.CommentsPath) then
@@ -4883,7 +4883,7 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
                     let id = freeId ()
                     addedRels.Add { Id = id; Type = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing"; Target = targetOf newVml; External = false }
                     [ "legacyDrawing", sprintf "<legacyDrawing%s r:id=\"%s\"/>" namespaceText id ]
-            | false, _ -> []
+            | ValueNone -> []
         // Its links, when they changed: the list in the part, an external one's address in the relationships.
         let links =
             if not (List.contains "hyperlinks" sheet.Extras.Patch.Value.Sections) then []
@@ -4919,11 +4919,11 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
         // (The cells of the file that named a shared string and are not written: all of a sheet written
         // from its cells, those that changed of rows that are the file's.)
         let rows, sharedGone =
-            match rowPlans.TryGetValue i with
-            | true, (plan, patch) ->
+            match Portable.Dict.tryFind i rowPlans with
+            | ValueSome (plan, patch) ->
                 let edits, _, gone = sheetDataEdits styles countedShared dynamicCm sheet patch plan
                 FileRows (patchedSheetData plan edits), Some gone
-            | false, _ ->
+            | ValueNone ->
                 match sheet.Extras.SourceXml with
                 | Some xml ->
                     let carry = rowCarryOf inPlace.IsSome sheet.Extras.Moves xml
@@ -5263,9 +5263,9 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
     let formatCache = System.Collections.Generic.Dictionary<int, XlsxCellFormat>()
     let formatOf (cell: XlsxReader.Cell) =
         let key = cell.StyleIndex |> Option.defaultValue -1
-        match formatCache.TryGetValue key with
-        | true, format -> format
-        | false, _ ->
+        match Portable.Dict.tryFind key formatCache with
+        | ValueSome format -> format
+        | ValueNone ->
             let format =
                 { styleOf cell.Style with NamedStyle = namedStyleOf cell; SourceXf = Some (defaultArg cell.StyleIndex 0) }
             formatCache.[key] <- format

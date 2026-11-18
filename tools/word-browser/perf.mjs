@@ -301,7 +301,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         const loaded = await tab.evaluate(([usePainter, cost, atOnce, frontFirst]) => window.perf.load(usePainter, cost, atOnce, frontFirst), [painter, measureCost, oneShot, progressive]);
         if (profile === 'load') {
             // Where opening the document spends its time: self time, and time under each function.
-            const { profile: cpu } = await cdpLoad.send('Profiler.stop');
+            const { profile: cpu } = await cdpLoad.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
             const selfById = new Map();
@@ -340,7 +340,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         if (profile === 'keys') { await cdp.send('Profiler.enable'); await cdp.send('Profiler.setSamplingInterval', { interval: 200 }); await cdp.send('Profiler.start'); }
         const typed = await tab.evaluate((n) => window.perf.keys(n), keys);
         if (profile === 'keys') {
-            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const self = new Map();
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
@@ -391,7 +391,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         const noted = await tab.evaluate((n) => window.perf.noteKeys(n, '2'), keys);
         if (profile === 'note') {
             // --profile note: the time under each function while typing in the footnote (per keystroke, of keys + 9).
-            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
             const selfById = new Map();
@@ -423,7 +423,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         const split = await tab.evaluate(() => window.perf.pressed(['Enter', 'Backspace'], 15));
         if (profile === 'enter') {
             // Time under each function while Enter and Backspace alternate (30 key presses).
-            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
             const selfById = new Map();
@@ -455,7 +455,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
         const all = await tab.evaluate((top) => window.perf.selectAll(top), loaded.top);
         if (profile === 'select') {
             // Where selecting everything and the queries after it spend their time (time under each function).
-            const { profile: cpu } = await cdp.send('Profiler.stop');
+            const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
             const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
             const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
             const selfById = new Map();
@@ -488,7 +488,7 @@ if (import.meta.url === pathToFileURL(process.argv[1]).href) {
                 results.push(await tab.evaluate((name) => window.perf.formatAll(name), step));
                 if (wanted) {
                     done = true;
-                    const { profile: cpu } = await cdp.send('Profiler.stop');
+                    const { profile: cpu } = await cdp.send('Profiler.stop'); if (process.env.PROFILE_OUT) fs.writeFileSync(process.env.PROFILE_OUT, JSON.stringify(cpu));
                     const interval = cpu.timeDeltas.reduce((a, b) => a + b, 0) / Math.max(1, cpu.samples.length) / 1000;
                     const byId = new Map(cpu.nodes.map((node) => [node.id, node]));
                     const selfById = new Map();

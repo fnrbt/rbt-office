@@ -574,9 +574,9 @@ type private EmbeddedImages(builder: PdfDoc.DocBuilder) =
     /// The image object of a picture (PNG and JPEG can be embedded).
     member _.NameOf (image: PaintImage) : string option =
         let name =
-            match names.TryGetValue image.Data with
-            | true, known -> known
-            | false, _ ->
+            match Portable.Dict.tryFind image.Data names with
+            | ValueSome known -> known
+            | ValueNone ->
                 let isPng = image.Data.Length > 8 && image.Data.[0] = 0x89uy && image.Data.[1] = 0x50uy && image.Data.[2] = 0x4Euy && image.Data.[3] = 0x47uy
                 let isJpeg = image.Data.Length > 3 && image.Data.[0] = 0xFFuy && image.Data.[1] = 0xD8uy
                 let parsed =
@@ -1328,8 +1328,8 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
         match pickFace options fontName bold italic with
         | None -> approx ()
         | Some primaryFace ->
-            match parsed.TryGetValue primaryFace.FaceName with
-            | true, primaryTtf ->
+            match Portable.Dict.tryFind primaryFace.FaceName parsed with
+            | ValueSome primaryTtf ->
                 let scaleWidth (ttf: PdfFont.TrueTypeFont) s =
                     let widthUnits = PdfFont.getTextWidth ttf s
                     float widthUnits / float ttf.UnitsPerEm * fontPt * 96.0 / 72.0
@@ -1348,8 +1348,8 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
     let usedGids = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>()
     let recordGids (faceName: string) (ttf: PdfFont.TrueTypeFont) (text: string) =
         let set =
-            match usedGids.TryGetValue faceName with
-            | true, s -> s
+            match Portable.Dict.tryFind faceName usedGids with
+            | ValueSome s -> s
             | _ ->
                 let s = System.Collections.Generic.HashSet<int>()
                 usedGids.[faceName] <- s
@@ -1365,8 +1365,8 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
             match pickFace options fontName bold italic with
             | None -> ()
             | Some primaryFace ->
-                match parsed.TryGetValue primaryFace.FaceName with
-                | true, primaryTtf ->
+                match Portable.Dict.tryFind primaryFace.FaceName parsed with
+                | ValueSome primaryTtf ->
                     if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf text then
                         recordGids primaryFace.FaceName primaryTtf text
                     else
@@ -1379,8 +1379,8 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 match pickFace options run.FontName run.Bold run.Italic with
                 | None -> ()
                 | Some primaryFace ->
-                    match parsed.TryGetValue primaryFace.FaceName with
-                    | true, primaryTtf ->
+                    match Portable.Dict.tryFind primaryFace.FaceName parsed with
+                    | ValueSome primaryTtf ->
                         if List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf run.Text then
                             recordGids primaryFace.FaceName primaryTtf run.Text
                         else
@@ -1589,9 +1589,9 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
 
         let headerFooterTemplateCache = System.Collections.Generic.Dictionary<string, HeaderFooter.Template>()
         let parsedHeaderFooter raw =
-            match headerFooterTemplateCache.TryGetValue raw with
-            | true, template -> template
-            | false, _ ->
+            match Portable.Dict.tryFind raw headerFooterTemplateCache with
+            | ValueSome template -> template
+            | ValueNone ->
                 let template = HeaderFooter.parse raw
                 headerFooterTemplateCache.[raw] <- template
                 template
@@ -1770,12 +1770,12 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
     // An empty list of sheets is a document of one blank page.
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
     let embedFace (face: FontFace) =
-        match parsed.TryGetValue face.FaceName with
-        | false, _ -> ()
-        | true, _ ->
+        match Portable.Dict.tryFind face.FaceName parsed with
+        | ValueNone -> ()
+        | ValueSome _ ->
             let used =
-                match usedGids.TryGetValue face.FaceName with
-                | true, s ->
+                match Portable.Dict.tryFind face.FaceName usedGids with
+                | ValueSome s ->
                     let mutable gids = Set.empty
                     for gid in s do
                         gids <- Set.add gid gids

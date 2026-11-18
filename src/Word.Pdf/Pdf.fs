@@ -265,9 +265,9 @@ let private tryGetPdfFont (textContext: TextContext) faceName =
 // the original bytes, so use those bytes both for PDF widths and embedding.
 let private shapedFaceName (textContext: TextContext) (font: Rbt.Text.Engine.TextFont) =
     let bytes = font.ShaperFont.Data
-    match textContext.FontNamesByBytes.TryGetValue bytes with
-    | true, name -> name
-    | false, _ ->
+    match Portable.Dict.tryFind bytes textContext.FontNamesByBytes with
+    | ValueSome name -> name
+    | ValueNone ->
         let mutable index = textContext.FontNamesByBytes.Count
         let mutable name = "RbtShapedFont" + string index
         while Map.containsKey name textContext.FontBytes do
@@ -279,9 +279,9 @@ let private shapedFaceName (textContext: TextContext) (font: Rbt.Text.Engine.Tex
 
 let private shapeTextCached (textContext: TextContext) text style =
     let key = textCacheKey text style
-    match textContext.ShapeCache.TryGetValue key with
-    | true, value -> value
-    | false, _ ->
+    match Portable.Dict.tryFind key textContext.ShapeCache with
+    | ValueSome value -> value
+    | ValueNone ->
         if textContext.ShapeCache.Count > textCacheLimit then textContext.ShapeCache.Clear()
         let value =
             match textContext.ExternalShapeText with
@@ -302,9 +302,9 @@ let private createContextMeasurer (textContext: TextContext) : WordCanvasLayout.
             | Some "superscript" | Some "subscript" -> { style with FontSize = style.FontSize * 0.7 }
             | _ -> style
         let key = textCacheKey text style
-        match cache.TryGetValue key with
-        | true, value -> value
-        | false, _ ->
+        match Portable.Dict.tryFind key cache with
+        | ValueSome value -> value
+        | ValueNone ->
             if cache.Count > textCacheLimit then cache.Clear()
             let value =
                 match shapeTextCached textContext text style with
@@ -366,8 +366,8 @@ let private clusterTextMappings (text: string) (glyphs: Rbt.Text.Engine.Position
     for glyph in glyphs do
         let cluster = max 0 (min text.Length glyph.Cluster)
         if not (controlWhitespaceAt text cluster) && seen.Add cluster then
-            match clusterEnds.TryGetValue cluster with
-            | true, finish when finish > cluster ->
+            match Portable.Dict.tryFind cluster clusterEnds with
+            | ValueSome finish when finish > cluster ->
                 mappings.Add(glyph.GlyphId, text.Substring(cluster, finish - cluster))
             | _ -> ()
     mappings.ToArray()
@@ -378,8 +378,8 @@ let private addGlyphTextMappings (textContext: TextContext) faceName (mappings: 
             textContext.GlyphText.[faceName] <- System.Collections.Generic.Dictionary<int, string>()
         let fontMappings = textContext.GlyphText.[faceName]
         for gid, text in mappings do
-            match fontMappings.TryGetValue gid with
-            | true, existing when existing.Length >= text.Length -> ()
+            match Portable.Dict.tryFind gid fontMappings with
+            | ValueSome existing when existing.Length >= text.Length -> ()
             | _ -> fontMappings.[gid] <- text
 
 let private equalsOrdinalIgnoreCase (left: string) (right: string) =
@@ -618,9 +618,9 @@ let private addEmbeddedTextOps (ops: ResizeArray<PdfDraw.DrawOp>) (textContext: 
         let cacheKey = pdfRunCacheKey faceName text width textStyle
         let runStart = timingStart ()
         let runs =
-            match textContext.PdfRunCache.TryGetValue cacheKey with
-            | true, value -> value
-            | false, _ ->
+            match Portable.Dict.tryFind cacheKey textContext.PdfRunCache with
+            | ValueSome value -> value
+            | ValueNone ->
                 if textContext.PdfRunCache.Count > textCacheLimit then textContext.PdfRunCache.Clear()
                 let value =
                     shapedText.Runs

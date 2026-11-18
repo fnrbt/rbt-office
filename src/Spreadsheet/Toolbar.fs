@@ -1189,12 +1189,12 @@ type SpreadsheetShell
     let focusSheetById id =
         deferFocus (fun () ->
             if live () then
-                match sheetTabButtons.TryGetValue id with
-                | true, button -> focus button
+                match Portable.Dict.tryFind id sheetTabButtons with
+                | ValueSome button -> focus button
                 | _ ->
                     let active = grid.GetSheetInfos().[grid.GetActiveSheetIndex()]
-                    match sheetTabButtons.TryGetValue (textOf (property active "id")) with
-                    | true, button -> focus button
+                    match Portable.Dict.tryFind (textOf (property active "id")) sheetTabButtons with
+                    | ValueSome button -> focus button
                     | _ -> ())
 
     let sheetOperation label focusActive epoch serial id action =
@@ -1840,8 +1840,8 @@ type SpreadsheetShell
                                 let currentInfo = grid.GetSheetInfos().[current]
                                 if textOf (property currentInfo "visibility") <> "visible" then invalidOp "This sheet is no longer visible."
                                 grid.SwitchSheet current
-                            match sheetTabButtons.TryGetValue id with
-                            | true, button -> focus button
+                            match Portable.Dict.tryFind id sheetTabButtons with
+                            | ValueSome button -> focus button
                             | _ -> ()
                         with error -> setFileMessage ("Switch sheet failed: " + printError (box error)))
                     addEventListener tab "keydown" (fun e ->
@@ -1859,8 +1859,8 @@ type SpreadsheetShell
                                 | "ArrowLeft" -> max 0 (position - 1)
                                 | _ -> min (visible.Length - 1) (position + 1)
                             let nextId = textOf (property visible.[next] "id")
-                            match sheetTabButtons.TryGetValue nextId with
-                            | true, button -> focus button
+                            match Portable.Dict.tryFind nextId sheetTabButtons with
+                            | ValueSome button -> focus button
                             | _ -> ())
                     addEventListener tab "contextmenu" (fun e ->
                         preventDefault e

@@ -783,7 +783,7 @@ let inline private (==>) key value = key, box value
 [<Emit("$0 == null")>]
 let private isMissing (_value: obj) : bool = jsNative
 
-let private memberOption<'a> (value: obj) : 'a option =
+let inline private memberOption<'a> (value: obj) : 'a option =
     if isMissing value then None else Some (unbox<'a> value)
 
 let private members (value: obj) : obj array =
@@ -1020,42 +1020,61 @@ let private runToEditorObject (run: EditorRun) =
                 | ModelText.Instruction code -> "instruction", Some code
             [ "Text" ==> ""; "IsImage" ==> false
               "FieldBoundary" ==> kind; "FieldInstruction" ==> instruction ]
-    createObj (contentFields @ [
-        "Style" ==> format.Style
-        "Bold" ==> format.Bold; "Italic" ==> format.Italic
-        "Underline" ==> format.Underline
-        "UnderlineStyle" ==> format.UnderlineStyle
-        "UnderlineColor" ==> format.UnderlineColor
-        "AllCaps" ==> format.AllCaps; "SmallCaps" ==> format.SmallCaps
-        "Strike" ==> format.Strike; "DoubleStrike" ==> format.DoubleStrike
-        "Hidden" ==> format.Hidden; "Position" ==> format.Position
-        "EmphasisMark" ==> format.EmphasisMark
-        "FontSize" ==> format.FontSize; "CharacterSpacing" ==> format.CharacterSpacing
-        "FontFamily" ==> format.FontFamily
-        "FontFamilyInherited" ==> format.FontFamilyInherited
-        "Color" ==> format.Color; "Highlight" ==> format.Highlight
-        "VertAlign" ==> format.VertAlign; "HasExplicit" ==> format.HasExplicit
-        "ExplicitBold" ==> format.ExplicitBold; "ExplicitItalic" ==> format.ExplicitItalic
-        "ExplicitUnderline" ==> format.ExplicitUnderline
-        "ExplicitAllCaps" ==> format.ExplicitAllCaps
-        "ExplicitSmallCaps" ==> format.ExplicitSmallCaps
-        "ExplicitStrike" ==> format.ExplicitStrike
-        "ExplicitDoubleStrike" ==> format.ExplicitDoubleStrike
-        "ExplicitHidden" ==> format.ExplicitHidden
-        "ExplicitFontSize" ==> format.ExplicitFontSize
-        "ExplicitColorAuto" ==> format.ExplicitColorAuto
-        "Hyperlink" ==> run.Hyperlink; "InactiveHyperlink" ==> run.InactiveHyperlink
-        "CommentId" ==> run.CommentId; "CommentText" ==> run.CommentText
-        "CommentAuthor" ==> run.CommentAuthor; "CommentDate" ==> run.CommentDate
-        "NoteId" ==> run.NoteId; "NoteType" ==> run.NoteType; "NoteText" ==> run.NoteText
-        "BookmarkStarts" ==> (run.BookmarkStarts |> List.map bookmarkStartToObject |> List.toArray)
-        "BookmarkEnds" ==> (run.BookmarkEnds |> List.map bookmarkEndToObject |> List.toArray)
-        "FieldCode" ==> run.FieldCode; "FieldResult" ==> run.FieldResult
-        "RenderedPageBreakBefore" ==> run.RenderedPageBreakBefore
-        "Checkbox" ==> run.Checkbox; "SourceRun" ==> run.SourceRun
-        "ContentControls" ==> (run.ContentControls |> List.map controlLayerToObject |> List.toArray)
-        "NoProps" ==> run.NoProps
-    ] @ revisionFields run.Revision @ inferredStyleFields format.StyleInfo)
+    // (Assigned one by one, in the order of the fields: no list of pairs built and copied per run.)
+    let o = obj ()
+    for key, value in contentFields do o?(key) <- value
+    o?Style <- format.Style
+    o?Bold <- format.Bold
+    o?Italic <- format.Italic
+    o?Underline <- format.Underline
+    o?UnderlineStyle <- format.UnderlineStyle
+    o?UnderlineColor <- format.UnderlineColor
+    o?AllCaps <- format.AllCaps
+    o?SmallCaps <- format.SmallCaps
+    o?Strike <- format.Strike
+    o?DoubleStrike <- format.DoubleStrike
+    o?Hidden <- format.Hidden
+    o?Position <- format.Position
+    o?EmphasisMark <- format.EmphasisMark
+    o?FontSize <- format.FontSize
+    o?CharacterSpacing <- format.CharacterSpacing
+    o?FontFamily <- format.FontFamily
+    o?FontFamilyInherited <- format.FontFamilyInherited
+    o?Color <- format.Color
+    o?Highlight <- format.Highlight
+    o?VertAlign <- format.VertAlign
+    o?HasExplicit <- format.HasExplicit
+    o?ExplicitBold <- format.ExplicitBold
+    o?ExplicitItalic <- format.ExplicitItalic
+    o?ExplicitUnderline <- format.ExplicitUnderline
+    o?ExplicitAllCaps <- format.ExplicitAllCaps
+    o?ExplicitSmallCaps <- format.ExplicitSmallCaps
+    o?ExplicitStrike <- format.ExplicitStrike
+    o?ExplicitDoubleStrike <- format.ExplicitDoubleStrike
+    o?ExplicitHidden <- format.ExplicitHidden
+    o?ExplicitFontSize <- format.ExplicitFontSize
+    o?ExplicitColorAuto <- format.ExplicitColorAuto
+    o?Hyperlink <- run.Hyperlink
+    o?InactiveHyperlink <- run.InactiveHyperlink
+    o?CommentId <- run.CommentId
+    o?CommentText <- run.CommentText
+    o?CommentAuthor <- run.CommentAuthor
+    o?CommentDate <- run.CommentDate
+    o?NoteId <- run.NoteId
+    o?NoteType <- run.NoteType
+    o?NoteText <- run.NoteText
+    o?BookmarkStarts <- (run.BookmarkStarts |> List.map bookmarkStartToObject |> List.toArray)
+    o?BookmarkEnds <- (run.BookmarkEnds |> List.map bookmarkEndToObject |> List.toArray)
+    o?FieldCode <- run.FieldCode
+    o?FieldResult <- run.FieldResult
+    o?RenderedPageBreakBefore <- run.RenderedPageBreakBefore
+    o?Checkbox <- run.Checkbox
+    o?SourceRun <- run.SourceRun
+    o?ContentControls <- (run.ContentControls |> List.map controlLayerToObject |> List.toArray)
+    o?NoProps <- run.NoProps
+    for key, value in revisionFields run.Revision do o?(key) <- value
+    for key, value in inferredStyleFields format.StyleInfo do o?(key) <- value
+    o
 
 let private borderToObject (border: Border option) : obj =
     match border with
@@ -1208,31 +1227,34 @@ let private paragraphListFields (value: ParagraphList option) =
                 "MarkSize" ==> level.MarkSize ]) |> List.toArray) ]
 
 let rec private paragraphToEditorObject (paragraph: EditorParagraph) : obj =
-    createObj (
-        [ "Type" ==> (match paragraph.HeadingLevel with Some _ -> "Heading" | None -> "Paragraph")
-          "HeadingLevel" ==> paragraph.HeadingLevel
-          "Runs" ==> (paragraph.Runs |> Array.map runToEditorObject)
-          "SectionBreak" ==> paragraph.SectionBreak
-          "SectionPageSetup" ==> pageSetupToObject paragraph.SectionPageSetup
-          "SectionColumns" ==> columnsToObject paragraph.SectionColumns
-          "SectionVerticalAlign" ==> paragraph.SectionVerticalAlign
-          "SectionPageNumberStart" ==> paragraph.SectionPageNumberStart
-          "SectionPageNumberFormat" ==> paragraph.SectionPageNumberFormat
-          "HeaderReferences" ==> referencesToObject paragraph.HeaderReferences
-          "FooterReferences" ==> referencesToObject paragraph.FooterReferences
-          "SourcePara" ==> (paragraph.SourceParagraph |> Option.map paragraphEditToObject)
-          "SpliceOriginal" ==> (paragraph.SpliceOriginal |> Option.map paragraphToEditorObject)
-          "SpliceFrom" ==> (paragraph.SpliceFrom |> Option.map (fun (start, finish) ->
+    // (Assigned one by one, in the order of the fields: no list of pairs built and copied per paragraph.)
+    let o = obj ()
+    o?Type <- (match paragraph.HeadingLevel with Some _ -> "Heading" | None -> "Paragraph")
+    o?HeadingLevel <- paragraph.HeadingLevel
+    o?Runs <- (paragraph.Runs |> Array.map runToEditorObject)
+    o?SectionBreak <- paragraph.SectionBreak
+    o?SectionPageSetup <- pageSetupToObject paragraph.SectionPageSetup
+    o?SectionColumns <- columnsToObject paragraph.SectionColumns
+    o?SectionVerticalAlign <- paragraph.SectionVerticalAlign
+    o?SectionPageNumberStart <- paragraph.SectionPageNumberStart
+    o?SectionPageNumberFormat <- paragraph.SectionPageNumberFormat
+    o?HeaderReferences <- referencesToObject paragraph.HeaderReferences
+    o?FooterReferences <- referencesToObject paragraph.FooterReferences
+    o?SourcePara <- (paragraph.SourceParagraph |> Option.map paragraphEditToObject)
+    o?SpliceOriginal <- (paragraph.SpliceOriginal |> Option.map paragraphToEditorObject)
+    o?SpliceFrom <- (paragraph.SpliceFrom |> Option.map (fun (start, finish) ->
               createObj [ "Start" ==> start; "End" ==> finish ]))
-          "SpliceLeading" ==> paragraph.SpliceLeading
-          "SpliceTrailing" ==> paragraph.SpliceTrailing
-          "SpliceJoined" ==> (paragraph.SpliceJoined |> Array.map paragraphToEditorObject)
-          "SourceIndex" ==> paragraph.SourceIndex
-          "SourceUnchanged" ==> paragraph.SourceUnchanged
-          "SourceWhy" ==> paragraph.SourceWhy
-          "SourceTextChanges" ==> (paragraph.SourceTextChanges |> Option.map sourceChangesToObject) ]
-        @ sourceFields paragraph.Source @ paragraphFormatFields paragraph.Formatting
-        @ paragraphListFields paragraph.List)
+    o?SpliceLeading <- paragraph.SpliceLeading
+    o?SpliceTrailing <- paragraph.SpliceTrailing
+    o?SpliceJoined <- (paragraph.SpliceJoined |> Array.map paragraphToEditorObject)
+    o?SourceIndex <- paragraph.SourceIndex
+    o?SourceUnchanged <- paragraph.SourceUnchanged
+    o?SourceWhy <- paragraph.SourceWhy
+    o?SourceTextChanges <- (paragraph.SourceTextChanges |> Option.map sourceChangesToObject)
+    for key, value in sourceFields paragraph.Source do o?(key) <- value
+    for key, value in paragraphFormatFields paragraph.Formatting do o?(key) <- value
+    for key, value in paragraphListFields paragraph.List do o?(key) <- value
+    o
 
 and private paragraphEditToObject (edit: ParagraphEdit) : obj =
     createObj [
@@ -1510,24 +1532,26 @@ let packageToEditorObject (package: EditorPackage) : obj =
         "Unchanged" ==> package.Unchanged
         "RegenerateAll" ==> package.RegenerateAll ]
 
-let private get<'a> (value: obj) (name: string) : 'a option =
+// (Inline: each read is a property of a literal name at its call site - a load the engine caches
+// per site - not one function reading every property by a variable name.)
+let inline private get<'a> (value: obj) (name: string) : 'a option =
     if isMissing value then None
     else memberOption<'a> (value?(name))
 
-let private textOf value name = get<string> value name
-let private text value name = textOf value name |> Option.defaultValue ""
-let private boolean value name = get<bool> value name |> Option.defaultValue false
+let inline private textOf value name = get<string> value name
+let inline private text value name = textOf value name |> Option.defaultValue ""
+let inline private boolean value name = get<bool> value name |> Option.defaultValue false
 [<Emit("Number($0)")>]
 let private jsNumber (_value: obj) : float = jsNative
-let private number value name =
+let inline private number value name =
     get<obj> value name
     |> Option.bind (fun raw ->
         let parsed = jsNumber raw
         if System.Double.IsNaN parsed || System.Double.IsInfinity parsed then None else Some parsed)
-let private amount value name fallback = number value name |> Option.defaultValue fallback
-let private integer value name = get<int> value name
-let private intValue value name fallback = integer value name |> Option.defaultValue fallback
-let private array value name = get<obj array> value name |> Option.defaultValue [||]
+let inline private amount value name fallback = number value name |> Option.defaultValue fallback
+let inline private integer value name = get<int> value name
+let inline private intValue value name fallback = integer value name |> Option.defaultValue fallback
+let inline private array value name = get<obj array> value name |> Option.defaultValue [||]
 
 let private readSource value =
     let copy = boolean value "SourceCopy"

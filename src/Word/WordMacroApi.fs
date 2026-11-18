@@ -82,7 +82,7 @@ let private resolveTarget (fromPart: string) (target: string) =
         let folder = match fromPart.LastIndexOf '/' with -1 -> "" | at -> fromPart.Substring(0, at + 1)
         let parts = ResizeArray<string>()
         for piece in (folder + target).Split('/') do
-            if piece = ".." then (if parts.Count > 0 then parts.RemoveAt(parts.Count - 1))
+            if piece = ".." then (if parts.Count > 0 then Portable.Stack.dropLast parts)
             elif piece <> "." && piece <> "" then parts.Add piece
         String.Join("/", parts)
 

@@ -72,9 +72,9 @@ let newLevelCache () = LevelCache(HashIdentity.Structural)
 let private convertedLevels (cache: LevelCache) levels =
     if List.isEmpty levels then []
     else
-        match cache.TryGetValue levels with
-        | true, converted -> converted
-        | false, _ ->
+        match Portable.Dict.tryFind levels cache with
+        | ValueSome converted -> converted
+        | ValueNone ->
             let converted = List.map listLevel levels
             cache.Add(levels, converted)
             converted
@@ -256,9 +256,9 @@ let mutable private importedBlockCounter = 1000
 let private nextId () =
 #if FABLE_COMPILER
     importedBlockCounter <- importedBlockCounter + 1
-    sprintf "imported-block-%d" importedBlockCounter
+    "imported-block-" + string importedBlockCounter
 #else
-    sprintf "imported-block-%d" (System.Threading.Interlocked.Increment &importedBlockCounter)
+    "imported-block-" + string (System.Threading.Interlocked.Increment &importedBlockCounter)
 #endif
 
 let private paragraph cache (item: WordEditorPackage.EditorParagraph) : ParagraphBlock =

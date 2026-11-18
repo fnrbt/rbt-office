@@ -849,13 +849,13 @@ let private readElement (lexer: XmlLexer) (names: System.Collections.Generic.Has
             let attrs = openAttrs.[top]
             let children = openChildren.[top]
             let span = { Start = openStarts.[top]; StartTagEnd = openTagEnds.[top]; EndTagStart = lexer.Start; End = lexer.End }
-            openNames.RemoveAt top
-            openAttrs.RemoveAt top
-            openStarts.RemoveAt top
-            openTagEnds.RemoveAt top
-            openPreserve.RemoveAt top
-            openInherited.RemoveAt top
-            openChildren.RemoveAt top
+            Portable.Stack.dropLast openNames
+            Portable.Stack.dropLast openAttrs
+            Portable.Stack.dropLast openStarts
+            Portable.Stack.dropLast openTagEnds
+            Portable.Stack.dropLast openPreserve
+            Portable.Stack.dropLast openInherited
+            Portable.Stack.dropLast openChildren
             closeElement name attrs children span
         | _ -> scanGiveUp ()
     result

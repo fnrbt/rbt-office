@@ -4,6 +4,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Include="src/Portable.fs" />
     <Compile Include="src/XmlDsl.fs" />
     <Compile Include="src/XmlPatch.fs" />
     <Compile Include="src/OfficeDsl.fs" />

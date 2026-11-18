@@ -401,20 +401,20 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
                             else ""
             let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
             let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
-            let made = { Font = sprintf "%s %fpx %s" fontStyle fontSize (cssFontFamily fontFamily); Scale = browserMetricScale fontFamily style }
+            let made = { Font = fontStyle + " " + Portable.Num.toFixed 6 fontSize + "px " + cssFontFamily fontFamily; Scale = browserMetricScale fontFamily style }
             styleMapSet measureFonts style made
             made
     let widths =
-        match measuredWidths.TryGetValue font.Font with
-        | true, widths -> widths
-        | false, _ ->
+        match Portable.Dict.tryFind font.Font measuredWidths with
+        | ValueSome widths -> widths
+        | ValueNone ->
             let widths = System.Collections.Generic.Dictionary<string, float>()
             measuredWidths.[font.Font] <- widths
             widths
     let width =
-        match widths.TryGetValue text with
-        | true, width -> width
-        | false, _ ->
+        match Portable.Dict.tryFind text widths with
+        | ValueSome width -> width
+        | ValueNone ->
             ctx.Ctx.font <- font.Font
             let width = ctx.Ctx.measureText(text).width
             // (Bounded: long texts are measured as they come, and the lot is dropped when it grows large.)
@@ -591,7 +591,7 @@ let private hybridBlocks (stale: StaleLayout) (blocks: Block list) : Block list 
             rest <- rest.Tail
         stale.Keep <- head.Count
         let mutable result = rest
-        for index in head.Count - 1 .. -1 .. 0 do
+        for index = head.Count - 1 downto 0 do
             result <- head.[index] :: result
         stale.HybridFor <- blocks
         stale.HybridKeep <- stale.Keep
@@ -1286,9 +1286,9 @@ let private commentAnchorsForLayouts (ctx: RenderContext) (doc: Document) (layou
         for layout in layouts do
             layoutById.[layout.BlockId] <- layout
     let tryLayout (blockId: string) =
-        match layoutById.TryGetValue blockId with
-        | true, layout -> Some layout
-        | false, _ -> None
+        match Portable.Dict.tryFind blockId layoutById with
+        | ValueSome layout -> Some layout
+        | ValueNone -> None
     // (Blocks without comments have no part in the list.)
     let commentedDocument = { doc with Blocks = [ for index in commented -> blocks.[index] ] }
     let calloutX = max (settings.Width - settings.MarginRight + 12.0) (settings.PaddingLeft + 120.0)
@@ -1493,7 +1493,7 @@ let private fontString (style: TextPaintStyle) defaultFontFamily =
                     elif style.Italic then "italic"
                     else ""
     let fontFamily = style.FontFamily |> Option.defaultValue defaultFontFamily
-    sprintf "%s %fpx %s" fontStyle style.FontSize (cssFontFamily fontFamily)
+    fontStyle + " " + Portable.Num.toFixed 6 style.FontSize + "px " + cssFontFamily fontFamily
 
 let private imageElement (ctx: RenderContext) (src: string) =
     match ctx.ImageCache with
@@ -2186,9 +2186,9 @@ let private frameLayoutLookup (frame: PaintFrame) =
             frame.LayoutById <- Some byId
             byId
     fun (blockId: string) ->
-        match byId.TryGetValue blockId with
-        | true, layout -> Some layout
-        | false, _ -> None
+        match Portable.Dict.tryFind blockId byId with
+        | ValueSome layout -> Some layout
+        | ValueNone -> None
 
 /// The frame of a document: the previous frame when it shows this document,
 /// the previous frame with another overlay when only the selection (or the

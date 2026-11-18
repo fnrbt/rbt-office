@@ -341,9 +341,9 @@ let resolveSheetName (name: string) (workbook: Workbook): SheetId option =
     if not sheetNamesHeld && not (weakRefIs sheetNamesOf (box workbook.Sheets)) then
         sheetNamesOf <- weakRefOf (box workbook.Sheets)
         sheetNamesFound.Clear()
-    match sheetNamesFound.TryGetValue name with
-    | true, found -> found
-    | false, _ ->
+    match Portable.Dict.tryFind name sheetNamesFound with
+    | ValueSome found -> found
+    | ValueNone ->
         let found = findSheetNamed name workbook
         sheetNamesFound.[name] <- found
         found
@@ -372,9 +372,9 @@ type private SheetNameMemo() =
         if not SheetNameMemo.held && (isNull SheetNameMemo.sheets || not (obj.ReferenceEquals(SheetNameMemo.sheets.Target, workbook.Sheets))) then
             SheetNameMemo.sheets <- System.WeakReference(box workbook.Sheets)
             SheetNameMemo.found.Clear()
-        match SheetNameMemo.found.TryGetValue name with
-        | true, known -> known
-        | false, _ ->
+        match Portable.Dict.tryFind name SheetNameMemo.found with
+        | ValueSome known -> known
+        | ValueNone ->
             let resolved = findSheetNamed name workbook
             SheetNameMemo.found.[name] <- resolved
             resolved

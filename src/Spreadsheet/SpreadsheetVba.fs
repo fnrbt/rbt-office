@@ -272,12 +272,12 @@ let private snapshotFromModelWithViewport (model: SpreadsheetModel) (viewport: R
         [|
             for row in 0 .. maxRow do
                 for col in 0 .. maxCol do
-                    match mergedByCell.TryGetValue(cellKey row col) with
-                    | true, m when row = m.StartRow && col = m.StartCol ->
+                    match Portable.Dict.tryFind (cellKey row col) mergedByCell with
+                    | ValueSome m when row = m.StartRow && col = m.StartCol ->
                         yield emitModelSnapshotCell model viewport row col (ValueSome m)
-                    | true, _ ->
+                    | ValueSome _ ->
                         ()
-                    | false, _ ->
+                    | ValueNone ->
                         yield emitModelSnapshotCell model viewport row col ValueNone
     |]
 
@@ -582,17 +582,17 @@ let private snapshotCells (snapshot: unit -> CellSnapshot array) =
             fun row col ->
                 match byCell with
                 | ValueSome index ->
-                    match index.TryGetValue(cellKey row col) with
-                    | true, cell -> Some cell
-                    | false, _ -> None
+                    match Portable.Dict.tryFind (cellKey row col) index with
+                    | ValueSome cell -> Some cell
+                    | ValueNone -> None
                 | ValueNone ->
                     lookupCount <- lookupCount + 1
                     if lookupCount >= 8 && (all ()).Length >= 32 then
                         let index = buildIndex ()
                         byCell <- ValueSome index
-                        match index.TryGetValue(cellKey row col) with
-                        | true, cell -> Some cell
-                        | false, _ -> None
+                        match Portable.Dict.tryFind (cellKey row col) index with
+                        | ValueSome cell -> Some cell
+                        | ValueNone -> None
                     else
                         linearFind row col
     }
@@ -974,8 +974,8 @@ let private bytecodeCache = System.Collections.Generic.Dictionary<string, Byteco
 
 /// Compile a macro module to bytecode, caching the result by source text.
 let compileCached (source: string) : Result<Bytecode.BytecodeProgram, string> =
-    match bytecodeCache.TryGetValue source with
-    | true, bc -> Result.Ok bc
+    match Portable.Dict.tryFind source bytecodeCache with
+    | ValueSome bc -> Result.Ok bc
     | _ ->
         match Api.compileSource vbaParseOpts source with
         | Result.Ok (_, bc) -> bytecodeCache.[source] <- bc; Result.Ok bc
@@ -1100,8 +1100,8 @@ let rec private valueToObj (value: Value) =
     | VBoolean b -> box b
     | VArray array -> array.Data |> Array.map valueToObj |> box
     | VFieldRef (instance, field) ->
-        match instance.Fields.TryGetValue field with
-        | true, inner -> valueToObj inner
+        match Portable.Dict.tryFind field instance.Fields with
+        | ValueSome inner -> valueToObj inner
         | _ -> null
     | VRef (values, idx) when idx >= 0 && idx < values.Length -> valueToObj values.[idx]
     | VRef _ -> null

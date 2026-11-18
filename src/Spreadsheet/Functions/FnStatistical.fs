@@ -53,9 +53,9 @@ let private modes (xs: float[]) : float[] =
     let counts = Collections.Generic.Dictionary<float, int>()
     let order = ResizeArray<float>()
     for x in xs do
-        match counts.TryGetValue x with
-        | true, c -> counts.[x] <- c + 1
-        | false, _ ->
+        match Portable.Dict.tryFind x counts with
+        | ValueSome c -> counts.[x] <- c + 1
+        | ValueNone ->
             counts.[x] <- 1
             order.Add x
     let best = if counts.Count = 0 then 0 else Seq.max counts.Values

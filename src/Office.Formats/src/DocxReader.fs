@@ -3293,8 +3293,8 @@ let completeOpaqueObjects (root: XmlNode) (blocks: DocumentContent list) : Docum
                 Some (selfContainedXml scope value)
         let completedLayers = lazy (System.Collections.Generic.Dictionary<ContentControlLayer, ContentControlLayer>())
         let completeLayer (layer: ContentControlLayer) =
-            match completedLayers.Value.TryGetValue layer with
-            | true, completed -> completed
+            match Portable.Dict.tryFind layer completedLayers.Value with
+            | ValueSome completed -> completed
             | _ ->
                 let completed = { layer with Xml = complete (Some layer.Group) layer.Xml }
                 completedLayers.Value.Add(layer, completed)
@@ -5331,12 +5331,12 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
             addImages (partImageKey commentsPartKey) (parentPath main.CommentsPath) main.CommentsRels
             let knownImages = System.Collections.Generic.Dictionary<string, string option>()
             let imageOf (imageKey: string) : string option =
-                match knownImages.TryGetValue imageKey with
-                | true, known -> known
-                | false, _ ->
+                match Portable.Dict.tryFind imageKey knownImages with
+                | ValueSome known -> known
+                | ValueNone ->
                     let found =
-                        match imageCandidates.TryGetValue imageKey with
-                        | true, candidates ->
+                        match Portable.Dict.tryFind imageKey imageCandidates with
+                        | ValueSome candidates ->
                             // (The last relationship of an id that has a picture, as a map made of all of them keeps.)
                             let mutable result = None
                             let mutable i = candidates.Count - 1
@@ -5349,7 +5349,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                                         |> Option.map (fun bytes -> dataUrlOfBytes (getMimeType rel.Target) bytes)
                                 i <- i - 1
                             result
-                        | false, _ -> None
+                        | ValueNone -> None
                     knownImages.[imageKey] <- found
                     found
             let imagesOf (blocks: DocumentContent list) : Map<string, string> =
@@ -5531,9 +5531,9 @@ let sourceOfArchive (archive: ZipArchive) : Fable.Core.JS.Promise<PartSource> =
             { Bytes = lookupPart bytes
               Text =
                 fun path ->
-                    match texts.TryGetValue path with
-                    | true, text -> text
-                    | false, _ ->
+                    match Portable.Dict.tryFind path texts with
+                    | ValueSome text -> text
+                    | ValueNone ->
                         let text = lookupPart bytes path |> Option.map textOfBytes
                         texts.[path] <- text
                         text }
@@ -6041,9 +6041,9 @@ let internal resolveStyle (styleMap: Map<string, StyleDefinition>) (styleId: str
         if not (obj.ReferenceEquals(resolvedStylesFor, styleMap)) then
             resolvedStyles.Clear()
             resolvedStylesFor <- box styleMap
-        match resolvedStyles.TryGetValue id with
-        | true, known -> known
-        | false, _ ->
+        match Portable.Dict.tryFind id resolvedStyles with
+        | ValueSome known -> known
+        | ValueNone ->
             let resolved = resolveStyleUncached styleMap styleId
             resolvedStyles.[id] <- resolved
             resolved

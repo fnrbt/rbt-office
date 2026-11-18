@@ -319,9 +319,9 @@ let rec private applyAt (order: SchemaOrder) (text: string) (node: XmlNode) (edi
                 | kid :: _ -> parts.Add (edited kid inner)
                 | [] -> ()
             | EditAt (start, inner) ->
-                match byStart.Value.TryGetValue start with
-                | true, kid -> parts.Add (edited kid inner)
-                | false, _ -> ()
+                match Portable.Dict.tryFind start byStart.Value with
+                | ValueSome kid -> parts.Add (edited kid inner)
+                | ValueNone -> ()
             | _ -> ()
         // (Several put in at one place go in their schema order.)
         for (at, _, xml) in inserts |> Seq.sortBy (fun (at, rank, _) -> at, rank) do parts.Add ((at, at, xml))

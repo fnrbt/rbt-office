@@ -912,8 +912,8 @@ let withCarriedMarks (atStart: string) (atEnd: string) (xml: string) : string =
 let carriedMarksOfItem (context: WriterContext) (para: EditorParagraph) =
     let copied = para.Source.Copy || (match para.Source.Origin with Some (LikeAt _) -> true | _ -> false)
     let source =
-        match context.CarriedSources.TryGetValue para with
-        | true, xml -> Some xml
+        match Portable.Dict.tryFind para context.CarriedSources with
+        | ValueSome xml -> Some xml
         | _ when para.SourceParagraph.IsSome || not copied ->
             context.ParagraphOrigin |> Option.bind (fun provider -> provider.Of para)
         | _ -> None
@@ -997,14 +997,14 @@ let inlineControlRuns (runs: (EditorRun * string) list) =
             remaining <- remaining.Tail
         while active.Count > common do
             output.Append("</w:sdtContent></w:sdt>") |> ignore
-            active.RemoveAt(active.Count - 1)
+            Portable.Stack.dropLast active
         for layer in remaining do
             output.Append("<w:sdt>").Append(controlProperties layer).Append("<w:sdtContent>") |> ignore
             active.Add layer
         output.Append(xml) |> ignore
     while active.Count > 0 do
         output.Append("</w:sdtContent></w:sdt>") |> ignore
-        active.RemoveAt(active.Count - 1)
+        Portable.Stack.dropLast active
     output.ToString()
 
 let generateParagraphWithHyperlinksAndImagesWithPageSetup (context: WriterContext) (packageSetup: PageSetupInfo) (hyperlinks: Map<string, string>) (images: ImageScope) (para: EditorParagraph) =
@@ -1419,8 +1419,8 @@ let rec generateTableCell (context: WriterContext) (hyperlinks: Map<string, stri
     let source =
         match context.CurrentSourceTable, sourceOfCell cell.SourceCell with
         | Some table, Some (at, copy, same) ->
-            (match table.TableCells.TryGetValue at with
-             | true, known -> Some (known, copy, same)
+            (match Portable.Dict.tryFind at table.TableCells with
+             | ValueSome known -> Some (known, copy, same)
              | _ -> None)
         | _ -> None
     match source with
@@ -1517,8 +1517,8 @@ and generateTableRow (context: WriterContext) (hyperlinks: Map<string, string>) 
     let source =
         match context.CurrentSourceTable, sourceOfRow row.SourceRow with
         | Some table, Some (at, copy, same) ->
-            (match table.TableRows.TryGetValue at with
-             | true, known -> Some (known, copy, same)
+            (match Portable.Dict.tryFind at table.TableRows with
+             | ValueSome known -> Some (known, copy, same)
              | _ -> None)
         | _ -> None
     match source with
@@ -2091,7 +2091,7 @@ let generateBlocks (generateItem: EditorBlock -> string) (generateTextBoxRun: Ed
     let closeTo depth =
         while active.Count > depth do
             output.Append("</w:sdtContent></w:sdt>") |> ignore
-            active.RemoveAt(active.Count - 1)
+            Portable.Stack.dropLast active
     let sameLayer (a: ContentControlLayer) (b: ContentControlLayer) =
         a.Id = b.Id && a.Tag = b.Tag && a.Alias = b.Alias && a.Xml = b.Xml &&
         (if a.Group <> "" || b.Group <> "" then a.Group <> "" && a.Group = b.Group
