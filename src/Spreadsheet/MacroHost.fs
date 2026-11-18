@@ -1173,7 +1173,8 @@ type private RangeState(book: MacroWorkbook, r: RangeRef, lines: int, areas: Ran
     member _.Note() = note ()
     member _.SetNote(next: CellComment option) = setNote next
     member _.NoteText() = note () |> Option.map (fun n -> n.Text) |> Option.defaultValue ""
-    member _.IdKey = sprintf "__id\t%s\t%d\t%d" r.Sheet r.Top r.Left
+    // (Read and written for each cell by a macro that marks cells: no sprintf, which is slow in JavaScript.)
+    member _.IdKey = "__id\t" + r.Sheet + "\t" + string r.Top + "\t" + string r.Left
 
     // ---- conditional formats of the range (FormatConditions) ----
     member _.Conditions() =
@@ -2748,6 +2749,8 @@ let private applicationType =
             let now = (DateTime.Now - DateTime(1899, 12, 30)).TotalDays
             let until = if target < 1.0 then Math.Floor now + target else target
             b.SetSetting("__waitUntil", VDouble until)
+            // (The slice ends here: the next statement runs after the wait, not up to 4000 instructions on.)
+            HostSignals.requestYield ()
             VBoolean true)
         // OnTime(EarliestTime, Procedure, LatestTime, Schedule): the host runs it then, when idle (a game's loop).
         method "OnTime" [ "EarliestTime"; "Procedure"; "LatestTime"; "Schedule" ] (fun b args ->
@@ -2989,6 +2992,8 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
             let left = (until - (DateTime.Now - DateTime(1899, 12, 30)).TotalDays) * 86400000.0
             if left <= 0.0 then book.SetSetting("__waitUntil", VEmpty); 0.0 else left
         | _ -> 0.0
+    /// Go on at once from the Application.Wait it is waiting at.
+    member _.EndWait() = book.SetSetting("__waitUntil", VEmpty)
     member _.Cancel() = session.Cancel()
     member _.Location = session.Location
     member _.IsRunning = session.IsRunning

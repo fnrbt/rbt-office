@@ -29,7 +29,11 @@ const every = Number(opt('--every', '0'));
 const [width, height] = opt('--size', '1280x720').split('x').map(Number);
 const hold = Number(opt('--hold', '0'));
 const play = Number(opt('--play', '0'));
-const video = (() => { const i = args.indexOf('--video'); if (i < 0) return false; args.splice(i, 1); return true; })();
+const flag = (name) => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
+const video = flag('--video');
+// --wait: Application.Wait waits (as it does with --every and --video, which show the run as it goes); without,
+// a run goes on at once, as tests/macros/showcase.fsx does - life-cells waits a second each of its 260 rounds.
+const waits = flag('--wait') || video || every > 0;
 const port = Number(process.env.PORT ?? 16031);
 const folder = path.join(repo, 'tests/macros/showcase');
 fs.mkdirSync(out, { recursive: true });
@@ -53,7 +57,7 @@ const page = `<!doctype html><meta charset="utf-8"><body style="margin:0"><scrip
 <script type="module">
 try {
     const { default: createSpreadsheet } = await import('/spreadsheet/Spreadsheet.js');
-    window.runShowcase = async (modules, entry, inputs, before) => {
+    window.runShowcase = async (modules, entry, inputs, before, waits) => {
         document.body.innerHTML = '';
         const host = document.createElement('div');
         host.id = 'grid';
@@ -64,7 +68,7 @@ try {
         const output = [];
         let asked = 0;
         grid.SetMacroHooks({ output: (text) => output.push(text), messageBox: (prompt) => { output.push('MsgBox: ' + prompt); return 1; },
-                             inputBox: () => inputs.length ? inputs[Math.min(asked++, inputs.length - 1)] : null });
+                             inputBox: () => inputs.length ? inputs[Math.min(asked++, inputs.length - 1)] : null, wait: () => waits });
         for (const m of modules) {
             // (A class module is told by its Attribute lines; one found without them gets them.)
             const code = m.cls && !/Attribute VB_/i.test(m.source) ? 'Attribute VB_Name = "' + m.module + '"\\nAttribute VB_PredeclaredId = False\\nAttribute VB_Exposed = False\\n' + m.source : m.source;
@@ -146,7 +150,7 @@ try {
         if (loadError) throw new Error(loadError);
         let result;
         // (The grid runs the macro a slice at a time and shows what it does: frames can be taken meanwhile.)
-        const running = tab.evaluate(([m, e, i, b]) => window.runShowcase(m, e, i, b), [modules, entry, inputs, before]);
+        const running = tab.evaluate(([m, e, i, b, w]) => window.runShowcase(m, e, i, b, w), [modules, entry, inputs, before, waits]);
         let done = false;
         running.then(() => { done = true; }, () => { done = true; });
         const frames = (async () => {

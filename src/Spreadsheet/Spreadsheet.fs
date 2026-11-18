@@ -73,6 +73,11 @@ let private caretToEnd (input: Element): unit = jsNative
 [<Emit("setTimeout($0, $1)")>]
 let private setTimeoutMs (callback: unit -> unit) (delay: int): int = jsNative
 
+/// Run `callback` as a task of its own, at once: the page paints and takes input before it, as after a
+/// setTimeout, but without the 4 ms a chain of setTimeouts is held back each time (a macro's slices).
+[<Emit("(() => { const channel = new MessageChannel(); channel.port1.onmessage = () => { channel.port1.close(); $0(); }; channel.port2.postMessage(null); })()")>]
+let private yieldThen (callback: unit -> unit): unit = jsNative
+
 /// The colour of the grid lines of the DOM grid.
 let private defaultGridColor = "#e0e0e0"
 
@@ -804,6 +809,8 @@ type Spreadsheet(container: Element) as this =
     let mutable macrosEnabled = false
     let mutable workbookOpened = false
     let mutable macroHooks = browserMacroHooks
+    // Whether a run waits at an Application.Wait of so many milliseconds (SetMacroHooks' wait; None: it does).
+    let mutable macroWait : (float -> bool) option = None
     // What macros asked for later: procedures to run at a time (Application.OnTime: the timers, by
     // procedure) and keys bound to procedures (Application.OnKey: by OnKey name, see parseOnKey).
     let macroTimers = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
@@ -7885,11 +7892,16 @@ type Spreadsheet(container: Element) as this =
 
     /// Where MsgBox, InputBox and Debug.Print go: { messageBox(prompt, buttons, title) -> VBA's answer
     /// (vbOK 1, vbCancel 2, vbYes 6, vbNo 7 ...), inputBox(prompt, title, default) -> text or null,
-    /// output(text) }. Missing members keep the browser's dialogs and the console; null restores them.
+    /// output(text), wait(ms) -> false to go on at once from an Application.Wait of so many milliseconds
+    /// (a test or a recording that does not wait) }. Missing members keep the browser's dialogs, the
+    /// console and waiting; null restores them.
     member _.SetMacroHooks(hooks: obj) =
-        if Host.isNullish hooks then macroHooks <- browserMacroHooks
+        if Host.isNullish hooks then
+            macroHooks <- browserMacroHooks
+            macroWait <- None
         else
             let fn (key: string) = let f = Host.getKey hooks key in if Host.isNullish f then None else Some f
+            macroWait <- fn "wait" |> Option.map (fun f -> fun (ms: float) -> let r = callHook3 f (box ms) null null in Host.isNullish r || unbox<bool> r)
             macroHooks <-
                 { browserMacroHooks with
                     MessageBox = (match fn "messageBox" with Some f -> (fun p b t -> let r = callHook3 f (box p) (box b) (box t) in if Host.isNullish r then 1 else unbox<int> r) | None -> browserMacroHooks.MessageBox)
@@ -7915,8 +7927,9 @@ type Spreadsheet(container: Element) as this =
     /// Whether a macro is running (RunMacro).
     member _.MacroRunning = macroRunning.IsSome
 
-    /// Stop the macro that is running: it ends as one stopped by Esc in Excel (error 18), and nothing of it is kept.
-    member _.StopMacro() = macroRunning |> Option.iter (fun run -> run.Cancel())
+    /// Stop the macro that is running (also at an Application.Wait): it ends as one stopped by Esc in Excel
+    /// (error 18), and nothing of it is kept.
+    member _.StopMacro() = macroRunning |> Option.iter (fun run -> run.EndWait(); run.Cancel())
 
     member private this.RunStepped(name: string) : JS.Promise<obj> =
         match macroProject with
@@ -7957,11 +7970,22 @@ type Spreadsheet(container: Element) as this =
                 // (Showing a frame costs time the macro does not get: the slices run three times as long as
                 // the last frame took to show, and at least 30 ms - about 25 frames a second at most.)
                 let paintMs = ref 10.0
+                // (A Wait the host's wait hook was asked about: it is asked once for each.)
+                let asked = ref false
+                let waiting () =
+                    let ms = run.WaitMs()
+                    if ms <= 0.0 then asked.Value <- false; false
+                    elif asked.Value then true
+                    else
+                        asked.Value <- true
+                        match macroWait with
+                        | Some wait when not (wait ms) -> run.EndWait(); asked.Value <- false; false
+                        | _ -> true
                 let rec pump () =
                     // In steps small enough to notice a Wait soon after it.
                     let sliceEnd = nowMs () + max 30.0 (3.0 * paintMs.Value)
                     let mutable outcome = None
-                    while outcome.IsNone && nowMs () < sliceEnd && run.WaitMs() <= 0.0 do
+                    while outcome.IsNone && nowMs () < sliceEnd && not (waiting ()) do
                         outcome <- run.Step 4000
                     match outcome with
                     | Some ended -> finish ended
@@ -7974,7 +7998,9 @@ type Spreadsheet(container: Element) as this =
                             render()
                             paintMs.Value <- nowMs () - painting
                         | None -> ()
-                        setTimeoutMs pump (int (min 1000.0 (run.WaitMs()))) |> ignore
+                        match run.WaitMs() with
+                        | ms when ms > 0.0 -> setTimeoutMs pump (int (min 1000.0 ms)) |> ignore
+                        | _ -> yieldThen pump
                 pump ())
 
     /// Run a line as the VBA editor's Immediate window does (`?expression`, `Print expression`, or
