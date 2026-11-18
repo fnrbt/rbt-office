@@ -271,3 +271,127 @@ let anchorXml (node: ShapeNode) (row: int) (col: int) (offsetX: float) (offsetY:
     let pixelsToEmu (pixels: float) = int64 (Math.Round(pixels * 9525.0))
     sprintf "<xdr:oneCellAnchor xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><xdr:from><xdr:col>%d</xdr:col><xdr:colOff>%d</xdr:colOff><xdr:row>%d</xdr:row><xdr:rowOff>%d</xdr:rowOff></xdr:from><xdr:ext cx=\"%d\" cy=\"%d\"/>%s<xdr:clientData/></xdr:oneCellAnchor>"
         col (pixelsToEmu offsetX) row (pixelsToEmu offsetY) (emu w) (emu h) (elementXml node)
+
+// ---- reading shapes back --------------------------------------------------------------------------------
+
+let private localName (name: string) = match name.IndexOf ':' with -1 -> name | at -> name.Substring(at + 1)
+let private kids (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, _, children, _) -> children | _ -> []
+let private nameOf (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (name, _, _, _) -> localName name | _ -> ""
+let private child (name: string) (node: XmlDsl.XmlNode) = kids node |> List.tryFind (fun c -> nameOf c = name)
+let private attr (name: string) (node: XmlDsl.XmlNode) = match node with XmlDsl.Element (_, attrs, _, _) -> Map.tryFind name attrs | _ -> None
+let private path (names: string list) (node: XmlDsl.XmlNode) = names |> List.fold (fun at name -> at |> Option.bind (child name)) (Some node)
+let private number (text: string option) = text |> Option.bind (fun t -> match Double.TryParse(t, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with | true, n -> Some n | _ -> None)
+
+/// "RRGGBB" as VBA's RGB number.
+let private bgrOf (hex: string) =
+    if hex.Length <> 6 then None
+    else
+        match Int32.TryParse(hex, Globalization.NumberStyles.HexNumber, Globalization.CultureInfo.InvariantCulture) with
+        | true, rgb -> Some (((rgb &&& 0xFF) <<< 16) ||| (rgb &&& 0xFF00) ||| ((rgb >>> 16) &&& 0xFF))
+        | _ -> None
+
+/// A colour element's colour (srgbClr, or a scheme colour of the Office theme) and its transparency.
+let private colorIn (fill: XmlDsl.XmlNode) : (int * float) option =
+    kids fill |> List.tryPick (fun c ->
+        let alpha = child "alpha" c |> Option.bind (fun a -> number (attr "val" a)) |> Option.map (fun a -> 1.0 - a / 100000.0) |> Option.defaultValue 0.0
+        match nameOf c with
+        | "srgbClr" -> attr "val" c |> Option.bind bgrOf |> Option.map (fun color -> color, alpha)
+        | "schemeClr" ->
+            let hex =
+                match attr "val" c with
+                | Some ("accent1") -> "4472C4" | Some "accent2" -> "ED7D31" | Some "accent3" -> "A5A5A5" | Some "accent4" -> "FFC000"
+                | Some "accent5" -> "5B9BD5" | Some "accent6" -> "70AD47" | Some ("dk1" | "tx1") -> "000000" | Some ("lt1" | "bg1") -> "FFFFFF"
+                | Some ("dk2" | "tx2") -> "44546A" | Some ("lt2" | "bg2") -> "E7E6E6" | _ -> ""
+            bgrOf hex |> Option.map (fun color -> color, alpha)
+        | _ -> None)
+
+/// A shape of a drawing's XML (an anchor holding `xdr:sp`, `xdr:cxnSp` or `xdr:grpSp`) as a shape a macro
+/// can change - None for what this module would not write back as it was (custom geometry, pictures,
+/// charts, a group holding one). Positions from the shapes' `a:xfrm` (EMU), a group's members mapped from
+/// its child rectangle; `nextId` numbers the members of a group.
+let fromXml (nextId: unit -> int) (anchorXml: string) : ShapeNode option =
+    let emuToPoints (v: float) = v / 12700.0
+    // (x, y) -> (x', y'): a group's child space onto the sheet.
+    let rec read (place: float * float -> float * float) (scale: float * float) (element: XmlDsl.XmlNode) : ShapeNode option =
+        let props = child "spPr" element |> Option.orElse (child "grpSpPr" element)
+        let xfrm = props |> Option.bind (child "xfrm")
+        let off = xfrm |> Option.bind (child "off")
+        let ext = xfrm |> Option.bind (child "ext")
+        let x, y = (off |> Option.bind (fun o -> number (attr "x" o)) |> Option.defaultValue 0.0), (off |> Option.bind (fun o -> number (attr "y" o)) |> Option.defaultValue 0.0)
+        let cx, cy = (ext |> Option.bind (fun e -> number (attr "cx" e)) |> Option.defaultValue 0.0), (ext |> Option.bind (fun e -> number (attr "cy" e)) |> Option.defaultValue 0.0)
+        let left, top = place (x, y)
+        let width, height = cx * fst scale, cy * snd scale
+        let names = kids element |> List.tryPick (fun c -> if nameOf c = "nvSpPr" || nameOf c = "nvCxnSpPr" || nameOf c = "nvGrpSpPr" then child "cNvPr" c else None)
+        let name = names |> Option.bind (attr "name") |> Option.defaultValue ""
+        let hidden = names |> Option.bind (attr "hidden") |> Option.exists (fun h -> h = "1" || h = "true")
+        let rotation = xfrm |> Option.bind (fun t -> number (attr "rot" t)) |> Option.map (fun r -> r / 60000.0) |> Option.defaultValue 0.0
+        let flag (n: string) = xfrm |> Option.bind (attr n) |> Option.exists (fun v -> v = "1" || v = "true")
+        match nameOf element with
+        | "grpSp" ->
+            let chOff = xfrm |> Option.bind (child "chOff")
+            let chExt = xfrm |> Option.bind (child "chExt")
+            let chx, chy = (chOff |> Option.bind (fun o -> number (attr "x" o)) |> Option.defaultValue x), (chOff |> Option.bind (fun o -> number (attr "y" o)) |> Option.defaultValue y)
+            let chcx, chcy = (chExt |> Option.bind (fun e -> number (attr "cx" e)) |> Option.defaultValue cx), (chExt |> Option.bind (fun e -> number (attr "cy" e)) |> Option.defaultValue cy)
+            let sx = if chcx > 0.0 then cx / chcx else 1.0
+            let sy = if chcy > 0.0 then cy / chcy else 1.0
+            let inner (px: float, py: float) = place (x + (px - chx) * sx, y + (py - chy) * sy)
+            let members =
+                kids element
+                |> List.filter (fun c -> match nameOf c with "sp" | "cxnSp" | "grpSp" | "pic" | "graphicFrame" | "AlternateContent" -> true | _ -> false)
+                |> List.map (read inner (fst scale * sx, snd scale * sy))
+            if members.IsEmpty || members |> List.exists Option.isNone || rotation <> 0.0 then None
+            else
+                let group = ShapeNode(nextId (), name, "group")
+                group.Visible <- not hidden
+                for m in members |> List.choose id do
+                    m.Parent <- Some group
+                    group.Members.Add m
+                Some group
+        | ("sp" | "cxnSp") as kind ->
+            let preset = props |> Option.bind (child "prstGeom") |> Option.bind (attr "prst")
+            match preset with
+            | None -> None
+            | Some prst ->
+                let isText = path [ "nvSpPr"; "cNvSpPr" ] element |> Option.bind (attr "txBox") |> Option.exists (fun v -> v = "1")
+                let node = ShapeNode(nextId (), name, (if kind = "cxnSp" then "line" elif isText then "textbox" else "autoshape"))
+                node.Preset <- prst
+                node.AutoShapeType <- (seq { 1 .. 160 } |> Seq.tryFind (fun t -> fst (presetOf t) = prst) |> Option.defaultValue 1)
+                node.Left <- emuToPoints left; node.Top <- emuToPoints top
+                node.Width <- emuToPoints width; node.Height <- emuToPoints height
+                node.Rotation <- rotation; node.FlipH <- flag "flipH"; node.FlipV <- flag "flipV"
+                node.Visible <- not hidden
+                node.OnAction <- attr "macro" element |> Option.defaultValue ""
+                match props |> Option.bind (fun p -> kids p |> List.tryFind (fun c -> nameOf c = "solidFill" || nameOf c = "noFill")) with
+                | Some f when nameOf f = "noFill" -> node.FillVisible <- false
+                | Some f -> colorIn f |> Option.iter (fun (color, alpha) -> node.FillColor <- color; node.FillTransparency <- alpha)
+                | None -> ()
+                match props |> Option.bind (child "ln") with
+                | Some ln ->
+                    number (attr "w" ln) |> Option.iter (fun w -> node.LineWeight <- emuToPoints w)
+                    if (child "noFill" ln).IsSome then node.LineVisible <- false
+                    child "solidFill" ln |> Option.bind colorIn |> Option.iter (fun (color, _) -> node.LineColor <- color)
+                | None -> ()
+                match child "txBody" element with
+                | Some body ->
+                    let paragraphs = kids body |> List.filter (fun c -> nameOf c = "p")
+                    let runs = paragraphs |> List.collect (fun p -> kids p |> List.filter (fun r -> nameOf r = "r"))
+                    let textOf (r: XmlDsl.XmlNode) = child "t" r |> Option.map (fun t -> kids t |> List.choose (function XmlDsl.Text s -> Some s | _ -> None) |> String.concat "") |> Option.defaultValue ""
+                    node.Text <- paragraphs |> List.map (fun p -> kids p |> List.filter (fun r -> nameOf r = "r") |> List.map textOf |> String.concat "") |> String.concat "\n"
+                    match runs |> List.tryHead |> Option.bind (child "rPr") with
+                    | Some rPr ->
+                        number (attr "sz" rPr) |> Option.iter (fun sz -> node.TextSize <- sz / 100.0)
+                        node.TextBold <- attr "b" rPr = Some "1"
+                        node.TextItalic <- attr "i" rPr = Some "1"
+                        child "solidFill" rPr |> Option.bind colorIn |> Option.iter (fun (color, _) -> node.TextColor <- color)
+                    | None -> ()
+                    paragraphs |> List.tryHead |> Option.bind (child "pPr") |> Option.bind (attr "algn") |> Option.iter (fun a -> node.TextAlign <- a)
+                    child "bodyPr" body |> Option.bind (attr "anchor") |> Option.iter (fun a -> node.TextAnchor <- a)
+                | None -> ()
+                Some node
+        | _ -> None
+    try
+        let anchor = XmlDsl.parse anchorXml
+        kids anchor
+        |> List.tryFind (fun c -> match nameOf c with "sp" | "cxnSp" | "grpSp" -> true | _ -> false)
+        |> Option.bind (read id (1.0, 1.0))
+    with _ -> None

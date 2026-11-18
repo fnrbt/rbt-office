@@ -747,6 +747,47 @@ checks['macro-stepped'] = async () => {
     return lines;
 };
 
+// Application.OnTime and OnKey on the grid: a game's loop (a procedure that schedules itself a second on,
+// as snake does: Now is whole seconds, so each tick comes at the next second or so),
+// keys bound to procedures, a key given back, and the timers ending with the workbook's macros.
+checks['macro-callbacks'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const value = (a1) => grid.GetRange(`${a1}:${a1}`)[0][0].value ?? null;
+    const press = (key) => host.querySelector('.spreadsheet-content').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+    try {
+        await grid.SetMacroModule('Module1', [
+            'Public Running As Boolean',
+            'Sub Start()', '    Running = True', '    Range("A1").Value = 0', '    Application.OnKey "{LEFT}", "GoLeft"', '    Application.OnKey "q", "Quit"', '    Tick', 'End Sub',
+            'Sub Tick()', '    If Not Running Then Exit Sub', '    Range("A1").Value = Range("A1").Value + 1',
+            '    Application.OnTime Now + TimeSerial(0, 0, 1), "Tick"', 'End Sub',
+            'Sub GoLeft()', '    Range("B1").Value = Range("B1").Value & "L"', 'End Sub',
+            'Sub Quit()', '    Running = False', '    Application.OnKey "{LEFT}"', 'End Sub'].join('\n'));
+        await grid.EnableMacros();
+        const started = await grid.RunMacro('Start');
+        await settle(2600);
+        const ticked = value('A1');
+        check('the loop runs on its timer (a tick a second)', [started.ok, ticked >= 2 && ticked <= 4 ? 'about 3' : ticked], [true, 'about 3']);
+        press('ArrowLeft');
+        await settle(120);
+        press('ArrowLeft');
+        await settle(120);
+        check('a bound key runs its procedure (the grid does not move)', [value('B1'), grid.GetActiveCell?.() ?? null], ['LL', grid.GetActiveCell?.() ?? null]);
+        press('q');
+        await settle(1200);
+        const stopped = value('A1');
+        await settle(1500);
+        check('a key stops the loop; the arrow is the grid\'s again', [value('A1'), stopped], [stopped, value('A1')]);
+        press('ArrowLeft');
+        await settle(120);
+        check('unbound: the arrow moves, no macro', value('B1'), 'LL');
+    } catch (e) {
+        lines.push('FAIL threw: ' + (e && e.stack || e));
+    } finally { close(); }
+    return lines;
+};
+
 // The VBA editor from the shell's Data menu: in a workbook without macros a blank Module1 to write in,
 // Apply compiles it, its macro runs on the grid (one undo step), the Immediate line evaluates, the output
 // shows each, and a save writes the project from the module.

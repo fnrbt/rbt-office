@@ -13,6 +13,12 @@ type MacroHooks = {
     InputBox: string -> string -> string -> string option
     Output: string -> unit
     FileName: string
+    /// Application.OnTime: run a procedure in so many milliseconds, when no macro is running (Schedule
+    /// False: the procedure asked for is not run after all).
+    OnTime: float -> string -> bool -> unit
+    /// Application.OnKey: a key ("{LEFT}", "^a", "+{F2}") runs a procedure; None gives the key back to the
+    /// grid, Some "" makes it do nothing.
+    OnKey: string -> string option -> unit
 }
 
 let defaultHooks = {
@@ -20,6 +26,8 @@ let defaultHooks = {
     InputBox = fun _ _ _ -> None
     Output = ignore
     FileName = "Book1.xlsx"
+    OnTime = fun _ _ _ -> ()
+    OnKey = fun _ _ -> ()
 }
 
 /// Why a macro stopped or a project does not compile: Excel's number and description, and where.

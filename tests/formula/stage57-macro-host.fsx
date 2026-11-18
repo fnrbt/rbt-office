@@ -343,5 +343,54 @@ match M.MacroProgram.Compile modules with
 | Result.Ok project -> check "the macros: standard ones by name, a sheet's as Sheet.Name" project.Macros [ "Main"; "Sheet1.Hello" ]
 | Result.Error f -> check "the project compiles" (f |> List.map (fun x -> x.Description)) []
 
+// ---- shapes across runs; Application.OnTime and OnKey ----
+let shapesProgram = program """
+Sub Draw()
+    With ActiveSheet.Shapes.AddShape(msoShapeOval, 10, 10, 50, 40)
+        .Name = "Ball"
+        .TextFrame.Characters.Text = "hi"
+    End With
+End Sub
+Sub Move()
+    With ActiveSheet.Shapes("Ball")
+        .Left = 100
+        Debug.Print .TextFrame.Characters.Text; " "; .AutoShapeType; " "; .Width
+        .TextFrame.Characters.Text = "moved"
+    End With
+End Sub
+"""
+let drawnXml (wb: Workbook) =
+    (sheetNamed wb "Data").Model.Drawings |> List.choose (fun d -> match d.Content with KeptObject ("shape", xml) -> Some xml | _ -> None)
+match shapesProgram.Run(start (), hooks, "Draw") with
+| M.MacroDone (drawn, _) ->
+    output.Clear()
+    match shapesProgram.Run(drawn, hooks, "Move") with
+    | M.MacroDone (moved, _) ->
+        check "a shape an earlier run drew is the macro's again (its text, type, size)" (List.ofSeq output) [ "hi  9   50 " ]
+        let xml = drawnXml moved |> List.head
+        check "it moves" (xml.Contains "<a:off x=\"1270000\"") true
+        check "its text changes" (xml.Contains ">moved</a:t>") true
+    | M.MacroFailed f -> check "Move runs" (Rbt.Vb.Api.VbFailure.format f) ""
+| M.MacroFailed f -> check "Draw runs" (Rbt.Vb.Api.VbFailure.format f) ""
+
+let timers = ResizeArray<float * string * bool>()
+let bound = ResizeArray<string * string option>()
+let callbackHooks = { hooks with OnTime = (fun delay procedure schedule -> timers.Add((delay, procedure, schedule))); OnKey = (fun key procedure -> bound.Add((key, procedure))) }
+match (program """
+Sub Main()
+    Application.OnTime Now + TimeSerial(0, 0, 2), "'Book.xlsm'!Tick"
+    Application.OnTime EarliestTime:=Now, Procedure:="Tick", Schedule:=False
+    Application.OnKey "{LEFT}", "GoLeft"
+    Application.OnKey "^a"
+End Sub
+""").Run(start (), callbackHooks, "Main") with
+| M.MacroDone _ ->
+    let delay, procedure, schedule = timers.[0]
+    check "OnTime: the procedure (without its workbook) in about two seconds" (procedure, schedule, delay > 900.0 && delay <= 2100.0) ("Tick", true, true)
+    let _, _, cancelled = timers.[1]
+    check "OnTime Schedule:=False cancels" cancelled false
+    check "OnKey binds and gives back keys" (List.ofSeq bound) [ "{LEFT}", Some "GoLeft"; "^a", None ]
+| M.MacroFailed f -> check "OnTime and OnKey run" (Rbt.Vb.Api.VbFailure.format f) ""
+
 printfn "Stage 57 macro host tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -235,7 +235,43 @@ let private browserMacroHooks : Rbt.Spreadsheet.MacroApi.MacroHooks =
         let answer = promptBox prompt defaultText
         if isNull answer then None else Some answer
       Output = consoleLog
-      FileName = "Book1.xlsm" }
+      FileName = "Book1.xlsm"
+      OnTime = fun _ _ _ -> ()
+      OnKey = fun _ _ -> () }
+
+/// A key as Application.OnKey names it, made comparable: modifiers (^ Ctrl, + Shift, % Alt) in that order,
+/// then the key's name in capitals ("{LEFT}" and "{left}" are "LEFT", "~" is "ENTER", "a" is "A").
+let private onKeyName (ctrl: bool) (shift: bool) (alt: bool) (key: string) =
+    (if ctrl then "^" else "") + (if shift then "+" else "") + (if alt then "%" else "") + key.ToUpperInvariant()
+
+let private parseOnKey (text: string) =
+    let mutable i = 0
+    let mutable ctrl, shift, alt = false, false, false
+    while i < text.Length - 1 && (text.[i] = '^' || text.[i] = '+' || text.[i] = '%') do
+        (match text.[i] with '^' -> ctrl <- true | '+' -> shift <- true | _ -> alt <- true)
+        i <- i + 1
+    let rest = text.Substring i
+    let name =
+        if rest.Length > 2 && rest.StartsWith "{" && rest.EndsWith "}" then
+            match rest.Substring(1, rest.Length - 2).ToUpperInvariant() with
+            | "BS" | "BKSP" -> "BACKSPACE" | "DEL" -> "DELETE" | "ESCAPE" -> "ESC" | "RETURN" -> "ENTER"
+            | "INS" -> "INSERT" | other -> other
+        elif rest = "~" then "ENTER"
+        else rest
+    onKeyName ctrl shift alt name
+
+/// The OnKey name of a key pressed (KeyboardEvent.key), when it has one.
+let private pressedOnKey (key: string) (ctrl: bool) (shift: bool) (alt: bool) =
+    let name =
+        match key with
+        | "ArrowLeft" -> Some "LEFT" | "ArrowRight" -> Some "RIGHT" | "ArrowUp" -> Some "UP" | "ArrowDown" -> Some "DOWN"
+        | "Enter" -> Some "ENTER" | "Escape" -> Some "ESC" | "Tab" -> Some "TAB" | "Backspace" -> Some "BACKSPACE"
+        | "Delete" -> Some "DELETE" | "Home" -> Some "HOME" | "End" -> Some "END" | "PageUp" -> Some "PGUP"
+        | "PageDown" -> Some "PGDN" | "Insert" -> Some "INSERT" | " " -> Some " "
+        | k when k.Length = 1 -> Some k
+        | k when k.Length <= 3 && k.StartsWith "F" -> Some k
+        | _ -> None
+    name |> Option.map (onKeyName ctrl shift alt)
 
 /// The VBA engine and Excel's object model (MacroProject.fs): fetched when macros are first enabled, run or
 /// edited - the grid never imports it otherwise, so a workbook that runs no macro does not load it.
@@ -768,6 +804,39 @@ type Spreadsheet(container: Element) as this =
     let mutable macrosEnabled = false
     let mutable workbookOpened = false
     let mutable macroHooks = browserMacroHooks
+    // What macros asked for later: procedures to run at a time (Application.OnTime: the timers, by
+    // procedure) and keys bound to procedures (Application.OnKey: by OnKey name, see parseOnKey).
+    let macroTimers = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
+    let macroKeys = System.Collections.Generic.Dictionary<string, string>()
+    /// Run a procedure once no macro is running (Excel runs OnTime and OnKey procedures when it is idle).
+    let rec runMacroWhenIdle (procedure: string) =
+        if macrosEnabled then
+            if macroRunning.IsSome then setTimeoutMs (fun () -> runMacroWhenIdle procedure) 20 |> ignore
+            else (try this.RunMacro(procedure) |> ignore with _ -> ())
+    let scheduleMacro (delayMs: float) (procedure: string) (schedule: bool) =
+        let key = procedure.ToLowerInvariant()
+        if schedule then
+            let timers =
+                match macroTimers.TryGetValue key with
+                | true, found -> found
+                | _ -> let created = ResizeArray() in macroTimers.[key] <- created; created
+            let id = ref 0
+            id.Value <- setTimeoutMs (fun () -> timers.Remove id.Value |> ignore; runMacroWhenIdle procedure) (int (min 2147483647.0 delayMs))
+            timers.Add id.Value
+        else
+            match macroTimers.TryGetValue key with
+            | true, timers -> (for id in timers do clearTimeoutId id); timers.Clear()
+            | _ -> ()
+    let bindMacroKey (key: string) (procedure: string option) =
+        let name = parseOnKey key
+        match procedure with
+        | Some p -> macroKeys.[name] <- p
+        | None -> macroKeys.Remove name |> ignore
+    /// A workbook's macros end: its timers and keys go with them.
+    let clearMacroCallbacks () =
+        for KeyValue (_, timers) in macroTimers do (for id in timers do clearTimeoutId id)
+        macroTimers.Clear()
+        macroKeys.Clear()
     // What macros printed and how runs ended (the VBA editor's output), and whether a module was edited
     // here (then a save writes the project from the modules instead of the one opened).
     let macroLog = ResizeArray<string>()
@@ -3111,6 +3180,18 @@ type Spreadsheet(container: Element) as this =
 
     /// Handle keyboard events
     and handleKeyDown (e: obj) =
+        // A key a macro bound (Application.OnKey) runs its procedure while macros may run; "" does nothing.
+        let bound =
+            if macrosEnabled && macroKeys.Count > 0 && model.EditingCell.IsNone then
+                pressedOnKey (getEventKey e) (eventFlag e "ctrlKey" || eventFlag e "metaKey") (eventFlag e "shiftKey") (eventFlag e "altKey")
+                |> Option.bind (fun name -> match macroKeys.TryGetValue name with | true, p -> Some p | _ -> None)
+            else None
+        match bound with
+        | Some procedure ->
+            preventDefault e
+            if procedure <> "" then runMacroWhenIdle procedure
+        | None -> handleGridKeyDown e
+    and handleGridKeyDown (e: obj) =
         let key = getEventKey e
         let isModifier = eventFlag e "ctrlKey" || eventFlag e "metaKey"
         let shift = eventFlag e "shiftKey"
@@ -6742,6 +6823,7 @@ type Spreadsheet(container: Element) as this =
         // (Another workbook: its macros, if any, come with its import.)
         macroPreserved <- None
         macroProject <- None
+        clearMacroCallbacks ()
         macroProjectLoad <- None
         macroLog.Clear()
         macroProjectEdited <- false
@@ -7832,7 +7914,7 @@ type Spreadsheet(container: Element) as this =
             if model.EditingCell.IsSome then finishEditing true |> ignore
             observeRevision ()
             let start = currentWorkbookSnapshot ()
-            let hooks = { macroHooks with Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
+            let hooks = { macroHooks with OnTime = scheduleMacro; OnKey = bindMacroKey; Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
             let run = project.Start(start, hooks, name)
             macroRunning <- Some run
             refreshSheetLock ()
@@ -7907,7 +7989,7 @@ type Spreadsheet(container: Element) as this =
             if model.EditingCell.IsSome then finishEditing true |> ignore
             observeRevision ()
             let start = currentWorkbookSnapshot ()
-            let hooks = { macroHooks with Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
+            let hooks = { macroHooks with OnTime = scheduleMacro; OnKey = bindMacroKey; Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
             match run project start hooks with
             | Rbt.Spreadsheet.MacroApi.MacroDone (result, selection) ->
                 if not (obj.ReferenceEquals(result, start)) then

@@ -440,6 +440,23 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     member _.SetSetting(name: string, value: Value) = settingValues.[name.ToLowerInvariant()] <- value
     member _.Charts = charts
     member _.Shapes = shapes
+    /// A shape of a sheet a macro can change: one a run drew, or one of the sheet's drawings read from its
+    /// XML the first time a macro reaches it (a shape an earlier run drew, a file's shape) - None for a
+    /// chart, a picture, or what MacroShapes would not write back as it was.
+    member this.DrawnShape(sheetId: SheetId, id: int) : MacroShapes.ShapeNode option =
+        match shapes.TryGetValue((sheetId, id)) with
+        | true, node -> Some node
+        | _ ->
+            match (this.Model sheetId).Drawings |> List.tryFind (fun d -> d.Id = id) with
+            | Some { Content = KeptObject ("shape", xml); Name = name } ->
+                match MacroShapes.fromXml (fun () -> this.NextShapeId()) xml with
+                | Some node ->
+                    node.Id <- id
+                    name |> Option.iter (fun n -> node.Name <- n)
+                    shapes.[(sheetId, id)] <- node
+                    Some node
+                | None -> None
+            | _ -> None
     /// An id for a shape inside a group (the drawing's own ids number the sheet's objects).
     member _.NextShapeId() = shapeIds <- shapeIds + 1; shapeIds
     /// A drawn shape changed: its XML is written again before the workbook is next read.
@@ -1544,9 +1561,9 @@ let private drawnValue (book: MacroWorkbook) (sheetId: SheetId) (node: MacroShap
 
 /// A shape of a sheet by its id: one the macro drew, else a chart's frame or a picture.
 let private shapeValue (book: MacroWorkbook) (sheetId: SheetId) (id: int) =
-    match book.Shapes.TryGetValue((sheetId, id)) with
-    | true, node -> drawnValue book sheetId node
-    | _ -> chartShapeType.Wrap (ShapeState(book, sheetId, id))
+    match book.DrawnShape(sheetId, id) with
+    | Some node -> drawnValue book sheetId node
+    | None -> chartShapeType.Wrap (ShapeState(book, sheetId, id))
 
 let private shapeRangeValue (book: MacroWorkbook) (sheetId: SheetId) (ids: int list) = shapeRangeType.Wrap (ShapeRangeState(book, sheetId, ids))
 
@@ -1554,9 +1571,9 @@ let private shapeRangeValue (book: MacroWorkbook) (sheetId: SheetId) (ids: int l
 let private findDrawing (s: ShapesState) (index: Value) =
     let list = s.Drawings ()
     let nameOf (d: SheetDrawing) =
-        match s.Book.Shapes.TryGetValue((s.Sheet, d.Id)) with
-        | true, node -> Some node.Name
-        | _ -> d.Name
+        match s.Book.DrawnShape(s.Sheet, d.Id) with
+        | Some node -> Some node.Name
+        | None -> d.Name
     match scalarOf index with
     | VString wanted ->
         match list |> List.tryFind (fun d -> nameOf d |> Option.exists (eq wanted)) with
@@ -1664,9 +1681,7 @@ let private groupShapes (s: ShapeRangeState) =
     let book, sheetId = s.Book, s.Sheet
     let members =
         s.Ids |> List.map (fun id ->
-            match book.Shapes.TryGetValue((sheetId, id)) with
-            | true, node -> Some node
-            | _ -> None)
+            book.DrawnShape(sheetId, id))
     if members |> List.exists Option.isNone || members.Length < 2 then failApp "Group method of ShapeRange class failed"
     let members = members |> List.choose id
     for m in members do book.Shapes.Remove((sheetId, m.Id)) |> ignore
@@ -2734,7 +2749,20 @@ let private applicationType =
             let until = if target < 1.0 then Math.Floor now + target else target
             b.SetSetting("__waitUntil", VDouble until)
             VBoolean true)
-        method "OnTime" [] (fun _ _ -> VEmpty)
+        // OnTime(EarliestTime, Procedure, LatestTime, Schedule): the host runs it then, when idle (a game's loop).
+        method "OnTime" [ "EarliestTime"; "Procedure"; "LatestTime"; "Schedule" ] (fun b args ->
+            let earliest = toFloat (at args 0)
+            let now = (DateTime.Now - DateTime(1899, 12, 30)).TotalDays
+            let delay = max 0.0 ((earliest - now) * 86400000.0)
+            // ('Book.xlsm'!Update is Update.)
+            let procedure = let p = toText (at args 1) in match p.LastIndexOf '!' with -1 -> p | i -> p.Substring(i + 1)
+            let schedule = isMissing (at args 3) || toBool (at args 3)
+            b.Hooks.OnTime delay procedure schedule
+            VEmpty)
+        // OnKey(Key, Procedure): the key runs the procedure; without one the key is the grid's again.
+        method "OnKey" [ "Key"; "Procedure" ] (fun b args ->
+            b.Hooks.OnKey (toText (at args 0)) (if isMissing (at args 1) then None else Some (toText (at args 1)))
+            VEmpty)
         method "InputBox" [ "Prompt"; "Title"; "Default"; "Left"; "Top"; "HelpFile"; "HelpContextID"; "Type" ] (fun b args ->
             let prompt = if args.Length > 0 then toText args.[0] else ""
             let title = if isMissing (at args 1) then "Microsoft Excel" else toText args.[1]

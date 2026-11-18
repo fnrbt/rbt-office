@@ -3,6 +3,9 @@
 ' Licence: CC0-1.0 (public domain dedication)
 ' What: Snake on a B2:Z27 board of coloured cells; arrow keys steer, one move per second, score in B29.
 ' Entry: StartGame
+' Before: Setup
+' Ticks: 40
+' Press: 6={DOWN}; 14={LEFT}; 22={UP}
 ' Game loop: Application.OnTime re-schedules Update every second; Application.OnKey binds the arrow keys (module snake.KeyBind.bas).
 ' Needs a shape named "Toggle" on the sheet (a button whose text it sets) - ActiveSheet.Shapes("Toggle"); without it StartGame stops there.
 ' Other subs: TogglePause, ResetGame. Uses Interior.color reads as collision detection, Borders().color, MsgBox.

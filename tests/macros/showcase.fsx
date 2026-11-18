@@ -18,6 +18,8 @@
 //   ' Input: 7                what InputBox answers (one line per call, the last one repeats)
 //   ' Limit: 900000000        its instruction limit (default 600 million)
 //   ' Before: Seed            a Sub run first (what a user would set up by hand, in a <name>.Prep.bas)
+//   ' Ticks: 40               then up to 40 procedures it asked for with Application.OnTime, in order
+//   ' Press: 5={DOWN}; 9={LEFT}   keys pressed before those ticks: their Application.OnKey procedures run
 // A macro "is" the files <name>.bas / <name>.<module>.bas / <name>.<class>.cls; a file whose name starts
 // with "_" is left out.
 
@@ -132,6 +134,12 @@ let runOne (name: string, files: string[]) =
     let limit = header "Limit" sources |> List.tryHead |> Option.map int |> Option.defaultValue 600_000_000
     let mutable inputIndex = 0
     let output = ResizeArray<string>()
+    let ticks = header "Ticks" sources |> List.tryHead |> Option.map int |> Option.defaultValue 0
+    let presses =
+        header "Press" sources |> List.collect (fun line -> line.Split(';') |> Array.toList)
+        |> List.choose (fun p -> match p.Trim().Split('=') with [| t; k |] -> Some (int t, k.Trim().ToUpperInvariant()) | _ -> None)
+    let scheduled = Collections.Generic.Queue<string>()
+    let keys = Collections.Generic.Dictionary<string, string>()
     let hooks =
         { M.defaultHooks with
             Output = output.Add
@@ -143,7 +151,9 @@ let runOne (name: string, files: string[]) =
                 | _ ->
                     let answer = inputs.[min inputIndex (inputs.Length - 1)]
                     inputIndex <- inputIndex + 1
-                    Some answer) }
+                    Some answer)
+            OnTime = (fun _ procedure schedule -> if schedule then scheduled.Enqueue procedure)
+            OnKey = (fun key procedure -> match procedure with Some p -> keys.[key.ToUpperInvariant()] <- p | None -> keys.Remove(key.ToUpperInvariant()) |> ignore) }
     let modules = files |> Array.sort |> Array.map moduleOf |> Array.toList
     let beforeName = match header "Before" sources with b :: _ -> "__" + b | [] -> ""
     xlsmDir |> Option.iter (fun dir -> Directory.CreateDirectory dir |> ignore; writeXlsm (Path.Combine(dir, sprintf "%s__%s%s.xlsm" name entry beforeName)) modules)
@@ -161,6 +171,19 @@ let runOne (name: string, files: string[]) =
             | [] -> createWorkbook ()
         let watch = Diagnostics.Stopwatch.StartNew()
         let result = try Choice1Of2 (program.Run(start, hooks, entry, maxInstructions = limit)) with e -> Choice2Of2 e
+        // (The procedures it asked for later, as the grid runs them when idle; keys pressed between them.)
+        let mutable result = result
+        let mutable tick = 0
+        while tick < ticks && scheduled.Count > 0 && (match result with Choice1Of2 (M.MacroDone _) -> true | _ -> false) do
+            tick <- tick + 1
+            let runOn (procedure: string) =
+                match result with
+                | Choice1Of2 (M.MacroDone (wb, _)) -> result <- (try Choice1Of2 (program.Run(wb, hooks, procedure, maxInstructions = limit)) with e -> Choice2Of2 e)
+                | _ -> ()
+            for (at, key) in presses do
+                if at = tick then match keys.TryGetValue key with | true, p when p <> "" -> runOn p | _ -> ()
+            runOn (scheduled.Dequeue())
+        if ticks > 0 then output.Add(sprintf "%d ticks" tick)
         let seconds = watch.Elapsed.TotalSeconds
         let printed = if output.Count = 0 then "" else " | output: " + (output |> Seq.truncate 3 |> String.concat " / ")
         match result with
@@ -170,7 +193,7 @@ let runOne (name: string, files: string[]) =
                 File.WriteAllLines(Path.Combine(dir, name + ".tsv"), sprintf "status\tok\t%.2f" seconds :: dump wb))
             { Name = name; Status = "ok"; Detail = printed.TrimStart(' ', '|'); Seconds = seconds; Changes = describe start wb }
         | Choice1Of2 (M.MacroFailed failure) ->
-            { Name = name; Status = "FAIL"; Detail = sprintf "error %d %s (%s.%s line %d)%s" failure.Number failure.Description failure.Module failure.Procedure failure.Line printed; Seconds = seconds; Changes = "" }
+            { Name = name; Status = "FAIL"; Detail = sprintf "error %d %s%s (%s.%s line %d)%s" failure.Number failure.Description (if failure.Detail = "" then "" else " [" + failure.Detail + "]") failure.Module failure.Procedure failure.Line printed; Seconds = seconds; Changes = "" }
         | Choice2Of2 e -> { Name = name; Status = "CRASH"; Detail = e.GetType().Name + ": " + e.Message.Split('\n').[0]; Seconds = seconds; Changes = "" }
 
 let outcomes = groups |> Array.map (fun g -> let o = runOne g in printfn "%-5s %-22s %6.2fs  %s  %s" (if o.Status = "ok" then "ok" else o.Status) o.Name o.Seconds o.Detail o.Changes; o)
