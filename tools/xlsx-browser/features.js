@@ -699,6 +699,54 @@ checks['vba-loads-on-use'] = async () => {
     return lines;
 };
 
+// RunMacro runs a macro a slice at a time (the showcase macros: Game of Life, Doom fire): the grid shows
+// what it has written so far - not while it has ScreenUpdating off -, is read-only meanwhile, refuses a
+// second run, StopMacro stops it (error 18) and nothing of it is kept; one that ends is one undo step.
+// Text a macro centres across a selection is drawn across it (a cell node's paint containment cut it off).
+checks['macro-stepped'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const value = (a1) => grid.GetRange(`${a1}:${a1}`)[0][0].value ?? null;
+    try {
+        await grid.SetMacroModule('Module1', [
+            'Sub Count()', '    Dim i As Long', '    For i = 1 To 50000000', '        Range("A1").Value = i', '    Next', 'End Sub',
+            'Sub Hidden()', '    Application.ScreenUpdating = False', '    Dim i As Long', '    For i = 1 To 50000000', '        Range("B1").Value = i', '    Next', 'End Sub',
+            'Sub Across()', '    Range("A3").Value = "Centred over five columns"', '    Range("A3:E3").HorizontalAlignment = xlCenterAcrossSelection', '    Range("C5").Value = 2',
+            '    Range("A7").Value = DateSerial(2026, 3, 1)', '    Range("A7").NumberFormat = "mmmm yyyy"', '    Range("A7").Font.Size = 18', '    Range("A7:G7").HorizontalAlignment = xlCenterAcrossSelection', 'End Sub'].join('\n'));
+        await grid.EnableMacros();
+        const running = grid.RunMacro('Count');
+        await settle(400);
+        check('while it runs: running, no typing, what it wrote so far on the grid', [grid.MacroRunning, grid.EnterText(9, 0, 'typed'), value('A1') > 0], [true, false, true]);
+        let refused = null;
+        try { await grid.RunMacro('Count'); } catch (e) { refused = String(e.message); }
+        check('a second run is refused', /running/.test(refused ?? ''), true);
+        grid.StopMacro();
+        const stopped = await running;
+        check('stopped: error 18, nothing kept, typing again', [stopped.ok, stopped.number, value('A1'), grid.MacroRunning, grid.EnterText(9, 0, 'typed'), value('A10')], [false, 18, null, false, true, 'typed']);
+        grid.Undo();
+        const hidden = grid.RunMacro('Hidden');
+        await settle(400);
+        check('ScreenUpdating off: nothing shown while it runs', [grid.MacroRunning, value('B1')], [true, null]);
+        grid.StopMacro();
+        await hidden;
+        const across = await grid.RunMacro('Across');
+        await settle(50);
+        const node = host.querySelector('.spreadsheet-cell[data-row="2"][data-col="0"]');
+        const text = node?.querySelector('.spreadsheet-across');
+        const box = node?.getBoundingClientRect(), span = text?.getBoundingClientRect();
+        check('a run that ends is kept, one undo step', [across.ok, value('C5')], [true, 2]);
+        check('text centred across five columns is painted beyond its cell', [!!text, getComputedStyle(node).contain.includes('paint'), span && box ? Math.round(span.width / box.width) : null], [true, false, 5]);
+        const date = host.querySelector('.spreadsheet-cell[data-row="6"][data-col="0"]');
+        check('a date centred across the selection: in full, at its size', [date?.textContent, date ? getComputedStyle(date).fontSize : null], ['March 2026', '24px']);
+        grid.Undo();
+        check('undone', [value('A3'), value('C5')], [null, null]);
+    } catch (e) {
+        lines.push('FAIL threw: ' + (e && e.stack || e));
+    } finally { close(); }
+    return lines;
+};
+
 // The VBA editor from the shell's Data menu: in a workbook without macros a blank Module1 to write in,
 // Apply compiles it, its macro runs on the grid (one undo step), the Immediate line evaluates, the output
 // shows each, and a save writes the project from the module.

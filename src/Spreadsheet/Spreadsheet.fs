@@ -2207,7 +2207,8 @@ type Spreadsheet(container: Element) as this =
 
     let commitInput (addr: CellAddress) (text: string) (validate: bool) (typed: bool) : bool =
         giveRoomFor addr
-        if sheetLocked then false else
+        // (While a macro runs the grid shows its frames: an entry would be lost when it ends.)
+        if sheetLocked || macroRunning.IsSome then false else
         let isClear = System.String.IsNullOrWhiteSpace text
         let hadCell = getCell addr model |> Option.isSome
         let mutable tableHandled = false
@@ -3668,7 +3669,8 @@ type Spreadsheet(container: Element) as this =
                 if at < 0 then None
                 else Some (displayText.Substring(0, at + 1), displayText.Substring(at + 1).TrimStart(' '))
             | _ -> None
-        if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone then
+        // (A number centred across the selection was fitted to the run's width: `Paint.cellLook`.)
+        if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone && look.AcrossTo <= col then
             let indent = look.IndentLeft + look.IndentRight
             let width = measureText (match accounting with Some (sign, number) -> sign + " " + number | None -> displayText)
             if width > w - 10.0 - indent then
@@ -3685,6 +3687,9 @@ type Spreadsheet(container: Element) as this =
             else 0.0
         if across > 0.0 then
             add "overflow" "visible"
+            // (A cell node's `contain: strict` cuts what it paints at its box: the text centred across the
+            // run is beyond it.)
+            add "contain" "layout style"
             add "z-index" "1"
             add "clip-path" ("inset(0px " + string (-(int across)) + "px 0px 0px)")
         // Text overflow: text wider than its cell runs over the empty cells
@@ -7846,8 +7851,11 @@ type Spreadsheet(container: Element) as this =
                         render()
                         resolve (createObj [ "ok" ==> true ])
                     | Rbt.Spreadsheet.MacroApi.MacroFailed f ->
-                        // (Nothing of it is kept: the grid shows the workbook as it was.)
-                        if shown.Value then installBook session.Workbook
+                        // (Nothing of it is kept: the grid shows the workbook as it was. The frames shown may
+                        // have reached the session's view - a selection, a scroll -, so it is the start again too.)
+                        if shown.Value then
+                            installBook start
+                            session.UpdateView start
                         refreshSheetLock ()
                         render()
                         macroLog.Add f.Text
