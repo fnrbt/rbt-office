@@ -58,6 +58,8 @@ type IMacroRun =
     abstract Frame: unit -> Workbook option
     /// How much longer the macro asked to wait (Application.Wait), in milliseconds; 0 when it is not waiting.
     abstract WaitMs: unit -> float
+    /// Go on at once from the Application.Wait it is waiting at (a host that does not wait).
+    abstract EndWait: unit -> unit
     /// Stop it: the next Step ends it (error 18, as Excel's Esc / Ctrl+Break).
     abstract Cancel: unit -> unit
 

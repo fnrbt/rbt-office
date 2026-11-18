@@ -713,7 +713,8 @@ checks['macro-stepped'] = async () => {
             'Sub Count()', '    Dim i As Long', '    For i = 1 To 50000000', '        Range("A1").Value = i', '    Next', 'End Sub',
             'Sub Hidden()', '    Application.ScreenUpdating = False', '    Dim i As Long', '    For i = 1 To 50000000', '        Range("B1").Value = i', '    Next', 'End Sub',
             'Sub Across()', '    Range("A3").Value = "Centred over five columns"', '    Range("A3:E3").HorizontalAlignment = xlCenterAcrossSelection', '    Range("C5").Value = 2',
-            '    Range("A7").Value = DateSerial(2026, 3, 1)', '    Range("A7").NumberFormat = "mmmm yyyy"', '    Range("A7").Font.Size = 18', '    Range("A7:G7").HorizontalAlignment = xlCenterAcrossSelection', 'End Sub'].join('\n'));
+            '    Range("A7").Value = DateSerial(2026, 3, 1)', '    Range("A7").NumberFormat = "mmmm yyyy"', '    Range("A7").Font.Size = 18', '    Range("A7:G7").HorizontalAlignment = xlCenterAcrossSelection', 'End Sub',
+            'Sub Pause()', '    Application.Wait Now + TimeSerial(0, 0, 30)', '    Range("D1").Value = "after"', 'End Sub'].join('\n'));
         await grid.EnableMacros();
         const running = grid.RunMacro('Count');
         await settle(400);
@@ -741,6 +742,22 @@ checks['macro-stepped'] = async () => {
         check('a date centred across the selection: in full, at its size', [date?.textContent, date ? getComputedStyle(date).fontSize : null], ['March 2026', '24px']);
         grid.Undo();
         check('undone', [value('A3'), value('C5')], [null, null]);
+        // Application.Wait waits (the grid stays as it is); StopMacro stops it there; a wait hook that answers
+        // false goes on at once (asked once, with the milliseconds).
+        const pausing = grid.RunMacro('Pause');
+        await settle(300);
+        check('at a 30 s Wait: running, nothing written yet', [grid.MacroRunning, value('D1')], [true, null]);
+        const stopAt = performance.now();
+        grid.StopMacro();
+        const paused = await pausing;
+        check('stopped at the Wait: error 18 within a second', [paused.ok, paused.number, performance.now() - stopAt < 1500], [false, 18, true]);
+        const asked = [];
+        grid.SetMacroHooks({ output: () => {}, wait: (ms) => { asked.push(ms); return false; } });
+        const startAt = performance.now();
+        const skipped = await grid.RunMacro('Pause');
+        check('a wait hook that answers false: on at once', [skipped.ok, value('D1'), asked.length, asked[0] > 25000 && asked[0] <= 30000, performance.now() - startAt < 5000], [true, 'after', 1, true, true]);
+        grid.SetMacroHooks(null);
+        grid.Undo();
     } catch (e) {
         lines.push('FAIL threw: ' + (e && e.stack || e));
     } finally { close(); }

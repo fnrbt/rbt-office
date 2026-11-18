@@ -46,6 +46,7 @@ type private Project(modules: ModuleSource list) =
                     member _.Step _ = Some failure
                     member _.Frame() = None
                     member _.WaitMs() = 0.0
+                    member _.EndWait() = ()
                     member _.Cancel() = () }
             | Result.Ok p ->
                 let begun = p.Begin(workbook, hooks, name, [])
@@ -66,6 +67,7 @@ type private Project(modules: ModuleSource list) =
                                 ended
                     member _.Frame() = if ended.IsSome then None else p.Frame()
                     member _.WaitMs() = if ended.IsSome then 0.0 else p.WaitMs()
+                    member _.EndWait() = p.EndWait()
                     member _.Cancel() = p.Cancel() }
         member _.Immediate(workbook, hooks, line) =
             match program with
