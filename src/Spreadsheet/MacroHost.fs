@@ -186,6 +186,24 @@ let private cellAddress (row: int) (col: int) (rowAbsolute: bool) (colAbsolute: 
 let maxRow = 1048575
 let maxCol = 16383
 
+/// A block's address as Excel's Range.Address gives it: whole rows as $2:$3, whole columns as $A:$B,
+/// a single cell alone; R1C1 (absolute, as Address gives it without RelativeTo) with `r1c1`.
+let private blockAddress (top: int) (left: int) (bottom: int) (right: int) (rowAbs: bool) (colAbs: bool) (r1c1: bool) =
+    let row n = (if rowAbs then "$" else "") + string (n + 1)
+    let col n = (if colAbs then "$" else "") + columnName n
+    let wholeRows = left = 0 && right = maxCol
+    let wholeCols = top = 0 && bottom = maxRow
+    if r1c1 then
+        let cell r c = sprintf "R%dC%d" (r + 1) (c + 1)
+        if wholeRows then (if top = bottom then sprintf "R%d" (top + 1) else sprintf "R%d:R%d" (top + 1) (bottom + 1))
+        elif wholeCols then (if left = right then sprintf "C%d" (left + 1) else sprintf "C%d:C%d" (left + 1) (right + 1))
+        elif top = bottom && left = right then cell top left
+        else cell top left + ":" + cell bottom right
+    elif wholeRows then row top + ":" + row bottom
+    elif wholeCols then col left + ":" + col right
+    elif top = bottom && left = right then cellAddress top left rowAbs colAbs
+    else cellAddress top left rowAbs colAbs + ":" + cellAddress bottom right rowAbs colAbs
+
 /// A reference of a macro ("A1", "$B$2:C9", "A:A", "3:5", "Sheet2!A1", a defined name) as
 /// (sheet name option, top, left, bottom, right), 0-based.
 let private parseReference (text: string) : (string option * int * int * int * int) option =
@@ -380,15 +398,63 @@ let private collection typeName get set call items = VHostObject (Host(typeName,
 /// A range, recognised among host objects (for WorksheetFunction arguments, Union, Intersect, Copy).
 type private RangeRef = { Sheet: SheetId; Top: int; Left: int; Bottom: int; Right: int }
 
+let private rangeAddress (r: RangeRef) rowAbs colAbs r1c1 = blockAddress r.Top r.Left r.Bottom r.Right rowAbs colAbs r1c1
+
+/// The parts of a formula outside its string literals, rewritten by `change` (literals kept as they are).
+let private outsideStrings (change: string -> string) (formula: string) =
+    let parts = formula.Split('"')
+    String.Join("\"", parts |> Array.mapi (fun i part -> if i % 2 = 0 then change part else part))
+
+/// A formula's A1 references as R1C1 ones, relative to the cell it is in (Range.FormulaR1C1).
+let private toR1C1 (row: int) (col: int) (formula: string) =
+    let pattern = Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_.])(\$?)([A-Za-z]{1,3})(\$?)([0-9]{1,7})(?![0-9A-Za-z_(!])")
+    formula |> outsideStrings (fun text ->
+        pattern.Replace(text, Text.RegularExpressions.MatchEvaluator(fun m ->
+            match parseReference (m.Groups.[2].Value + m.Groups.[4].Value) with
+            | Some (_, r, c, _, _) when r <= maxRow && c <= maxCol ->
+                let part (absolute: bool) (letter: string) (target: int) (here: int) =
+                    if absolute then letter + string (target + 1)
+                    elif target = here then letter
+                    else sprintf "%s[%d]" letter (target - here)
+                part (m.Groups.[3].Value = "$") "R" r row + part (m.Groups.[1].Value = "$") "C" c col
+            | _ -> m.Value)))
+
+/// A formula's R1C1 references as A1 ones, for the cell it goes into (setting Range.FormulaR1C1).
+let private fromR1C1 (row: int) (col: int) (formula: string) =
+    let pattern = Text.RegularExpressions.Regex(@"(?<![A-Za-z0-9_.])R(\[-?[0-9]+\]|[0-9]+)?C(\[-?[0-9]+\]|[0-9]+)?(?![0-9A-Za-z_(])", Text.RegularExpressions.RegexOptions.IgnoreCase)
+    formula |> outsideStrings (fun text ->
+        pattern.Replace(text, Text.RegularExpressions.MatchEvaluator(fun m ->
+            let resolve (part: string) (here: int) =
+                if part = "" then false, here
+                elif part.StartsWith "[" then false, here + int (part.Trim('[', ']'))
+                else true, int part - 1
+            let rowAbs, r = resolve m.Groups.[1].Value row
+            let colAbs, c = resolve m.Groups.[2].Value col
+            cellAddress r c rowAbs colAbs)))
+
+/// The range a host object stands for (a Range, a global that forwards to one - Selection, ActiveCell -,
+/// the first area of a union).
 let private rangeRefOf (value: Value) : RangeRef option =
     match value with
-    | VHostObject (:? Host as h) ->
-        match (h :> IHostObject).GetMember "__RbtRange" with
+    | VHostObject h ->
+        match (try h.GetMember "__RbtRange" with _ -> None) with
         | Some (VString text) ->
             let parts = text.Split '\t'
             Some { Sheet = parts.[0]; Top = int parts.[1]; Left = int parts.[2]; Bottom = int parts.[3]; Right = int parts.[4] }
         | _ -> None
     | _ -> None
+
+/// The areas a host object stands for: those of a union, else its one range.
+let private areasOf (value: Value) : RangeRef list =
+    match value with
+    | VHostObject h ->
+        match (try h.GetMember "__RbtAreas" with _ -> None) with
+        | Some (VString text) when text <> "" ->
+            [ for area in text.Split '\n' ->
+                let parts = area.Split '\t'
+                { Sheet = parts.[0]; Top = int parts.[1]; Left = int parts.[2]; Bottom = int parts.[3]; Right = int parts.[4] } ]
+        | _ -> Option.toList (rangeRefOf value)
+    | _ -> []
 
 let private sheetIdNamed (book: MacroWorkbook) (name: string) =
     book.SheetOrder |> List.tryFind (fun id -> eq (book.Sheet id).Name name)
@@ -409,13 +475,18 @@ let private entered (book: MacroWorkbook) (sheetId: SheetId) (row: int) (col: in
     | VDouble d -> withValue (Number d)
     | VBoolean b -> withValue (Boolean b)
     | VDate serial ->
-        // A Date gets a date format when the cell has none (as Excel gives it one).
+        // A Date gets a date format when the cell has none (as Excel gives it one): a time alone a time's.
         let format =
             match format.NumberFormat with
-            | None -> { format with NumberFormat = Some (if serial <> Math.Floor serial then "m/d/yyyy h:mm" else "m/d/yyyy") }
+            | None ->
+                let code = if serial >= 0.0 && serial < 1.0 then "h:mm:ss AM/PM" elif serial <> Math.Floor serial then "m/d/yyyy h:mm" else "m/d/yyyy"
+                { format with NumberFormat = Some code }
             | Some _ -> format
         Some { Value = Number (if book.Date1904 then serial - 1462.0 else serial); Format = format; Comment = comment }
-    | VCurrency units -> withValue (Number (float units / 10000.0))
+    | VCurrency units ->
+        // (A Currency gets Excel's currency format when the cell has none.)
+        let format = if format.NumberFormat.IsNone then { format with NumberFormat = Some "$#,##0.00_);($#,##0.00)" } else format
+        Some { Value = Number (float units / 10000.0); Format = format; Comment = comment }
     | VError code -> withValue (Error (errorTextOf code))
     | VString "" -> if comment.IsSome || format <> defaultFormat then withValue CellValue.Empty else None
     | VString text ->
@@ -561,7 +632,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             elif eq name "Strikethrough" then Some (VBoolean f.Strikethrough)
             elif eq name "Size" then Some (VDouble (f.FontSize |> Option.map float |> Option.defaultValue 11.0))
             elif eq name "Name" then Some (VString (f.FontName |> Option.defaultValue "Calibri"))
-            elif eq name "Color" then Some (VInteger (colorToLong f.TextColor |> Option.defaultValue 0))
+            elif eq name "Color" then Some (VDouble (float (colorToLong f.TextColor |> Option.defaultValue 0)))
             elif eq name "ColorIndex" then Some (VInteger (match f.TextColor with None -> -4105 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
             else None
         let set (name: string) (value: Value) =
@@ -582,7 +653,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
     let interiorObject () =
         let get (name: string) : Value option =
             let f = format ()
-            if eq name "Color" then Some (VInteger (colorToLong f.BgColor |> Option.defaultValue 16777215))
+            if eq name "Color" then Some (VDouble (float (colorToLong f.BgColor |> Option.defaultValue 16777215)))
             elif eq name "ColorIndex" then Some (VInteger (match f.BgColor with None -> -4142 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
             elif eq name "Pattern" then Some (VInteger (if f.BgColor.IsSome then 1 else -4142))
             else unsupported "Interior" name
@@ -619,11 +690,11 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "Value2" then Some (gather value2At)
         elif eq name "Value" || eq name "_Default" || name = "" then Some (gather valueAt)
         elif eq name "Formula" || eq name "FormulaLocal" then Some (gather formulaAt)
+        elif eq name "FormulaR1C1" then
+            Some (gather (fun row col -> match formulaAt row col with VString text when text.StartsWith "=" -> VString (toR1C1 row col text) | other -> other))
         elif eq name "Text" then Some (textAt r.Top r.Left)
         elif eq name "HasFormula" then Some (VBoolean (match cellAt r.Top r.Left with Some { Value = Formula _ } -> true | _ -> false))
-        elif eq name "Address" then
-            let first = cellAddress r.Top r.Left true true
-            Some (VString (if rows = 1 && cols = 1 then first else first + ":" + cellAddress r.Bottom r.Right true true))
+        elif eq name "Address" then Some (VString (rangeAddress r true true false))
         elif eq name "Row" then Some (VInteger (r.Top + 1))
         elif eq name "Column" then Some (VInteger (r.Left + 1))
         elif eq name "Count" || eq name "CountLarge" then Some (VDouble (float rows * float cols))
@@ -667,6 +738,12 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
     let set (name: string) (value: Value) : bool =
         if eq name "Value" || eq name "Value2" || eq name "_Default" || name = "" || eq name "Formula" || eq name "FormulaLocal" then
             assign value (fun row col item -> entered book r.Sheet row col item); true
+        elif eq name "FormulaR1C1" then
+            assign value (fun row col item ->
+                match scalarOf item with
+                | VString text when text.StartsWith "=" -> entered book r.Sheet row col (VString (fromR1C1 row col text))
+                | other -> entered book r.Sheet row col other)
+            true
         elif eq name "NumberFormat" || eq name "NumberFormatLocal" then
             let code = toText value
             changeFormats (fun f -> { f with NumberFormat = (if eq code "General" then None else Some code) }); true
@@ -730,9 +807,9 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "Address" then
             let rowAbs = if isMissing (arg 0) then true else toBool (arg 0)
             let colAbs = if isMissing (arg 1) then true else toBool (arg 1)
+            let r1c1 = args.Length >= 3 && not (isMissing (arg 2)) && toInt (arg 2) = -4150
             let external = args.Length >= 4 && not (isMissing (arg 3)) && toBool (arg 3)
-            let first = cellAddress r.Top r.Left rowAbs colAbs
-            let text = if rows = 1 && cols = 1 then first else first + ":" + cellAddress r.Bottom r.Right rowAbs colAbs
+            let text = rangeAddress r rowAbs colAbs r1c1
             Some (VString (if external then "[" + book.Hooks.FileName + "]" + quotedSheet (sheetName ()) + "!" + text else text))
         elif eq name "ClearContents" then clearContents (); Some VEmpty
         elif eq name "Clear" then clearContents (); clearFormats (); Some VEmpty
@@ -823,6 +900,43 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         seq { for row in r.Top .. bottom do
                 for col in r.Left .. right -> sub row col row col }
     collection "Range" (fun name -> match get name with Some v -> Some v | None -> unsupported "Range" name) set call items
+
+/// Several areas (Union of separate blocks): its Address joins theirs ($A$1,$C$3), Areas lists them, Count
+/// and For Each go over all their cells; anything else is its first area's, as Excel reads a range.
+and private areasObject (book: MacroWorkbook) (areas: RangeRef list) : Value =
+    match areas with
+    | [ single ] -> rangeObject book single
+    | [] -> VNothing
+    | first :: _ ->
+        let firstHost () = match rangeObject book first with VHostObject h -> h | _ -> failwith "range"
+        let areaList () =
+            collection "Areas"
+                (fun n -> if eq n "Count" then Some (VInteger areas.Length) else unsupported "Areas" n)
+                (fun n _ -> unsupported "Areas" n)
+                (fun n args -> if (n = "" || eq n "_Default" || eq n "Item") && args.Length = 1 then Some (rangeObject book areas.[toInt args.[0] - 1]) else unsupported "Areas" n)
+                (fun () -> areas |> List.map (rangeObject book) |> Seq.ofList)
+        let encoded () = String.Join("\n", [| for a in areas -> String.Join("\t", [| a.Sheet; string a.Top; string a.Left; string a.Bottom; string a.Right |]) |])
+        collection "Range"
+            (fun n ->
+                if n = "__RbtAreas" then Some (VString (encoded ()))
+                elif eq n "Address" then Some (VString (String.Join(",", areas |> List.map (fun a -> rangeAddress a true true false))))
+                elif eq n "Count" || eq n "CountLarge" then Some (VDouble (areas |> List.sumBy (fun a -> float (a.Bottom - a.Top + 1) * float (a.Right - a.Left + 1))))
+                elif eq n "Areas" then Some (areaList ())
+                else (firstHost ()).GetMember n)
+            (fun n value ->
+                // (A value or format given to a union goes to every area.)
+                areas |> List.iter (fun a -> match rangeObject book a with VHostObject h -> h.SetMember n value |> ignore | _ -> ())
+                true)
+            (fun n args ->
+                if eq n "Address" then
+                    let rowAbs = if args.Length > 0 && not (isMissing args.[0]) then toBool args.[0] else true
+                    let colAbs = if args.Length > 1 && not (isMissing args.[1]) then toBool args.[1] else true
+                    Some (VString (String.Join(",", areas |> List.map (fun a -> rangeAddress a rowAbs colAbs false))))
+                elif eq n "ClearContents" || eq n "Clear" || eq n "ClearFormats" then
+                    areas |> List.iter (fun a -> match rangeObject book a with VHostObject h -> h.CallMethod n args |> ignore | _ -> ())
+                    Some VEmpty
+                else (firstHost ()).CallMethod n args)
+            (fun () -> areas |> Seq.collect (fun a -> match rangeObject book a with VHostObject h -> (h.Enumerate () |> Option.defaultValue Seq.empty) | _ -> Seq.empty))
 
 and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
     let whole = { Sheet = sheetId; Top = 0; Left = 0; Bottom = maxRow; Right = maxCol }
@@ -1107,9 +1221,12 @@ let evaluate (book: MacroWorkbook) (formula: string) : Value =
     let workbook = book.Workbook
     let sheet = book.ActiveSheet
     let model = book.Model sheet
-    match Rbt.Spreadsheet.Formula.evaluateFormulaValuesShifted (Some workbook) (Some sheet) formula 0 0 model { Row = 0; Col = 0 } with
-    | Some [ single ] -> cellValue single
-    | Some values when not values.IsEmpty -> VArray { Data = values |> List.map cellValue |> List.toArray; LowerBounds = [| 1 |]; Lengths = [| values.Length |] }
+    // (An array or range result keeps its shape: a 2-D array, 1-based, as Excel hands it to VBA.)
+    match Rbt.Spreadsheet.Formula.evaluateFormulaRows (Some workbook) (Some sheet) formula model { Row = 0; Col = 0 } with
+    | Some [| [| single |] |] -> cellValue single
+    | Some rows when rows.Length > 0 && rows.[0].Length > 0 ->
+        let cols = rows.[0].Length
+        array2D rows.Length cols (fun i j -> if j < rows.[i].Length then cellValue rows.[i].[j] else VError 2042)
     | _ -> cellValue (Rbt.Spreadsheet.Formula.evaluateFormulaShifted (Some workbook) (Some sheet) formula 0 0 model { Row = 0; Col = 0 })
 
 let private worksheetFunctionObject (book: MacroWorkbook) =
@@ -1199,14 +1316,14 @@ let private applicationObject (book: MacroWorkbook) =
                 | Some r -> Some (rangeObject book r)
                 | None -> Some VNothing
             elif eq name "Union" then
-                // (The bounding block of the ranges: Excel's union of separate areas is not modelled.)
-                let refs = args |> Array.choose rangeRefOf
-                if refs.Length = 0 then failApp "Method 'Union' of object '_Application' failed"
-                let top = refs |> Array.map (fun r -> r.Top) |> Array.min
-                let left = refs |> Array.map (fun r -> r.Left) |> Array.min
-                let bottom = refs |> Array.map (fun r -> r.Bottom) |> Array.max
-                let right = refs |> Array.map (fun r -> r.Right) |> Array.max
-                Some (rangeObject book { refs.[0] with Top = top; Left = left; Bottom = bottom; Right = right })
+                // Separate blocks stay separate areas; blocks one contains are dropped.
+                let refs = args |> Array.filter (isMissing >> not) |> Array.toList |> List.collect areasOf
+                if refs.IsEmpty then failApp "Method 'Union' of object '_Application' failed"
+                let contains (a: RangeRef) (b: RangeRef) = a.Sheet = b.Sheet && a.Top <= b.Top && a.Left <= b.Left && a.Bottom >= b.Bottom && a.Right >= b.Right
+                let kept =
+                    refs |> List.distinct
+                    |> fun all -> all |> List.filter (fun r -> not (all |> List.exists (fun other -> other <> r && contains other r)))
+                Some (areasObject book kept)
             elif eq name "Goto" && args.Length >= 1 then
                 match rangeRefOf args.[0] with
                 | Some r -> book.SetActiveSheet r.Sheet; book.Selection <- Some (r.Sheet, r.Top, r.Left, r.Bottom, r.Right); Some VEmpty
@@ -1221,7 +1338,13 @@ let private applicationObject (book: MacroWorkbook) =
             else
                 match get name with
                 | Some value when args.Length = 0 -> Some value
-                | _ -> unsupported "Application" name)
+                | _ ->
+                    // Application.<function>: a worksheet function that hands back its error as an Error
+                    // value (Application.Match of a missing value is CVErr(xlErrNA)) instead of raising.
+                    let formula = name.ToUpperInvariant() + "(" + String.Join(",", args |> Array.map (formulaArgument book)) + ")"
+                    match evaluate book formula with
+                    | VError 2029 -> unsupported "Application" name
+                    | result -> Some result)
 
 /// A range object of the workbook (an event's Target).
 let private rangeValue (book: MacroWorkbook) (r: RangeRef) = rangeObject book r
@@ -1235,13 +1358,20 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
     /// resolved on each use, with its members, its default call and For Each.
     let forward (name: string) (target: unit -> Value option) (defaultCall: Value array -> Value option) =
         let current () = match target () with Some (VHostObject h) -> Some h | _ -> None
-        collection name
-            (fun member' -> match current () with Some h -> h.GetMember member' | None -> unsupported name member')
-            (fun member' value -> match current () with Some h -> h.SetMember member' value | None -> false)
-            (fun member' args ->
-                if member' = "" || eq member' "_Default" then (if args.Length = 0 then (match current () with Some h -> h.CallMethod "" args | None -> None) else defaultCall args)
-                else match current () with Some h -> h.CallMethod member' args | None -> unsupported name member')
-            (fun () -> match current () |> Option.bind (fun h -> h.Enumerate ()) with Some items -> items | None -> raiseVbError 451)
+        // (It is what it stands for: TypeName(ActiveSheet) is "Worksheet".)
+        VHostObject
+            { new IHostObject with
+                member _.TypeName = match current () with Some h -> h.TypeName | None -> name
+                member _.GetMember member' = match current () with Some h -> h.GetMember member' | None -> unsupported name member'
+                member _.SetMember member' value = match current () with Some h -> h.SetMember member' value | None -> false
+                member _.CallMethod member' args =
+                    if member' = "" || eq member' "_Default" then (if args.Length = 0 then (match current () with Some h -> h.CallMethod "" args | None -> None) else defaultCall args)
+                    else match current () with Some h -> h.CallMethod member' args | None -> unsupported name member'
+                member _.CallNamed member' args names =
+                    match current () with
+                    | Some h when member' <> "" && not (eq member' "_Default") -> h.CallNamed member' args names
+                    | _ -> defaultCall args
+                member _.Enumerate () = current () |> Option.bind (fun h -> h.Enumerate ()) }
     let viaApp (name: string) = forward name (fun () -> appHost.GetMember name) (fun args -> appHost.CallMethod name args)
     let viaSheet (name: string) =
         let sheet () = match worksheetObject book book.ActiveSheet with VHostObject h -> h | _ -> failwith "sheet"

@@ -299,6 +299,38 @@ check "CVErr written is the error" (valueAt dates "Data" (3, 3)) (Error "N/A")
 check "Scripting.Dictionary" (valueAt dates "Data" (4, 4)) (String "2:Ann,Bob")
 check "dates into WorksheetFunction" (valueAt dates "Data" (5, 4)) (Boolean true)
 
+// ---- as Excel 2019 does it (tools/vba-parity, 2026-11-18) ----
+let excelSource = """
+Sub Main()
+    Range("E1").Value = Application.Union(Range("A1"), Range("C3")).Address
+    Range("E2").Value = Application.Union(Range("A1"), Range("C3")).Areas.Count
+    Range("E3").Value = Range("B2").EntireRow.Address & " " & Range("B2").EntireColumn.Address(False, False)
+    Range("E4").Value = Range("B3").Address(ReferenceStyle:=xlR1C1)
+    Range("F1").Formula = "=SUM(A2:B$4)"
+    Range("E5").Value = "'" & Range("F1").FormulaR1C1
+    Range("F2").FormulaR1C1 = "=R[-1]C*2"
+    Range("E6").Value = "'" & Range("F2").Formula
+    Range("E7").Value = TypeName(Application.Match(99, Range("B2:B4"), 0))
+    Range("E8").Value = Application.Match(20, Range("B2:B4"), 0)
+    Range("G1:G3").Value = WorksheetFunction.Transpose(Array(3, 1, 2))
+    Range("E9").Value = TypeName(ActiveSheet) & "/" & TypeName(Selection) & "/" & TypeName(Range("A1").Interior.Color)
+    Range("H1").Value = TimeSerial(13, 45, 30)
+    Range("H2").Value = CCur(2.5)
+End Sub"""
+let excelLike = run excelSource (Some "Main")
+check "Union keeps separate areas" (valueAt excelLike "Data" (0, 4)) (String "$A$1,$C$3")
+check "... as Areas" (valueAt excelLike "Data" (1, 4)) (Number 2.0)
+check "whole rows and columns" (valueAt excelLike "Data" (2, 4)) (String "$2:$2 B:B")
+check "an R1C1 address" (valueAt excelLike "Data" (3, 4)) (String "R3C2")
+check "FormulaR1C1 read" (valueAt excelLike "Data" (4, 4)) (String "=SUM(R[1]C[-5]:R4C[-4])")
+check "FormulaR1C1 written" (valueAt excelLike "Data" (5, 4)) (String "=F1*2")
+check "Application.Match hands back its error" (valueAt excelLike "Data" (6, 4)) (String "Error")
+check "Application.Match found" (valueAt excelLike "Data" (7, 4)) (Number 2.0)
+check "Transpose fills a column" ([ 0 .. 2 ] |> List.map (fun r -> valueAt excelLike "Data" (r, 6))) [ Number 3.0; Number 1.0; Number 2.0 ]
+check "TypeName of the globals and colours" (valueAt excelLike "Data" (8, 4)) (String "Worksheet/Range/Double")
+check "a time gets a time format" ((formatAt excelLike "Data" (0, 7)).NumberFormat) (Some "h:mm:ss AM/PM")
+check "a Currency gets a currency format" ((formatAt excelLike "Data" (1, 7)).NumberFormat) (Some "$#,##0.00_);($#,##0.00)")
+
 // ---- the macro list of a project of several modules ----
 let modules =
     [ M.macroModule "Module1" "Attribute VB_Name = \"Module1\"\nSub Main()\nEnd Sub\nPrivate Sub Hidden()\nEnd Sub\nSub WithArgs(x)\nEnd Sub\nFunction F()\nEnd Function"

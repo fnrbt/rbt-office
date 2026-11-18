@@ -1592,7 +1592,8 @@ checks['formula-result-format'] = async () => {
         grid.EnterText(0, 1, '12.5%'); grid.EnterText(1, 1, '=B1*2');
         check('=B1*2 on a percentage is a percentage', [at(1, 1)[0], at(1, 1)[1] === grid.GetCell(0, 1).format.numberFormat], ['25.00%', true]);
         grid.EnterText(0, 2, '$1,200.50'); grid.EnterText(1, 2, '$300'); grid.SetCell(2, 2, '=SUM(C1:C2)');
-        check('a sum of amounts is an amount (SetCell too)', [at(2, 2)[0], at(2, 2)[1] === grid.GetCell(0, 2).format.numberFormat], ['$1,500.50', true]);
+        // (Excel's format for a typed amount keeps room for a negative's parenthesis: "$1,500.50 ".)
+        check('a sum of amounts is an amount (SetCell too)', [at(2, 2)[0], at(2, 2)[1] === grid.GetCell(0, 2).format.numberFormat], ['$1,500.50 ', true]);
         grid.EnterText(3, 2, '=C1*B1');
         check('an amount times a rate is an amount', at(3, 2)[1] === grid.GetCell(0, 2).format.numberFormat, true);
         grid.EnterText(0, 3, '=DATE(2026,3,31)'); grid.EnterText(1, 3, '=COUNT(C1:C2)');

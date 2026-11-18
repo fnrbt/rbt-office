@@ -539,7 +539,9 @@ let private excelSerialToDate (date1904: bool) (serial: float) : System.DateTime
     let days = if date1904 then serial + 1462.0 elif serial >= 60.0 then serial else serial + 1.0
     // Day arithmetic in UTC, then the same calendar fields as a local-kind
     // value: Fable formats some tokens (AM/PM) from local time regardless of kind.
-    let utc = excelEpoch.AddDays(days)
+    // (To the nearest millisecond: 13:05 is 0.5451388888888889 days, a hair under 13:05, which the
+    // fields below would otherwise truncate to 13:04:59.999.)
+    let utc = excelEpoch.AddMilliseconds(System.Math.Round(days * 86400000.0))
     System.DateTime(utc.Year, utc.Month, utc.Day, utc.Hour, utc.Minute, utc.Second, utc.Millisecond)
 
 /// Tokenize an Excel format code into .NET DateTime.ToString format. Tracks
@@ -847,13 +849,15 @@ let private formatExcelDateOpt (date1904: bool) (code: string) (serial: float) :
             // fractional second; otherwise, when seconds are shown at all,
             // round to the whole second (Excel renders 59.9999996 s as the
             // next whole second, e.g. `0:01:00`, where .NET would truncate
-            // to `0:00:59`). Date-only / minute-only formats keep `prec < 0`
-            // so they are left untouched.
+            // to `0:00:59`). Formats without seconds still round to the
+            // millisecond: a time typed as 13:05 is 0.5451388888888889 days,
+            // which .NET's conversion makes 13:04:59.999 - and h:mm would show
+            // 13:04 where Excel shows 13:05.
             let prec =
                 let p = fractionalSecondPrecision code
                 if p >= 0 then p
                 elif containsIgnoringLocaleTags 's' (firstSection code) then 0
-                else -1
+                else 3
             if prec < 0 then dt
             else
                 // Keep the exponent in float space. Fable maps int64 `pown`
@@ -904,6 +908,17 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
     let maxChars = max 1 (int (usableWidth / mdwPx fontPt))
 
     let mutable result: string voption = ValueNone
+    // A small number stays in plain decimals while they fit, as Excel shows it (0.000001 in a default
+    // column, where .NET's general format would give 1E-06): the most significant digits that fit.
+    let magnitude = abs n
+    if magnitude > 0.0 && magnitude < 1e-4 && magnitude >= 1e-9 then
+        let leadingZeros = int (floor (-(System.Math.Log10 magnitude)))
+        let mutable digits = 10
+        while result.IsNone && digits >= 1 do
+            let decimals = min 15 (leadingZeros + digits)
+            let text = (System.Math.Round(n, decimals)).ToString("F" + string decimals, System.Globalization.CultureInfo.InvariantCulture).TrimEnd('0').TrimEnd('.')
+            if text.Length <= maxChars && text <> "0" && text <> "-0" then result <- ValueSome text
+            digits <- digits - 1
     let mutable i = 0
     while result.IsNone && i < generalNumberFormats.Length do
         let s = NumberText.numberToString generalNumberFormats.[i] n

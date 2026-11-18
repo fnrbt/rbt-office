@@ -134,11 +134,14 @@ let private tryNumber (input: string) : ParsedInput option =
                 Some { Value = Number (signed / 100.0); NumberFormat = Some (if decimals > 0 then "0.00%" else "0%") }
             else
                 match currency with
-                | Some '$' -> Some { Value = Number signed; NumberFormat = Some ("$#,##0" + fraction) }
+                // (Excel's own currency format for a typed amount: room for the parenthesis of a negative.)
+                | Some '$' -> Some { Value = Number signed; NumberFormat = Some ("$#,##0" + fraction + "_);[Red]($#,##0" + fraction + ")") }
                 | Some symbol -> Some { Value = Number signed; NumberFormat = Some ("\"" + string symbol + "\"#,##0" + fraction) }
                 | None ->
+                    // (Typed in scientific notation, the number is shown so: Excel's 0.00E+00.)
+                    let scientific = text.IndexOfAny([| 'E'; 'e' |]) > 0
                     Some { Value = Number signed
-                           NumberFormat = (if grouped then Some ("#,##0" + fraction) else None) }
+                           NumberFormat = (if scientific then Some "0.00E+00" elif grouped then Some ("#,##0" + fraction) else None) }
 
 /// `1 1/2`, `0 3/4`: a whole number, a space and a fraction.
 let private tryFraction (input: string) : ParsedInput option =
@@ -233,9 +236,10 @@ let private tryDate (date1904: bool) (currentYear: int) (input: string) : (float
                     match text.Split(sep) with
                     | [| first; second; third |] when allDigits first && allDigits second && allDigits third ->
                         if first.Length = 4 then
-                            // ISO: year first.
+                            // ISO: year first. (Excel shows it as it shows any typed date: m/d/yyyy -
+                            // Excel 2019 with 2024-01-31 and 2024/1/31, tools/vba-parity.)
                             match smallInt second, smallInt third with
-                            | Some month, Some day -> trySerial date1904 (int first) month day |> Option.map (fun serial -> serial, "yyyy-mm-dd")
+                            | Some month, Some day -> trySerial date1904 (int first) month day |> Option.map (fun serial -> serial, "m/d/yyyy")
                             | _ -> None
                         else
                             match smallInt first, smallInt second, yearOf third with

@@ -15162,6 +15162,18 @@ let evaluateFormulaValuesShifted (workbook: Rbt.Spreadsheet.Workbook.Workbook op
                     for value in row -> unwrapValue value ]
         with _ -> None
 
+/// The values a formula gives, as rows (a range or an array keeps its shape; anything else is one row
+/// of one value), evaluated as `evaluateFormulaShifted` evaluates it. None for a formula that cannot be read.
+let evaluateFormulaRows (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                        (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                        (formula: string) (model: SpreadsheetModel) (cell: CellAddress) : CellValue[][] option =
+    match parseFormulaShared formula with
+    | Result.Error _ -> None
+    | Ok expr ->
+        let ctx = { Model = model; Workbook = workbook; Sheet = sheet; CurrentCell = Some cell }
+        try Some (evalArray expr ctx |> Array.map (Array.map unwrapValue))
+        with _ -> None
+
 /// Installs what Model.fs needs from this file, which compiles after it: the
 /// formula rewrites for paste, fill and row/column edits, and the evaluator
 /// for validation and conditional-format formulas. Model.fs reads this value
