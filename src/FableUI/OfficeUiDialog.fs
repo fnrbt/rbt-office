@@ -183,7 +183,7 @@ let defaultStylesheet = """
 .rb-dlg-button { min-height: 32px; padding: 0 16px; border: 1px solid var(--office-border, #dadce0); border-radius: var(--office-radius, 6px); background: var(--office-surface, #fff); color: var(--office-text, #202124); font: inherit; cursor: pointer; }
 .rb-dlg-button:hover { background: var(--office-hover, #f1f3f4); }
 .rb-office-dialog .rb-dlg-button-primary { background: var(--office-accent, #1a73e8); color: #fff; border-color: var(--office-accent, #1a73e8); }
-.rb-office-dialog .rb-dlg-button-primary:hover { filter: brightness(.9); }
+.rb-office-dialog .rb-dlg-button-primary:hover, .rb-dlg-buttons .rb-dlg-button.rb-dlg-button-primary:hover { background: var(--office-accent, #1a73e8); color: #fff; filter: brightness(.9); }
 .rb-dlg-card :focus-visible, .rb-dlg-card:focus-visible { outline: 2px solid var(--office-accent, #1a73e8); outline-offset: 2px; }
 """
 /// Mount once alongside the shell. Dialogs are created and disposed as the state changes.

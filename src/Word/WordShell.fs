@@ -577,6 +577,11 @@ module Shell =
         let canEdit () =
             let _ = host.SelectionVersion.Value
             host.Editor |> Option.exists (fun editor -> inputEditable (WordApi.getInputElement editor) && editor.Doc.Selection.IsSome)
+        // (What does not act at the caret - the VBA editor - needs an editable document, not a selection: a
+        // document just opened has no caret until it is clicked.)
+        let documentEditable () =
+            let _ = host.SelectionVersion.Value
+            host.Editor |> Option.exists (fun editor -> inputEditable (WordApi.getInputElement editor))
         let inTable () =
             canEdit () && (host.Editor |> Option.exists (fun editor -> (Rbt.Word.Document.caretContext editor.Doc).InTable))
         let add id label shortcut action =
@@ -613,7 +618,7 @@ module Shell =
         addValue "format.alignment" "Alignment" applyAlignment
         add "format.paragraphDialog" "Paragraph style" None (fun () -> WordHost.openParagraphStyle host)
         registry.Add(Rbt.Office.Commands.command "format.fontDialog" "Font" None canEdit (fun _ -> WordHost.openFontDialog host))
-        registry.Add(Rbt.Office.Commands.command "tools.vba" "VBA editor" None canEdit (fun _ -> WordHost.openVbaEditor host))
+        registry.Add(Rbt.Office.Commands.command "tools.vba" "VBA editor" None documentEditable (fun _ -> WordHost.openVbaEditor host))
         registry.Add(Rbt.Office.Commands.command "format.paragraphBorders" "Borders and shading" None canEdit (fun _ -> WordHost.openParagraphBorders host))
         registry.Add(Rbt.Office.Commands.command "format.listsDialog" "Bullets and numbering" None canEdit (fun _ -> WordHost.openListsDialog host))
         add "format.normal" "Normal paragraph" None applyNormalParagraph
