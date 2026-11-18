@@ -62,6 +62,17 @@ mechanical one-for-one. The list comes from CPU profiles of opening, scrolling, 
   counts and indices, `float` for measures); widths that only one backend has cheaply (`int64`,
   `decimal`, `bigint`) stay at the edges, where a value is parsed or written.
 
+## Writing a helper
+
+A helper is `inline`, with `#if FABLE_COMPILER` around a native expression (`emitJsExpr`) and
+the replaced spelling in the `#else`. Two traps:
+
+- Fable coerces an emitted expression whose F# type is `int` with `| 0` (and so on for the
+  other integer types): an `undefined` meaning "not there" becomes `0`. Type such an
+  expression `obj` and unbox once it is known to be there (see `Dict.tryFind`).
+- Arguments substituted into the emitted text more than once are evaluated more than once:
+  bind them with `let` first.
+
 ## Measuring
 
 The browser harnesses print the functions with the most self time; with `PROFILE_OUT=file.json`

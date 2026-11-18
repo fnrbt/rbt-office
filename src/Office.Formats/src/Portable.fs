@@ -48,8 +48,10 @@ module Dict =
         // A dictionary with primitive keys is a JavaScript Map: one look-up,
         // a second only for a value that is undefined (unit, None). Fable's
         // own Dictionary (structural keys) throws from get: has first.
-        let found : 'V = emitJsExpr (d, k) "($0 instanceof Map || $0.has($1)) ? $0.get($1) : undefined"
-        if not (isNull (box found)) || d.ContainsKey k then ValueSome found else ValueNone
+        // (Read as obj, unboxed once found: Fable coerces an emitted expression of type int with `| 0`,
+        // which would make a missing key's undefined a 0.)
+        let found : obj = emitJsExpr (d, k) "($0 instanceof Map || $0.has($1)) ? $0.get($1) : undefined"
+        if not (isNull found) || d.ContainsKey k then ValueSome (unbox<'V> found) else ValueNone
 #else
         let mutable found = Unchecked.defaultof<'V>
         if dictionary.TryGetValue(key, &found) then ValueSome found else ValueNone

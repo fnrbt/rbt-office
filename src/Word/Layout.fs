@@ -7482,8 +7482,16 @@ let private sectionsUpTo (limit: int) (sections: (Block list * SectionColumns op
     let mutable left = max 1 limit
     for (blocks, columns, geometry, breakType, isFinal) in sections do
         if left > 0 then
-            let count = List.length blocks
-            if count <= left then
+            // (The length when it is at most `left`, else -1: the walk stops at the limit, not at
+            // the end of a long document's one section, with every pass.)
+            let count =
+                let mutable n = 0
+                let mutable rest = blocks
+                while n <= left && not rest.IsEmpty do
+                    n <- n + 1
+                    rest <- rest.Tail
+                if n <= left then n else -1
+            if count >= 0 then
                 kept.Add (blocks, columns, geometry, breakType, isFinal)
                 left <- left - count
             else
