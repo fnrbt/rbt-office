@@ -43,7 +43,9 @@ let rec private scalarOf (value: Value) =
 
 let private toFloat (value: Value) =
     match scalarOf value with
-    | VInteger i -> float i
+    | VInteger i | VLong i -> float i
+    | VByte b -> float b
+    | VSingle f -> float (Rbt.Vb.NumberText.singleAsDouble f)
     | VDouble d -> d
     | VDate serial -> serial
     | VCurrency units -> float units / 10000.0
@@ -60,7 +62,9 @@ let private toInt (value: Value) = int (Math.Round(toFloat value))
 let private toText (value: Value) =
     match scalarOf value with
     | VString s -> s
-    | VInteger i -> string i
+    | VInteger i | VLong i -> string i
+    | VByte b -> string b
+    | VSingle _ -> Rbt.Vb.Api.displayValue value
     | VDouble d -> Rbt.Vb.Api.displayValue (VDouble d)
     | VDate _ | VCurrency _ as v -> Rbt.Vb.Api.displayValue v
     | VBoolean b -> if b then "True" else "False"
@@ -70,7 +74,9 @@ let private toText (value: Value) =
 let private toBool (value: Value) =
     match scalarOf value with
     | VBoolean b -> b
-    | VInteger i -> i <> 0
+    | VInteger i | VLong i -> i <> 0
+    | VByte b -> b <> 0uy
+    | VSingle f -> f <> 0.0f
     | VDouble d -> d <> 0.0
     | VString s when eq s "true" -> true
     | VString s when eq s "false" -> false
@@ -105,8 +111,8 @@ let private colorOfValue (value: Value) : string option =
 
 let private colorValueOf (color: string option) =
     match color |> Option.bind longOfHex with
-    | Some n -> VInteger n
-    | None -> VInteger wdColorAutomatic
+    | Some n -> VLong n
+    | None -> VLong wdColorAutomatic
 
 /// WdColorIndex: wdBlack 1 ... wdGray25 16, as colours and as w:highlight names.
 let private colorIndexColors =
@@ -229,7 +235,7 @@ let constants : (string * Value) list =
       "wdDoNotSaveChanges", 0; "wdSaveChanges", -1; "wdPromptToSaveChanges", -2
       "wdFormatDocument", 0; "wdFormatXMLDocument", 12; "wdFormatXMLDocumentMacroEnabled", 13; "wdFormatPDF", 17
       "wdMainTextStory", 1; "wdAlertsNone", 0; "wdAlertsAll", -1 ]
-    |> List.map (fun (name, value) -> name, VInteger value)
+    |> List.map (fun (name, value) -> name, VLong value)
 
 // ---- the main story ------------------------------------------------------------------------------------
 
@@ -1003,7 +1009,7 @@ let private collectionObject typeName (items: unit -> Value array) (moreGet: str
     makeObject typeName
         (fun name ->
             match name with
-            | "count" -> Some (VInteger (items ()).Length)
+            | "count" -> Some (VLong (items ()).Length)
             | "first" -> (match items () with [||] -> noSuchMember () | all -> Some all.[0])
             | "last" -> (match items () with [||] -> noSuchMember () | all -> Some all.[all.Length - 1])
             | _ -> moreGet name)
@@ -1054,22 +1060,22 @@ let private fontChange (name: string) (value: Value) : (TB.TextStyle -> TB.TextS
 
 let private fontRead (name: string) (s: TB.TextStyle) : Value option =
     match name with
-    | "bold" -> Some (VInteger (if s.Bold then -1 else 0))
-    | "italic" -> Some (VInteger (if s.Italic then -1 else 0))
+    | "bold" -> Some (VLong (if s.Bold then -1 else 0))
+    | "italic" -> Some (VLong (if s.Italic then -1 else 0))
     | "underline" ->
-        if not s.Underline then Some (VInteger 0)
-        else Some (VInteger (underlineStyles |> List.tryPick (fun (k, v) -> if v = s.UnderlineStyle then Some k else None) |> Option.defaultValue 1))
+        if not s.Underline then Some (VLong 0)
+        else Some (VLong (underlineStyles |> List.tryPick (fun (k, v) -> if v = s.UnderlineStyle then Some k else None) |> Option.defaultValue 1))
     | "size" -> Some (VDouble (Math.Round(ptOfPx s.FontSize * 2.0) / 2.0))
     | "name" | "nameascii" | "nameother" -> Some (VString (defaultArg s.FontFamily "Calibri"))
     | "color" -> Some (colorValueOf s.Color)
-    | "colorindex" -> Some (VInteger (indexOfColor s.Color))
-    | "strikethrough" -> Some (VInteger (if s.Strike then -1 else 0))
-    | "doublestrikethrough" -> Some (VInteger (if s.DoubleStrike then -1 else 0))
-    | "superscript" -> Some (VInteger (if s.VertAlign = Some "superscript" then -1 else 0))
-    | "subscript" -> Some (VInteger (if s.VertAlign = Some "subscript" then -1 else 0))
-    | "allcaps" -> Some (VInteger (if s.AllCaps then -1 else 0))
-    | "smallcaps" -> Some (VInteger (if s.SmallCaps then -1 else 0))
-    | "hidden" -> Some (VInteger (if s.Hidden then -1 else 0))
+    | "colorindex" -> Some (VLong (indexOfColor s.Color))
+    | "strikethrough" -> Some (VLong (if s.Strike then -1 else 0))
+    | "doublestrikethrough" -> Some (VLong (if s.DoubleStrike then -1 else 0))
+    | "superscript" -> Some (VLong (if s.VertAlign = Some "superscript" then -1 else 0))
+    | "subscript" -> Some (VLong (if s.VertAlign = Some "subscript" then -1 else 0))
+    | "allcaps" -> Some (VLong (if s.AllCaps then -1 else 0))
+    | "smallcaps" -> Some (VLong (if s.SmallCaps then -1 else 0))
+    | "hidden" -> Some (VLong (if s.Hidden then -1 else 0))
     | "spacing" -> Some (VDouble (ptOfPx s.CharacterSpacing))
     | "position" -> Some (VDouble s.Position)
     | _ -> None
@@ -1095,12 +1101,12 @@ let private fontObject (book: MacroDocument) (target: FontTarget) : Value =
                 match fontRead name styles.Head with
                 | Some first ->
                     let all = styles |> List.map (fun s -> (fontRead name s).Value) |> List.distinct
-                    Some (if all.Length = 1 then first else VInteger wdUndefined)
+                    Some (if all.Length = 1 then first else VLong wdUndefined)
                 | None -> None
             | SpecFont spec ->
                 match spec.TryGetValue name with
                 | true, v -> Some v
-                | _ -> fontRead name TB.defaultStyle |> Option.map (fun _ -> VInteger wdUndefined)
+                | _ -> fontRead name TB.defaultStyle |> Option.map (fun _ -> VLong wdUndefined)
             | StyleFont id ->
                 let named = book.Document.Styles |> List.tryFind (fun s -> s.Id = id)
                 let text = named |> Option.bind (fun s -> s.Text) |> Option.defaultValue TB.defaultStyle
@@ -1194,7 +1200,7 @@ let rec private paragraphRead (style: StyleFallback) (name: string) (m: BlockMet
     match name with
     | "alignment" ->
         let a = if m.ExplicitAlignment then m.Alignment else (fromStyle (fun s -> s.Alignment) |> Option.defaultValue m.Alignment)
-        Some (VInteger (alignmentValue a))
+        Some (VLong (alignmentValue a))
     | "spacebefore" -> Some (VDouble (m.SpacingBefore |> Option.orElse (fromStyle (fun s -> s.SpacingBefore)) |> Option.defaultValue 0.0))
     | "spaceafter" -> Some (VDouble (m.SpacingAfter |> Option.orElse (fromStyle (fun s -> s.SpacingAfter)) |> Option.defaultValue 0.0))
     | "leftindent" -> Some (VDouble (ptOfPx (m.IndentLeft |> Option.orElse (fromStyle (fun s -> s.IndentLeft)) |> Option.defaultValue 0.0)))
@@ -1204,12 +1210,12 @@ let rec private paragraphRead (style: StyleFallback) (name: string) (m: BlockMet
         match m.LineSpacingRule, m.LineSpacing with
         | _ when m.LineSpacingRule.IsNone && (fromStyle (fun s -> s.LineSpacingRule)).IsSome && m.LineSpacing.IsNone ->
             paragraphRead { style with Fallback = None } name { m with LineSpacingRule = fromStyle (fun s -> s.LineSpacingRule); LineSpacing = fromStyle (fun s -> s.LineSpacing) }
-        | Some "exact", _ -> Some (VInteger 4)
-        | Some "atLeast", _ -> Some (VInteger 3)
-        | _, Some 1.5 -> Some (VInteger 1)
-        | _, Some 2.0 -> Some (VInteger 2)
-        | _, (Some 1.0 | None) -> Some (VInteger 0)
-        | _ -> Some (VInteger 5)
+        | Some "exact", _ -> Some (VLong 4)
+        | Some "atLeast", _ -> Some (VLong 3)
+        | _, Some 1.5 -> Some (VLong 1)
+        | _, Some 2.0 -> Some (VLong 2)
+        | _, (Some 1.0 | None) -> Some (VLong 0)
+        | _ -> Some (VLong 5)
     | "linespacing" when m.LineSpacing.IsNone && (fromStyle (fun s -> s.LineSpacing)).IsSome ->
         paragraphRead { style with Fallback = None } name { m with LineSpacingRule = fromStyle (fun s -> s.LineSpacingRule); LineSpacing = fromStyle (fun s -> s.LineSpacing) }
     | "linespacing" ->
@@ -1221,7 +1227,7 @@ let rec private paragraphRead (style: StyleFallback) (name: string) (m: BlockMet
     | "keeptogether" -> Some (VBoolean (m.KeepLines |> Option.orElse (fromStyle (fun s -> s.KeepLines)) |> Option.defaultValue false))
     | "pagebreakbefore" -> Some (VBoolean m.PageBreakBefore)
     | "widowcontrol" -> Some (VBoolean (m.WidowControl |> Option.defaultValue true))
-    | "outlinelevel" -> Some (VInteger (match style.Level with Some l -> l | None -> 10))
+    | "outlinelevel" -> Some (VLong (match style.Level with Some l -> l | None -> 10))
     | "spacebeforeauto" | "spaceafterauto" -> Some (VBoolean false)
     | _ -> None
 
@@ -1275,9 +1281,9 @@ let private shadingObject (book: MacroDocument) (target: ShadingTarget) : Value 
         (fun name ->
             match name with
             | "backgroundpatterncolor" -> Some (colorValueOf (readColor ()))
-            | "backgroundpatterncolorindex" -> Some (VInteger (indexOfColor (readColor ())))
-            | "foregroundpatterncolor" -> Some (VInteger wdColorAutomatic)
-            | "texture" -> Some (VInteger 0)
+            | "backgroundpatterncolorindex" -> Some (VLong (indexOfColor (readColor ())))
+            | "foregroundpatterncolor" -> Some (VLong wdColorAutomatic)
+            | "texture" -> Some (VLong 0)
             | _ -> None)
         (fun name value ->
             match name with
@@ -1371,10 +1377,10 @@ let private borderObject (book: MacroDocument) (target: BordersTarget) (side: Bo
         (fun name ->
             let line = readLine book target side
             match name with
-            | "linestyle" -> Some (VInteger (match line with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
-            | "linewidth" -> Some (VInteger (match line with Some l -> int (Math.Round(l.LineWidth * 6.0)) | None -> 4))
+            | "linestyle" -> Some (VLong (match line with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
+            | "linewidth" -> Some (VLong (match line with Some l -> int (Math.Round(l.LineWidth * 6.0)) | None -> 4))
             | "color" -> Some (colorValueOf (line |> Option.bind (fun l -> l.LineColor)))
-            | "colorindex" -> Some (VInteger (indexOfColor (line |> Option.bind (fun l -> l.LineColor))))
+            | "colorindex" -> Some (VLong (indexOfColor (line |> Option.bind (fun l -> l.LineColor))))
             | "visible" -> Some (VBoolean line.IsSome)
             | _ -> None)
         (fun name value ->
@@ -1402,9 +1408,9 @@ let private bordersObject (book: MacroDocument) (target: BordersTarget) : Value 
         (fun () -> sides |> List.map (borderObject book target) |> List.toArray)
         (fun name ->
             match name with
-            | "enable" -> Some (VInteger (if sides |> List.exists (fun s -> (readLine book target s).IsSome) then -1 else 0))
-            | "insidelinestyle" -> Some (VInteger (match inside |> List.tryHead |> Option.bind (readLine book target) with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
-            | "outsidelinestyle" -> Some (VInteger (match readLine book target SideTop with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
+            | "enable" -> Some (VLong (if sides |> List.exists (fun s -> (readLine book target s).IsSome) then -1 else 0))
+            | "insidelinestyle" -> Some (VLong (match inside |> List.tryHead |> Option.bind (readLine book target) with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
+            | "outsidelinestyle" -> Some (VLong (match readLine book target SideTop with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
             | "shadow" -> Some (VBoolean false)
             | _ -> None)
         (fun name value ->
@@ -1791,10 +1797,10 @@ and private rangeGet (book: MacroDocument) (r: LiveRange) (name: string) : Value
     match name with
     | "" | "_default" | "text" -> Some (VString (book.TextOf(r.Start, r.End)))
     | "formattedtext" | "duplicate" -> Some (rangeOf book r.Start r.End)
-    | "start" -> Some (VInteger r.Start)
-    | "end" -> Some (VInteger r.End)
-    | "storylength" -> Some (VInteger book.Story.Total)
-    | "storytype" -> Some (VInteger 1)
+    | "start" -> Some (VLong r.Start)
+    | "end" -> Some (VLong r.End)
+    | "storylength" -> Some (VLong book.Story.Total)
+    | "storytype" -> Some (VLong 1)
     | "font" -> Some (fontObject book (RangeFont r))
     | "paragraphformat" -> Some (paragraphFormatObject book (fun () -> book.ParagraphIdsIn(r.Start, r.End)))
     | "paragraphs" -> Some (paragraphsObject book (fun () -> r.Start, r.End))
@@ -1809,9 +1815,9 @@ and private rangeGet (book: MacroDocument) (r: LiveRange) (name: string) : Value
     | "paragraphstyle" -> Some (styleOfRange book r)
     | "highlightcolorindex" ->
         let values = book.StylesIn(r.Start, r.End) |> List.map (fun s -> indexOfHighlight s.Highlight) |> List.distinct
-        Some (VInteger (match values with [ v ] -> v | _ -> wdUndefined))
+        Some (VLong (match values with [ v ] -> v | _ -> wdUndefined))
     | "bold" | "italic" | "underline" -> (match fontObject book (RangeFont r) with VHostObject h -> h.GetMember name | _ -> None)
-    | "case" -> Some (VInteger wdUndefined)
+    | "case" -> Some (VLong wdUndefined)
     | "find" -> Some (findObject book r false)
     | "document" -> Some (documentObject book)
     | "shading" -> Some (shadingObject book (ParagraphShading (fun () -> book.ParagraphIdsIn(r.Start, r.End))))
@@ -1820,7 +1826,7 @@ and private rangeGet (book: MacroDocument) (r: LiveRange) (name: string) : Value
     | "bookmarks" -> Some (bookmarksObject book (Some r))
     | "information" | "computestatistics" -> None
     | "isendofrowmark" -> Some (VBoolean (book.SegmentsIn(r.Start, r.Start) |> List.exists (fun s -> s.Mark = RowMark)))
-    | "languageid" -> Some (VInteger 1033)
+    | "languageid" -> Some (VLong 1033)
     | "revisions" | "fields" | "inlineshapes" | "shapes" -> Some (collectionObject "Collection" (fun () -> [||]) (fun _ -> None) noSet noCall)
     | _ -> None
 
@@ -1905,7 +1911,7 @@ and private rangeCall (book: MacroDocument) (r: LiveRange) (name: string) (args:
             let count = intArg args 1 1
             let s, _ = book.Replace(r.Start, moveBy book (intArg args 0 1) r.Start count, "", r)
             collapsedAt s
-        Some (VInteger 1)
+        Some (VLong 1)
     | "collapse" ->
         let direction = intArg args 0 1
         // (The end of a range with the last paragraph mark is before that mark: nothing is after it.)
@@ -1927,30 +1933,30 @@ and private rangeCall (book: MacroDocument) (r: LiveRange) (name: string) (args:
                 moveBy book unit collapsed (if count > 0 then count - 1 else count + 1)
             else moveBy book unit r.Start count
         collapsedAt p
-        Some (VInteger count)
+        Some (VLong count)
     | "movestart" ->
         let p = moveBy book (intArg args 0 1) r.Start (intArg args 1 1)
         r.Start <- p
         if r.End < p then r.End <- p
-        Some (VInteger 1)
+        Some (VLong 1)
     | "moveend" ->
         let p = moveBy book (intArg args 0 1) r.End (intArg args 1 1)
         r.End <- p
         if r.Start > p then r.Start <- p
-        Some (VInteger 1)
+        Some (VLong 1)
     | "expand" ->
         let unit = intArg args 0 2
         let s, _ = spanAt book unit r.Start
         let _, e = spanAt book unit (max r.Start (r.End - 1))
-        r.Start <- s; r.End <- max s e; Some (VInteger 1)
+        r.Start <- s; r.End <- max s e; Some (VLong 1)
     | "startof" ->
         let s, _ = spanAt book (intArg args 0 2) r.Start
         if intArg args 1 0 = 1 then r.Start <- s else collapsedAt s
-        Some (VInteger 1)
+        Some (VLong 1)
     | "endof" ->
         let _, e = spanAt book (intArg args 0 2) (max r.Start (r.End - 1))
         if intArg args 1 0 = 1 then r.End <- e else collapsedAt e
-        Some (VInteger 1)
+        Some (VLong 1)
     | "next" | "previous" ->
         let unit = intArg args 0 1
         let count = intArg args 1 1
@@ -1961,7 +1967,7 @@ and private rangeCall (book: MacroDocument) (r: LiveRange) (name: string) (args:
             Some (rangeOf book s e)
     | "information" ->
         Some (information book r.Start r.End (intArg args 0 0))
-    | "computestatistics" -> Some (VInteger (statistics book r.Start r.End (intArg args 0 0)))
+    | "computestatistics" -> Some (VLong (statistics book r.Start r.End (intArg args 0 0)))
     | "inrange" | "isequal" ->
         match arg args 0 |> Option.bind rangeBounds with
         | Some (s, e) -> Some (VBoolean (if name = "inrange" then s <= r.Start && r.End <= e else s = r.Start && r.End = e))
@@ -1980,15 +1986,15 @@ and private information (book: MacroDocument) (s: int) (e: int) (kind: int) : Va
             book.Story.Segments
             |> Array.filter (fun seg -> seg.Start <= e && seg.Para <> "" && (book.Paragraph seg.Para |> Option.exists (fun p -> p.Metadata.PageBreakBefore)))
             |> Array.length
-        VInteger (1 + breaks)
-    | 4 -> VInteger (statistics book 0 book.Story.Total 2)
-    | 2 -> VInteger 1
-    | 13 | 14 -> (match segs |> List.tryFind (fun seg -> seg.Table <> "") with Some seg -> VInteger (seg.Row + 1) | None -> VInteger -1)
-    | 16 | 17 -> (match segs |> List.tryFind (fun seg -> seg.Table <> "") with Some seg -> VInteger (seg.Col + 1) | None -> VInteger -1)
+        VLong (1 + breaks)
+    | 4 -> VLong (statistics book 0 book.Story.Total 2)
+    | 2 -> VLong 1
+    | 13 | 14 -> (match segs |> List.tryFind (fun seg -> seg.Table <> "") with Some seg -> VLong (seg.Row + 1) | None -> VLong -1)
+    | 16 | 17 -> (match segs |> List.tryFind (fun seg -> seg.Table <> "") with Some seg -> VLong (seg.Col + 1) | None -> VLong -1)
     | 15 | 18 ->
         match segs |> List.tryFind (fun seg -> seg.Table <> "") |> Option.bind (fun seg -> tableOf book seg.Table) with
-        | Some t -> VInteger (if kind = 15 then t.Rows.Length else t.Rows |> List.map (fun row -> row.Cells.Length) |> List.max)
-        | None -> VInteger -1
+        | Some t -> VLong (if kind = 15 then t.Rows.Length else t.Rows |> List.map (fun row -> row.Cells.Length) |> List.max)
+        | None -> VLong -1
     | 31 -> VBoolean (segs |> List.exists (fun seg -> seg.Mark = RowMark))
     | _ -> VEmpty
 
@@ -2005,7 +2011,7 @@ and private styleOfRange (book: MacroDocument) (r: LiveRange) : Value =
 and private setRangeStyle (book: MacroDocument) (r: LiveRange) (value: Value) =
     let name =
         match scalarOf value with
-        | VInteger n -> (match builtInStyleName n with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
+        | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
         | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
         | other -> toText other
     if eq name "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
@@ -2052,7 +2058,7 @@ and private paragraphFormatObject (book: MacroDocument) (ids: unit -> string lis
                     let doc = book.Document
                     let normal = WordStyles.forBlockInDocument doc (Paragraph (newEmptyParagraph ()))
                     paragraphRead { Fallback = Some normal; Level = None } name defaultMetadata
-                | _ -> Some (VInteger wdUndefined))
+                | _ -> Some (VLong wdUndefined))
         (fun name value ->
             match name with
             | "style" ->
@@ -2083,12 +2089,12 @@ and private listFormatObject (book: MacroDocument) (r: LiveRange) : Value =
             match name with
             | "listtype" ->
                 match book.ParagraphIdsIn(r.Start, r.End) |> List.tryHead |> Option.bind book.Paragraph with
-                | Some p -> Some (VInteger (match p.Metadata.ListStyle with Bullet -> 2 | Numbered -> 3 | NoList -> 0))
-                | None -> Some (VInteger 0)
+                | Some p -> Some (VLong (match p.Metadata.ListStyle with Bullet -> 2 | Numbered -> 3 | NoList -> 0))
+                | None -> Some (VLong 0)
             | "listlevelnumber" ->
                 match book.ParagraphIdsIn(r.Start, r.End) |> List.tryHead |> Option.bind book.Paragraph with
-                | Some p -> Some (VInteger (max 1 p.Metadata.ListLevel))
-                | None -> Some (VInteger 1)
+                | Some p -> Some (VLong (max 1 p.Metadata.ListLevel))
+                | None -> Some (VLong 1)
             | _ -> None)
         (fun name value ->
             match name with
@@ -2194,9 +2200,9 @@ and private paragraphsObject (book: MacroDocument) (bounds: unit -> int * int) :
                 let s, e = bounds ()
                 let change =
                     match name with
-                    | "space1" -> (paragraphChange "linespacingrule" (VInteger 0)).Value
-                    | "space15" -> (paragraphChange "linespacingrule" (VInteger 1)).Value
-                    | "space2" -> (paragraphChange "linespacingrule" (VInteger 2)).Value
+                    | "space1" -> (paragraphChange "linespacingrule" (VLong 0)).Value
+                    | "space15" -> (paragraphChange "linespacingrule" (VLong 1)).Value
+                    | "space2" -> (paragraphChange "linespacingrule" (VLong 2)).Value
                     | step -> (fun m -> { m with IndentLeft = Some (max 0.0 (defaultArg m.IndentLeft 0.0 + pxOfPt (if step = "indent" then 36.0 else -36.0))) } |> withFlag ParagraphExplicit.IndentLeft true)
                 book.MapParagraphs(s, e, change); Some VEmpty
             | _ -> None)
@@ -2218,10 +2224,10 @@ and private cellObject (book: MacroDocument) (c: CellRef) : Value =
             | "range" -> let s, e = cellSpan book c in Some (rangeOf book s e)
             | "shading" -> Some (shadingObject book (CellShading (fun () -> [ c ])))
             | "borders" -> Some (bordersObject book (CellBorders (fun () -> [ c ])))
-            | "rowindex" -> Some (VInteger (c.Row + 1))
-            | "columnindex" -> Some (VInteger (c.Col + 1))
+            | "rowindex" -> Some (VLong (c.Row + 1))
+            | "columnindex" -> Some (VLong (c.Col + 1))
             | "verticalalignment" ->
-                Some (VInteger (match cellOf book c |> Option.bind (fun x -> x.VerticalAlignment) with Some "center" -> 1 | Some "bottom" -> 3 | _ -> 0))
+                Some (VLong (match cellOf book c |> Option.bind (fun x -> x.VerticalAlignment) with Some "center" -> 1 | Some "bottom" -> 3 | _ -> 0))
             | "width" -> Some (VDouble (cellOf book c |> Option.bind (fun x -> x.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
             | "next" | "previous" -> None
             | _ -> None)
@@ -2260,18 +2266,18 @@ and private tableObject (book: MacroDocument) (tableId: string) : Value =
             | "borders" -> Some (bordersObject book (TableBorders tableId))
             | "shading" -> Some (shadingObject book (CellShading allCells))
             | "style" -> Some (VString (match book.Settings.TryGetValue ("tablestyle:" + tableId) with | true, v -> toText v | _ -> "Table Grid"))
-            | "nestinglevel" -> Some (VInteger 1)
+            | "nestinglevel" -> Some (VLong 1)
             | "uniform" -> Some (VBoolean true)
             | "title" | "descr" -> Some (VString "")
             | "preferredwidth" -> Some (VDouble 0.0)
-            | "preferredwidthtype" -> Some (VInteger 1)
+            | "preferredwidthtype" -> Some (VLong 1)
             | "allowautofit" -> Some (VBoolean true)
             | "applystyleheadingrows" | "applystylefirstcolumn" | "applystylelastrow" | "applystylelastcolumn" | "applystylerowbands" -> Some (VBoolean true)
             | _ -> None)
         (fun name value ->
             match name with
             | "style" ->
-                let text = match scalarOf value with VInteger n -> string n | v -> toText v
+                let text = match scalarOf value with VInteger n | VLong n -> string n | v -> toText v
                 book.Settings.["tablestyle:" + tableId] <- VString text
                 if not (applyTableStyle book tableId text) then
                     // (A style of the document: the reference is kept for the file.)
@@ -2372,12 +2378,12 @@ and private rowObject (book: MacroDocument) (tableId: string) (row: int) : Value
             | "cells" -> Some (collectionObject "Cells" (fun () -> cells () |> List.map (cellObject book) |> List.toArray) (fun _ -> None) noSet noCall)
             | "shading" -> Some (shadingObject book (CellShading cells))
             | "borders" -> Some (bordersObject book (CellBorders cells))
-            | "index" -> Some (VInteger (row + 1))
+            | "index" -> Some (VLong (row + 1))
             | "headingformat" -> Some (VBoolean (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.exists (fun r -> r.IsHeader)))
             | "height" -> Some (VDouble (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.bind (fun r -> r.Height) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
             | "isfirst" -> Some (VBoolean (row = 0))
             | "islast" -> Some (VBoolean (tableOf book tableId |> Option.exists (fun t -> row = t.Rows.Length - 1)))
-            | "alignment" -> Some (VInteger 0)
+            | "alignment" -> Some (VLong 0)
             | _ -> None)
         (fun name value ->
             match name with
@@ -2406,7 +2412,7 @@ and private rowsObject (book: MacroDocument) (tableId: string) : Value =
     collectionObject "Rows" (fun () -> [| for r in 0 .. count () - 1 -> rowObject book tableId r |])
         (fun name ->
             match name with
-            | "alignment" -> Some (VInteger (match tableOf book tableId |> Option.bind (fun t -> t.Alignment) with Some "center" -> 1 | Some "right" -> 2 | _ -> 0))
+            | "alignment" -> Some (VLong (match tableOf book tableId |> Option.bind (fun t -> t.Alignment) with Some "center" -> 1 | Some "right" -> 2 | _ -> 0))
             | "headingformat" -> Some (VBoolean false)
             | _ -> None)
         (fun name value ->
@@ -2442,7 +2448,7 @@ and private columnsObject (book: MacroDocument) (tableId: string) : Value =
                 | "cells" -> Some (collectionObject "Cells" (fun () -> cells () |> List.map (cellObject book) |> List.toArray) (fun _ -> None) noSet noCall)
                 | "shading" -> Some (shadingObject book (CellShading cells))
                 | "borders" -> Some (bordersObject book (CellBorders cells))
-                | "index" -> Some (VInteger (col + 1))
+                | "index" -> Some (VLong (col + 1))
                 | "width" -> Some (VDouble (cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
                 | _ -> None)
             (fun name value ->
@@ -2613,7 +2619,7 @@ and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) 
                 match name with
                 | "text" -> Some (VString state.ReplacementText)
                 | "font" -> Some (fontObject book (SpecFont state.ReplacementFont))
-                | "highlight" -> Some (VInteger (if state.ReplacementHighlight < 0 then wdUndefined else state.ReplacementHighlight))
+                | "highlight" -> Some (VLong (if state.ReplacementHighlight < 0 then wdUndefined else state.ReplacementHighlight))
                 | "style" -> Some (VString (defaultArg state.ReplacementStyle ""))
                 | "paragraphformat" -> Some (specParagraphFormat state.ReplacementParagraph)
                 | _ -> None)
@@ -2624,7 +2630,7 @@ and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) 
                 | "style" ->
                     state.ReplacementStyle <-
                         (match scalarOf value with
-                         | VInteger n -> builtInStyleName n
+                         | VInteger n | VLong n -> builtInStyleName n
                          | v -> Some (toText v))
                     true
                 | _ -> false)
@@ -2688,7 +2694,7 @@ and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) 
             | "text" -> Some (VString state.Text)
             | "replacement" -> Some replacement
             | "forward" -> Some (VBoolean state.Forward)
-            | "wrap" -> Some (VInteger state.Wrap)
+            | "wrap" -> Some (VLong state.Wrap)
             | "format" -> Some (VBoolean state.Format)
             | "matchcase" -> Some (VBoolean state.MatchCase)
             | "matchwholeword" -> Some (VBoolean state.MatchWholeWord)
@@ -2696,7 +2702,7 @@ and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) 
             | "matchsoundslike" | "matchallwordforms" | "matchprefix" | "matchsuffix" | "matchdiacritics" | "matchkashida" | "matchalefhamza" | "matchcontrol" | "matchbyte" | "matchfuzzy" | "ignorespace" | "ignorepunct" -> Some (VBoolean false)
             | "found" -> Some (VBoolean state.Found)
             | "font" -> Some (fontObject book (SpecFont state.Font))
-            | "highlight" -> Some (VInteger (if state.Highlight < 0 then wdUndefined else state.Highlight))
+            | "highlight" -> Some (VLong (if state.Highlight < 0 then wdUndefined else state.Highlight))
             | "parent" -> Some (if isSelection then selectionObject book else rangeObject book r)
             | _ -> None)
         (fun name value ->
@@ -2722,7 +2728,7 @@ and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) 
 
 and private specParagraphFormat (spec: Dictionary<string, Value>) : Value =
     makeObject "ParagraphFormat"
-        (fun name -> match spec.TryGetValue name with | true, v -> Some v | _ -> (paragraphRead noFallback name defaultMetadata |> Option.map (fun _ -> VInteger wdUndefined)))
+        (fun name -> match spec.TryGetValue name with | true, v -> Some v | _ -> (paragraphRead noFallback name defaultMetadata |> Option.map (fun _ -> VLong wdUndefined)))
         (fun name value -> match paragraphChange name value with Some _ -> spec.[name] <- value; true | None -> false)
         noCall None
 
@@ -2771,8 +2777,8 @@ and private selectionObject (book: MacroDocument) : Value =
                 else Some (fontObject book (RangeFont s))
             | "range" -> Some (rangeOf book (r ()).Start (r ()).End)
             | "find" -> Some (findObject book (r ()) true)
-            | "type" -> Some (VInteger (if (r ()).End > (r ()).Start then 2 else 1))
-            | "storytype" -> Some (VInteger 1)
+            | "type" -> Some (VLong (if (r ()).End > (r ()).Start then 2 else 1))
+            | "storytype" -> Some (VLong 1)
             | "active" -> Some (VBoolean true)
             | "isendofrowmark" -> Some (VBoolean false)
             | _ -> rangeGet book (r ()) name)
@@ -2810,7 +2816,7 @@ and private selectionObject (book: MacroDocument) : Value =
                     | _, "homekey" -> lineStart s.Start
                     | _, _ -> lineEnd (active ())
                 moveTo p (extend 1)
-                Some (VInteger 1)
+                Some (VLong 1)
             | "moveright" | "moveleft" ->
                 let unit = intArg args 0 1
                 let count = intArg args 1 1
@@ -2829,7 +2835,7 @@ and private selectionObject (book: MacroDocument) : Value =
                         let a, b = spans.[j]
                         s.Start <- a; s.End <- b - 1; s.ActiveAtStart <- false
                 else moveTo (moveBy book unit (active ()) count) ext
-                Some (VInteger (abs count))
+                Some (VLong (abs count))
             | "moveup" | "movedown" ->
                 let unit = intArg args 0 5
                 let count = intArg args 1 1
@@ -2840,7 +2846,7 @@ and private selectionObject (book: MacroDocument) : Value =
                     if count > 0 then moveBy book unit from count
                     else moveBy book unit (lineStart from) (count + (if lineStart from = from then 0 else 1))
                 moveTo target (extend 2)
-                Some (VInteger (abs count))
+                Some (VLong (abs count))
             | "wholestory" -> let s = r () in s.Start <- 0; s.End <- book.Story.Total; Some VEmpty
             | "collapse" -> book.Pending.Clear(); rangeCall book (r ()) name args
             | "delete" ->
@@ -2852,7 +2858,7 @@ and private selectionObject (book: MacroDocument) : Value =
                     let count = intArg args 1 1
                     book.Replace(s.Start, moveBy book (intArg args 0 1) s.Start count, "", s) |> ignore
                     collapsedAt s.Start
-                Some (VInteger 1)
+                Some (VLong 1)
             | "escapekey" -> collapsedAt (r ()).Start; Some VEmpty
             | "extend" -> Some VEmpty
             | "selectrow" | "selectcell" | "selectcolumn" ->
@@ -2878,8 +2884,8 @@ and private bookmarksObject (book: MacroDocument) (within: LiveRange option) : V
                 match name with
                 | "" | "_default" | "name" -> Some (VString info.Name)
                 | "range" -> Some (rangeOf book s e)
-                | "start" -> Some (VInteger s)
-                | "end" -> Some (VInteger e)
+                | "start" -> Some (VLong s)
+                | "end" -> Some (VLong e)
                 | "empty" -> Some (VBoolean (s = e))
                 | _ -> None)
             noSet
@@ -2933,7 +2939,7 @@ and private styleObject (book: MacroDocument) (id: string) : Value =
             | "" | "_default" | "namelocal" | "name" -> Some (VString (match style () with Some s -> styleDisplayName s | None -> id))
             | "font" -> Some (fontObject book (StyleFont id))
             | "paragraphformat" -> Some (styleParagraphFormat book id)
-            | "type" -> Some (VInteger (match style () |> Option.map (fun s -> s.StyleType) with Some "character" -> 2 | Some "table" -> 3 | _ -> 1))
+            | "type" -> Some (VLong (match style () |> Option.map (fun s -> s.StyleType) with Some "character" -> 2 | Some "table" -> 3 | _ -> 1))
             | "baseStyle" | "basestyle" -> Some (VString (style () |> Option.bind (fun s -> s.BasedOn) |> Option.defaultValue ""))
             | "builtin" -> Some (VBoolean true)
             | "inuse" -> Some (VBoolean true)
@@ -2971,7 +2977,7 @@ and private stylesObject (book: MacroDocument) : Value =
     let lookup (key: Value) =
         let name =
             match scalarOf key with
-            | VInteger n -> (match builtInStyleName n with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
+            | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
             | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
             | v -> toText v
         if eq name "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
@@ -3012,7 +3018,7 @@ and private documentObject (book: MacroDocument) : Value =
                 | "rightmargin" -> Some (px p.MarginRight)
                 | "pagewidth" -> Some (px p.PageWidth)
                 | "pageheight" -> Some (px p.PageHeight)
-                | "orientation" -> Some (VInteger (if p.PageWidth > p.PageHeight then 1 else 0))
+                | "orientation" -> Some (VLong (if p.PageWidth > p.PageHeight then 1 else 0))
                 | "headerdistance" -> Some (px p.HeaderDistance)
                 | "footerdistance" -> Some (px p.FooterDistance)
                 | _ -> None)
@@ -3071,7 +3077,7 @@ and private documentObject (book: MacroDocument) : Value =
                 let e = intArg args 1 (if arg args 0 |> Option.isSome && args.Length = 1 then s else total)
                 let e = if args.Length = 0 then total else e
                 Some (rangeOf book (max 0 (min total s)) (max 0 (min total e)))
-            | "computestatistics" -> Some (VInteger (statistics book 0 book.Story.Total (intArg args 0 0)))
+            | "computestatistics" -> Some (VLong (statistics book 0 book.Story.Total (intArg args 0 0)))
             | "activate" | "select" | "repaginate" | "undoclear" -> Some VEmpty
             | "save" | "saveas" | "saveas2" | "close" | "printout" | "exportasfixedformat" ->
                 book.Hooks.Output (sprintf "(Document.%s is not run here: the host saves the document)" name)
@@ -3114,7 +3120,7 @@ and private variablesObject (book: MacroDocument) : Value =
 and private windowObject (book: MacroDocument) : Value =
     let view =
         makeObject "View"
-            (fun name -> match name with "type" -> Some (VInteger 3) | "showall" | "showhiddentext" | "showfieldcodes" -> Some (VBoolean false) | "zoom" -> Some (makeObject "Zoom" (fun n -> if n = "percentage" then Some (VInteger 100) else None) (fun _ _ -> true) noCall None) | _ -> None)
+            (fun name -> match name with "type" -> Some (VLong 3) | "showall" | "showhiddentext" | "showfieldcodes" -> Some (VBoolean false) | "zoom" -> Some (makeObject "Zoom" (fun n -> if n = "percentage" then Some (VLong 100) else None) (fun _ _ -> true) noCall None) | _ -> None)
             (fun name _ -> match name with "type" | "showall" | "showhiddentext" | "showfieldcodes" | "showbookmarks" | "showparagraphs" | "draft" -> true | _ -> false)
             noCall None
     makeObject "Window"
@@ -3124,7 +3130,7 @@ and private windowObject (book: MacroDocument) : Value =
             | "activepane" -> Some (makeObject "Pane" (fun n -> if n = "view" then Some view else None) noSet (fun n _ -> if n = "smallscroll" || n = "largescroll" then Some VEmpty else None) None)
             | "selection" -> Some (selectionObject book)
             | "caption" -> Some (VString book.Hooks.FileName)
-            | "windowstate" -> Some (VInteger 0)
+            | "windowstate" -> Some (VLong 0)
             | "displayrulers" | "displayverticalruler" | "displayhorizontalscrollbar" | "displayverticalscrollbar" -> Some (VBoolean true)
             | _ -> None)
         (fun name _ -> match name with "windowstate" | "caption" | "displayrulers" | "displayverticalruler" | "displayhorizontalscrollbar" | "displayverticalscrollbar" -> true | _ -> false)
@@ -3132,9 +3138,9 @@ and private windowObject (book: MacroDocument) : Value =
         None
 
 and private optionsObject (book: MacroDocument) : Value =
-    let known = [ "defaulthighlightcolorindex", VInteger 7; "replaceselection", VBoolean true; "checkspellingasyoutype", VBoolean true
+    let known = [ "defaulthighlightcolorindex", VLong 7; "replaceselection", VBoolean true; "checkspellingasyoutype", VBoolean true
                   "checkgrammarasyoutype", VBoolean true; "autoformatasyoutypereplacequotes", VBoolean true; "smartcutpaste", VBoolean true
-                  "pagination", VBoolean true; "measurementunit", VInteger 0; "autoformatasyoutypeapplynumberedlists", VBoolean true ]
+                  "pagination", VBoolean true; "measurementunit", VLong 0; "autoformatasyoutypeapplynumberedlists", VBoolean true ]
     makeObject "Options"
         (fun name ->
             match book.Settings.TryGetValue name with
@@ -3164,7 +3170,7 @@ and private applicationObject (book: MacroDocument) : Value =
             | "userinitials" -> Some (VString "U")
             | "pathseparator" -> Some (VString "\\")
             | "screenupdating" -> Some (flag "screenupdating" (VBoolean true))
-            | "displayalerts" -> Some (flag "displayalerts" (VInteger -1))
+            | "displayalerts" -> Some (flag "displayalerts" (VLong -1))
             | "visible" -> Some (VBoolean true)
             | "statusbar" -> Some (flag "statusbar" (VString ""))
             | "caption" -> Some (VString "Microsoft Word")
@@ -3177,7 +3183,7 @@ and private applicationObject (book: MacroDocument) : Value =
             | "statusbar" -> book.Settings.["app:statusbar"] <- value; true
             | _ -> false)
         (fun name args ->
-            let pts factor = Some (VDouble (toFloat (defaultArg (arg args 0) (VInteger 0)) * factor))
+            let pts factor = Some (VDouble (toFloat (defaultArg (arg args 0) (VLong 0)) * factor))
             match name with
             | "centimeterstopoints" -> pts (72.0 / 2.54)
             | "millimeterstopoints" -> pts (72.0 / 25.4)
@@ -3206,7 +3212,7 @@ and private documentsObject (book: MacroDocument) : Value =
             | "open" -> notAvailable "Documents.Open (files)"
             | "" | "_default" | "item" ->
                 match arg args 0 with
-                | Some (VString _) | Some (VInteger 1) | Some (VDouble 1.0) -> Some (documentObject book)
+                | Some (VString _) | Some (VLong 1) | Some (VDouble 1.0) -> Some (documentObject book)
                 | _ -> noSuchMember ()
             | _ -> None)
 
@@ -3239,7 +3245,7 @@ let hostGlobals (book: MacroDocument) : (string * Value) list =
       "LinesToPoints", conversion "LinesToPoints"
       "PointsToCentimeters", conversion "PointsToCentimeters"
       "PointsToInches", conversion "PointsToInches"
-      "DoEvents", VHostObject (Host("DoEvents", (fun _ -> Some (VInteger 0)), (fun _ _ -> false), (fun _ _ -> Some (VInteger 0)), None) :> IHostObject) ]
+      "DoEvents", VHostObject (Host("DoEvents", (fun _ -> Some (VLong 0)), (fun _ _ -> false), (fun _ _ -> Some (VLong 0)), None) :> IHostObject) ]
     @ constants
 
 // ---- running macros ---------------------------------------------------------------------------------------------

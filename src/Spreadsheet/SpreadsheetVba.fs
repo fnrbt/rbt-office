@@ -1092,7 +1092,9 @@ let runModelVbs (model: SpreadsheetModel) source =
 
 let rec private valueToObj (value: Value) =
     match value with
-    | VInteger i -> box i
+    | VInteger i | VLong i -> box i
+    | VByte b -> box (int b)
+    | VSingle f -> box (float f)
     | VDouble d -> box d
     | VString s -> box s
     | VBoolean b -> box b
@@ -1109,6 +1111,7 @@ let rec private valueToObj (value: Value) =
     | VUndefined -> null
     | VObject o -> box o.ClassName
     | VHostObject o -> box o.TypeName
+    | other -> box (Rbt.Vb.Api.displayValue other)
 
 let runForJs (spreadsheet: Spreadsheet.Spreadsheet) (source: string) (resultName: string) =
     match run spreadsheet source with

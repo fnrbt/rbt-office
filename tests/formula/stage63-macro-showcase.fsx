@@ -171,7 +171,8 @@ let unloadable =
     match M.MacroProgram.Compile [ Rbt.Vb.Api.ModuleSource.standard "Module1" "Sub Show(a)\nEnd Sub\nSub Main()\n    Dim p(5) As String\n    Show p()\nEnd Sub" ] with
     | Result.Ok _ -> "compiled"
     | Result.Error failures -> if (List.head failures).Description.StartsWith "The VBA engine could not" then "a compile error" else (List.head failures).Description
-check "an engine exception is a compile error, not a crash" unloadable "a compile error"
+// (Rbt.Vb 0.5.0 passes `p()` as the array; before, this was the engine's exception at load.)
+check "an array passed with empty parentheses compiles" unloadable "compiled"
 
 // ---- a class module exported from the VBA editor (VERSION / BEGIN header) ----
 let exported = M.macroModule "Counter" "VERSION 1.0 CLASS\nBEGIN\n  MultiUse = -1  'True\nEND\nAttribute VB_Name = \"Counter\"\nAttribute VB_PredeclaredId = False\nAttribute VB_Exposed = False\nPublic N As Long\n"

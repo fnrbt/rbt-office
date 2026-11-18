@@ -53,7 +53,7 @@ let constants : (string * Value) list =
       "xlThemeColorAccent1", 5; "xlThemeColorAccent2", 6; "xlThemeColorAccent3", 7; "xlThemeColorAccent4", 8
       "xlThemeColorAccent5", 9; "xlThemeColorAccent6", 10; "xlThemeColorHyperlink", 11; "xlThemeColorFollowedHyperlink", 12
       "xlErrDiv0", 2007; "xlErrNA", 2042; "xlErrName", 2029; "xlErrNull", 2000; "xlErrNum", 2036; "xlErrRef", 2023; "xlErrValue", 2015 ]
-    |> List.map (fun (name, value) -> name, VInteger value)
+    |> List.map (fun (name, value) -> name, VLong value)
 
 // ---- values --------------------------------------------------------------------------------------------
 
@@ -75,7 +75,9 @@ let rec private scalarOf (value: Value) =
 
 let private toInt (value: Value) =
     match scalarOf value with
-    | VInteger i -> i
+    | VInteger i | VLong i -> i
+    | VByte b -> int b
+    | VSingle f -> int (Math.Round (float f))
     | VDouble d -> int (Math.Round d)
     | VDate serial -> int (Math.Round serial)
     | VCurrency units -> int (Math.Round (float units / 10000.0))
@@ -89,7 +91,9 @@ let private toInt (value: Value) =
 
 let private toFloat (value: Value) =
     match scalarOf value with
-    | VInteger i -> float i
+    | VInteger i | VLong i -> float i
+    | VByte b -> float b
+    | VSingle f -> float (Rbt.Vb.NumberText.singleAsDouble f)
     | VDouble d -> d
     | VDate serial -> serial
     | VCurrency units -> float units / 10000.0
@@ -104,7 +108,9 @@ let private toFloat (value: Value) =
 let private toText (value: Value) =
     match scalarOf value with
     | VString s -> s
-    | VInteger i -> string i
+    | VInteger i | VLong i -> string i
+    | VByte b -> string b
+    | VSingle _ -> Rbt.Vb.Api.displayValue value
     | VDouble d -> d.ToString("R", Globalization.CultureInfo.InvariantCulture)
     | VDate _ | VCurrency _ -> Rbt.Vb.Api.displayValue value
     | VBoolean b -> if b then "True" else "False"
@@ -114,7 +120,9 @@ let private toText (value: Value) =
 let private toBool (value: Value) =
     match scalarOf value with
     | VBoolean b -> b
-    | VInteger i -> i <> 0
+    | VInteger i | VLong i -> i <> 0
+    | VByte b -> b <> 0uy
+    | VSingle f -> f <> 0.0f
     | VDouble d -> d <> 0.0
     | VString s when eq s "true" -> true
     | VString s when eq s "false" -> false
@@ -599,7 +607,10 @@ let private entered (book: MacroWorkbook) (sheetId: SheetId) (row: int) (col: in
     let withValue v = Some { Value = v; Format = format; Comment = comment }
     match scalarOf value with
     | VEmpty | VNull | VNothing | VUndefined -> if comment.IsSome || format <> defaultFormat then withValue CellValue.Empty else None
-    | VInteger i -> withValue (Number (float i))
+    | VInteger i | VLong i -> withValue (Number (float i))
+    | VByte b -> withValue (Number (float b))
+    // (A Single goes into a cell as its exact binary value, as Excel stores it - not its 7 printed digits.)
+    | VSingle f -> withValue (Number (float f))
     | VDouble d -> withValue (Number d)
     | VBoolean b -> withValue (Boolean b)
     | VDate serial ->
@@ -666,15 +677,15 @@ let private styleObject (typeName: string) (interior: bool) (format: unit -> Cel
     host typeName
         (fun name ->
             let f = format ()
-            if eq name "Color" then Some (VInteger (colorToLong (colorOf f) |> Option.defaultValue (if interior then 16777215 else 0)))
+            if eq name "Color" then Some (VLong (colorToLong (colorOf f) |> Option.defaultValue (if interior then 16777215 else 0)))
             elif eq name "ColorIndex" then
-                Some (VInteger (match colorOf f with
+                Some (VLong (match colorOf f with
                                 | None -> if interior then -4142 else -4105
                                 | Some c -> match Array.IndexOf(palette, c.ToUpperInvariant()) with -1 -> -4105 | i -> i + 1))
-            elif eq name "Pattern" && interior then Some (VInteger (if f.BgColor.IsSome then 1 else -4142))
+            elif eq name "Pattern" && interior then Some (VLong (if f.BgColor.IsSome then 1 else -4142))
             elif eq name "Bold" && not interior then Some (VBoolean f.Bold)
             elif eq name "Italic" && not interior then Some (VBoolean f.Italic)
-            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VLong 0)
             else unsupported typeName name)
         (fun name value ->
             if eq name "Color" then write (withColor (Some (longToColor (toInt value)))); true
@@ -895,16 +906,16 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 match bordersSides index |> List.map (borderIn model >> pick) |> List.distinct with
                 | [ v ] -> v
                 | _ -> VNull
-            if eq name "LineStyle" || eq name "Value" then Some (one (function Some b -> VInteger (fst (lineOfStyle b.Style)) | None -> VInteger xlLineStyleNone))
-            elif eq name "Weight" then Some (one (function Some b -> VInteger (snd (lineOfStyle b.Style)) | None -> VInteger 2))
-            elif eq name "Color" then Some (one (function Some { Color = Some c } -> VInteger (colorToLong (Some c) |> Option.defaultValue 0) | _ -> VInteger 0))
+            if eq name "LineStyle" || eq name "Value" then Some (one (function Some b -> VLong (fst (lineOfStyle b.Style)) | None -> VLong xlLineStyleNone))
+            elif eq name "Weight" then Some (one (function Some b -> VLong (snd (lineOfStyle b.Style)) | None -> VLong 2))
+            elif eq name "Color" then Some (one (function Some { Color = Some c } -> VLong (colorToLong (Some c) |> Option.defaultValue 0) | _ -> VLong 0))
             elif eq name "ColorIndex" then
                 Some (one (function
-                    | Some { Color = Some c } -> VInteger (match Array.IndexOf(palette, c.ToUpperInvariant()) with -1 -> -4105 | i -> i + 1)
-                    | Some _ -> VInteger -4105
-                    | None -> VInteger -4142))
-            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
-            elif eq name "Count" && index.IsNone then Some (VInteger 6)
+                    | Some { Color = Some c } -> VLong (match Array.IndexOf(palette, c.ToUpperInvariant()) with -1 -> -4105 | i -> i + 1)
+                    | Some _ -> VLong -4105
+                    | None -> VLong -4142))
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VLong 0)
+            elif eq name "Count" && index.IsNone then Some (VLong 6)
             else None
         let write (name: string) (value: Value) =
             let styled (current: BorderStyle option) = current |> Option.defaultValue { Style = "thin"; Color = None }
@@ -1002,7 +1013,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             host "ColorScaleCriterion"
                 (fun name ->
                     let threshold, color = stop ()
-                    if eq name "Type" then Some (VInteger (kindValue threshold.Kind))
+                    if eq name "Type" then Some (VLong (kindValue threshold.Kind))
                     elif eq name "Value" then Some (match threshold.Value with Some v -> (match Double.TryParse(v, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with | true, n -> VDouble n | _ -> VString v) | None -> VEmpty)
                     elif eq name "FormatColor" then
                         Some (styleObject "FormatColor" true (fun () -> { defaultFormat with BgColor = Some (snd (stop ())) })
@@ -1019,15 +1030,15 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             (fun name ->
                 if eq name "Font" then Some (styleObject "Font" false (fun () -> (entry ()).Format.Style) (Some changeStyle))
                 elif eq name "Interior" then Some (styleObject "Interior" true (fun () -> (entry ()).Format.Style) (Some changeStyle))
-                elif eq name "Type" then Some (VInteger (match (entry ()).Format.Rule with CellIs _ -> 1 | Expression _ -> 2 | ColorScale _ -> 3 | DataBar _ | DataBarEx _ -> 4 | _ -> 1))
-                elif eq name "Priority" then Some (VInteger (entry ()).Priority)
+                elif eq name "Type" then Some (VLong (match (entry ()).Format.Rule with CellIs _ -> 1 | Expression _ -> 2 | ColorScale _ -> 3 | DataBar _ | DataBarEx _ -> 4 | _ -> 1))
+                elif eq name "Priority" then Some (VLong (entry ()).Priority)
                 elif eq name "StopIfTrue" then Some (VBoolean (entry ()).StopIfTrue)
                 elif eq name "Formula1" then Some (match (entry ()).Format.Rule with CellIs (_, f, _) | Expression f -> VString ("=" + f) | _ -> VString "")
                 elif eq name "SetFirstPriority" then book.ChangeModel(r.Sheet, SheetOps.moveConditionalFormat "SetFirstPriority" id 1); Some VEmpty
                 elif eq name "Delete" then book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" id); Some VEmpty
                 elif eq name "ColorScaleCriteria" then
                     Some (collection "ColorScaleCriteria"
-                            (fun n -> if eq n "Count" then Some (VInteger (stops ()).Length) else unsupported "ColorScaleCriteria" n)
+                            (fun n -> if eq n "Count" then Some (VLong (stops ()).Length) else unsupported "ColorScaleCriteria" n)
                             (fun n _ -> unsupported "ColorScaleCriteria" n)
                             (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (criterion (toInt args.[0])) else unsupported "ColorScaleCriteria" n)
                             (fun () -> (stops ()) |> List.mapi (fun i _ -> criterion (i + 1)) |> Seq.ofList))
@@ -1065,7 +1076,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             | other -> failApp (sprintf "FormatConditions.Add of type %d is not supported" other)
         collection "FormatConditions"
             (fun name ->
-                if eq name "Count" then Some (VInteger (conditions ()).Length)
+                if eq name "Count" then Some (VLong (conditions ()).Length)
                 elif eq name "Delete" then
                     for e in conditions () do book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" e.Id)
                     Some VEmpty
@@ -1078,7 +1089,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 elif eq name "Delete" then
                     for e in conditions () do book.ChangeModel(r.Sheet, SheetOps.removeConditionalFormat "Delete" e.Id)
                     Some VEmpty
-                elif eq name "Count" then Some (VInteger (conditions ()).Length)
+                elif eq name "Count" then Some (VLong (conditions ()).Length)
                 else unsupported "FormatConditions" name)
             (fun () -> conditions () |> List.map (fun e -> conditionObject e.Id) |> Seq.ofList)
     /// What the first cell shows with (DisplayFormat): its format, with a conditional format that holds on it.
@@ -1099,7 +1110,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 if eq name "Interior" then Some (styleObject "Interior" true displayed None)
                 elif eq name "Font" then Some (styleObject "Font" false displayed None)
                 elif eq name "NumberFormat" then Some (VString ((displayed ()).NumberFormat |> Option.defaultValue "General"))
-                elif eq name "HorizontalAlignment" then Some (VInteger 1)
+                elif eq name "HorizontalAlignment" then Some (VLong 1)
                 else unsupported "DisplayFormat" name)
             (fun name _ -> unsupported "DisplayFormat" name)
             (fun name _ -> unsupported "DisplayFormat" name)
@@ -1126,13 +1137,13 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             let f = format ()
             if eq name "Bold" then Some (VBoolean f.Bold)
             elif eq name "Italic" then Some (VBoolean f.Italic)
-            elif eq name "Underline" then Some (VInteger (if f.UnderlineDouble then -4119 elif f.Underline then 2 else -4142))
+            elif eq name "Underline" then Some (VLong (if f.UnderlineDouble then -4119 elif f.Underline then 2 else -4142))
             elif eq name "Strikethrough" then Some (VBoolean f.Strikethrough)
             elif eq name "Size" then Some (VDouble (f.FontSize |> Option.map float |> Option.defaultValue 11.0))
             elif eq name "Name" then Some (VString (f.FontName |> Option.defaultValue "Calibri"))
             elif eq name "Color" then Some (VDouble (float (colorToLong f.TextColor |> Option.defaultValue 0)))
-            elif eq name "ColorIndex" then Some (VInteger (match f.TextColor with None -> -4105 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
-            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VInteger 0)
+            elif eq name "ColorIndex" then Some (VLong (match f.TextColor with None -> -4105 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
+            elif eq name "ThemeColor" || eq name "TintAndShade" then Some (VLong 0)
             elif eq name "FontStyle" then Some (VString (match f.Bold, f.Italic with true, true -> "Bold Italic" | true, false -> "Bold" | false, true -> "Italic" | _ -> "Regular"))
             else None
         let set (name: string) (value: Value) =
@@ -1163,10 +1174,10 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         let get (name: string) : Value option =
             let f = format ()
             if eq name "Color" then Some (VDouble (float (colorToLong f.BgColor |> Option.defaultValue 16777215)))
-            elif eq name "ColorIndex" then Some (VInteger (match f.BgColor with None -> -4142 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
-            elif eq name "Pattern" then Some (VInteger (if f.BgColor.IsSome then 1 else -4142))
-            elif eq name "ThemeColor" || eq name "TintAndShade" || eq name "PatternTintAndShade" then Some (VInteger 0)
-            elif eq name "PatternColorIndex" then Some (VInteger -4105)
+            elif eq name "ColorIndex" then Some (VLong (match f.BgColor with None -> -4142 | Some c -> (Array.IndexOf(palette, c.ToUpperInvariant()) + 1) |> fun i -> if i = 0 then -4105 else i))
+            elif eq name "Pattern" then Some (VLong (if f.BgColor.IsSome then 1 else -4142))
+            elif eq name "ThemeColor" || eq name "TintAndShade" || eq name "PatternTintAndShade" then Some (VLong 0)
+            elif eq name "PatternColorIndex" then Some (VLong -4105)
             else unsupported "Interior" name
         let set (name: string) (value: Value) =
             if eq name "Color" then changeFormats (fun f -> { f with BgColor = Some (longToColor (toInt value)) }); true
@@ -1197,7 +1208,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
                 | Some (_, _, usedBottom, usedRight) -> if vertical then min count (usedRight - r.Left + 1) else min count (usedBottom - r.Top + 1)
                 | None -> 0
         collection "Range"
-            (fun name -> if eq name "Count" then Some (VInteger count) else selfHost.GetMember name)
+            (fun name -> if eq name "Count" then Some (VLong count) else selfHost.GetMember name)
             (fun name value -> selfHost.SetMember name value)
             (fun name args ->
                 if (name = "" || eq name "_Default" || eq name "Item") && args.Length >= 1 then Some (item (toInt args.[0]))
@@ -1213,9 +1224,13 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         elif eq name "Text" then Some (textAt r.Top r.Left)
         elif eq name "HasFormula" then Some (VBoolean (match cellAt r.Top r.Left with Some { Value = Formula _ } -> true | _ -> false))
         elif eq name "Address" then Some (VString (rangeAddress r true true false))
-        elif eq name "Row" then Some (VInteger (r.Top + 1))
-        elif eq name "Column" then Some (VInteger (r.Left + 1))
-        elif eq name "Count" || eq name "CountLarge" then Some (VDouble (float rows * float cols))
+        elif eq name "Row" then Some (VLong (r.Top + 1))
+        elif eq name "Column" then Some (VLong (r.Left + 1))
+        // (Count is a Long, as Excel's - which overflows past 2^31 cells; CountLarge is the Double.)
+        elif eq name "Count" then
+            let cells = float rows * float cols
+            if cells > 2147483647.0 then fail 6 "Overflow" else Some (VLong (int cells))
+        elif eq name "CountLarge" then Some (VDouble (float rows * float cols))
         elif eq name "Rows" then Some (lines false)
         elif eq name "Columns" then Some (lines true)
         elif eq name "Cells" then Some (rangeObject book r)
@@ -1238,12 +1253,12 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             Some VEmpty
         elif eq name "ID" then Some (book.Setting (idKey ()) |> Option.defaultValue (VString ""))
         elif eq name "Locked" then Some (book.Setting ("__locked" + idKey ()) |> Option.defaultValue (VBoolean true))
-        elif eq name "HorizontalAlignment" then Some (VInteger (alignmentValue (format().HorizontalAlign) true))
-        elif eq name "VerticalAlignment" then Some (VInteger (alignmentValue (format().VerticalAlign) false))
+        elif eq name "HorizontalAlignment" then Some (VLong (alignmentValue (format().HorizontalAlign) true))
+        elif eq name "VerticalAlignment" then Some (VLong (alignmentValue (format().VerticalAlign) false))
         elif eq name "WrapText" then Some (VBoolean (format().WrapText))
-        elif eq name "IndentLevel" then Some (VInteger (format().Indent))
+        elif eq name "IndentLevel" then Some (VLong (format().Indent))
         elif eq name "Orientation" then
-            Some (VInteger (match format().TextRotation with 0 -> -4128 | 255 -> -4166 | d when d > 90 -> -(d - 90) | d -> d))
+            Some (VLong (match format().TextRotation with 0 -> -4128 | 255 -> -4166 | d when d > 90 -> -(d - 90) | d -> d))
         elif eq name "MergeCells" then
             Some (VBoolean (book.Model(r.Sheet).MergedCells |> List.exists (fun m -> m.StartRow <= r.Top && m.EndRow >= r.Top && m.StartCol <= r.Left && m.EndCol >= r.Left)))
         elif eq name "ColumnWidth" then
@@ -1254,7 +1269,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             Some (VDouble (Math.Round(px * 0.75, 2)))
         elif eq name "Hidden" then
             Some (VBoolean (if wholeCols then book.Model(r.Sheet).ColumnWidths |> Map.tryFind r.Left = Some 0.0 else book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top = Some 0.0))
-        elif eq name "Areas" then Some (collection "Areas" (fun n -> if eq n "Count" then Some (VInteger 1) else unsupported "Areas" n) (fun n _ -> unsupported "Areas" n) (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (rangeObject book r) else unsupported "Areas" n) (fun () -> Seq.singleton (rangeObject book r)))
+        elif eq name "Areas" then Some (collection "Areas" (fun n -> if eq n "Count" then Some (VLong 1) else unsupported "Areas" n) (fun n _ -> unsupported "Areas" n) (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (rangeObject book r) else unsupported "Areas" n) (fun () -> Seq.singleton (rangeObject book r)))
         elif eq name "Next" then Some (sub r.Top (r.Left + 1) r.Top (r.Left + 1))
         elif eq name "Previous" then Some (sub r.Top (max 0 (r.Left - 1)) r.Top (max 0 (r.Left - 1)))
         elif eq name "Application" then Some (VString "Microsoft Excel")
@@ -1411,7 +1426,7 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
             | Some source ->
                 let what = if isMissing (arg 0) then -4104 else toInt (arg 0)
                 (match rangeObject book source with
-                 | VHostObject h -> h.CallMethod "__CopyTo" [| rangeObject book r; VInteger what |] |> ignore
+                 | VHostObject h -> h.CallMethod "__CopyTo" [| rangeObject book r; VLong what |] |> ignore
                  | _ -> ())
                 Some VEmpty
             | None -> failApp "PasteSpecial method of Range class failed"
@@ -1489,7 +1504,7 @@ and private areasObject (book: MacroWorkbook) (areas: RangeRef list) : Value =
         let firstHost () = match rangeObject book first with VHostObject h -> h | _ -> failwith "range"
         let areaList () =
             collection "Areas"
-                (fun n -> if eq n "Count" then Some (VInteger areas.Length) else unsupported "Areas" n)
+                (fun n -> if eq n "Count" then Some (VLong areas.Length) else unsupported "Areas" n)
                 (fun n _ -> unsupported "Areas" n)
                 (fun n args -> if (n = "" || eq n "_Default" || eq n "Item") && args.Length = 1 then Some (rangeObject book areas.[toInt args.[0] - 1]) else unsupported "Areas" n)
                 (fun () -> areas |> List.map (rangeObject book) |> Seq.ofList)
@@ -1577,7 +1592,7 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
     let lines (vertical: bool) =
         collection "Range"
             (fun name ->
-                if eq name "Count" then Some (VInteger (if vertical then maxCol + 1 else maxRow + 1))
+                if eq name "Count" then Some (VLong (if vertical then maxCol + 1 else maxRow + 1))
                 else match rangeObject book whole with VHostObject h -> h.GetMember name | _ -> None)
             (fun name value -> match rangeObject book whole with VHostObject h -> h.SetMember name value | _ -> false)
             (fun name args ->
@@ -1587,20 +1602,20 @@ and private worksheetObject (book: MacroWorkbook) (sheetId: SheetId) : Value =
                 // (As far as the sheet is used.)
                 let model = book.Model sheetId
                 let last = if Map.isEmpty model.Cells then -1 else model.Cells |> Map.toSeq |> Seq.map (fun (a, _) -> if vertical then a.Col else a.Row) |> Seq.max
-                seq { for i in 0 .. last -> lineRange vertical [| VInteger (i + 1) |] })
+                seq { for i in 0 .. last -> lineRange vertical [| VLong (i + 1) |] })
     let get (name: string) =
         if eq name "Name" then Some (VString (book.Sheet sheetId).Name)
         elif eq name "CodeName" then Some (VString (book.Sheet sheetId).Name)
-        elif eq name "Index" then Some (VInteger ((book.SheetOrder |> List.findIndex ((=) sheetId)) + 1))
+        elif eq name "Index" then Some (VLong ((book.SheetOrder |> List.findIndex ((=) sheetId)) + 1))
         elif eq name "Cells" then Some (rangeObject book whole)
         elif eq name "Rows" then Some (lines false)
         elif eq name "Columns" then Some (lines true)
         elif eq name "UsedRange" then Some (usedRange ())
         elif eq name "Shapes" then Some (shapesObject book sheetId false)
         elif eq name "ChartObjects" then Some (shapesObject book sheetId true)
-        elif eq name "Visible" then Some (VInteger (if (book.Sheet sheetId).Visible then -1 elif (book.Model sheetId).VeryHidden then 2 else 0))
+        elif eq name "Visible" then Some (VLong (if (book.Sheet sheetId).Visible then -1 elif (book.Model sheetId).VeryHidden then 2 else 0))
         elif eq name "Parent" then Some (workbookObject book)
-        elif eq name "Type" then Some (VInteger -4167)
+        elif eq name "Type" then Some (VLong -4167)
         elif eq name "Next" then
             let order = book.SheetOrder
             let at = order |> List.findIndex ((=) sheetId)
@@ -1717,7 +1732,7 @@ and private shapesObject (book: MacroWorkbook) (sheetId: SheetId) (chartsOnly: b
             shapeObject book sheetId list.[i - 1].Id
     collection typeName
         (fun name ->
-            if eq name "Count" then Some (VInteger (drawings ()).Length)
+            if eq name "Count" then Some (VLong (drawings ()).Length)
             elif eq name "AddChart" || eq name "Add" && chartsOnly then Some (addChart 51 VEmpty VEmpty VEmpty VEmpty)
             elif eq name "AddChart2" then Some (addChart 51 VEmpty VEmpty VEmpty VEmpty)
             else unsupported typeName name)
@@ -1725,7 +1740,7 @@ and private shapesObject (book: MacroWorkbook) (sheetId: SheetId) (chartsOnly: b
         (fun name args ->
             let arg i = if i < args.Length then args.[i] else VEmpty
             if (name = "" || eq name "_Default" || eq name "Item") && args.Length = 1 then Some (item args.[0])
-            elif eq name "Count" then Some (VInteger (drawings ()).Length)
+            elif eq name "Count" then Some (VLong (drawings ()).Length)
             // AddChart(Type, Left, Top, Width, Height); AddChart2(Style, XlChartType, Left, Top, Width, Height); ChartObjects.Add(Left, Top, Width, Height).
             elif eq name "AddChart" && not chartsOnly then Some (addChart (if isMissing (arg 0) then 51 else toInt (arg 0)) (arg 1) (arg 2) (arg 3) (arg 4))
             elif eq name "AddChart2" && not chartsOnly then Some (addChart (if isMissing (arg 1) then 51 else toInt (arg 1)) (arg 2) (arg 3) (arg 4) (arg 5))
@@ -1757,8 +1772,8 @@ and private shapeObject (book: MacroWorkbook) (sheetId: SheetId) (id: int) : Val
             | Some rel when book.Charts.ContainsKey rel -> Some (chartObject book rel)
             | _ -> failApp "This object has no chart the macro can change"
         elif eq name "HasChart" then Some (VBoolean (relOf d).IsSome)
-        elif eq name "Visible" then Some (VInteger -1)
-        elif eq name "ID" then Some (VInteger id)
+        elif eq name "Visible" then Some (VLong -1)
+        elif eq name "ID" then Some (VLong id)
         elif eq name "Delete" then
             book.ChangeModel(sheetId, fun m ->
                 { m with Drawings = m.Drawings |> List.filter (fun x -> x.Id <> id)
@@ -1848,7 +1863,7 @@ and private chartObject (book: MacroWorkbook) (rel: string) : Value =
     let seriesCollection =
         collection "SeriesCollection"
             (fun name ->
-                if eq name "Count" then Some (VInteger (current ()).Series.Length)
+                if eq name "Count" then Some (VLong (current ()).Series.Length)
                 elif eq name "NewSeries" then Some (newSeries ())
                 else unsupported "SeriesCollection" name)
             (fun name _ -> unsupported "SeriesCollection" name)
@@ -1861,7 +1876,7 @@ and private chartObject (book: MacroWorkbook) (rel: string) : Value =
                         | None -> fail 1004 "Invalid parameter"
                     | v -> Some (seriesObject (toInt v))
                 elif eq name "NewSeries" then Some (newSeries ())
-                elif eq name "Count" then Some (VInteger (current ()).Series.Length)
+                elif eq name "Count" then Some (VLong (current ()).Series.Length)
                 else unsupported "SeriesCollection" name)
             (fun () -> (current ()).Series |> List.mapi (fun i _ -> seriesObject (i + 1)) |> Seq.ofList)
     /// SetSourceData(range, PlotBy): a series of each column (xlColumns 2, the default for a tall range) or
@@ -1901,7 +1916,7 @@ and private chartObject (book: MacroWorkbook) (rel: string) : Value =
             (fun name value -> if eq name "Text" || eq name "Caption" then update (fun c -> { c with Title = Some (toText value) }); true else true)
             (fun name _ -> unsupported "ChartTitle" name)
     let get (name: string) : Value option =
-        if eq name "ChartType" then Some (VInteger (current ()).ChartType)
+        if eq name "ChartType" then Some (VLong (current ()).ChartType)
         elif eq name "HasLegend" then Some (VBoolean (current ()).HasLegend)
         elif eq name "HasTitle" then Some (VBoolean (current ()).Title.IsSome)
         elif eq name "ChartTitle" then Some (titleObject ())
@@ -1962,14 +1977,14 @@ and private sheetsObject (book: MacroWorkbook) : Value =
         worksheetObject book added
     collection "Sheets"
         (fun name ->
-            if eq name "Count" then Some (VInteger book.SheetOrder.Length)
+            if eq name "Count" then Some (VLong book.SheetOrder.Length)
             elif eq name "Add" then Some (add [||])
             else unsupported "Sheets" name)
         (fun name _ -> unsupported "Sheets" name)
         (fun name args ->
             if (name = "" || eq name "_Default" || eq name "Item") && args.Length = 1 then Some (item args.[0])
             elif eq name "Add" then Some (add args)
-            elif eq name "Count" then Some (VInteger book.SheetOrder.Length)
+            elif eq name "Count" then Some (VLong book.SheetOrder.Length)
             else unsupported "Sheets" name)
         (fun () -> book.SheetOrder |> List.map (worksheetObject book) |> Seq.ofList)
 
@@ -1993,7 +2008,7 @@ and private namesObject (book: MacroWorkbook) : Value =
                 else unsupported "Name" n)
             (fun n _ -> if eq n "Delete" then book.ChangeWorkbook(fun wb -> deleteDefinedName name.Scope name.Name wb |> Option.defaultValue wb); Some VEmpty else unsupported "Name" n)
     collection "Names"
-        (fun n -> if eq n "Count" then Some (VInteger (names ()).Length) else unsupported "Names" n)
+        (fun n -> if eq n "Count" then Some (VLong (names ()).Length) else unsupported "Names" n)
         (fun n _ -> unsupported "Names" n)
         (fun n args ->
             if (n = "" || eq n "_Default" || eq n "Item") && args.Length >= 1 then
@@ -2051,7 +2066,9 @@ and private workbookObject (book: MacroWorkbook) : Value =
 let private formulaArgument (book: MacroWorkbook) (value: Value) =
     let literal (v: Value) =
         match scalarOf v with
-        | VInteger i -> string i
+        | VInteger i | VLong i -> string i
+        | VByte b -> string b
+        | VSingle f -> (Rbt.Vb.NumberText.singleAsDouble f).ToString("R", Globalization.CultureInfo.InvariantCulture)
         | VDouble d -> d.ToString("R", Globalization.CultureInfo.InvariantCulture)
         | VBoolean b -> if b then "TRUE" else "FALSE"
         | VString s -> "\"" + s.Replace("\"", "\"\"") + "\""
@@ -2089,7 +2106,14 @@ let evaluate (book: MacroWorkbook) (formula: string) : Value =
 
 let private worksheetFunctionObject (book: MacroWorkbook) =
     host "WorksheetFunction"
-        (fun name -> unsupported "WorksheetFunction" name)
+        // (A function without arguments reads as a member: WorksheetFunction.Pi.)
+        (fun name ->
+            if name = "" || name.StartsWith "__" then unsupported "WorksheetFunction" name
+            else
+                match evaluate book (name.ToUpperInvariant() + "()") with
+                | VError 2029 -> unsupported "WorksheetFunction" name
+                | VError _ -> failApp (sprintf "Unable to get the %s property of the WorksheetFunction class" name)
+                | value -> Some value)
         (fun name _ -> unsupported "WorksheetFunction" name)
         (fun name args ->
             let formula = name.ToUpperInvariant() + "(" + String.Join(",", args |> Array.map (formulaArgument book)) + ")"
@@ -2123,10 +2147,10 @@ let private windowObject (book: MacroWorkbook) =
         elif eq name "DisplayZeros" then Some (VBoolean (model ()).ShowZeros)
         elif eq name "Zoom" then Some (VDouble (Math.Round((model ()).Zoom * 100.0)))
         elif eq name "FreezePanes" then Some (VBoolean ((model ()).FrozenRows > 0 || (model ()).FrozenCols > 0))
-        elif eq name "SplitRow" then Some (VInteger (model ()).FrozenRows)
-        elif eq name "SplitColumn" then Some (VInteger (model ()).FrozenCols)
-        elif eq name "ScrollRow" || eq name "ScrollColumn" then Some (book.Setting ("Window" + name) |> Option.defaultValue (VInteger 1))
-        elif eq name "WindowState" then Some (book.Setting "WindowState" |> Option.defaultValue (VInteger -4137))
+        elif eq name "SplitRow" then Some (VLong (model ()).FrozenRows)
+        elif eq name "SplitColumn" then Some (VLong (model ()).FrozenCols)
+        elif eq name "ScrollRow" || eq name "ScrollColumn" then Some (book.Setting ("Window" + name) |> Option.defaultValue (VLong 1))
+        elif eq name "WindowState" then Some (book.Setting "WindowState" |> Option.defaultValue (VLong -4137))
         elif eq name "Caption" then Some (VString book.Hooks.FileName)
         elif eq name "ActiveSheet" then Some (worksheetObject book book.ActiveSheet)
         elif eq name "ActiveCell" || eq name "Selection" || eq name "VisibleRange" then None
@@ -2181,7 +2205,7 @@ let private applicationObject (book: MacroWorkbook) =
         elif eq name "Worksheets" || eq name "Sheets" then Some (sheetsObject book)
         elif eq name "Workbooks" then
             Some (collection "Workbooks"
-                    (fun n -> if eq n "Count" then Some (VInteger 1) else unsupported "Workbooks" n)
+                    (fun n -> if eq n "Count" then Some (VLong 1) else unsupported "Workbooks" n)
                     (fun n _ -> unsupported "Workbooks" n)
                     (fun n args -> if (n = "" || eq n "Item") && args.Length = 1 then Some (workbookObject book) else unsupported "Workbooks" n)
                     (fun () -> Seq.singleton (workbookObject book)))
@@ -2195,7 +2219,7 @@ let private applicationObject (book: MacroWorkbook) =
         elif eq name "Name" then Some (VString "Microsoft Excel")
         elif eq name "Application" then Some (VString "Microsoft Excel")
         elif eq name "UserName" then Some (VString "")
-        elif eq name "Calculation" then Some (book.Setting "Calculation" |> Option.defaultValue (VInteger -4105))
+        elif eq name "Calculation" then Some (book.Setting "Calculation" |> Option.defaultValue (VLong -4105))
         elif eq name "Calculate" || eq name "CalculateFull" then Some VEmpty
         elif ["ScreenUpdating"; "EnableEvents"; "DisplayAlerts"; "StatusBar"; "CutCopyMode"; "DisplayStatusBar"; "Interactive"; "EnableCancelKey"; "AskToUpdateLinks"]
              |> List.exists (eq name) then
@@ -2335,7 +2359,7 @@ let hostGlobals (book: MacroWorkbook) : (string * Value) list =
       "Intersect", host "Intersect" (fun n -> unsupported "Intersect" n) (fun _ _ -> false) (fun n args -> if n = "" || eq n "_Default" then appHost.CallMethod "Intersect" args else unsupported "Intersect" n)
       "Union", host "Union" (fun n -> unsupported "Union" n) (fun _ _ -> false) (fun n args -> if n = "" || eq n "_Default" then appHost.CallMethod "Union" args else unsupported "Union" n)
       // (DoEvents: the engine has no event loop to yield to.)
-      "DoEvents", host "DoEvents" (fun _ -> Some (VInteger 0)) (fun _ _ -> false) (fun _ _ -> Some (VInteger 0)) ]
+      "DoEvents", host "DoEvents" (fun _ -> Some (VLong 0)) (fun _ _ -> false) (fun _ _ -> Some (VLong 0)) ]
     @ constants
 
 /// Sheet1, Sheet2 ...: a sheet by its code name, as Excel gives every module (`Sheet1.Range("A1")`). A

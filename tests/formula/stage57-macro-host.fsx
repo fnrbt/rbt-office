@@ -316,6 +316,7 @@ Sub Main()
     Range("E9").Value = TypeName(ActiveSheet) & "/" & TypeName(Selection) & "/" & TypeName(Range("A1").Interior.Color)
     Range("H1").Value = TimeSerial(13, 45, 30)
     Range("H2").Value = CCur(2.5)
+    Range("H3").Value = WorksheetFunction.Pi * 2
 End Sub"""
 let excelLike = run excelSource (Some "Main")
 check "Union keeps separate areas" (valueAt excelLike "Data" (0, 4)) (String "$A$1,$C$3")
@@ -330,6 +331,7 @@ check "Transpose fills a column" ([ 0 .. 2 ] |> List.map (fun r -> valueAt excel
 check "TypeName of the globals and colours" (valueAt excelLike "Data" (8, 4)) (String "Worksheet/Range/Double")
 check "a time gets a time format" ((formatAt excelLike "Data" (0, 7)).NumberFormat) (Some "h:mm:ss AM/PM")
 check "a Currency gets a currency format" ((formatAt excelLike "Data" (1, 7)).NumberFormat) (Some "$#,##0.00_);($#,##0.00)")
+check "a function without arguments as a member (WorksheetFunction.Pi)" (valueAt excelLike "Data" (2, 7)) (Number (2.0 * System.Math.PI))
 
 // ---- the macro list of a project of several modules ----
 let modules =
