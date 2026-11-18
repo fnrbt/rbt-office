@@ -1,6 +1,6 @@
 ' (Written for the rbt-office demo, MIT.) When macros are enabled: a button that draws it.
 Private Sub Workbook_Open()
-    Dim s As Object
+    Dim s As Shape
     On Error Resume Next
     Set s = Sheets(1).Shapes("Draw")
     On Error GoTo 0

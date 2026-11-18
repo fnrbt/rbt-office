@@ -805,6 +805,38 @@ checks['macro-callbacks'] = async () => {
     return lines;
 };
 
+// A shape with a macro assigned (its OnAction): a click runs the macro, once macros may run - and only then.
+checks['macro-shape-click'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const value = (a1) => grid.GetRange(`${a1}:${a1}`)[0][0].value ?? null;
+    const click = (node) => {
+        for (const type of ['mousedown', 'mouseup', 'click'])
+            node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 10 }));
+    };
+    try {
+        await grid.SetMacroModule('Module1', [
+            'Sub MakeButton()', '    Dim s As Shape',
+            '    Set s = ActiveSheet.Shapes.AddShape(msoShapeRoundedRectangle, 200, 20, 100, 30)',
+            '    s.Name = "Go": s.OnAction = "Pressed"', 'End Sub',
+            'Sub Pressed()', '    Range("A1").Value = Range("A1").Value + 1', 'End Sub'].join('\n'));
+        await grid.EnableMacros();
+        await grid.RunMacro('MakeButton');
+        await settle(300);
+        const button = host.querySelector('[data-macro]');
+        check('the shape is drawn with its macro', button && button.getAttribute('data-macro'), 'Pressed');
+        click(button);
+        await settle(300);
+        click(host.querySelector('[data-macro]'));
+        await settle(300);
+        check('each click runs it', value('A1'), 2);
+    } catch (e) {
+        lines.push('FAIL threw: ' + (e && e.stack || e));
+    } finally { close(); }
+    return lines;
+};
+
 // The VBA editor from the shell's Data menu: in a workbook without macros a blank Module1 to write in,
 // Apply compiles it, its macro runs on the grid (one undo step), the Immediate line evaluates, the output
 // shows each, and a save writes the project from the module.
