@@ -816,6 +816,18 @@ type Spreadsheet(container: Element) as this =
     let macroTimers = System.Collections.Generic.Dictionary<string, ResizeArray<int>>()
     let macroKeys = System.Collections.Generic.Dictionary<string, string>()
     /// Run a procedure once no macro is running (Excel runs OnTime and OnKey procedures when it is idle).
+    /// The macro assigned to a drawn shape (its `macro` attribute, Excel's OnAction), without the workbook
+    /// a name like 'Book1.xlsm'!Module.Proc starts with; None when it has none.
+    let assignedMacro (drawing: SheetDrawing) : string option =
+        match drawing.Content with
+        | KeptObject (_, xml) ->
+            let found = System.Text.RegularExpressions.Regex.Match(xml, "<(?:\\w+:)?(?:sp|grpSp|pic|cxnSp|graphicFrame)\\b[^>]*?\\smacro=\"([^\"]+)\"")
+            if found.Success then
+                let name = found.Groups.[1].Value
+                let bang = name.LastIndexOf '!'
+                Some (if bang >= 0 then name.Substring(bang + 1) else name)
+            else None
+        | _ -> None
     let rec runMacroWhenIdle (procedure: string) =
         if macrosEnabled then
             if macroRunning.IsSome then setTimeoutMs (fun () -> runMacroWhenIdle procedure) 20 |> ignore
@@ -4423,7 +4435,9 @@ type Spreadsheet(container: Element) as this =
                     | _ -> SpreadsheetLayout.drawingRect model drawing
                 if rect.Width >= 1.0 && rect.Height >= 1.0 then
                     let label = SpreadsheetLayout.drawingLabel drawing
-                    let takesPointer = (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
+                    // (A shape with a macro assigned - its OnAction - runs it when clicked, once macros may run.)
+                    let assigned = assignedMacro drawing
+                    let takesPointer = assigned.IsSome || (match drawing.Content with Picture _ -> not readOnly | KeptObject _ -> false)
                     // A chart, a shape or a group of them is drawn from the file's parts (None: a frame that says what it is).
                     // (Laid out after the grid is on screen, the objects in view first: until then its place is empty.)
                     let known =
@@ -4492,6 +4506,7 @@ type Spreadsheet(container: Element) as this =
                                 frame
                         setAttribute node "title" label
                         setAttribute node "data-drawing-id" (string drawing.Id)
+                        assigned |> Option.iter (setAttribute node "data-macro")
                         // A picture takes the pointer in the editor (it is selected,
                         // moved and sized with it); in a viewer, and for a chart or
                         // another kept object, clicks go through to the cells.
@@ -4504,7 +4519,7 @@ type Spreadsheet(container: Element) as this =
                             "max-width", "none"
                             "z-index", "3"
                             "pointer-events", (if takesPointer then "auto" else "none")
-                            "cursor", (if takesPointer then "move" else "default")
+                            "cursor", (if assigned.IsSome then "pointer" elif takesPointer then "move" else "default")
                         ]
                         node
                     let right = rect.X + rect.Width
@@ -5977,6 +5992,12 @@ type Spreadsheet(container: Element) as this =
                 preventDefault e
                 stopPropagation e
                 if mouseButton e = 0 then pressFilterButton (closest target ".spreadsheet-filter-button")
+            elif within target "[data-macro]" then
+                // (A shape's macro runs on a click, as in Excel; it is not selected.)
+                preventDefault e
+                // (The keys stay the grid's: a macro may have bound some with OnKey.)
+                if not (holdsFocus content) then focusQuietly content
+                if mouseButton e = 0 && macrosEnabled then runMacroWhenIdle (getAttribute (closest target "[data-macro]") "data-macro")
             elif within target ".spreadsheet-picture-handle, .spreadsheet-picture" then
                 // A picture is selected by a click on it, moved by dragging it
                 // and sized by dragging a handle of its frame.
