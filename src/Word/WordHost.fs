@@ -20,10 +20,12 @@ module Host =
     [<Emit("!!($0 && ($0.SelectionChanged || $0.FormatChanged || $0.DocumentChanged || $0.LoadChanged))")>]
     let private isSelectionNotice (_change: obj) : bool = jsNative
 
-    [<Emit("!new URLSearchParams(window.location.search).has('rbCanvasMeasure') && window.localStorage.getItem('rb.word.canvasMeasure') !== '1'")>]
+    // (Shaped text is the host's: a page that puts no window.RbtWordTextStack measures with the canvas, and
+    // says nothing of an engine that would never load.)
+    [<Emit("!!(window.RbtWordTextStack && typeof window.RbtWordTextStack.install === 'function') && !new URLSearchParams(window.location.search).has('rbCanvasMeasure') && window.localStorage.getItem('rb.word.canvasMeasure') !== '1'")>]
     let private shapedTextEnabled () : bool = jsNative
 
-    [<Emit("window.RbtWordTextStack && window.RbtWordTextStack.install($0).then(function () { $1('Shaped text engine ready') }).catch(function (e) { $1('Shaped text engine failed: ' + ((e && e.message) || e)) })")>]
+    [<Emit("Promise.resolve().then(function () { return window.RbtWordTextStack.install($0) }).then(function () { $1('Shaped text engine ready') }).catch(function (e) { $1('Shaped text engine failed: ' + ((e && e.message) || e)) })")>]
     let private installShapedText (_editor: WordApi.Editor) (_setStatus: string -> unit) : unit = jsNative
 
     type Host = {
