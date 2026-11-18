@@ -1,5 +1,5 @@
-' cscript run-showcase-macro.vbs NAME__ENTRY.xlsm OUT.tsv: opens the macro-enabled workbook in Excel with
-' macros allowed, runs ENTRY (the part of the file name after "__"), and writes OUT.tsv (UTF-16):
+' cscript run-showcase-macro.vbs NAME__ENTRY[__BEFORE].xlsm OUT.tsv: opens the macro-enabled workbook in Excel
+' with macros allowed, runs BEFORE (a setup Sub) then ENTRY, and writes OUT.tsv (UTF-16):
 ' a line "status<TAB>ok|error number description<TAB>seconds", then one line per cell of the active
 ' sheet's used range that has a value or a fill: address, Value2 as text, fill colour (BGR long, or -).
 ' For the showcase macros (tests/macros/showcase): tests/macros/showcase.fsx --dump writes the same for ours.
@@ -8,17 +8,20 @@ Set fso = CreateObject("Scripting.FileSystemObject")
 inPath = WScript.Arguments(0)
 outPath = WScript.Arguments(1)
 base = fso.GetBaseName(inPath)
-entry = "Main"
-If InStr(base, "__") > 0 Then entry = Mid(base, InStr(base, "__") + 2)
+parts = Split(base, "__")
+entry = "Main" : before = ""
+If UBound(parts) >= 1 Then entry = parts(1)
+If UBound(parts) >= 2 Then before = parts(2)
 Set x = CreateObject("Excel.Application")
 x.Visible = False : x.DisplayAlerts = False
 x.AutomationSecurity = 1  ' msoAutomationSecurityLow: the workbook's macros may run
 Set wb = x.Workbooks.Open(inPath)
+status = ""
 started = Timer
 On Error Resume Next
-x.Run "'" & wb.Name & "'!" & entry
-status = "ok"
-If Err.Number <> 0 Then status = "error " & Err.Number & " " & Err.Description
+If before <> "" Then RunMacro before
+If status = "" Then RunMacro entry
+If status = "" Then status = "ok"
 Err.Clear
 On Error GoTo 0
 elapsed = Timer - started
@@ -40,3 +43,14 @@ Next
 out.Close
 wb.Close False
 x.Quit
+
+' Runs a Sub by name; a Sub in a module of the same name (Main in Main) needs Module.Sub.
+Sub RunMacro(name)
+  Err.Clear
+  x.Run "'" & wb.Name & "'!" & name
+  If Err.Number = 1004 Then
+    Err.Clear
+    x.Run "'" & wb.Name & "'!" & name & "." & name
+  End If
+  If Err.Number <> 0 Then status = "error " & Err.Number & " " & Err.Description & " (" & name & ")"
+End Sub

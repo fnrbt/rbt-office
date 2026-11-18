@@ -11,7 +11,7 @@
 //
 // --dump DIR writes DIR/<name>.tsv: the active sheet's cells with a value or a fill (address, Value2,
 // fill as a BGR long or -), as tools/excel-parity/run-showcase-macro.vbs writes Excel's; --xlsm DIR writes
-// DIR/<name>__<Entry>.xlsm, the macro in a blank macro-enabled workbook, for that script.
+// DIR/<name>__<Entry>[__<Before>].xlsm, the macro in a blank macro-enabled workbook, for that script.
 //
 // A macro's header comments say how to run it:
 //   ' Entry: Main             the Sub to run (default Main)
@@ -145,7 +145,8 @@ let runOne (name: string, files: string[]) =
                     inputIndex <- inputIndex + 1
                     Some answer) }
     let modules = files |> Array.sort |> Array.map moduleOf |> Array.toList
-    xlsmDir |> Option.iter (fun dir -> Directory.CreateDirectory dir |> ignore; writeXlsm (Path.Combine(dir, sprintf "%s__%s.xlsm" name entry)) modules)
+    let beforeName = match header "Before" sources with b :: _ -> "__" + b | [] -> ""
+    xlsmDir |> Option.iter (fun dir -> Directory.CreateDirectory dir |> ignore; writeXlsm (Path.Combine(dir, sprintf "%s__%s%s.xlsm" name entry beforeName)) modules)
     match (try M.MacroProgram.Compile modules with e -> Result.Error [ { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "engine exception: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
     | Result.Error failures ->
         { Name = name; Status = "COMPILE"; Detail = failures |> List.truncate 3 |> List.map Rbt.Vb.Api.VbFailure.format |> String.concat "; "; Seconds = 0.0; Changes = "" }
