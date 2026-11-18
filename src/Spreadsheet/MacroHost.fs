@@ -15,6 +15,14 @@ open Rbt.Spreadsheet.Workbook
 /// A run-time error of the object model, as Excel raises it: `On Error` sees its number.
 let private fail number (description: string) : 'a = raiseVbErrorWith number description
 let private failApp description = fail 1004 description
+/// A property that takes arguments, as Excel's type library has it (Range.Offset, Worksheet.Range): read
+/// or called alike, but not a method (CallByName ... VbMethod is error 438).
+let private propertyWith (name: string) (parameters: string list) (read: 'T -> Value array -> Value) : Rbt.Vb.HostMembers.Member<'T> =
+    Rbt.Vb.HostMembers.indexed name parameters (fun s -> read s [||]) read
+
+/// Error 1004 with Excel's text, and what it was about kept for the report (VbErrorInfo.Detail), not Err.
+let private failAppAbout (description: string) (detail: string) : 'a =
+    raise (VbError { Number = 1004; Description = description; Source = ""; Detail = detail })
 let private unsupported (typeName: string) (memberName: string) =
     fail 438 (sprintf "Object doesn't support this property or method (%s.%s)" typeName memberName)
 
@@ -310,14 +318,16 @@ let private parseReference (text: string) : (string option * int * int * int * i
         let part = part.Replace("$", "").Trim()
         let letters = System.String(part |> Seq.takeWhile Char.IsLetter |> Seq.toArray)
         let digits = part.Substring letters.Length
+        // (Past the sheet's last column XFD or row 1048576 is not a reference.)
         let col =
-            if letters = "" then None
+            if letters = "" || letters.Length > 3 then None
             else Some ((letters.ToUpperInvariant() |> Seq.fold (fun acc ch -> acc * 26 + (int ch - int 'A' + 1)) 0) - 1)
         let row =
             match Int32.TryParse digits with
-            | true, n when n >= 1 -> Some (n - 1)
+            | true, n when n >= 1 && n - 1 <= maxRow -> Some (n - 1)
             | _ -> None
         if digits <> "" && row.IsNone then None
+        elif letters <> "" && (col.IsNone || col.Value > maxCol) then None
         elif letters = "" && digits = "" then None
         else Some (row, col)
     let parts = body.Split ':'
@@ -1438,7 +1448,9 @@ let private rangeItems (s: RangeState) : Value seq =
     else s.Cells () |> Seq.map wrapRange
 
 /// Worksheet.Range(...): a reference ("A1:B2", a defined name), a range, or the block two corners span.
-let private sheetRange (book: MacroWorkbook) (sheetId: SheetId) (args: Value array) : RangeState =
+/// (`owner`: what Excel's message names - "_Global" for Range(...), "_Worksheet" for a sheet's.)
+let private sheetRangeOf (owner: string) (book: MacroWorkbook) (sheetId: SheetId) (args: Value array) : RangeState =
+    let failed (text: string) : 'a = failAppAbout (sprintf "Method 'Range' of object '%s' failed" owner) text
     match args with
     | [| first |] ->
         match rangeRefOf first with
@@ -1455,8 +1467,8 @@ let private sheetRange (book: MacroWorkbook) (sheetId: SheetId) (args: Value arr
                     | Some (sheetName, a, b, c, d) ->
                         let target = sheetName |> Option.bind (sheetIdNamed book) |> Option.defaultValue sheetId
                         rangeState book { Sheet = target; Top = a; Left = b; Bottom = c; Right = d }
-                    | None -> failApp (sprintf "Method 'Range' of object '_Worksheet' failed (%s)" text)
-                | None -> failApp (sprintf "Method 'Range' of object '_Worksheet' failed (%s)" text)
+                    | None -> failed text
+                | None -> failed text
     | [| first; second |] ->
         let corner (v: Value) =
             match rangeRefOf v with
@@ -1464,11 +1476,13 @@ let private sheetRange (book: MacroWorkbook) (sheetId: SheetId) (args: Value arr
             | None ->
                 match parseReference (toText v) with
                 | Some (_, a, b, c, d) -> a, b, c, d
-                | None -> failApp "Method 'Range' of object '_Worksheet' failed"
+                | None -> failed (toText v)
         let a0, b0, c0, d0 = corner first
         let a1, b1, c1, d1 = corner second
         rangeState book { Sheet = sheetId; Top = min a0 a1; Left = min b0 b1; Bottom = max c0 c1; Right = max d0 d1 }
     | _ -> fail 450 "Wrong number of arguments or invalid property assignment"
+
+let private sheetRange book sheetId args = sheetRangeOf "_Worksheet" book sheetId args
 
 let private usedRange (s: WorksheetState) =
     let model = s.Book.Model s.Id
@@ -2083,7 +2097,7 @@ let private rangeMembers : Member<RangeState> list =
       { indexed "_Default" [ "RowIndex"; "ColumnIndex" ] (fun (s: RangeState) -> s.Values ())
             (fun s args -> if args.Length = 0 && s.Lines < 3 then s.Values () else wrapRange (s.ItemAt args))
         with Set = Some (fun s v -> s.Enter v) }
-      method "Item" [ "RowIndex"; "ColumnIndex" ] (fun s args -> if args.Length = 0 then unsupported "Range" "Item" else wrapRange (s.ItemAt args))
+      propertyWith "Item" [ "RowIndex"; "ColumnIndex" ] (fun s args -> if args.Length = 0 then unsupported "Range" "Item" else wrapRange (s.ItemAt args))
       value
       prop "Value2" (fun s -> s.Values2 ()) (fun s v -> s.Enter v)
       formula
@@ -2100,10 +2114,10 @@ let private rangeMembers : Member<RangeState> list =
       get "Rows" (fun s -> wrapRange (s.LinesOf false))
       get "Columns" (fun s -> wrapRange (s.LinesOf true))
       indexed "Cells" [ "RowIndex"; "ColumnIndex" ] (fun s -> wrapRange (s.Plain ())) (fun s args -> wrapRange (if args.Length = 0 then s.Plain () else s.CellItem args))
-      method "Range" [ "Cell1"; "Cell2" ] (fun s args -> if args.Length = 0 then unsupported "Range" "Range" else wrapRange (s.Range (toText args.[0])))
-      method "Offset" [ "RowOffset"; "ColumnOffset" ] (fun s args -> wrapRange (s.Offset args))
-      method "Resize" [ "RowSize"; "ColumnSize" ] (fun s args -> wrapRange (s.Resize args))
-      method "End" [ "Direction" ] (fun s args -> wrapRange (s.EndOf (toInt (at args 0))))
+      propertyWith "Range" [ "Cell1"; "Cell2" ] (fun s args -> if args.Length = 0 then unsupported "Range" "Range" else wrapRange (s.Range (toText args.[0])))
+      propertyWith "Offset" [ "RowOffset"; "ColumnOffset" ] (fun s args -> wrapRange (s.Offset args))
+      propertyWith "Resize" [ "RowSize"; "ColumnSize" ] (fun s args -> wrapRange (s.Resize args))
+      propertyWith "End" [ "Direction" ] (fun s args -> wrapRange (s.EndOf (toInt (at args 0))))
       worksheet
       alias "Parent" worksheet
       get "EntireRow" (fun s -> wrapRange (s.Sub(s.Ref.Top, 0, s.Ref.Bottom, maxCol)))
@@ -2489,7 +2503,7 @@ let private worksheetMembers : Member<WorksheetState> list =
       // Rows(i) / Columns(i): what Rows / Columns is called with ("3:5", "A:C" and a column's letters too).
       get "Rows" (fun s -> wrapRange (RangeState(s.Book, s.Whole, 3, [])))
       get "Columns" (fun s -> wrapRange (RangeState(s.Book, s.Whole, 4, [])))
-      method "Range" [ "Cell1"; "Cell2" ] (fun s args -> wrapRange (sheetRange s.Book s.Id args))
+      propertyWith "Range" [ "Cell1"; "Cell2" ] (fun s args -> wrapRange (sheetRange s.Book s.Id args))
       get "UsedRange" (fun s -> wrapRange (usedRange s))
       get "Shapes" (fun s -> shapesType.Wrap (ShapesState(s.Book, s.Id, false)))
       get "ChartObjects" (fun s -> chartObjectsType.Wrap (ShapesState(s.Book, s.Id, true)))
@@ -2700,7 +2714,7 @@ let private applicationType =
         prop "Calculation" (fun b -> b.Setting "Calculation" |> Option.defaultValue (VLong -4105)) (fun b v -> b.SetSetting("Calculation", v))
         calculate
         alias "CalculateFull" calculate
-        method "Range" [ "Cell1"; "Cell2" ] (fun b args -> wrapRange (sheetRange b b.ActiveSheet args))
+        propertyWith "Range" [ "Cell1"; "Cell2" ] (fun b args -> wrapRange (sheetRangeOf "_Application" b b.ActiveSheet args))
         indexed "Cells" [ "RowIndex"; "ColumnIndex" ] (fun b -> rangeValue b (wholeSheet b.ActiveSheet)) (fun b args ->
             let whole = rangeState b (wholeSheet b.ActiveSheet)
             wrapRange (if args.Length = 0 then whole else whole.CellItem args))
@@ -2762,7 +2776,7 @@ let private intersectGlobal = callable "Intersect" rangeArguments intersectOf
 let private unionGlobal = callable "Union" rangeArguments unionOf
 /// Range(...): of the active sheet.
 let private rangeGlobal =
-    callable "Range" [ "Cell1"; "Cell2" ] (fun b args -> if args.Length = 0 then unsupported "Application" "Range" else wrapRange (sheetRange b b.ActiveSheet args))
+    callable "Range" [ "Cell1"; "Cell2" ] (fun b args -> if args.Length = 0 then unsupported "Application" "Range" else wrapRange (sheetRangeOf "_Global" b b.ActiveSheet args))
 // (DoEvents: the engine has no event loop to yield to.)
 let private doEventsGlobal = callable "DoEvents" [] (fun _ _ -> VLong 0)
 
@@ -2871,7 +2885,7 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
             session.Cancel()
             match session.Step 1 with
             | Failed failure -> MacroFailed { failure with Description = "The macro ran too long and was stopped" }
-            | _ -> MacroFailed { Kind = Runtime; Number = 18; Description = "The macro ran too long and was stopped"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+            | _ -> MacroFailed { Detail = ""; Kind = Runtime; Number = 18; Description = "The macro ran too long and was stopped"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
 
     /// Compile the modules (`macroModule` for those of a file); the compile errors when they do not.
     static member Compile(modules: ModuleSource list) : Result<MacroProgram, VbFailure list> =
@@ -2882,18 +2896,28 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
               InputBox = (fun prompt title defaultText -> book.Hooks.InputBox prompt title defaultText)
               CreateObject = (fun _ -> None)
               Environ = (fun _ -> "") }
+        // Excel's type library: its constants (all of them; this host's own where it has the name too) and its
+        // types, for early binding - a typed variable's members are checked when the project compiles.
+        let library = ExcelTypeLibrary.library.Value
+        let sheetModules =
+            [ for m in modules do if m.Kind = Document && m.Name.ToLowerInvariant() <> "thisworkbook" then yield m.Name.ToLowerInvariant(), "Worksheet" ]
+        let hostTypes : Rbt.Vb.TypeCheck.HostTypes =
+            { Library = library
+              GlobalInterface = Some "_Global"
+              Globals = Map.ofList ([ for i in 1 .. 64 -> sprintf "sheet%d" i, "Worksheet" ] @ sheetModules @ [ "thisworkbook", "Workbook" ]) }
         let options =
             ProjectOptions.vba
-            |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book @ codeNameGlobals book modules))
+            |> ProjectOptions.withHostGlobals (Map.ofList (library.Constants @ hostGlobals book @ codeNameGlobals book modules))
             |> ProjectOptions.withHooks runtime
+            |> ProjectOptions.withHostTypes hostTypes
         match (try Project.compile options modules
-               with e -> Result.Error [ { Kind = Compile; Number = 0; Description = "The VBA engine could not compile the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
+               with e -> Result.Error [ { Detail = ""; Kind = Compile; Number = 0; Description = "The VBA engine could not compile the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
         | Result.Error failures -> Result.Error failures
         | Result.Ok project ->
             // (Module-level code runs once, on a blank workbook: Excel's modules have none to speak of.)
             // (An engine that throws on a project - bytecode it does not accept - fails it as a compile error.)
             match (try Session.Create(project, defaultInstructionLimit)
-                   with e -> Result.Error { Kind = Compile; Number = 0; Description = "The VBA engine could not load the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }) with
+                   with e -> Result.Error { Detail = ""; Kind = Compile; Number = 0; Description = "The VBA engine could not load the project: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }) with
             | Result.Ok session -> Result.Ok (MacroProgram(project, book, session))
             | Result.Error failure -> Result.Error [ failure ]
 

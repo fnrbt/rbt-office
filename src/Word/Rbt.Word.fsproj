@@ -23,6 +23,7 @@
     <Compile Include="TypedDocxExport.fs" />
     <Compile Include="Docx.fs" />
     <Compile Include="WordMacroApi.fs" />
+    <Compile Include="WordTypeLibrary.fs" />
     <Compile Include="WordMacroHost.fs" />
     <Compile Include="WordMacroProject.fs" />
     <Compile Include="Renderer.fs" />

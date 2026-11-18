@@ -147,7 +147,7 @@ let runOne (name: string, files: string[]) =
     let modules = files |> Array.sort |> Array.map moduleOf |> Array.toList
     let beforeName = match header "Before" sources with b :: _ -> "__" + b | [] -> ""
     xlsmDir |> Option.iter (fun dir -> Directory.CreateDirectory dir |> ignore; writeXlsm (Path.Combine(dir, sprintf "%s__%s%s.xlsm" name entry beforeName)) modules)
-    match (try M.MacroProgram.Compile modules with e -> Result.Error [ { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "engine exception: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
+    match (try M.MacroProgram.Compile modules with e -> Result.Error [ { Detail = ""; Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "engine exception: " + e.Message; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" } ]) with
     | Result.Error failures ->
         { Name = name; Status = "COMPILE"; Detail = failures |> List.truncate 3 |> List.map Rbt.Vb.Api.VbFailure.format |> String.concat "; "; Seconds = 0.0; Changes = "" }
     | Result.Ok program ->

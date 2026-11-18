@@ -9,7 +9,7 @@
          the neighbouring checkouts' when they were project references: the
          .fsx suites load them from there. -->
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <RbtVbPackageVersion Condition="'$(RbtVbPackageVersion)' == ''">0.6.0</RbtVbPackageVersion>
+    <RbtVbPackageVersion Condition="'$(RbtVbPackageVersion)' == ''">0.8.2</RbtVbPackageVersion>
     <RbtTextPackageVersion Condition="'$(RbtTextPackageVersion)' == ''">0.1.3</RbtTextPackageVersion>
     <RbtPdfPackageVersion Condition="'$(RbtPdfPackageVersion)' == ''">0.1.4</RbtPdfPackageVersion>
     <RbtRendererPackageVersion Condition="'$(RbtRendererPackageVersion)' == ''">0.1.4</RbtRendererPackageVersion>

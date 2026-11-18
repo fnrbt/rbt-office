@@ -358,7 +358,7 @@ let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (so
         { wb with Sheets = wb.Sheets |> Map.map (fun _ sheet -> if sheet.Model.Macros = source then sheet else { sheet with Model = { sheet.Model with Macros = source } }) }
     let outcome =
         match programOf source with
-        | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There are no macros"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+        | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Detail = ""; Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There are no macros"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
         | Some (Result.Error failures) -> Rbt.Spreadsheet.MacroHost.MacroFailed (List.head failures)
         | Some (Result.Ok program) ->
             let name =
@@ -367,7 +367,7 @@ let runMacro (st: EditorState) (hooks: Rbt.Spreadsheet.MacroHost.MacroHooks) (so
                 | None -> if program.Has "Main" then Some "Main" else List.tryHead program.Macros
             match name with
             | Some name -> program.Run(start, hooks, name)
-            | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There is no Sub to run"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+            | None -> Rbt.Spreadsheet.MacroHost.MacroFailed { Detail = ""; Kind = Rbt.Vb.Api.Compile; Number = 0; Description = "There is no Sub to run"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
     match outcome with
     | Rbt.Spreadsheet.MacroHost.MacroDone (result, selection) ->
         let result =

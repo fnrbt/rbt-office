@@ -94,7 +94,7 @@ Sub Main()
     ActiveDocument.Nope = 1
     Debug.Print Err.Number; Err.Description
 End Sub""" |> ok "type names" |> ignore
-check "type names" (List.ofSeq output) [ "Document Document Window Paragraph"; " 438 Object doesn't support this property or method (Document.Nope)" ]
+check "type names" (List.ofSeq output) [ "Document Document Window Paragraph"; " 438 Object doesn't support this property or method" ]
 
 // ---- character formatting -------------------------------------------------------------------------------------
 let d4 =
@@ -338,8 +338,12 @@ check "bookmarks: text" (texts d14) [ "Dear Ada, thanks." ]
 check "bookmarks: output" (List.ofSeq output) [ "True NAME" ]
 
 // ---- errors ---------------------------------------------------------------------------------------------------
+// (Word's Range is a non-extensible interface: a member it does not have is a compile error, as in Word.
+// Late-bound, the same is run-time error 438.)
 let e1 = run (docOf [ "x" ]) "Sub Main()\n    ActiveDocument.Content.Frobnicate\nEnd Sub"
-check "errors: 438" (match e1 with Error t -> t.Contains "438" && t.Contains "Frobnicate" | Ok _ -> false) true
+check "errors: early-bound unknown member" (match e1 with Error t -> t.Contains "Method or data member not found" && t.Contains "Range.Frobnicate" | Ok _ -> false) true
+let e1b = run (docOf [ "x" ]) "Sub Main()\n    Dim o As Object\n    Set o = ActiveDocument.Content\n    o.Frobnicate\nEnd Sub"
+check "errors: 438" (match e1b with Error t -> t.Contains "438" && t.Contains "Frobnicate" | Ok _ -> false) true
 let e2 = run (docOf [ "x" ]) "Sub Main()\n    ActiveDocument.Content.Text = \"changed\"\n    Err.Raise 5\nEnd Sub"
 check "errors: nothing kept" (match e2 with Error _ -> true | Ok _ -> false) true
 let e3 =

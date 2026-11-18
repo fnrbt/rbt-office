@@ -31,3 +31,22 @@ the case it stopped in. Mind VBA's own rules when writing cases: `Resume` re-exe
 raised, so a retry must change what that statement sees.
 
 Engine differences found this way are kept as minimal repros in `tests/vba-parity/engine-gaps/`.
+
+## Compile errors (early binding)
+
+VBA checks members of declared types when it compiles. Our engine does the same against Excel's and Word's
+type libraries (`src/Spreadsheet/ExcelTypeLibrary.fs`, `src/Word/WordTypeLibrary.fs`, made from the VM's
+Office by `tools/vba-parity/typelib.sh`; the TSV is `typelib.ps1`'s). The cases are
+`tests/vba-parity/compile-cases/*.bas` (and `<case>.<Class>.cls` class modules):
+
+```
+tools/vba-parity/compile-on-vm.sh tests/vba-parity/compile-cases excel-compile.tsv     # Excel's compile errors
+dotnet fsi tools/vba-parity/compile-parity.fsx tests/vba-parity/compile-cases excel-compile.tsv
+```
+
+`compile-cases.ps1` puts each case into a blank workbook and runs VBE's "Compile VBAProject"; a compile
+error is a dialog, which a watcher process reads and closes. What Excel showed: a member an *extensible*
+interface does not list (Excel's Range, Font, Application) compiles and is found at run time (438); a
+non-extensible one (Excel's Worksheet, nearly all of Word's, a VBA class) gives "Method or data member not
+found". Known members are checked either way (arguments, read-only properties). The task runner takes an
+output file that is already there as done: each run uses a fresh folder.

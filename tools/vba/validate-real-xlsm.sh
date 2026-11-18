@@ -21,7 +21,7 @@ dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj -c Debug >/dev/null
 
 dll="$repo/src/Office.Formats/bin/Debug/netstandard2.0/OfficeFormat.dll"
 rb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
-vb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/FsVb.dll"
+vb="$repo/src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Vb.dll"
 
 cat > /tmp/validate-real.fsx <<EOF
 #r "$dll"

@@ -3357,14 +3357,21 @@ type MacroProgram private (project: Project, book: MacroDocument, session: Sessi
             session.Cancel()
             match session.Step 1 with
             | Failed failure -> MacroFailed { failure with Description = "The macro ran too long and was stopped" }
-            | _ -> MacroFailed { Kind = Runtime; Number = 18; Description = "The macro ran too long and was stopped"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
+            | _ -> MacroFailed { Detail = ""; Kind = Runtime; Number = 18; Description = "The macro ran too long and was stopped"; Source = ""; Line = 0; Column = 0; Procedure = ""; Module = "" }
 
     static member Compile(modules: ModuleSource list) : Result<MacroProgram, VbFailure list> =
         let book = MacroDocument(Rbt.Word.Document.empty, WordMacroApi.defaultHooks)
+        // Word's type library: its constants (this host's own where it has the name too) and its types, for
+        // early binding - most of Word's interfaces are non-extensible, so an unknown member of a typed
+        // variable is a compile error, as in Word.
+        let library = WordTypeLibrary.library.Value
+        let hostTypes : Rbt.Vb.TypeCheck.HostTypes =
+            { Library = library; GlobalInterface = Some "_Global"; Globals = Map.ofList [ "thisdocument", "Document" ] }
         let options =
             ProjectOptions.vba
-            |> ProjectOptions.withHostGlobals (Map.ofList (hostGlobals book))
+            |> ProjectOptions.withHostGlobals (Map.ofList (library.Constants @ hostGlobals book))
             |> ProjectOptions.withHooks (hooksOf book)
+            |> ProjectOptions.withHostTypes hostTypes
         match Project.compile options (modules |> List.map (fun m -> { m with Source = compiledSource m.Source })) with
         | Result.Error failures -> Result.Error failures
         | Result.Ok project ->
