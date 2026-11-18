@@ -277,6 +277,30 @@ module Dialogs =
         Label = signal "Figure"
     }
 
+    /// The VBA editor: the module shown and its code, the macro to run, an Immediate line, the output;
+    /// the project's modules (name, kind, code) and macros as they were when the editor was (re)opened.
+    type VbaEditorState = {
+        IsOpen: Signal<bool>
+        Module: Signal<string>
+        Code: Signal<string>
+        Macro: Signal<string>
+        Immediate: Signal<string>
+        Output: Signal<string>
+        mutable Modules: (string * string * string) list
+        mutable Macros: string list
+    }
+
+    let vbaEditorState () = {
+        IsOpen = signal false
+        Module = signal "Module1"
+        Code = signal ""
+        Macro = signal ""
+        Immediate = signal "?ActiveDocument.Paragraphs.Count"
+        Output = signal ""
+        Modules = []
+        Macros = []
+    }
+
     let bookmarkState () = {
         IsOpen = signal false
         Name = signal "Bookmark1"
@@ -577,6 +601,31 @@ module Dialogs =
             selectField "word-cross-reference-label" "Reference type" captionChoices state.Label
             note "word-cross-reference-help" "Inserts a reference to the latest caption of this type."
         ] [ cancel "word-cross-reference-cancel" state.IsOpen; apply "word-cross-reference-apply" "Insert" state.IsOpen onApply ]
+
+    /// The VBA editor (the spreadsheet's Ui.macroEditor in the Word shell's terms): a module's code to read
+    /// and change (Apply compiles it), the macros to run on the document (one undo step), an Immediate line,
+    /// and the output. The dialog stays open; the host shows it again when the project changed.
+    let vbaEditorDialog dialogTestId (state: VbaEditorState) (onApply: unit -> unit) (onRun: unit -> unit) (onImmediate: unit -> unit) =
+        let keepOpen id label primary action = dialogButton id label primary (fun _ -> action (); false)
+        let moduleField, moduleValue =
+            selectField "word-vba-module" "Module" [ for name, kind, _ in state.Modules -> name, sprintf "%s (%s)" name kind ] state.Module
+        let codeField = dialogTextArea "word-vba-code" "Code" "Sub Main()\n    ActiveDocument.Content.InsertAfter \"Hello\"\nEnd Sub" 16 state.Code.Value |> dialogTestId "word-vba-code"
+        let spec, values =
+            form dialogTestId "VBA" [
+                (moduleField |> dialogUpdating (fun values chosen ->
+                    let code = state.Modules |> List.tryPick (fun (n, _, c) -> if n = chosen then Some c else None) |> Option.defaultValue ""
+                    values |> Map.add "word-vba-module" chosen |> Map.add "word-vba-code" code)), moduleValue
+                codeField, state.Code
+                selectField "word-vba-macro" "Macro" [ for name in state.Macros -> name, name ] state.Macro
+                textField "word-vba-immediate" "Immediate (?expression, or a statement)" state.Immediate
+                statusField "word-vba-output" state.Output
+            ] [
+                dialogButton "word-vba-close" "Close" false (fun _ -> state.IsOpen.Value <- false; true)
+                keepOpen "word-vba-apply" "Apply" false onApply
+                keepOpen "word-vba-immediate-run" "Run line" false onImmediate
+                keepOpen "word-vba-run" "Run macro" true onRun
+            ]
+        { spec with Subtitle = Some "Apply compiles a module's changes; Run runs a macro on the document as one undo step." }, values
 
     let bookmarkDialog dialogTestId (state: BookmarkState) onApply =
         form dialogTestId "Bookmark" [

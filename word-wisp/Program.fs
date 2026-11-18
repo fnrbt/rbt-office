@@ -176,7 +176,7 @@ let main argv =
           AcceptSelectedRevision = ignore; RejectSelectedRevision = ignore; AcceptAllRevisions = ignore
           RejectAllRevisions = ignore; InsertSectionBreak = ignore; OpenAnnotation = ignore
           OpenParagraphStyle = ignore; OpenTableCellStyle = ignore; OpenTableMargins = ignore
-          OpenFontDialog = None; OpenParagraphBorders = None; OpenListsDialog = None
+          OpenFontDialog = None; OpenParagraphBorders = None; OpenListsDialog = None; OpenVbaEditor = None
           OpenInsertTable = ignore; InsertDefaultTable = ignore; InsertTableRow = ignore; InsertTableColumn = ignore
           DeleteTableRow = ignore; DeleteTableColumn = ignore; ApplyHeading = ignore; ApplyNormalParagraph = ignore
           ApplyParagraphStyle = ignore; ApplyCharacterStyle = ignore

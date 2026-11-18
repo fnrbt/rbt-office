@@ -384,5 +384,31 @@ check "calendar: three months" calendarTables.Length 3
 check "calendar: weekend shading" (calendarTables.Head.Rows.[1].Cells |> List.map (fun c -> c.BackgroundColor)) [ None; None; None; None; None; Some "#DEEBF7"; Some "#DEEBF7" ]
 check "calendar: page breaks as Word makes them" (Doc.allParagraphs calendar |> List.filter (fun p -> p.Metadata.PageBreakBefore) |> List.length) 2
 
+// ---- a project saved with a document: a .docx made macro-enabled, a .docm's project replaced ----------
+let unzip (bytes: byte[]) =
+    use archive = new IO.Compression.ZipArchive(new IO.MemoryStream(bytes))
+    [ for e in archive.Entries ->
+        use s = e.Open()
+        use m = new IO.MemoryStream()
+        s.CopyTo m
+        e.FullName, m.ToArray() ] |> Map.ofList
+let save (doc: Doc.Document) = DocumentWriter.writeTypedPackageBytes (Rbt.Word.Docx.exportTypedDocumentPackage doc)
+let project = Rbt.Word.WordMacroHost.modulesBytes [ Rbt.Vb.Api.ModuleSource.standard "Module1" "Sub Main()\r\nEnd Sub\r\n" ]
+check "a plain document: no project" (hasProject blank) false
+let saved = unzip (save (withProjectBytes project blank))
+check "docx -> docm: the project part" (saved |> Map.containsKey "word/vbaProject.bin") true
+let types = Text.Encoding.UTF8.GetString saved.["[Content_Types].xml"]
+check "docx -> docm: macro-enabled main part" (types.Contains "application/vnd.ms-word.document.macroEnabled.main+xml") true
+check "docx -> docm: the project's content type" (types.Contains "/word/vbaProject.bin") true
+check "docx -> docm: the relationship" (Text.Encoding.UTF8.GetString(saved.["word/_rels/document.xml.rels"]).Contains "relationships/vbaProject") true
+let reopened = (Rbt.Word.Docx.loadBytesNative (save (withProjectBytes project blank))).Value
+check "docx -> docm: read again" ((Rbt.Word.WordMacroHost.macroModulesOf reopened) |> List.map (fun m -> m.Name)) [ "Module1" ]
+let docm = (Rbt.Word.Docx.loadBytesNative (IO.File.ReadAllBytes(IO.Path.Combine(showcase, "docm/rainbow-text.docm")))).Value
+check "docm: its modules" (Rbt.Word.WordMacroHost.macroModulesOf docm |> List.map (fun m -> m.Name)) [ "ThisDocument"; "RainbowText" ]
+let edited = (Project.openProject docm).WithModule("RainbowText", "Sub Other()\nEnd Sub")
+let resaved = (Rbt.Word.Docx.loadBytesNative (save (withProjectBytes (edited.ProjectBytes()) docm))).Value
+check "docm: the edited module saved" ((Project.openProject resaved).Macros) [ "Other" ]
+check "docm: kept as it was when not edited" (unzip (save docm)).["word/vbaProject.bin"] (projectBytes docm).Value
+
 printfn "word macros: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
