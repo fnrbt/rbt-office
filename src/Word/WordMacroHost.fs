@@ -1943,8 +1943,8 @@ type private ReplacementState = { Book: MacroDocument; Find: FindState }
 type private BookmarkState = { Book: MacroDocument; Info: BookmarkInfo; S: int; E: int }
 type private StyleState = { Book: MacroDocument; Id: string }
 type private VariableState = { Book: MacroDocument; Key: string }
-/// The document, or its window, and the name it goes by (TypeName(ActiveDocument) is "ActiveDocument").
-type private NamedState = { Book: MacroDocument; TypeName: string }
+/// The document, or its window (TypeName(ActiveDocument) is "Document", as Word's).
+type private NamedState = { Book: MacroDocument }
 type private ConversionState = { Conversion: string; Factor: float }
 
 // ---- styles ----------------------------------------------------------------------------------------------------
@@ -2218,8 +2218,8 @@ let private cellObject (book: MacroDocument) (c: CellRef) = cellType.Wrap { Book
 let private cellsObject (book: MacroDocument) (cells: CellSet) = cellsType.Wrap { Book = book; Cells = cells }
 let private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) = findType.Wrap { Book = book; R = r; IsSelection = isSelection; Find = findStateOf r }
 let private bookmarksObject (book: MacroDocument) (within: LiveRange option) = bookmarksType.Wrap { Book = book; Within = within }
-let private documentObject (book: MacroDocument) = documentType.Wrap { Book = book; TypeName = "Document" }
-let private windowObject (book: MacroDocument) = windowType.Wrap { Book = book; TypeName = "Window" }
+let private documentObject (book: MacroDocument) = documentType.Wrap { Book = book }
+let private windowObject (book: MacroDocument) = windowType.Wrap { Book = book }
 let private documentsObject (book: MacroDocument) = documentsType.Wrap book
 let private applicationObject (book: MacroDocument) = applicationType.Wrap book
 
@@ -3218,8 +3218,7 @@ documentType <-
           notRun "PrintOut" []
           notRun "ExportAsFixedFormat" []
           method "Undo" [] (fun _ _ -> VBoolean false)
-          method "Redo" [] (fun _ _ -> VBoolean false) ],
-        typeNameOf = (fun d -> d.TypeName))
+          method "Redo" [] (fun _ _ -> VBoolean false) ])
 
 windowType <-
     let display name = accepted name (VBoolean true)
@@ -3237,8 +3236,7 @@ windowType <-
           nothing "Activate"
           nothing "ScrollIntoView"
           nothing "SmallScroll"
-          nothing "LargeScroll" ],
-        typeNameOf = (fun w -> w.TypeName))
+          nothing "LargeScroll" ])
 
 documentsType <-
     collectionType "Documents" (fun (book: MacroDocument) -> [| documentObject book |])
@@ -3295,12 +3293,12 @@ applicationType <-
 let hostGlobals (book: MacroDocument) : (string * Value) list =
     let globalConversions = [ "CentimetersToPoints"; "MillimetersToPoints"; "InchesToPoints"; "LinesToPoints"; "PointsToCentimeters"; "PointsToInches" ]
     [ "Application", applicationObject book
-      "ActiveDocument", documentType.Wrap { Book = book; TypeName = "ActiveDocument" }
-      "ThisDocument", documentType.Wrap { Book = book; TypeName = "ActiveDocument" }
+      "ActiveDocument", documentObject book
+      "ThisDocument", documentObject book
       "Selection", selectionObject book
       "Documents", documentsObject book
       "Options", optionsType.Wrap book
-      "ActiveWindow", windowType.Wrap { Book = book; TypeName = "ActiveWindow" } ]
+      "ActiveWindow", windowObject book ]
     @ [ for name, factor in conversions do
           if List.contains name globalConversions then yield name, conversionType.Wrap { Conversion = name; Factor = factor } ]
     @ [ "DoEvents", doEventsType.Wrap () ]
