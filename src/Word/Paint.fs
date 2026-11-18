@@ -339,6 +339,16 @@ let private lineVerticalBounds defaultTop defaultBottom (lines: MeasuredLine lis
             bottom <- line.Y + line.Height
         first.Y, bottom
 
+/// The colour of a w:highlight name as Word paints it. (The names are not CSS colours: Word's "green" is
+/// #00FF00 where CSS's is #008000, and "darkYellow" is no CSS colour at all.)
+let highlightColor (name: string) =
+    match name.ToLowerInvariant() with
+    | "yellow" -> "#FFFF00" | "green" -> "#00FF00" | "cyan" -> "#00FFFF" | "magenta" -> "#FF00FF"
+    | "blue" -> "#0000FF" | "red" -> "#FF0000" | "darkblue" -> "#000080" | "darkcyan" -> "#008080"
+    | "darkgreen" -> "#008000" | "darkmagenta" -> "#800080" | "darkred" -> "#800000" | "darkyellow" -> "#808000"
+    | "darkgray" -> "#808080" | "lightgray" -> "#C0C0C0" | "black" -> "#000000" | "white" -> "#FFFFFF"
+    | _ -> name
+
 let private styleFromTextStyle (style: TextStyle) = {
     Bold = style.Bold
     Italic = style.Italic
@@ -351,7 +361,7 @@ let private styleFromTextStyle (style: TextStyle) = {
     CharacterSpacing = style.CharacterSpacing
     FontFamily = style.FontFamily
     Color = WordLayout.Text.fallbackColor style
-    Highlight = style.Highlight
+    Highlight = style.Highlight |> Option.filter (fun name -> name <> "none") |> Option.map highlightColor
     VertAlign = style.VertAlign
 }
 

@@ -61,6 +61,8 @@ Sub Main()
     ActiveDocument.Paragraphs(1).Style = wdStyleTitle
     For i = 2 To count + 1
         With ActiveDocument.Paragraphs(i)
+            ' (The lines were typed into the first heading's paragraph: they have its style until now.)
+            .Style = wdStyleNormal
             level = Val(Left(.Range.Text, 1))
             .Range.Characters(1).Delete
             .Range.Characters(1).Delete

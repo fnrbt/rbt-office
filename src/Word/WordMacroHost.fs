@@ -2222,7 +2222,7 @@ and private cellObject (book: MacroDocument) (c: CellRef) : Value =
             | "columnindex" -> Some (VInteger (c.Col + 1))
             | "verticalalignment" ->
                 Some (VInteger (match cellOf book c |> Option.bind (fun x -> x.VerticalAlignment) with Some "center" -> 1 | Some "bottom" -> 3 | _ -> 0))
-            | "width" -> Some (VDouble (cellOf book c |> Option.bind (fun x -> x.Width) |> Option.map ptOfPx |> Option.defaultValue 0.0))
+            | "width" -> Some (VDouble (cellOf book c |> Option.bind (fun x -> x.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
             | "next" | "previous" -> None
             | _ -> None)
         (fun name value ->
@@ -2232,7 +2232,7 @@ and private cellObject (book: MacroDocument) (c: CellRef) : Value =
                 mapCells book [ c ] (fun x -> { x with VerticalAlignment = v }); true
             | "width" ->
                 let px = pxOfPt (toFloat value)
-                mapCells book [ c ] (fun x -> { x with Width = Some px; PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } }); true
+                mapCells book [ c ] (fun x -> { x with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } }); true
             | _ -> false)
         (fun name args ->
             match name with
@@ -2374,7 +2374,7 @@ and private rowObject (book: MacroDocument) (tableId: string) (row: int) : Value
             | "borders" -> Some (bordersObject book (CellBorders cells))
             | "index" -> Some (VInteger (row + 1))
             | "headingformat" -> Some (VBoolean (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.exists (fun r -> r.IsHeader)))
-            | "height" -> Some (VDouble (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.bind (fun r -> r.Height) |> Option.map ptOfPx |> Option.defaultValue 0.0))
+            | "height" -> Some (VDouble (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.bind (fun r -> r.Height) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
             | "isfirst" -> Some (VBoolean (row = 0))
             | "islast" -> Some (VBoolean (tableOf book tableId |> Option.exists (fun t -> row = t.Rows.Length - 1)))
             | "alignment" -> Some (VInteger 0)
@@ -2382,7 +2382,7 @@ and private rowObject (book: MacroDocument) (tableId: string) (row: int) : Value
         (fun name value ->
             match name with
             | "headingformat" -> let on = toBool value in mapRow (fun r -> { r with IsHeader = on }); true
-            | "height" -> let px = pxOfPt (toFloat value) in mapRow (fun r -> { r with Height = Some px; HeightRule = Some (defaultArg r.HeightRule "atLeast") }); true
+            | "height" -> let twips = toFloat value * 20.0 in mapRow (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }); true
             | "heightrule" -> let rule = match toInt value with 2 -> "exact" | 1 -> "atLeast" | _ -> "auto" in mapRow (fun r -> { r with HeightRule = Some rule }); true
             | "allowbreakacrosspages" -> let on = toBool value in mapRow (fun r -> { r with CanSplit = Some on }); true
             | "alignment" -> setTableAlignment book tableId (toInt value); true
@@ -2415,7 +2415,7 @@ and private rowsObject (book: MacroDocument) (tableId: string) : Value =
             | "leftindent" -> let px = pxOfPt (toFloat value) in mapTable book tableId (fun t -> { t with Indent = Some px }); true
             | "allowbreakacrosspages" | "wraparoundtext" -> true
             | "headingformat" -> let on = toBool value in mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.map (fun r -> { r with IsHeader = on }) }); true
-            | "height" -> let px = pxOfPt (toFloat value) in mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.map (fun r -> { r with Height = Some px; HeightRule = Some (defaultArg r.HeightRule "atLeast") }) }); true
+            | "height" -> let twips = toFloat value * 20.0 in mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.map (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }) }); true
             | _ -> false)
         (fun name args ->
             match name with
@@ -2443,13 +2443,13 @@ and private columnsObject (book: MacroDocument) (tableId: string) : Value =
                 | "shading" -> Some (shadingObject book (CellShading cells))
                 | "borders" -> Some (bordersObject book (CellBorders cells))
                 | "index" -> Some (VInteger (col + 1))
-                | "width" -> Some (VDouble (cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.Width) |> Option.map ptOfPx |> Option.defaultValue 0.0))
+                | "width" -> Some (VDouble (cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
                 | _ -> None)
             (fun name value ->
                 match name with
                 | "width" | "preferredwidth" ->
                     let px = pxOfPt (toFloat value)
-                    mapCells book (cells ()) (fun c -> { c with Width = Some px; PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } })
+                    mapCells book (cells ()) (fun c -> { c with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } })
                     mapTable book tableId (fun t ->
                         let n = count ()
                         let grid = if t.GridColumns.Length = n then t.GridColumns else List.replicate n { Kind = AutoWidth; Value = None }
@@ -2533,6 +2533,16 @@ and private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : s
     let table =
         match table with
         | Table t ->
+            // (Word's Tables.Add: columns of equal width across the text, 0.08" cell margins left and right.)
+            let setup = doc.PageSetup
+            let column = (setup.PageWidth - setup.MarginLeft - setup.MarginRight) * 15.0 / float cols
+            let width : TableWidth = { Kind = DxaWidth; Value = Some (System.Math.Round column) }
+            let t =
+                { t with
+                    GridColumns = List.replicate cols width
+                    PaddingLeft = Some 108.0
+                    PaddingRight = Some 108.0
+                    Rows = t.Rows |> List.map (fun r -> { r with Cells = r.Cells |> List.map (fun c -> { c with PreferredWidth = Some width }) }) }
             let cellPara (p: ParagraphBlock) = { p with Metadata = { p.Metadata with Style = para.Metadata.Style; SpacingAfter = para.Metadata.SpacingAfter; SpacingBefore = para.Metadata.SpacingBefore; LineSpacing = para.Metadata.LineSpacing; LineSpacingRule = para.Metadata.LineSpacingRule; Explicit = para.Metadata.Explicit &&& (ParagraphExplicit.SpacingAfter ||| ParagraphExplicit.SpacingBefore ||| ParagraphExplicit.LineSpacing) } }
             Table { t with Rows = t.Rows |> List.map (fun r -> { r with Cells = r.Cells |> List.map (fun c -> { c with Content = c.Content |> List.map cellPara }) }) }
         | other -> other

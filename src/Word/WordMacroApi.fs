@@ -69,7 +69,8 @@ let private macroEnabledMain = "application/vnd.ms-word.document.macroEnabled.ma
 
 let private isVbaRelationship (relType: string) = relType.EndsWith "/vbaProject"
 
-/// The path of the main document part (word/document.xml) of a package.
+/// The path of the main document part (word/document.xml) of a package. (Its relationships are kept under
+/// the key "document" in PreservedPackage.PartRelationships.)
 let private mainPartPath (preserved: WordEditorPackage.PreservedPackage) =
     preserved.RootRelationships
     |> List.tryPick (fun r -> if r.Type.EndsWith "/officeDocument" && not r.External then Some (r.Target.TrimStart '/') else None)
@@ -93,7 +94,7 @@ let projectPartPath (doc: Document) : string option =
         let main = mainPartPath preserved
         let fromRelationship =
             preserved.PartRelationships
-            |> Map.tryFind main
+            |> Map.tryFind "document" |> Option.orElse (preserved.PartRelationships |> Map.tryFind main)
             |> Option.bind (List.tryPick (fun r -> if isVbaRelationship r.Type && not r.External then Some (resolveTarget main r.Target) else None))
         let exists path = preserved.Parts |> List.exists (fun p -> p.Path.TrimStart '/' = path)
         match fromRelationship with
@@ -125,14 +126,14 @@ let withProjectBytes (bytes: byte[]) (doc: Document) : Document =
             | None ->
                 let main = mainPartPath preserved
                 let path = "word/vbaProject.bin"
-                let relationships = preserved.PartRelationships |> Map.tryFind main |> Option.defaultValue []
+                let relationships = preserved.PartRelationships |> Map.tryFind "document" |> Option.defaultValue []
                 let id =
                     Seq.initInfinite (fun i -> sprintf "rIdVba%d" (i + 1))
                     |> Seq.find (fun candidate -> relationships |> List.forall (fun r -> r.Id <> candidate))
                 let relationship : WordEditorPackage.Relationship = { Id = id; Type = vbaRelationshipType; Target = "vbaProject.bin"; External = false }
                 { preserved with
                     Parts = preserved.Parts @ [ { Path = path; Data = bytes } ]
-                    PartRelationships = preserved.PartRelationships |> Map.add main (relationships @ [ relationship ])
+                    PartRelationships = preserved.PartRelationships |> Map.add "document" (relationships @ [ relationship ])
                     Overrides =
                         (preserved.Overrides |> List.filter (fun (part, _) -> part.TrimStart '/' <> path))
                         @ [ "/" + path, vbaContentType ]

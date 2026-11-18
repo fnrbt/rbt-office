@@ -605,13 +605,13 @@ module Dialogs =
     /// The VBA editor (the spreadsheet's Ui.macroEditor in the Word shell's terms): a module's code to read
     /// and change (Apply compiles it), the macros to run on the document (one undo step), an Immediate line,
     /// and the output. The dialog stays open; the host shows it again when the project changed.
-    let vbaEditorDialog dialogTestId (state: VbaEditorState) (onApply: unit -> unit) (onRun: unit -> unit) (onImmediate: unit -> unit) =
+    let vbaEditorDialog testId (state: VbaEditorState) (onApply: unit -> unit) (onRun: unit -> unit) (onImmediate: unit -> unit) =
         let keepOpen id label primary action = dialogButton id label primary (fun _ -> action (); false)
         let moduleField, moduleValue =
             selectField "word-vba-module" "Module" [ for name, kind, _ in state.Modules -> name, sprintf "%s (%s)" name kind ] state.Module
         let codeField = dialogTextArea "word-vba-code" "Code" "Sub Main()\n    ActiveDocument.Content.InsertAfter \"Hello\"\nEnd Sub" 16 state.Code.Value |> dialogTestId "word-vba-code"
         let spec, values =
-            form dialogTestId "VBA" [
+            form testId "VBA" [
                 (moduleField |> dialogUpdating (fun values chosen ->
                     let code = state.Modules |> List.tryPick (fun (n, _, c) -> if n = chosen then Some c else None) |> Option.defaultValue ""
                     values |> Map.add "word-vba-module" chosen |> Map.add "word-vba-code" code)), moduleValue
