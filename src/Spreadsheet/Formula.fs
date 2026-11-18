@@ -1319,9 +1319,12 @@ let coerceNumber (value: CellValue) : Result<float, string> =
         match Double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, n -> Ok n
         | _ ->
-            // Excel also coerces "TRUE"/"FALSE" text in arithmetic? No — it
-            // does not; only the boolean *value* coerces. Text TRUE → #VALUE!.
-            Result.Error Err.value
+            // Text a number would be typed as (a date "3/1/2026" or "March 2026", a time, "50%",
+            // "$1,000") is that number, as typing it would enter it: ="March 2026"+0, TEXT("3/1/2026", ...).
+            // Text TRUE / FALSE is not: only the boolean *value* coerces (#VALUE!).
+            match (Rbt.Spreadsheet.Input.parseInput t).Value with
+            | CellValue.Number n when t <> "" -> Ok n
+            | _ -> Result.Error Err.value
     | CellValue.Formula _ -> Result.Error Err.value  // unreachable after unwrap
 
 let inline private tryAggregateNumber (value: CellValue) : float voption =

@@ -47,13 +47,13 @@ type private Project(modules: ModuleSource list) =
             | Result.Ok p -> p.RunEvent(workbook, hooks, handler, target) |> Option.map outcomeOf
             | Result.Error _ -> None
         member _.WithModule(name, code) =
-            let modules =
-                if modules |> List.exists (fun m -> m.Name = name) then modules
-                else modules @ [ ModuleSource.standard name "" ]
+            // (A module it does not have is added: a class when the code has a class's Attribute lines.)
             let edited =
-                modules |> List.map (fun m ->
-                    if m.Name <> name then m
-                    else { m with Source = Host.joinHeader (fst (Host.splitHeader m.Source)) code })
+                if modules |> List.exists (fun m -> m.Name = name) then
+                    modules |> List.map (fun m ->
+                        if m.Name <> name then m
+                        else { m with Source = Host.joinHeader (fst (Host.splitHeader m.Source)) code })
+                else modules @ [ { Host.macroModule name code with Name = name } ]
             Project(edited) :> IMacroProject
         member _.ProjectBytes() = Host.projectBytes modules
 
