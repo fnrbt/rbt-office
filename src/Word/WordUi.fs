@@ -181,6 +181,8 @@ module Ui =
         OpenAnnotation: string -> unit
         OpenParagraphStyle: unit -> unit
         OpenFontDialog: (unit -> unit) option
+        /// The VBA editor (macros of the document); None where the host has none.
+        OpenVbaEditor: (unit -> unit) option
         OpenParagraphBorders: (unit -> unit) option
         OpenListsDialog: (unit -> unit) option
         OpenTableCellStyle: unit -> unit
@@ -297,7 +299,8 @@ module Ui =
                 item "word-menu-insert-field" "Field..." None actions.OpenField
                 item "word-menu-insert-equation" "Equation..." None actions.OpenEquation
                 item "word-menu-section-break-next" "Section break" None (fun () -> actions.InsertSectionBreak "nextPage")
-            ]
+            ] @
+            (actions.OpenVbaEditor |> Option.map (fun openEditor -> item "word-menu-vba" "Macros (VBA)..." None openEditor) |> Option.toList)
         }
         {
             TestId = "word-format-menu"

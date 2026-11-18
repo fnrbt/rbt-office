@@ -62,6 +62,7 @@ module Host =
         Caption: WordDialogs.CaptionState
         CrossReference: WordDialogs.CrossReferenceState
         Bookmark: WordDialogs.BookmarkState
+        VbaEditor: WordDialogs.VbaEditorState
         ContentControl: WordDialogs.ContentControlState
         Field: WordDialogs.FieldState
         Equation: WordDialogs.EquationState
@@ -117,6 +118,7 @@ module Host =
         Caption = WordDialogs.captionState ()
         CrossReference = WordDialogs.crossReferenceState ()
         Bookmark = WordDialogs.bookmarkState ()
+        VbaEditor = WordDialogs.vbaEditorState ()
         ContentControl = WordDialogs.contentControlState ()
         Field = WordDialogs.fieldState ()
         Equation = WordDialogs.equationState ()
@@ -882,6 +884,67 @@ module Host =
     let openCrossReference host =
         host.CrossReference.IsOpen.Value <- true
 
+    // ---- the VBA editor ----------------------------------------------------------------------------------
+
+    /// The project as the editor shows it: its modules (a blank Module1 when it has none), its macros,
+    /// what macros printed and how runs ended.
+    let private refreshVba host (editor: WordApi.Editor) (shown: string option) =
+        let state = host.VbaEditor
+        let text (value: obj) = if isNull value then "" else string value
+        let modules =
+            match WordApi.getMacroModules editor |> Array.map (fun m -> text m?name, text m?kind, text m?code) |> List.ofArray with
+            | [] -> [ "Module1", "standard", "" ]
+            | found -> found
+        state.Modules <- modules
+        state.Macros <- WordApi.getMacros editor |> List.ofArray
+        let current = match shown with Some name -> name | None -> state.Module.Value
+        let current = if modules |> List.exists (fun (n, _, _) -> n = current) then current else (let n, _, _ = modules.Head in n)
+        state.Module.Value <- current
+        state.Code.Value <- modules |> List.pick (fun (n, _, c) -> if n = current then Some c else None)
+        if not (state.Macros |> List.contains state.Macro.Value) then state.Macro.Value <- (state.Macros |> List.tryHead |> Option.defaultValue "")
+        let lines = WordApi.getMacroOutput editor
+        state.Output.Value <- String.concat "\n" (if lines.Length > 40 then lines.[lines.Length - 40 ..] else lines)
+
+    /// Show the editor again (its module and macro lists follow the project).
+    let private reopenVba host =
+        host.VbaEditor.IsOpen.Value <- false
+        host.VbaEditor.IsOpen.Value <- true
+
+    /// Open the VBA editor on the document's macros (they are loaded first: the VBA engine is fetched then).
+    let openVbaEditor host =
+        match host.Editor with
+        | None -> ()
+        | Some editor ->
+            (WordApi.loadMacros editor).``then``(fun () ->
+                refreshVba host editor None
+                host.VbaEditor.IsOpen.Value <- true) |> ignore
+
+    /// Run an action of the editor with the document's macros enabled (as Word's "Enable Content").
+    let private withMacrosEnabled host (action: WordApi.Editor -> Fable.Core.JS.Promise<obj>) =
+        match host.Editor with
+        | None -> ()
+        | Some editor ->
+            let run () = (action editor).``then``(fun _ -> refreshVba host editor None; reopenVba host) |> ignore
+            if WordApi.getMacrosEnabled editor then run ()
+            else (WordApi.enableMacros editor).``then``(fun _ -> run ()) |> ignore
+
+    let private applyVbaModule host =
+        match host.Editor with
+        | None -> ()
+        | Some editor ->
+            let name = host.VbaEditor.Module.Value
+            (WordApi.setMacroModule editor name host.VbaEditor.Code.Value).``then``(fun _ ->
+                refreshVba host editor (Some name)
+                reopenVba host) |> ignore
+
+    let private runVbaMacro host =
+        let name = host.VbaEditor.Macro.Value
+        if name <> "" then withMacrosEnabled host (fun editor -> WordApi.runMacro editor name)
+
+    let private runVbaLine host =
+        let line = host.VbaEditor.Immediate.Value
+        if line.Trim() <> "" then withMacrosEnabled host (fun editor -> WordApi.runMacroLine editor line)
+
     let openBookmark host =
         host.EditingBookmarkId <- None
         host.Bookmark.IsOpen.Value <- true
@@ -1572,6 +1635,7 @@ module Host =
             host.PageSetup.IsOpen, (fun () -> WordDialogs.pageSetupDialog "word-page-setup-dialog" host.PageSetup (fun () -> applyPageSetup host))
             host.HeaderFooter.IsOpen, (fun () -> WordDialogs.headerFooterDialog "word-header-footer-dialog" host.HeaderFooter (fun () -> applyHeaderFooter host))
             host.Annotation.IsOpen, (fun () -> WordDialogs.annotationDialog "word-annotation-dialog" host.Annotation (fun () -> applyAnnotation host))
+            host.VbaEditor.IsOpen, (fun () -> WordDialogs.vbaEditorDialog "word-vba-dialog" host.VbaEditor (fun () -> applyVbaModule host) (fun () -> runVbaMacro host) (fun () -> runVbaLine host))
         ]
         let uiDialog = Rbt.FableUI.OfficeUiDialog.createState ()
         let mutable openedFor: Signal<bool> option = None

@@ -1105,3 +1105,62 @@ object with these methods; `canvas` is used to measure text.
 | `setFontAvailability(isAvailable)`, `getPendingFonts()`, `getRequiredFonts()` | The faces the document is set in, and those the host has not got. |
 | `getRenderStats()` | Counters for hosts and tests (frames built, blocks laid out). |
 | `render(document)`, `dispose()` | Paint a document of the model on the viewer's canvas; end the viewer. |
+
+## Macros (VBA)
+
+A macro-enabled document (.docm) keeps its VBA project (`word/vbaProject.bin`): it is saved back as it
+was unless a module was edited in the app. Its macros run on the document through Word's object model
+(`src/Word/WordMacroHost.fs`, the same on .NET) with the VBA engine Rbt.Vb. The engine and the object
+model are fetched only when macros are loaded, enabled, run or edited (`word/WordMacroProject.js`;
+`scripts/check-start-up-modules.mjs` fails the build when they become reachable from `Word.js`,
+`WordShell.js` or `WordHost.js`).
+
+| Function | Arguments | Returns | What it does |
+|---|---|---|---|
+| `hasMacros(editor)` | | `boolean` | Whether the document has a VBA project, known without loading it. |
+| `loadMacros(editor)` | | `Promise<void>` | Loads the project with the VBA engine (fetched the first time). `getMacros`, `getMacroModules` and `getMacroProblems` answer from what is loaded; the functions that run macros load first. |
+| `getMacros(editor)` | | `string[]` | The macros a user can run, as Word's Macros dialog lists them: public Subs without arguments, in order; those of `ThisDocument` as `ThisDocument.Name`. Empty until `loadMacros`. |
+| `getMacroModules(editor)` | | `{ name, kind, source, code }[]` | The project's modules: `kind` "standard", "class" or "document" (ThisDocument), `source` with its Attribute lines, `code` without them. |
+| `getMacroProblems(editor)` | | `{ module, line, column, description }[]` | What keeps the project from compiling (none when it compiles). |
+| `getMacrosEnabled(editor)` | | `boolean` | Whether macros may run. Off for every document opened: the host asks the user, as Word's "Enable Content". |
+| `enableMacros(editor)` | | `Promise<{ ok, number?, description? }>` | Lets the macros run, and runs `ThisDocument.Document_Open` (or `AutoOpen`) once, as opening the document in Word with content enabled would; its result as `runMacro`'s. |
+| `setMacroHooks(editor, hooks)` | `{ messageBox?(prompt, buttons, title): number, inputBox?(prompt, title, default): string \| null, output?(text), fileName? }` or null | | Where `MsgBox`, `InputBox` and `Debug.Print` go (`messageBox` returns VBA's answer: vbOK 1, vbCancel 2, vbYes 6, vbNo 7); `fileName` is `ActiveDocument.Name`. Without hooks: the browser's alert / confirm / prompt and the console. |
+| `runMacro(editor, name)` | a Sub without arguments, `Name` or `Module.Name` | `Promise<{ ok: true } \| { ok: false, number, description, module, procedure, line }>` | Runs it on the document. What it changes is one undo step and marks the document changed; the selection it leaves becomes the editor's; a macro that stops on an error keeps nothing and returns Word's `Err.Number` / `Err.Description`. Throws when macros are not enabled. Not while a header, footer or note is edited in place (`ok: false`, 4605). |
+| `runMacroLine(editor, line)` | `?expression`, `Print expression` or statements | `Promise`, as `runMacro` | An Immediate-window line on the document; one undo step. |
+| `setMacroModule(editor, name, code)` | a module's name, its code without Attribute lines | `Promise` of the problems, as `getMacroProblems` | Replaces the module's code (adds a standard module of that name when there is none) and compiles the project again. `exportDocumentPackage` then writes the project from the modules (a .docx becomes macro-enabled). |
+| `getMacroOutput(editor)` | | `string[]` | What macros printed and how runs ended, newest last. |
+
+What macros reach: `Application` (`ActiveDocument`, `Documents`, `Selection`, `Options`, `ActiveWindow`,
+`ScreenUpdating`, `StatusBar`, the unit conversions), `ActiveDocument` / `ThisDocument` (`Content`,
+`Range(Start, End)`, `Paragraphs`, `Words`, `Characters`, `Sentences`, `Tables`, `Bookmarks`, `Styles`,
+`Variables`, `PageSetup`, `ComputeStatistics`; `Documents.Add` empties the editor's document), `Range` and
+`Selection` (`Text`, `Start` / `End`, `InsertAfter` / `InsertBefore` / `InsertParagraphAfter` /
+`InsertBreak` / `Delete`, `Collapse`, `Move` / `MoveStart` / `MoveEnd` / `Expand` / `StartOf` / `EndOf` /
+`Next` / `Previous` by character, word, sentence, paragraph, cell, row, table or story, `Font` - Bold,
+Italic, Underline, Size, Name, Color, ColorIndex, caps, strike, super/subscript -, `ParagraphFormat` -
+Alignment, SpaceBefore/After, indents, LineSpacing(Rule), KeepWithNext, PageBreakBefore, Shading,
+Borders -, `Style`, `HighlightColorIndex`, `Case`, `ListFormat`, `Information`, `ConvertToTable`, `Find`
+with `Replacement` - text, ^ codes, wildcards, MatchCase / MatchWholeWord, formatting found and replaced,
+wdReplaceOne / wdReplaceAll -; on the Selection `TypeText`, `TypeParagraph`, `TypeBackspace`, `HomeKey` /
+`EndKey`, `MoveLeft` / `MoveRight` / `MoveUp` / `MoveDown` and Font set at a caret for what is typed
+next), `Tables.Add` (Word's default: no borders; wdWord9TableBehavior: Table Grid), `Table` (`Cell(r, c)`,
+`Rows` / `Columns` with `Add`, `Delete`, `Height`, `Width`, `Shading`, `Borders`, `Style` - Word's
+built-in table styles applied as cell formatting -, `AutoFormat`, `Sort`), the `wd*` constants, `RGB`,
+`MsgBox`, `InputBox`, `Debug.Print`. Positions are Word's: a paragraph mark, an end-of-cell and an
+end-of-row mark are one character each (read as vbCr and vbCr & Chr(7)), a page break is Chr(12) in a
+paragraph of its own; a style the document does not have yet (Heading 1-6, Title, Subtitle, Quote,
+Intense Quote, List Paragraph, No Spacing, Caption, Strong, Emphasis ...) is added as Word 2016 defines
+it. A member Word has and the object model does not raises error 438.
+
+Checked against Word 2019 (16.0.19127) on the VM: `tools/word-parity/macro-parity.sh` runs each module of
+`tests/macros/word-showcase` in Word and in ours and compares the documents paragraph by paragraph (text,
+style, alignment, spacing, indents, font, size, bold, italic, underline, colour, highlight, list,
+shading; tables and cells; counts and the selection). The shell's Insert menu has a VBA editor
+(`Macros (VBA)...`: module code, Apply, the macro list, Run, an Immediate line and the output).
+
+Not modelled: an inline page break inside a paragraph (`Chr(12)` typed into text becomes a paragraph of
+its own), headers and footers, fields, shapes, comments, revisions, `Cells.Merge`, page and line
+positions (`Information` answers page numbers from page breaks only, `wdLine` moves by paragraphs), the
+clipboard, `Documents.Open` / `SaveAs` (reported to the output, not run), events other than
+Document_Open / AutoOpen, UserForms. A paragraph mark's own formatting (what text typed into an empty
+paragraph gets) is kept while the project is loaded, not in the document.
