@@ -12,9 +12,11 @@ module Rbt.Word.WordMacroHost
 open System
 open System.Collections.Generic
 open Rbt.Vb.Values
+open Rbt.Vb.HostMembers
 open Rbt.Word.Document
 open Rbt.Word.WordMacroApi
 module TB = Rbt.Word.TextBuffer
+module HostMembers = Rbt.Vb.HostMembers
 
 // ---- errors ------------------------------------------------------------------------------------------
 
@@ -901,127 +903,48 @@ type MacroDocument(initial: Document, initialHooks: MacroHooks) =
         if a.BlockId = "" then doc else { doc with Selection = Some { Anchor = a; Focus = f } }
 
 // ---- the object model --------------------------------------------------------------------------------------
+//
+// Each type of object (Range, Paragraph, Table, Selection, Document...) is a table of its members by name,
+// built once (Rbt.Vb.HostMembers), and an object is its type's table with the state of one instance: the
+// document and what of it (a live range, a table's id...). A name a type does not have is error 438.
 
-/// The parameters of Word's methods, for calls with named arguments: by (object type, method), lower case.
-let private parameterNames : Map<string * string, string list> =
-    let rangeMethods =
-        [ "collapse", [ "Direction" ]
-          "move", [ "Unit"; "Count" ]
-          "movestart", [ "Unit"; "Count" ]
-          "moveend", [ "Unit"; "Count" ]
-          "expand", [ "Unit" ]
-          "startof", [ "Unit"; "Extend" ]
-          "endof", [ "Unit"; "Extend" ]
-          "next", [ "Unit"; "Count" ]
-          "previous", [ "Unit"; "Count" ]
-          "insertbreak", [ "Type" ]
-          "setrange", [ "Start"; "End" ]
-          "delete", [ "Unit"; "Count" ]
-          "information", [ "Type" ]
-          "computestatistics", [ "Statistic"; "IncludeFootnotesAndEndnotes" ]
-          "converttotable", [ "Separator"; "NumRows"; "NumColumns"; "InitialColumnWidth"; "Format"; "ApplyBorders" ]
-          "insertafter", [ "Text" ]
-          "insertbefore", [ "Text" ]
-          "typetext", [ "Text" ]
-          "homekey", [ "Unit"; "Extend" ]
-          "endkey", [ "Unit"; "Extend" ]
-          "moveright", [ "Unit"; "Count"; "Extend" ]
-          "moveleft", [ "Unit"; "Count"; "Extend" ]
-          "moveup", [ "Unit"; "Count"; "Extend" ]
-          "movedown", [ "Unit"; "Count"; "Extend" ] ]
-    [ for (m, ps) in rangeMethods do
-        yield ("Range", m), ps
-        yield ("Selection", m), ps
-        yield ("Paragraph", m), ps
-      yield ("Find", "execute"), [ "FindText"; "MatchCase"; "MatchWholeWord"; "MatchWildcards"; "MatchSoundsLike"; "MatchAllWordForms"
-                                   "Forward"; "Wrap"; "Format"; "ReplaceWith"; "Replace"; "MatchKashida"; "MatchDiacritics"; "MatchAlefHamza"; "MatchControl" ]
-      yield ("Tables", "add"), [ "Range"; "NumRows"; "NumColumns"; "DefaultTableBehavior"; "AutoFitBehavior" ]
-      yield ("Table", "cell"), [ "Row"; "Column" ]
-      yield ("Table", "autofitbehavior"), [ "Behavior" ]
-      yield ("Table", "sort"), [ "ExcludeHeader"; "FieldNumber"; "SortFieldType"; "SortOrder" ]
-      yield ("Rows", "add"), [ "BeforeRow" ]
-      yield ("Columns", "add"), [ "BeforeColumn" ]
-      yield ("Bookmarks", "add"), [ "Name"; "Range" ]
-      yield ("Documents", "add"), [ "Template"; "NewTemplate"; "DocumentType"; "Visible" ]
-      yield ("Document", "range"), [ "Start"; "End" ]
-      yield ("Document", "saveas"), [ "FileName"; "FileFormat" ]
-      yield ("Document", "saveas2"), [ "FileName"; "FileFormat" ]
-      yield ("Document", "close"), [ "SaveChanges" ]
-      yield ("Paragraphs", "add"), [ "Range" ] ]
-    |> List.map (fun ((t, m), ps) -> (t, m), ps |> List.map (fun p -> p.ToLowerInvariant()))
-    |> Map.ofList
+/// Item(i) of a collection: 1-based.
+let private itemAt (typeName: string) (items: Value array) (args: Value array) : Value =
+    match arg args 0 with
+    | Some index ->
+        let i = toInt index
+        if i >= 1 && i <= items.Length then items.[i - 1] else noSuchMember ()
+    | None -> unsupported typeName "Item"
 
-type private Host(typeName: string, get: string -> Value option, set: string -> Value -> bool,
-                  call: string -> Value array -> Value option, enumerate: (unit -> Value seq) option) =
-    member _.TypeName = typeName
-    interface IHostObject with
-        member _.TypeName = typeName
-        member _.GetMember name = get name
-        member _.SetMember name value = set name value
-        member _.CallMethod name args = call name args
-        member _.CallNamed name args names =
-            let kind = match typeName with "ActiveDocument" | "ThisDocument" -> "Document" | other -> other
-            match Map.tryFind (kind, name.ToLowerInvariant()) parameterNames with
-            | None -> call name args
-            | Some parameters ->
-                let slots = ResizeArray<Value>()
-                let put index value =
-                    while slots.Count <= index do slots.Add VUndefined
-                    slots.[index] <- value
-                args |> Array.iteri (fun i a ->
-                    let argName = if i < names.Length then names.[i] else ""
-                    if argName = "" then put i a
-                    else
-                        match parameters |> List.tryFindIndex ((=) (argName.ToLowerInvariant())) with
-                        | Some index -> put index a
-                        | None -> raiseVbErrorWith 448 ("Named argument not found: " + argName))
-                call name (slots.ToArray())
-        member _.Enumerate () = enumerate |> Option.map (fun items -> items ())
+/// A collection's members: Count, First, Last and Item(i) (`item` for an Item of its own: by name, say).
+/// A collection has no default member: `obj(i)` is Item (the engine calls Item then), and the collection
+/// assigned without Set stays the object.
+let private collectionMembers (typeName: string) (items: 'T -> Value array) (item: ('T -> Value array -> Value) option) : Member<'T> list =
+    [ get "Count" (fun s -> VLong (items s).Length)
+      get "First" (fun s -> match items s with [||] -> noSuchMember () | all -> all.[0])
+      get "Last" (fun s -> match items s with [||] -> noSuchMember () | all -> all.[all.Length - 1])
+      method "Item" [ "Index" ] (match item with Some f -> f | None -> fun s args -> itemAt typeName (items s) args) ]
 
-/// An object with members by (lower-case) name: `get` answers None for a member it does not have, `set`
-/// false; `call` handles methods and falls back to `get` for a property read with arguments.
-let private makeObject typeName (get: string -> Value option) (set: string -> Value -> bool) (call: string -> Value array -> Value option) (items: (unit -> Value seq) option) =
-    let get' (name: string) = get (name.ToLowerInvariant())
-    let set' (name: string) value = if set (name.ToLowerInvariant()) value then true else unsupported typeName name
-    let call' (name: string) (args: Value array) =
-        let lower = name.ToLowerInvariant()
-        match call lower args with
-        | Some v -> Some v
-        | None ->
-            match get lower with
-            | Some v when args.Length = 0 -> Some v
-            | Some _ -> None
-            | None -> unsupported typeName name
-    VHostObject (Host(typeName, get', set', call', items) :> IHostObject)
+/// A type of collection: its items (For Each), its collection members and its own.
+let private collectionType (typeName: string) (items: 'T -> Value array) (item: ('T -> Value array -> Value) option) (members: Member<'T> list) =
+    HostMembers.Table<'T>(typeName, collectionMembers typeName items item @ members, items = (fun s -> Seq.ofArray (items s)))
 
-let private noSet (_: string) (_: Value) = false
-let private noCall (_: string) (_: Value array) : Value option = None
+/// A member of one type as a member of another, whose state gives the first's (Selection's Range members).
+let private lift (view: 'S -> 'T) (m: Member<'T>) : Member<'S> =
+    { Name = m.Name
+      Parameters = m.Parameters
+      Get = m.Get |> Option.map (fun read -> fun s -> read (view s))
+      Set = m.Set |> Option.map (fun write -> fun s value -> write (view s) value)
+      Call = m.Call |> Option.map (fun run -> fun s args -> run (view s) args) }
 
-/// A collection: Count, Item(i) (1-based) / its default member, First, Last, For Each; `more` for its own members.
-let private collectionObject typeName (items: unit -> Value array) (moreGet: string -> Value option) (moreSet: string -> Value -> bool) (moreCall: string -> Value array -> Value option) =
-    let item (args: Value array) =
-        match arg args 0 with
-        | Some index ->
-            let all = items ()
-            let i = toInt index
-            if i >= 1 && i <= all.Length then Some all.[i - 1] else noSuchMember ()
-        | None -> None
-    makeObject typeName
-        (fun name ->
-            match name with
-            | "count" -> Some (VLong (items ()).Length)
-            | "first" -> (match items () with [||] -> noSuchMember () | all -> Some all.[0])
-            | "last" -> (match items () with [||] -> noSuchMember () | all -> Some all.[all.Length - 1])
-            | _ -> moreGet name)
-        moreSet
-        (fun name args ->
-            match name with
-            | "" | "_default" | "item" when args.Length > 0 ->
-                match moreCall name args with
-                | Some v -> Some v
-                | None -> item args
-            | _ -> moreCall name args)
-        (Some (fun () -> Seq.ofArray (items ())))
+/// A type's own members, and those of `inherited` it does not have itself.
+let private extending (own: Member<'T> list) (inherited: Member<'T> list) : Member<'T> list =
+    let names = own |> List.map (fun m -> m.Name.ToLowerInvariant()) |> Set.ofList
+    (inherited |> List.filter (fun m -> not (names.Contains (m.Name.ToLowerInvariant())))) @ own
+
+/// An empty collection (Fields, Shapes, Revisions...: what the model does not have).
+let private emptyCollectionType = collectionType "Collection" (fun () -> [||]) None []
+let private emptyCollection () = emptyCollectionType.Wrap ()
 
 // ---- character formatting ------------------------------------------------------------------------------------
 
@@ -1031,113 +954,142 @@ let private toggleOr (value: Value) (current: bool) =
     let n = match scalarOf value with VBoolean b -> (if b then -1 else 0) | other -> toInt other
     if n = wdToggle then not current else n <> 0
 
-/// What setting a Font property does to a run's formatting; None for a property Font does not have.
-let private fontChange (name: string) (value: Value) : (TB.TextStyle -> TB.TextStyle) option =
-    match name with
-    | "bold" -> Some (fun s -> TB.withExplicitBold (toggleOr value s.Bold) s)
-    | "italic" -> Some (fun s -> TB.withExplicitItalic (toggleOr value s.Italic) s)
-    | "underline" ->
-        let n = toInt value
-        Some (fun s ->
-            if n = 0 then TB.withExplicitUnderline false { s with UnderlineStyle = None }
-            else
-                let style = underlineStyles |> List.tryPick (fun (k, v) -> if k = n then Some v else None) |> Option.defaultValue None
-                TB.withExplicitUnderline true { s with UnderlineStyle = style })
-    | "size" -> let size = pxOfPt (toFloat value) in Some (TB.withExplicitFontSize size)
-    | "name" | "nameascii" | "nameother" -> let family = toText value in Some (fun s -> { s with FontFamily = Some family })
-    | "color" -> let color = colorOfValue value in Some (fun s -> { s with Color = color })
-    | "colorindex" -> let color = colorOfIndex (toInt value) in Some (fun s -> { s with Color = color })
-    | "strikethrough" -> Some (fun s -> TB.withExplicitStrike (toggleOr value s.Strike) s)
-    | "doublestrikethrough" -> Some (fun s -> TB.withExplicitDoubleStrike (toggleOr value s.DoubleStrike) s)
-    | "superscript" -> let on = toBool value in Some (fun s -> { s with VertAlign = (if on then Some "superscript" elif s.VertAlign = Some "superscript" then None else s.VertAlign) })
-    | "subscript" -> let on = toBool value in Some (fun s -> { s with VertAlign = (if on then Some "subscript" elif s.VertAlign = Some "subscript" then None else s.VertAlign) })
-    | "allcaps" -> Some (fun s -> TB.withExplicitAllCaps (toggleOr value s.AllCaps) s)
-    | "smallcaps" -> Some (fun s -> TB.withExplicitSmallCaps (toggleOr value s.SmallCaps) s)
-    | "hidden" -> Some (fun s -> TB.withExplicitHidden (toggleOr value s.Hidden) s)
-    | "spacing" -> let px = pxOfPt (toFloat value) in Some (fun s -> { s with CharacterSpacing = px })
-    | "position" -> let pt = toFloat value in Some (fun s -> { s with Position = pt })
-    | _ -> None
+/// A Font property: what it reads of a run's formatting, and what setting it to a value does to a run's
+/// formatting (the value is converted when the change is made, before it is applied).
+type private FontProperty = { Name: string; Read: TB.TextStyle -> Value; Change: Value -> TB.TextStyle -> TB.TextStyle }
 
-let private fontRead (name: string) (s: TB.TextStyle) : Value option =
-    match name with
-    | "bold" -> Some (VLong (if s.Bold then -1 else 0))
-    | "italic" -> Some (VLong (if s.Italic then -1 else 0))
-    | "underline" ->
-        if not s.Underline then Some (VLong 0)
-        else Some (VLong (underlineStyles |> List.tryPick (fun (k, v) -> if v = s.UnderlineStyle then Some k else None) |> Option.defaultValue 1))
-    | "size" -> Some (VDouble (Math.Round(ptOfPx s.FontSize * 2.0) / 2.0))
-    | "name" | "nameascii" | "nameother" -> Some (VString (defaultArg s.FontFamily "Calibri"))
-    | "color" -> Some (colorValueOf s.Color)
-    | "colorindex" -> Some (VLong (indexOfColor s.Color))
-    | "strikethrough" -> Some (VLong (if s.Strike then -1 else 0))
-    | "doublestrikethrough" -> Some (VLong (if s.DoubleStrike then -1 else 0))
-    | "superscript" -> Some (VLong (if s.VertAlign = Some "superscript" then -1 else 0))
-    | "subscript" -> Some (VLong (if s.VertAlign = Some "subscript" then -1 else 0))
-    | "allcaps" -> Some (VLong (if s.AllCaps then -1 else 0))
-    | "smallcaps" -> Some (VLong (if s.SmallCaps then -1 else 0))
-    | "hidden" -> Some (VLong (if s.Hidden then -1 else 0))
-    | "spacing" -> Some (VDouble (ptOfPx s.CharacterSpacing))
-    | "position" -> Some (VDouble s.Position)
-    | _ -> None
+let private fontProperties : FontProperty list =
+    let flag name (read: TB.TextStyle -> bool) (write: bool -> TB.TextStyle -> TB.TextStyle) : FontProperty =
+        { Name = name; Read = (fun s -> VLong (if read s then -1 else 0)); Change = (fun value s -> write (toggleOr value (read s)) s) }
+    let vertical name (position: string) : FontProperty =
+        { Name = name
+          Read = (fun s -> VLong (if s.VertAlign = Some position then -1 else 0))
+          Change = (fun value ->
+            let on = toBool value
+            fun s -> { s with VertAlign = (if on then Some position elif s.VertAlign = Some position then None else s.VertAlign) }) }
+    let family name : FontProperty =
+        { Name = name
+          Read = (fun s -> VString (defaultArg s.FontFamily "Calibri"))
+          Change = (fun value -> let family = toText value in fun s -> { s with FontFamily = Some family }) }
+    [ flag "Bold" (fun s -> s.Bold) TB.withExplicitBold
+      flag "Italic" (fun s -> s.Italic) TB.withExplicitItalic
+      { Name = "Underline"
+        Read = (fun s ->
+            if not s.Underline then VLong 0
+            else VLong (underlineStyles |> List.tryPick (fun (k, v) -> if v = s.UnderlineStyle then Some k else None) |> Option.defaultValue 1))
+        Change = (fun value ->
+            let n = toInt value
+            fun s ->
+                if n = 0 then TB.withExplicitUnderline false { s with UnderlineStyle = None }
+                else
+                    let style = underlineStyles |> List.tryPick (fun (k, v) -> if k = n then Some v else None) |> Option.defaultValue None
+                    TB.withExplicitUnderline true { s with UnderlineStyle = style }) }
+      { Name = "Size"
+        Read = (fun s -> VDouble (Math.Round(ptOfPx s.FontSize * 2.0) / 2.0))
+        Change = (fun value -> let size = pxOfPt (toFloat value) in TB.withExplicitFontSize size) }
+      family "Name"
+      family "NameAscii"
+      family "NameOther"
+      { Name = "Color"; Read = (fun s -> colorValueOf s.Color); Change = (fun value -> let color = colorOfValue value in fun s -> { s with Color = color }) }
+      { Name = "ColorIndex"; Read = (fun s -> VLong (indexOfColor s.Color)); Change = (fun value -> let color = colorOfIndex (toInt value) in fun s -> { s with Color = color }) }
+      flag "StrikeThrough" (fun s -> s.Strike) TB.withExplicitStrike
+      flag "DoubleStrikeThrough" (fun s -> s.DoubleStrike) TB.withExplicitDoubleStrike
+      vertical "Superscript" "superscript"
+      vertical "Subscript" "subscript"
+      flag "AllCaps" (fun s -> s.AllCaps) TB.withExplicitAllCaps
+      flag "SmallCaps" (fun s -> s.SmallCaps) TB.withExplicitSmallCaps
+      flag "Hidden" (fun s -> s.Hidden) TB.withExplicitHidden
+      { Name = "Spacing"; Read = (fun s -> VDouble (ptOfPx s.CharacterSpacing)); Change = (fun value -> let px = pxOfPt (toFloat value) in fun s -> { s with CharacterSpacing = px }) }
+      { Name = "Position"; Read = (fun s -> VDouble s.Position); Change = (fun value -> let pt = toFloat value in fun s -> { s with Position = pt }) } ]
 
-/// What a Font is of: a range's text, a set of settings (Find's, Replacement's, the Selection's at a
-/// caret), or a style.
+/// A Font property's key in a set of Font settings (Find's, Replacement's, what is typed at a caret).
+let private fontKey (p: FontProperty) = p.Name.ToLowerInvariant()
+
+let private fontPropertyOf : Dictionary<string, FontProperty> =
+    let byKey = Dictionary<string, FontProperty>()
+    for p in fontProperties do byKey.[fontKey p] <- p
+    byKey
+
+/// What a Font is of: a range's text, a set of settings (Find's, Replacement's), a style, or the
+/// Selection's caret (what is typed next gets what is set; reading gives the caret's formatting).
 type private FontTarget =
     | RangeFont of LiveRange
     | SpecFont of Dictionary<string, Value>
     | StyleFont of string
+    | CaretFont of LiveRange
+
+type private FontState = { Book: MacroDocument; Target: FontTarget }
 
 /// The change a set of Font settings makes.
 let private specChange (spec: Dictionary<string, Value>) : TB.TextStyle -> TB.TextStyle =
-    let changes = [ for kv in spec -> (fontChange kv.Key kv.Value).Value ]
+    let changes = [ for kv in spec -> fontPropertyOf.[kv.Key].Change kv.Value ]
     fun s -> changes |> List.fold (fun acc f -> f acc) s
 
-let private fontObject (book: MacroDocument) (target: FontTarget) : Value =
-    makeObject "Font"
-        (fun name ->
-            match target with
-            | RangeFont r ->
-                let styles = book.StylesIn(r.Start, r.End)
-                match fontRead name styles.Head with
-                | Some first ->
-                    let all = styles |> List.map (fun s -> (fontRead name s).Value) |> List.distinct
-                    Some (if all.Length = 1 then first else VLong wdUndefined)
-                | None -> None
-            | SpecFont spec ->
-                match spec.TryGetValue name with
-                | true, v -> Some v
-                | _ -> fontRead name TB.defaultStyle |> Option.map (fun _ -> VLong wdUndefined)
-            | StyleFont id ->
-                let named = book.Document.Styles |> List.tryFind (fun s -> s.Id = id)
-                let text = named |> Option.bind (fun s -> s.Text) |> Option.defaultValue TB.defaultStyle
-                let text =
-                    match named with
-                    | Some s -> { text with Bold = defaultArg s.TextBold text.Bold; Italic = defaultArg s.TextItalic text.Italic }
-                    | None -> text
-                fontRead name text)
-        (fun name value ->
-            match fontChange name value with
-            | None -> false
-            | Some change ->
-                match target with
-                | RangeFont r -> book.Format(r.Start, r.End, change); true
-                | SpecFont spec -> spec.[name] <- value; true
-                | StyleFont id ->
-                    book.ChangeStyle(id, fun s ->
-                        let text = change (defaultArg s.Text TB.defaultStyle)
-                        { s with
-                            Text = Some text
-                            TextBold = (if name = "bold" then Some text.Bold else s.TextBold)
-                            TextItalic = (if name = "italic" then Some text.Italic else s.TextItalic) })
-                    true)
-        (fun name _ ->
-            match name, target with
-            | "reset", RangeFont r -> book.Format(r.Start, r.End, (fun s -> { TB.defaultStyle with Style = s.Style; Hyperlink = s.Hyperlink; BookmarkStarts = s.BookmarkStarts; BookmarkEnds = s.BookmarkEnds; SourceRun = s.SourceRun })); Some VEmpty
-            | "reset", SpecFont spec -> spec.Clear(); Some VEmpty
-            | "grow", RangeFont r -> book.Format(r.Start, r.End, (fun s -> TB.withExplicitFontSize (s.FontSize + pxOfPt 1.0) s)); Some VEmpty
-            | "shrink", RangeFont r -> book.Format(r.Start, r.End, (fun s -> TB.withExplicitFontSize (max 1.0 (s.FontSize - pxOfPt 1.0)) s)); Some VEmpty
-            | _ -> None)
-        None
+let rec private readFont (font: FontState) (p: FontProperty) : Value =
+    let book = font.Book
+    match font.Target with
+    | RangeFont r ->
+        match book.StylesIn(r.Start, r.End) |> List.map p.Read |> List.distinct with
+        | [ value ] -> value
+        | _ -> VLong wdUndefined
+    | SpecFont spec ->
+        match spec.TryGetValue (fontKey p) with
+        | true, v -> v
+        | _ -> VLong wdUndefined
+    | CaretFont r ->
+        match book.Pending.TryGetValue (fontKey p) with
+        | true, v -> v
+        | _ -> readFont { font with Target = RangeFont r } p
+    | StyleFont id ->
+        let named = book.Document.Styles |> List.tryFind (fun s -> s.Id = id)
+        let text = named |> Option.bind (fun s -> s.Text) |> Option.defaultValue TB.defaultStyle
+        let text =
+            match named with
+            | Some s -> { text with Bold = defaultArg s.TextBold text.Bold; Italic = defaultArg s.TextItalic text.Italic }
+            | None -> text
+        p.Read text
+
+let private writeFont (font: FontState) (p: FontProperty) (value: Value) =
+    let book = font.Book
+    let change = p.Change value
+    match font.Target with
+    | RangeFont r -> book.Format(r.Start, r.End, change)
+    | SpecFont spec -> spec.[fontKey p] <- value
+    | CaretFont _ -> book.Pending.[fontKey p] <- value
+    | StyleFont id ->
+        book.ChangeStyle(id, fun s ->
+            let text = change (defaultArg s.Text TB.defaultStyle)
+            { s with
+                Text = Some text
+                TextBold = (if p.Name = "Bold" then Some text.Bold else s.TextBold)
+                TextItalic = (if p.Name = "Italic" then Some text.Italic else s.TextItalic) })
+
+let private fontType =
+    let rangeOnly (name: string) (change: TB.TextStyle -> TB.TextStyle) =
+        method name [] (fun (font: FontState) _ ->
+            match font.Target with
+            | RangeFont r -> font.Book.Format(r.Start, r.End, change); VEmpty
+            | _ -> unsupported "Font" name)
+    HostMembers.Table<FontState>("Font",
+        (fontProperties |> List.map (fun p -> prop p.Name (fun font -> readFont font p) (fun font value -> writeFont font p value)))
+        @ [ method "Reset" [] (fun font _ ->
+                match font.Target with
+                | RangeFont r ->
+                    font.Book.Format(r.Start, r.End, fun s ->
+                        { TB.defaultStyle with Style = s.Style; Hyperlink = s.Hyperlink; BookmarkStarts = s.BookmarkStarts; BookmarkEnds = s.BookmarkEnds; SourceRun = s.SourceRun })
+                    VEmpty
+                | SpecFont spec -> spec.Clear(); VEmpty
+                | _ -> unsupported "Font" "Reset")
+            rangeOnly "Grow" (fun s -> TB.withExplicitFontSize (s.FontSize + pxOfPt 1.0) s)
+            rangeOnly "Shrink" (fun s -> TB.withExplicitFontSize (max 1.0 (s.FontSize - pxOfPt 1.0)) s) ])
+
+let private fontObject (book: MacroDocument) (target: FontTarget) = fontType.Wrap { Book = book; Target = target }
+
+/// A Font property of a Range itself (Range.Bold).
+let private rangeFontProperty (name: string) (range: 'T -> MacroDocument * LiveRange) : Member<'T> =
+    let p = fontPropertyOf.[name.ToLowerInvariant()]
+    let font (s: 'T) : FontState = let book, r = range s in { Book = book; Target = RangeFont r }
+    prop p.Name (fun s -> readFont (font s) p) (fun s value -> writeFont (font s) p value)
 
 // ---- paragraph formatting ------------------------------------------------------------------------------------
 
@@ -1145,40 +1097,6 @@ let private alignmentOf (n: int) = match n with 1 -> Center | 2 -> Right | 3 | 4
 let private alignmentValue (a: Alignment) = match a with Left -> 0 | Center -> 1 | Right -> 2 | Justify -> 3
 
 let private withFlag flag on (m: BlockMetadata) = { m with Explicit = (if on then m.Explicit ||| flag else m.Explicit &&& ~~~flag) }
-
-/// What setting a ParagraphFormat property does to a paragraph's metadata.
-let private paragraphChange (name: string) (value: Value) : (BlockMetadata -> BlockMetadata) option =
-    match name with
-    | "alignment" -> let a = alignmentOf (toInt value) in Some (fun m -> { m with Alignment = a; ExplicitAlignment = true })
-    | "spacebefore" -> let v = toFloat value in Some (fun m -> { m with SpacingBefore = Some v } |> withFlag ParagraphExplicit.SpacingBefore true)
-    | "spaceafter" -> let v = toFloat value in Some (fun m -> { m with SpacingAfter = Some v } |> withFlag ParagraphExplicit.SpacingAfter true)
-    | "leftindent" -> let v = pxOfPt (toFloat value) in Some (fun m -> { m with IndentLeft = Some v } |> withFlag ParagraphExplicit.IndentLeft true)
-    | "rightindent" -> let v = pxOfPt (toFloat value) in Some (fun m -> { m with IndentRight = Some v } |> withFlag ParagraphExplicit.IndentRight true)
-    | "firstlineindent" -> let v = pxOfPt (toFloat value) in Some (fun m -> { m with FirstLineIndent = Some v } |> withFlag ParagraphExplicit.FirstLineIndent true)
-    | "linespacingrule" ->
-        let rule = toInt value
-        Some (fun m ->
-            let multiple v = { m with LineSpacing = Some v; LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true
-            match rule with
-            | 0 -> multiple 1.0
-            | 1 -> multiple 1.5
-            | 2 -> multiple 2.0
-            | 3 -> { m with LineSpacingRule = Some "atLeast"; LineSpacing = Some (defaultArg (m.LineSpacing |> Option.filter (fun v -> m.LineSpacingRule = Some "atLeast" || m.LineSpacingRule = Some "exact")) (pxOfPt 12.0)) } |> withFlag ParagraphExplicit.LineSpacing true
-            | 4 -> { m with LineSpacingRule = Some "exact"; LineSpacing = Some (defaultArg (m.LineSpacing |> Option.filter (fun v -> m.LineSpacingRule = Some "atLeast" || m.LineSpacingRule = Some "exact")) (pxOfPt 12.0)) } |> withFlag ParagraphExplicit.LineSpacing true
-            | _ -> { m with LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true)
-    | "linespacing" ->
-        let pt = toFloat value
-        Some (fun m ->
-            match m.LineSpacingRule with
-            | Some "exact" | Some "atLeast" -> { m with LineSpacing = Some (pxOfPt pt) } |> withFlag ParagraphExplicit.LineSpacing true
-            | _ -> { m with LineSpacing = Some (pt / 12.0); LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true)
-    | "keepwithnext" -> let v = toBool value in Some (fun m -> { m with KeepNext = Some v })
-    | "keeptogether" -> let v = toBool value in Some (fun m -> { m with KeepLines = Some v })
-    | "pagebreakbefore" -> let v = toBool value in Some (fun m -> { m with PageBreakBefore = v })
-    | "widowcontrol" -> let v = toBool value in Some (fun m -> { m with WidowControl = Some v })
-    | "spacebeforeauto" -> let v = toBool value in Some (fun m -> if v then { m with SpacingBefore = Some 14.0 } |> withFlag ParagraphExplicit.SpacingBefore true else m)
-    | "spaceafterauto" -> let v = toBool value in Some (fun m -> if v then { m with SpacingAfter = Some 14.0 } |> withFlag ParagraphExplicit.SpacingAfter true else m)
-    | _ -> None
 
 /// What a paragraph's style gives it where it states nothing itself (resolved: based-on styles and the
 /// document defaults in), and its heading level.
@@ -1195,41 +1113,134 @@ let private fallbackOfNamed (s: NamedStyle) : StyleFallback =
                 KeepNext = s.KeepNext; KeepLines = s.KeepLines }
       Level = headingLevelOf s }
 
-let rec private paragraphRead (style: StyleFallback) (name: string) (m: BlockMetadata) : Value option =
-    let fromStyle (f: WordStyles.ParagraphStyle -> 'a option) = style.Fallback |> Option.bind f
-    match name with
-    | "alignment" ->
-        let a = if m.ExplicitAlignment then m.Alignment else (fromStyle (fun s -> s.Alignment) |> Option.defaultValue m.Alignment)
-        Some (VLong (alignmentValue a))
-    | "spacebefore" -> Some (VDouble (m.SpacingBefore |> Option.orElse (fromStyle (fun s -> s.SpacingBefore)) |> Option.defaultValue 0.0))
-    | "spaceafter" -> Some (VDouble (m.SpacingAfter |> Option.orElse (fromStyle (fun s -> s.SpacingAfter)) |> Option.defaultValue 0.0))
-    | "leftindent" -> Some (VDouble (ptOfPx (m.IndentLeft |> Option.orElse (fromStyle (fun s -> s.IndentLeft)) |> Option.defaultValue 0.0)))
-    | "rightindent" -> Some (VDouble (ptOfPx (m.IndentRight |> Option.orElse (fromStyle (fun s -> s.IndentRight)) |> Option.defaultValue 0.0)))
-    | "firstlineindent" -> Some (VDouble (ptOfPx (m.FirstLineIndent |> Option.orElse (fromStyle (fun s -> s.FirstLineIndent)) |> Option.defaultValue 0.0)))
-    | "linespacingrule" ->
-        match m.LineSpacingRule, m.LineSpacing with
-        | _ when m.LineSpacingRule.IsNone && (fromStyle (fun s -> s.LineSpacingRule)).IsSome && m.LineSpacing.IsNone ->
-            paragraphRead { style with Fallback = None } name { m with LineSpacingRule = fromStyle (fun s -> s.LineSpacingRule); LineSpacing = fromStyle (fun s -> s.LineSpacing) }
-        | Some "exact", _ -> Some (VLong 4)
-        | Some "atLeast", _ -> Some (VLong 3)
-        | _, Some 1.5 -> Some (VLong 1)
-        | _, Some 2.0 -> Some (VLong 2)
-        | _, (Some 1.0 | None) -> Some (VLong 0)
-        | _ -> Some (VLong 5)
-    | "linespacing" when m.LineSpacing.IsNone && (fromStyle (fun s -> s.LineSpacing)).IsSome ->
-        paragraphRead { style with Fallback = None } name { m with LineSpacingRule = fromStyle (fun s -> s.LineSpacingRule); LineSpacing = fromStyle (fun s -> s.LineSpacing) }
-    | "linespacing" ->
-        match m.LineSpacingRule, m.LineSpacing with
-        | (Some "exact" | Some "atLeast"), Some px -> Some (VDouble (ptOfPx px))
-        | _, Some multiple -> Some (VDouble (multiple * 12.0))
-        | _ -> Some (VDouble 12.0)
-    | "keepwithnext" -> Some (VBoolean (m.KeepNext |> Option.orElse (fromStyle (fun s -> s.KeepNext)) |> Option.defaultValue false))
-    | "keeptogether" -> Some (VBoolean (m.KeepLines |> Option.orElse (fromStyle (fun s -> s.KeepLines)) |> Option.defaultValue false))
-    | "pagebreakbefore" -> Some (VBoolean m.PageBreakBefore)
-    | "widowcontrol" -> Some (VBoolean (m.WidowControl |> Option.defaultValue true))
-    | "outlinelevel" -> Some (VLong (match style.Level with Some l -> l | None -> 10))
-    | "spacebeforeauto" | "spaceafterauto" -> Some (VBoolean false)
-    | _ -> None
+let private fromStyle (style: StyleFallback) (f: WordStyles.ParagraphStyle -> 'a option) = style.Fallback |> Option.bind f
+
+/// The paragraph's line spacing taken from its style (it states none itself).
+let private styleLineSpacing (style: StyleFallback) (m: BlockMetadata) =
+    { m with LineSpacingRule = fromStyle style (fun s -> s.LineSpacingRule); LineSpacing = fromStyle style (fun s -> s.LineSpacing) }
+
+let private lineSpacingRuleOf (style: StyleFallback) (m: BlockMetadata) =
+    let m =
+        if m.LineSpacingRule.IsNone && (fromStyle style (fun s -> s.LineSpacingRule)).IsSome && m.LineSpacing.IsNone then styleLineSpacing style m
+        else m
+    match m.LineSpacingRule, m.LineSpacing with
+    | Some "exact", _ -> VLong 4
+    | Some "atLeast", _ -> VLong 3
+    | _, Some 1.5 -> VLong 1
+    | _, Some 2.0 -> VLong 2
+    | _, (Some 1.0 | None) -> VLong 0
+    | _ -> VLong 5
+
+let private lineSpacingOf (style: StyleFallback) (m: BlockMetadata) =
+    let m = if m.LineSpacing.IsNone && (fromStyle style (fun s -> s.LineSpacing)).IsSome then styleLineSpacing style m else m
+    match m.LineSpacingRule, m.LineSpacing with
+    | (Some "exact" | Some "atLeast"), Some px -> VDouble (ptOfPx px)
+    | _, Some multiple -> VDouble (multiple * 12.0)
+    | _ -> VDouble 12.0
+
+let private lineSpacingRuleChange (value: Value) : BlockMetadata -> BlockMetadata =
+    let rule = toInt value
+    fun m ->
+        let multiple v = { m with LineSpacing = Some v; LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true
+        let fixedAs (kind: string) =
+            let current = m.LineSpacing |> Option.filter (fun _ -> m.LineSpacingRule = Some "atLeast" || m.LineSpacingRule = Some "exact")
+            { m with LineSpacingRule = Some kind; LineSpacing = Some (defaultArg current (pxOfPt 12.0)) } |> withFlag ParagraphExplicit.LineSpacing true
+        match rule with
+        | 0 -> multiple 1.0
+        | 1 -> multiple 1.5
+        | 2 -> multiple 2.0
+        | 3 -> fixedAs "atLeast"
+        | 4 -> fixedAs "exact"
+        | _ -> { m with LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true
+
+/// A ParagraphFormat property: what it reads of a paragraph (with what its style gives it), what setting
+/// it does to a paragraph and to a paragraph style (None: it cannot be set there).
+type private ParagraphProperty = {
+    Name: string
+    Read: StyleFallback -> BlockMetadata -> Value
+    Change: (Value -> BlockMetadata -> BlockMetadata) option
+    StyleChange: (Value -> NamedStyle -> NamedStyle) option
+}
+
+let private paragraphProperties : ParagraphProperty list =
+    let orStyle (own: float option) (style: StyleFallback) (f: WordStyles.ParagraphStyle -> float option) =
+        own |> Option.orElse (fromStyle style f) |> Option.defaultValue 0.0
+    let indent name (own: BlockMetadata -> float option) (ofStyle: WordStyles.ParagraphStyle -> float option) flag
+               (change: float -> BlockMetadata -> BlockMetadata) (styleChange: float -> NamedStyle -> NamedStyle) : ParagraphProperty =
+        { Name = name
+          Read = (fun style m -> VDouble (ptOfPx (orStyle (own m) style ofStyle)))
+          Change = Some (fun value -> let v = pxOfPt (toFloat value) in fun m -> change v m |> withFlag flag true)
+          StyleChange = Some (fun value s -> styleChange (pxOfPt (toFloat value)) s) }
+    let keep name (own: BlockMetadata -> bool option) (ofStyle: WordStyles.ParagraphStyle -> bool option)
+             (change: bool -> BlockMetadata -> BlockMetadata) (styleChange: bool -> NamedStyle -> NamedStyle) : ParagraphProperty =
+        { Name = name
+          Read = (fun style m -> VBoolean (own m |> Option.orElse (fromStyle style ofStyle) |> Option.defaultValue false))
+          Change = Some (fun value -> let v = toBool value in change v)
+          StyleChange = Some (fun value s -> styleChange (toBool value) s) }
+    let auto name (change: BlockMetadata -> BlockMetadata) : ParagraphProperty =
+        { Name = name
+          Read = (fun _ _ -> VBoolean false)
+          Change = Some (fun value -> let v = toBool value in fun m -> if v then change m else m)
+          StyleChange = None }
+    [ { Name = "Alignment"
+        Read = (fun style m -> VLong (alignmentValue (if m.ExplicitAlignment then m.Alignment else (fromStyle style (fun s -> s.Alignment) |> Option.defaultValue m.Alignment))))
+        Change = Some (fun value -> let a = alignmentOf (toInt value) in fun m -> { m with Alignment = a; ExplicitAlignment = true })
+        StyleChange = Some (fun value s -> { s with Alignment = Some (alignmentOf (toInt value)) }) }
+      { Name = "SpaceBefore"
+        Read = (fun style m -> VDouble (orStyle m.SpacingBefore style (fun s -> s.SpacingBefore)))
+        Change = Some (fun value -> let v = toFloat value in fun m -> { m with SpacingBefore = Some v } |> withFlag ParagraphExplicit.SpacingBefore true)
+        StyleChange = Some (fun value s -> { s with SpacingBefore = Some (toFloat value) }) }
+      { Name = "SpaceAfter"
+        Read = (fun style m -> VDouble (orStyle m.SpacingAfter style (fun s -> s.SpacingAfter)))
+        Change = Some (fun value -> let v = toFloat value in fun m -> { m with SpacingAfter = Some v } |> withFlag ParagraphExplicit.SpacingAfter true)
+        StyleChange = Some (fun value s -> { s with SpacingAfter = Some (toFloat value) }) }
+      indent "LeftIndent" (fun m -> m.IndentLeft) (fun s -> s.IndentLeft) ParagraphExplicit.IndentLeft
+          (fun v m -> { m with IndentLeft = Some v }) (fun v s -> { s with IndentLeft = Some v })
+      indent "RightIndent" (fun m -> m.IndentRight) (fun s -> s.IndentRight) ParagraphExplicit.IndentRight
+          (fun v m -> { m with IndentRight = Some v }) (fun v s -> { s with IndentRight = Some v })
+      indent "FirstLineIndent" (fun m -> m.FirstLineIndent) (fun s -> s.FirstLineIndent) ParagraphExplicit.FirstLineIndent
+          (fun v m -> { m with FirstLineIndent = Some v }) (fun v s -> { s with FirstLineIndent = Some v })
+      { Name = "LineSpacingRule"
+        Read = lineSpacingRuleOf
+        Change = Some lineSpacingRuleChange
+        // (A style's rule goes with its LineSpacing.)
+        StyleChange = Some (fun _ s -> s) }
+      { Name = "LineSpacing"
+        Read = lineSpacingOf
+        Change = Some (fun value ->
+            let pt = toFloat value
+            fun m ->
+                match m.LineSpacingRule with
+                | Some "exact" | Some "atLeast" -> { m with LineSpacing = Some (pxOfPt pt) } |> withFlag ParagraphExplicit.LineSpacing true
+                | _ -> { m with LineSpacing = Some (pt / 12.0); LineSpacingRule = Some "auto" } |> withFlag ParagraphExplicit.LineSpacing true)
+        StyleChange = Some (fun value s -> { s with LineSpacing = Some (toFloat value / 12.0); LineSpacingRule = Some "auto" }) }
+      keep "KeepWithNext" (fun m -> m.KeepNext) (fun s -> s.KeepNext) (fun v m -> { m with KeepNext = Some v }) (fun v s -> { s with KeepNext = Some v })
+      keep "KeepTogether" (fun m -> m.KeepLines) (fun s -> s.KeepLines) (fun v m -> { m with KeepLines = Some v }) (fun v s -> { s with KeepLines = Some v })
+      { Name = "PageBreakBefore"
+        Read = (fun _ m -> VBoolean m.PageBreakBefore)
+        Change = Some (fun value -> let v = toBool value in fun m -> { m with PageBreakBefore = v })
+        StyleChange = None }
+      { Name = "WidowControl"
+        Read = (fun _ m -> VBoolean (m.WidowControl |> Option.defaultValue true))
+        Change = Some (fun value -> let v = toBool value in fun m -> { m with WidowControl = Some v })
+        StyleChange = None }
+      { Name = "OutlineLevel"; Read = (fun style _ -> VLong (match style.Level with Some l -> l | None -> 10)); Change = None; StyleChange = None }
+      auto "SpaceBeforeAuto" (fun m -> { m with SpacingBefore = Some 14.0 } |> withFlag ParagraphExplicit.SpacingBefore true)
+      auto "SpaceAfterAuto" (fun m -> { m with SpacingAfter = Some 14.0 } |> withFlag ParagraphExplicit.SpacingAfter true) ]
+
+/// A ParagraphFormat property's key in a set of settings (Replacement's).
+let private paragraphKey (p: ParagraphProperty) = p.Name.ToLowerInvariant()
+
+let private paragraphPropertyOf : Dictionary<string, ParagraphProperty> =
+    let byKey = Dictionary<string, ParagraphProperty>()
+    for p in paragraphProperties do byKey.[paragraphKey p] <- p
+    byKey
+
+/// The change a set of ParagraphFormat settings makes.
+let private paragraphSpecChange (spec: Dictionary<string, Value>) : BlockMetadata -> BlockMetadata =
+    let changes = [ for kv in spec -> paragraphPropertyOf.[kv.Key].Change.Value kv.Value ]
+    fun m -> changes |> List.fold (fun acc f -> f acc) m
+
 
 // ---- shading and borders ---------------------------------------------------------------------------------------
 
@@ -1255,51 +1266,49 @@ type private ShadingTarget =
     | ParagraphShading of (unit -> string list)
     | CellShading of (unit -> CellRef list)
 
-let private shadingObject (book: MacroDocument) (target: ShadingTarget) : Value =
-    let readColor () =
-        match target with
-        | ParagraphShading ids ->
-            match ids () |> List.tryHead with
-            | Some id ->
-                match book.Paragraph id |> Option.bind (fun p -> p.Metadata.BackgroundColor) with
-                | Some color -> Some color
-                | None ->
-                    // (A paragraph in a table cell shows the cell's shading, and Word reports it.)
-                    let st = book.Story
-                    match st.Segments |> Array.tryFind (fun seg -> seg.Para = id && seg.Table <> "") with
-                    | Some seg -> cellOf book { TableId = seg.Table; Row = seg.Row; Col = seg.Col } |> Option.bind (fun c -> c.BackgroundColor)
-                    | None -> None
-            | None -> None
-        | CellShading cells -> cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.BackgroundColor)
-    let setColor (color: string option) =
-        match target with
-        | ParagraphShading ids ->
-            for id in ids () do
-                book.UpdateParagraph(id, fun p -> { p with Metadata = { p.Metadata with BackgroundColor = color } |> withFlag ParagraphExplicit.BackgroundColor color.IsSome })
-        | CellShading cells -> mapCells book (cells ()) (fun c -> { c with BackgroundColor = color; Shading = None })
-    makeObject "Shading"
-        (fun name ->
-            match name with
-            | "backgroundpatterncolor" -> Some (colorValueOf (readColor ()))
-            | "backgroundpatterncolorindex" -> Some (VLong (indexOfColor (readColor ())))
-            | "foregroundpatterncolor" -> Some (VLong wdColorAutomatic)
-            | "texture" -> Some (VLong 0)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "backgroundpatterncolor" -> setColor (colorOfValue value); true
-            | "backgroundpatterncolorindex" -> setColor (colorOfIndex (toInt value)); true
-            | "foregroundpatterncolor" | "foregroundpatterncolorindex" -> true
-            | "texture" -> true
-            | _ -> false)
-        noCall None
+type private ShadingState = { Book: MacroDocument; Target: ShadingTarget }
+
+let private shadingColor (shading: ShadingState) =
+    let book = shading.Book
+    match shading.Target with
+    | ParagraphShading ids ->
+        match ids () |> List.tryHead with
+        | Some id ->
+            match book.Paragraph id |> Option.bind (fun p -> p.Metadata.BackgroundColor) with
+            | Some color -> Some color
+            | None ->
+                // (A paragraph in a table cell shows the cell's shading, and Word reports it.)
+                let st = book.Story
+                match st.Segments |> Array.tryFind (fun seg -> seg.Para = id && seg.Table <> "") with
+                | Some seg -> cellOf book { TableId = seg.Table; Row = seg.Row; Col = seg.Col } |> Option.bind (fun c -> c.BackgroundColor)
+                | None -> None
+        | None -> None
+    | CellShading cells -> cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.BackgroundColor)
+
+let private setShadingColor (shading: ShadingState) (color: string option) =
+    let book = shading.Book
+    match shading.Target with
+    | ParagraphShading ids ->
+        for id in ids () do
+            book.UpdateParagraph(id, fun p -> { p with Metadata = { p.Metadata with BackgroundColor = color } |> withFlag ParagraphExplicit.BackgroundColor color.IsSome })
+    | CellShading cells -> mapCells book (cells ()) (fun c -> { c with BackgroundColor = color; Shading = None })
+
+let private shadingType =
+    HostMembers.Table<ShadingState>("Shading", [
+        prop "BackgroundPatternColor" (fun s -> colorValueOf (shadingColor s)) (fun s value -> setShadingColor s (colorOfValue value))
+        prop "BackgroundPatternColorIndex" (fun s -> VLong (indexOfColor (shadingColor s))) (fun s value -> setShadingColor s (colorOfIndex (toInt value)))
+        accepted "ForegroundPatternColor" (VLong wdColorAutomatic)
+        set "ForegroundPatternColorIndex" (fun _ _ -> ())
+        accepted "Texture" (VLong 0) ])
+
+let private shadingObject (book: MacroDocument) (target: ShadingTarget) = shadingType.Wrap { Book = book; Target = target }
 
 let private lineStyleNames =
     [ 0, "none"; 1, "single"; 2, "dotted"; 3, "dashSmallGap"; 4, "dashed"; 5, "dotDash"; 6, "dotDotDash"; 7, "double"
       8, "triple"; 9, "thinThickSmallGap"; 10, "thickThinSmallGap"; 18, "wave"; 19, "doubleWave" ]
 let private lineStyleName (n: int) = lineStyleNames |> List.tryPick (fun (k, v) -> if k = n then Some v else None) |> Option.defaultValue "single"
-let private lineStyleValue (name: string option) =
-    match name with
+let private lineStyleValue (style: string option) =
+    match style with
     | None -> 0
     | Some n -> lineStyleNames |> List.tryPick (fun (k, v) -> if eq v n then Some k else None) |> Option.defaultValue 1
 
@@ -1372,71 +1381,197 @@ let private writeLine (book: MacroDocument) (target: BordersTarget) (side: Borde
                     | SideBottom -> { borders with Bottom = next } | SideRight -> { borders with Right = next } | _ -> borders
                 { p with Metadata = { p.Metadata with ParagraphBorders = Some borders } })
 
-let private borderObject (book: MacroDocument) (target: BordersTarget) (side: BorderSide) : Value =
-    makeObject "Border"
-        (fun name ->
-            let line = readLine book target side
-            match name with
-            | "linestyle" -> Some (VLong (match line with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
-            | "linewidth" -> Some (VLong (match line with Some l -> int (Math.Round(l.LineWidth * 6.0)) | None -> 4))
-            | "color" -> Some (colorValueOf (line |> Option.bind (fun l -> l.LineColor)))
-            | "colorindex" -> Some (VLong (indexOfColor (line |> Option.bind (fun l -> l.LineColor))))
-            | "visible" -> Some (VBoolean line.IsSome)
-            | _ -> None)
-        (fun name value ->
-            let update change = writeLine book target side change; true
-            match name with
-            | "linestyle" ->
-                let n = toInt value
-                update (fun line -> if n = 0 then None else Some { (defaultArg line defaultLine) with LineStyle = lineStyleName n })
-            | "linewidth" -> let px = float (toInt value) / 6.0 in update (fun line -> Some { (defaultArg line defaultLine) with LineWidth = px })
-            | "color" -> let c = colorOfValue value in update (fun line -> Some { (defaultArg line defaultLine) with LineColor = (match c with Some _ -> c | None -> Some "#000000") })
-            | "colorindex" -> let c = colorOfIndex (toInt value) in update (fun line -> Some { (defaultArg line defaultLine) with LineColor = (match c with Some _ -> c | None -> Some "#000000") })
-            | "visible" -> let on = toBool value in update (fun line -> if on then Some (defaultArg line defaultLine) else None)
-            | _ -> false)
-        noCall None
+/// A colour set on a border: black for automatic.
+let private lineColor (color: string option) = match color with Some _ -> color | None -> Some "#000000"
 
-let private bordersObject (book: MacroDocument) (target: BordersTarget) : Value =
-    let sides =
-        match target with
+type private BorderState = { Book: MacroDocument; Target: BordersTarget; Side: BorderSide }
+
+let private borderType =
+    let line (b: BorderState) = readLine b.Book b.Target b.Side
+    let update (b: BorderState) change = writeLine b.Book b.Target b.Side change
+    HostMembers.Table<BorderState>("Border", [
+        prop "LineStyle"
+            (fun b -> VLong (match line b with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
+            (fun b value -> let n = toInt value in update b (fun l -> if n = 0 then None else Some { (defaultArg l defaultLine) with LineStyle = lineStyleName n }))
+        prop "LineWidth"
+            (fun b -> VLong (match line b with Some l -> int (Math.Round(l.LineWidth * 6.0)) | None -> 4))
+            (fun b value -> let px = float (toInt value) / 6.0 in update b (fun l -> Some { (defaultArg l defaultLine) with LineWidth = px }))
+        prop "Color"
+            (fun b -> colorValueOf (line b |> Option.bind (fun l -> l.LineColor)))
+            (fun b value -> let c = lineColor (colorOfValue value) in update b (fun l -> Some { (defaultArg l defaultLine) with LineColor = c }))
+        prop "ColorIndex"
+            (fun b -> VLong (indexOfColor (line b |> Option.bind (fun l -> l.LineColor))))
+            (fun b value -> let c = lineColor (colorOfIndex (toInt value)) in update b (fun l -> Some { (defaultArg l defaultLine) with LineColor = c }))
+        prop "Visible"
+            (fun b -> VBoolean (line b).IsSome)
+            (fun b value -> let on = toBool value in update b (fun l -> if on then Some (defaultArg l defaultLine) else None)) ])
+
+let private borderObject (book: MacroDocument) (target: BordersTarget) (side: BorderSide) = borderType.Wrap { Book = book; Target = target; Side = side }
+
+type private BordersState = { Book: MacroDocument; Target: BordersTarget }
+
+let private bordersType =
+    let sides (b: BordersState) =
+        match b.Target with
         | ParagraphBorders _ -> [ SideTop; SideLeft; SideBottom; SideRight ]
         | _ -> [ SideTop; SideLeft; SideBottom; SideRight; SideInsideH; SideInsideV ]
-    let outside = [ SideTop; SideLeft; SideBottom; SideRight ]
-    let inside = sides |> List.filter (fun s -> s = SideInsideH || s = SideInsideV)
-    let setAll (which: BorderSide list) change = for side in which do writeLine book target side change
-    collectionObject "Borders"
-        (fun () -> sides |> List.map (borderObject book target) |> List.toArray)
-        (fun name ->
-            match name with
-            | "enable" -> Some (VLong (if sides |> List.exists (fun s -> (readLine book target s).IsSome) then -1 else 0))
-            | "insidelinestyle" -> Some (VLong (match inside |> List.tryHead |> Option.bind (readLine book target) with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
-            | "outsidelinestyle" -> Some (VLong (match readLine book target SideTop with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0))
-            | "shadow" -> Some (VBoolean false)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "enable" ->
-                let on = toBool value
-                setAll sides (fun line -> if on then Some (defaultArg line defaultLine) else None); true
-            | "insidelinestyle" | "outsidelinestyle" ->
-                let n = toInt value
-                setAll (if name = "insidelinestyle" then inside else outside) (fun line -> if n = 0 then None else Some { (defaultArg line defaultLine) with LineStyle = lineStyleName n }); true
-            | "insidelinewidth" | "outsidelinewidth" ->
-                let px = float (toInt value) / 6.0
-                setAll (if name = "insidelinewidth" then inside else outside) (fun line -> Some { (defaultArg line defaultLine) with LineWidth = px }); true
-            | "insidecolor" | "outsidecolor" | "insidecolorindex" | "outsidecolorindex" ->
-                let c = if name.EndsWith "index" then colorOfIndex (toInt value) else colorOfValue value
-                let c = match c with Some _ -> c | None -> Some "#000000"
-                setAll (if name.StartsWith "inside" then inside else outside) (fun line -> Some { (defaultArg line defaultLine) with LineColor = c }); true
-            | "shadow" | "distancefromtop" | "distancefrombottom" | "distancefromleft" | "distancefromright" -> true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "" | "_default" | "item" ->
-                match arg args 0 |> Option.map toInt |> Option.bind sideOf with
-                | Some side -> Some (borderObject book target side)
-                | None -> Some (borderObject book target SideTop)
-            | _ -> None)
+    let outside (_: BordersState) = [ SideTop; SideLeft; SideBottom; SideRight ]
+    let inside (b: BordersState) = sides b |> List.filter (fun s -> s = SideInsideH || s = SideInsideV)
+    let setAll (b: BordersState) (which: BorderSide list) change = for side in which do writeLine b.Book b.Target side change
+    let lineStyleOf (b: BordersState) (side: BorderSide option) =
+        VLong (match side |> Option.bind (readLine b.Book b.Target) with Some l -> lineStyleValue (Some l.LineStyle) | None -> 0)
+    let setLineStyle (which: BordersState -> BorderSide list) (b: BordersState) (value: Value) =
+        let n = toInt value
+        setAll b (which b) (fun line -> if n = 0 then None else Some { (defaultArg line defaultLine) with LineStyle = lineStyleName n })
+    let setLineWidth (which: BordersState -> BorderSide list) (b: BordersState) (value: Value) =
+        let px = float (toInt value) / 6.0
+        setAll b (which b) (fun line -> Some { (defaultArg line defaultLine) with LineWidth = px })
+    let setColor (which: BordersState -> BorderSide list) (color: Value -> string option) (b: BordersState) (value: Value) =
+        let c = lineColor (color value)
+        setAll b (which b) (fun line -> Some { (defaultArg line defaultLine) with LineColor = c })
+    let colorIndex (value: Value) = colorOfIndex (toInt value)
+    collectionType "Borders"
+        (fun b -> sides b |> List.map (borderObject b.Book b.Target) |> List.toArray)
+        // (Borders(wdBorderTop) ...; any other index, or none, is the top border.)
+        (Some (fun b args -> borderObject b.Book b.Target (arg args 0 |> Option.map toInt |> Option.bind sideOf |> Option.defaultValue SideTop)))
+        [ prop "Enable"
+            (fun b -> VLong (if sides b |> List.exists (fun s -> (readLine b.Book b.Target s).IsSome) then -1 else 0))
+            (fun b value -> let on = toBool value in setAll b (sides b) (fun line -> if on then Some (defaultArg line defaultLine) else None))
+          prop "InsideLineStyle" (fun b -> lineStyleOf b (inside b |> List.tryHead)) (setLineStyle inside)
+          prop "OutsideLineStyle" (fun b -> lineStyleOf b (Some SideTop)) (setLineStyle outside)
+          set "InsideLineWidth" (setLineWidth inside)
+          set "OutsideLineWidth" (setLineWidth outside)
+          set "InsideColor" (setColor inside colorOfValue)
+          set "OutsideColor" (setColor outside colorOfValue)
+          set "InsideColorIndex" (setColor inside colorIndex)
+          set "OutsideColorIndex" (setColor outside colorIndex)
+          accepted "Shadow" (VBoolean false)
+          set "DistanceFromTop" (fun _ _ -> ())
+          set "DistanceFromBottom" (fun _ _ -> ())
+          set "DistanceFromLeft" (fun _ _ -> ())
+          set "DistanceFromRight" (fun _ _ -> ()) ]
+
+let private bordersObject (book: MacroDocument) (target: BordersTarget) = bordersType.Wrap { Book = book; Target = target }
+
+// ---- styles of a range -----------------------------------------------------------------------------------------
+
+let private setRangeStyle (book: MacroDocument) (r: LiveRange) (value: Value) =
+    let styleName =
+        match scalarOf value with
+        | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
+        | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
+        | other -> toText other
+    if eq styleName "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
+        for id in book.ParagraphIdsIn(r.Start, r.End) do book.ApplyParagraphStyle(id, None, None)
+    else
+        match book.FindStyle styleName with
+        | Some style when style.StyleType = "character" ->
+            book.Format(r.Start, r.End, fun s -> { s with Style = Some style.Id })
+        | Some style ->
+            let level = headingLevelOf style
+            for id in book.ParagraphIdsIn(r.Start, r.End) do book.ApplyParagraphStyle(id, Some style.Id, level)
+        | None ->
+            if eq styleName "List Bullet" || eq styleName "List Number" then
+                for id in book.ParagraphIdsIn(r.Start, r.End) do
+                    book.UpdateParagraph(id, fun p -> { p with Metadata = { p.Metadata with ListStyle = (if eq styleName "List Bullet" then Bullet else Numbered); ListLevel = max 1 p.Metadata.ListLevel } })
+            else fail 5834 (sprintf "Item with specified name does not exist (style \"%s\")." styleName)
+
+// ---- ParagraphFormat ---------------------------------------------------------------------------------------------
+
+/// The bounds of what an object is of: a range, or the whole story (None).
+let private boundsOf (book: MacroDocument) (within: LiveRange option) =
+    match within with
+    | Some r -> r.Start, r.End
+    | None -> 0, book.Story.Total
+
+/// What a ParagraphFormat is of: the paragraphs of a range (None: of the document), a set of settings
+/// (Replacement's), or a paragraph style.
+type private ParagraphTarget =
+    | ParagraphsOf of LiveRange option
+    | SpecParagraphs of Dictionary<string, Value>
+    | StyleParagraphs of string
+
+type private ParagraphFormatState = { Book: MacroDocument; Target: ParagraphTarget }
+
+let private paragraphIds (book: MacroDocument) (within: LiveRange option) =
+    let s, e = boundsOf book within
+    book.ParagraphIdsIn(s, e)
+
+let private namedStyleOf (book: MacroDocument) (id: string) =
+    book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style) |> Option.bind (fun s -> book.Document.Styles |> List.tryFind (fun x -> x.Id = s))
+
+let private paragraphFallback (book: MacroDocument) (id: string) : StyleFallback =
+    let doc = book.Document
+    let resolved =
+        match doc.Blocks |> List.tryFind (function Paragraph p | Heading (_, p) -> p.Id = id | _ -> false) with
+        | Some block -> Some (WordStyles.forBlockInDocument doc block)
+        | None -> book.Paragraph id |> Option.map (WordStyles.forTableCellParagraphInDocument doc)
+    { Fallback = resolved; Level = namedStyleOf book id |> Option.bind headingLevelOf }
+
+/// A style for each of the paragraphs.
+let private setParagraphStyles (book: MacroDocument) (within: LiveRange option) (value: Value) =
+    for id in paragraphIds book within do
+        let pos = book.PositionOf(id, 0)
+        setRangeStyle book (LiveRange(pos, pos)) value
+
+let private readParagraphFormat (format: ParagraphFormatState) (p: ParagraphProperty) : Value =
+    let book = format.Book
+    match format.Target with
+    | ParagraphsOf within ->
+        let values = paragraphIds book within |> List.choose (fun id -> book.Paragraph id |> Option.map (fun para -> p.Read (paragraphFallback book id) para.Metadata))
+        match values |> List.distinct with
+        | [ v ] -> v
+        | [] ->
+            // (An end-of-row mark: the default paragraph style's format.)
+            let normal = WordStyles.forBlockInDocument book.Document (Paragraph (newEmptyParagraph ()))
+            p.Read { Fallback = Some normal; Level = None } defaultMetadata
+        | _ -> VLong wdUndefined
+    | SpecParagraphs spec ->
+        match spec.TryGetValue (paragraphKey p) with
+        | true, v -> v
+        | _ -> VLong wdUndefined
+    | StyleParagraphs id ->
+        let s = book.Document.Styles |> List.tryFind (fun x -> x.Id = id)
+        p.Read (match s with Some x -> fallbackOfNamed x | None -> noFallback) defaultMetadata
+
+let private writeParagraphFormat (format: ParagraphFormatState) (p: ParagraphProperty) (value: Value) =
+    let book = format.Book
+    match format.Target, p.Change, p.StyleChange with
+    | ParagraphsOf within, Some change, _ ->
+        let change = change value
+        for id in paragraphIds book within do
+            book.UpdateParagraph(id, fun para -> let m = change para.Metadata in if m = para.Metadata then para else { para with Metadata = m })
+    | SpecParagraphs spec, Some change, _ ->
+        change value |> ignore
+        spec.[paragraphKey p] <- value
+    | StyleParagraphs id, _, Some change -> book.ChangeStyle(id, change value)
+    | _ -> unsupported "ParagraphFormat" p.Name
+
+let private paragraphFormatType =
+    let ofParagraphs (name: string) (f: MacroDocument -> LiveRange option -> Value) (format: ParagraphFormatState) =
+        match format.Target with
+        | ParagraphsOf within -> f format.Book within
+        | _ -> unsupported "ParagraphFormat" name
+    HostMembers.Table<ParagraphFormatState>("ParagraphFormat",
+        (paragraphProperties |> List.map (fun p -> prop p.Name (fun format -> readParagraphFormat format p) (fun format value -> writeParagraphFormat format p value)))
+        @ [ get "Shading" (ofParagraphs "Shading" (fun book within -> shadingObject book (ParagraphShading (fun () -> paragraphIds book within))))
+            get "Borders" (ofParagraphs "Borders" (fun book within -> bordersObject book (ParagraphBorders (fun () -> paragraphIds book within))))
+            prop "Style"
+                (ofParagraphs "Style" (fun book within ->
+                    match paragraphIds book within with
+                    | id :: _ -> VString (match namedStyleOf book id with Some s -> styleDisplayName s | None -> "Normal")
+                    | [] -> VEmpty))
+                (fun format value ->
+                    match format.Target with
+                    | ParagraphsOf within -> setParagraphStyles format.Book within value
+                    | _ -> unsupported "ParagraphFormat" "Style") ])
+
+let private paragraphFormatObject (book: MacroDocument) (target: ParagraphTarget) = paragraphFormatType.Wrap { Book = book; Target = target }
+
+/// The ParagraphFormat properties of an object of paragraphs itself (Paragraph.Alignment), read and set
+/// through its ParagraphFormat.
+let private paragraphFormatProperties (format: 'T -> ParagraphFormatState) : Member<'T> list =
+    paragraphProperties |> List.map (fun p -> prop p.Name (fun s -> readParagraphFormat (format s) p) (fun s value -> writeParagraphFormat (format s) p value))
 
 // ---- tables -------------------------------------------------------------------------------------------------
 
@@ -1656,8 +1791,9 @@ let private matchesFormatting (book: MacroDocument) (state: FindState) (s: int) 
         let styles = book.StylesIn(s, e)
         let fontOk =
             state.Font |> Seq.forall (fun kv ->
-                let wanted = match fontChange kv.Key kv.Value with Some f -> fontRead kv.Key (f TB.defaultStyle) | None -> None
-                styles |> List.forall (fun st -> fontRead kv.Key st = wanted))
+                let p = fontPropertyOf.[kv.Key]
+                let wanted = p.Read (p.Change kv.Value TB.defaultStyle)
+                styles |> List.forall (fun st -> p.Read st = wanted))
         let highlightOk =
             if state.Highlight < 0 then true
             elif state.Highlight = 0 then styles |> List.forall (fun st -> st.Highlight.IsNone)
@@ -1710,8 +1846,7 @@ let private applyReplacementFormatting (book: MacroDocument) (state: FindState) 
         | None -> ()
     | None -> ()
     if state.ReplacementParagraph.Count > 0 then
-        let changes = [ for kv in state.ReplacementParagraph -> (paragraphChange kv.Key kv.Value).Value ]
-        book.MapParagraphs(s, e, fun m -> changes |> List.fold (fun acc f -> f acc) m)
+        book.MapParagraphs(s, e, paragraphSpecChange state.ReplacementParagraph)
 
 let private replacesFormatting (state: FindState) =
     state.ReplacementFont.Count > 0 || state.ReplacementHighlight >= 0 || state.ReplacementStyle.IsSome || state.ReplacementParagraph.Count > 0
@@ -1730,7 +1865,7 @@ let private replaceMatch (book: MacroDocument) (state: FindState) (s: int, e: in
     if state.Format || replacesFormatting state then applyReplacementFormatting book state s e
     s, e
 
-// ---- the objects ---------------------------------------------------------------------------------------------
+// ---- units of text -----------------------------------------------------------------------------------------
 
 let private unitSpans (book: MacroDocument) (unit: int) : (int * int) array =
     let st = book.Story
@@ -1788,195 +1923,320 @@ let private statistics (book: MacroDocument) (s: int) (e: int) (kind: int) =
     | 5 -> text |> Seq.filter (fun c -> c <> '\r' && c <> '\a' && c <> '\b') |> Seq.length
     | _ -> 0
 
-let rec private rangeObject (book: MacroDocument) (r: LiveRange) : Value =
-    makeObject "Range" (rangeGet book r) (rangeSet book r) (rangeCall book r) None
+// ---- the objects' state --------------------------------------------------------------------------------------
 
-and private rangeOf (book: MacroDocument) (s: int) (e: int) = rangeObject book (book.Track(s, e))
+type private RangeState = { Book: MacroDocument; R: LiveRange }
+/// A collection of the document's text (Paragraphs, Words, Tables, Bookmarks): of a range, or of the
+/// whole story (None).
+type private WithinState = { Book: MacroDocument; Within: LiveRange option }
+type private TableState = { Book: MacroDocument; TableId: string }
+type private RowState = { Book: MacroDocument; TableId: string; Row: int }
+type private ColumnState = { Book: MacroDocument; TableId: string; Col: int }
+type private CellState = { Book: MacroDocument; Cell: CellRef }
+type private CellSet =
+    | CellsInRange of LiveRange
+    | CellsOfRow of string * int
+    | CellsOfColumn of string * int
+type private CellsState = { Book: MacroDocument; Cells: CellSet }
+type private FindObjectState = { Book: MacroDocument; R: LiveRange; IsSelection: bool; Find: FindState }
+type private ReplacementState = { Book: MacroDocument; Find: FindState }
+type private BookmarkState = { Book: MacroDocument; Info: BookmarkInfo; S: int; E: int }
+type private StyleState = { Book: MacroDocument; Id: string }
+type private VariableState = { Book: MacroDocument; Key: string }
+/// The document, or its window (TypeName(ActiveDocument) is "Document", as Word's).
+type private NamedState = { Book: MacroDocument }
+type private ConversionState = { Conversion: string; Factor: float }
 
-and private rangeGet (book: MacroDocument) (r: LiveRange) (name: string) : Value option =
-    match name with
-    | "" | "_default" | "text" -> Some (VString (book.TextOf(r.Start, r.End)))
-    | "formattedtext" | "duplicate" -> Some (rangeOf book r.Start r.End)
-    | "start" -> Some (VLong r.Start)
-    | "end" -> Some (VLong r.End)
-    | "storylength" -> Some (VLong book.Story.Total)
-    | "storytype" -> Some (VLong 1)
-    | "font" -> Some (fontObject book (RangeFont r))
-    | "paragraphformat" -> Some (paragraphFormatObject book (fun () -> book.ParagraphIdsIn(r.Start, r.End)))
-    | "paragraphs" -> Some (paragraphsObject book (fun () -> r.Start, r.End))
-    | "words" -> Some (spansObject book "Words" (fun () -> r.Start, r.End) 2)
-    | "characters" -> Some (spansObject book "Characters" (fun () -> r.Start, r.End) 1)
-    | "sentences" -> Some (spansObject book "Sentences" (fun () -> r.Start, r.End) 3)
-    | "tables" -> Some (tablesObject book (fun () -> r.Start, r.End))
-    | "cells" -> Some (cellsInRange book r)
-    | "rows" -> Some (rowsInRange book r)
-    | "style" -> Some (styleOfRange book r)
-    | "characterstyle" -> Some (VString "Default Paragraph Font")
-    | "paragraphstyle" -> Some (styleOfRange book r)
-    | "highlightcolorindex" ->
-        let values = book.StylesIn(r.Start, r.End) |> List.map (fun s -> indexOfHighlight s.Highlight) |> List.distinct
-        Some (VLong (match values with [ v ] -> v | _ -> wdUndefined))
-    | "bold" | "italic" | "underline" -> (match fontObject book (RangeFont r) with VHostObject h -> h.GetMember name | _ -> None)
-    | "case" -> Some (VLong wdUndefined)
-    | "find" -> Some (findObject book r false)
-    | "document" -> Some (documentObject book)
-    | "shading" -> Some (shadingObject book (ParagraphShading (fun () -> book.ParagraphIdsIn(r.Start, r.End))))
-    | "borders" -> Some (bordersObject book (ParagraphBorders (fun () -> book.ParagraphIdsIn(r.Start, r.End))))
-    | "listformat" -> Some (listFormatObject book r)
-    | "bookmarks" -> Some (bookmarksObject book (Some r))
-    | "information" | "computestatistics" -> None
-    | "isendofrowmark" -> Some (VBoolean (book.SegmentsIn(r.Start, r.Start) |> List.exists (fun s -> s.Mark = RowMark)))
-    | "languageid" -> Some (VLong 1033)
-    | "revisions" | "fields" | "inlineshapes" | "shapes" -> Some (collectionObject "Collection" (fun () -> [||]) (fun _ -> None) noSet noCall)
-    | _ -> None
+// ---- styles ----------------------------------------------------------------------------------------------------
 
-and private rangeSet (book: MacroDocument) (r: LiveRange) (name: string) (value: Value) : bool =
-    match name with
-    | "" | "_default" | "text" | "formattedtext" ->
-        let s, e = book.Replace(r.Start, r.End, toText value, r)
-        r.Start <- s; r.End <- e; r.Matched <- false; true
-    | "start" ->
-        let v = max 0 (min book.Story.Total (toInt value))
-        r.Matched <- false
-        r.Start <- v
-        if r.End < v then r.End <- v
-        true
-    | "end" ->
-        let v = max 0 (min book.Story.Total (toInt value))
-        r.Matched <- false
-        r.End <- v
-        if r.Start > v then r.Start <- v
-        true
-    | "style" -> setRangeStyle book r value; true
-    | "paragraphstyle" -> setRangeStyle book r value; true
-    | "characterstyle" -> true
-    | "highlightcolorindex" ->
-        let color = highlightOfIndex (toInt value)
-        book.Format(r.Start, r.End, fun s -> { s with Highlight = color }); true
-    | "bold" | "italic" | "underline" -> (match fontObject book (RangeFont r) with VHostObject h -> h.SetMember name value | _ -> false)
-    | "case" ->
-        let kind = toInt value
-        let st = book.Story.Text
-        book.MapText(r.Start, r.End, fun text i ->
-            let c = text.[i]
-            match kind with
-            | 0 -> Char.ToLowerInvariant c
-            | 1 -> Char.ToUpperInvariant c
-            | 2 -> if i = 0 || not (Char.IsLetterOrDigit text.[i - 1] || text.[i - 1] = '\'') then Char.ToUpperInvariant c else Char.ToLowerInvariant c
-            | 4 ->
-                let rec start j = if j < 0 then true elif Char.IsWhiteSpace text.[j] then start (j - 1) else text.[j] = '.' || text.[j] = '!' || text.[j] = '?'
-                if Char.IsLetter c && start (i - 1) then Char.ToUpperInvariant c else Char.ToLowerInvariant c
-            | 5 -> if Char.IsUpper c then Char.ToLowerInvariant c else Char.ToUpperInvariant c
-            | _ -> c)
-        ignore st
-        true
-    | "languageid" | "noproofing" -> true
-    | _ -> false
+let private styleType =
+    let style (s: StyleState) = s.Book.Document.Styles |> List.tryFind (fun x -> x.Id = s.Id)
+    let name (s: StyleState) = VString (match style s with Some x -> styleDisplayName x | None -> s.Id)
+    HostMembers.Table<StyleState>("Style",
+        [ get "NameLocal" name
+          get "Name" name
+          get "Font" (fun s -> fontObject s.Book (StyleFont s.Id))
+          get "ParagraphFormat" (fun s -> paragraphFormatObject s.Book (StyleParagraphs s.Id))
+          get "Type" (fun s -> VLong (match style s |> Option.map (fun x -> x.StyleType) with Some "character" -> 2 | Some "table" -> 3 | _ -> 1))
+          prop "BaseStyle"
+            (fun s -> VString (style s |> Option.bind (fun x -> x.BasedOn) |> Option.defaultValue ""))
+            (fun s value -> s.Book.ChangeStyle(s.Id, fun x -> { x with BasedOn = Some (toText value |> compact) }))
+          set "NextParagraphStyle" (fun s value -> s.Book.ChangeStyle(s.Id, fun x -> { x with Next = Some (toText value |> compact) }))
+          get "BuiltIn" (fun _ -> VBoolean true)
+          get "InUse" (fun _ -> VBoolean true)
+          prop "QuickStyle" (fun s -> VBoolean (style s |> Option.exists (fun x -> x.IsQuickStyle))) (fun _ _ -> ())
+          set "AutomaticallyUpdate" (fun _ _ -> ())
+          set "NoFollowUp" (fun _ _ -> ()) ],
+        defaultMember = "NameLocal")
 
-and private rangeCall (book: MacroDocument) (r: LiveRange) (name: string) (args: Value array) : Value option =
-    let collapsedAt p = r.Start <- p; r.End <- p
-    match name with
-    | "insertafter" ->
-        let text = toText (defaultArg (arg args 0) (VString ""))
-        let total = book.Story.Total
-        let at = min r.End (total - 1)
-        // (A cell's or a row's range: the text goes before its end-of-cell mark.)
-        let at =
-            let text = book.Story.Text
-            let mutable p = at
-            if r.End < total then
-                while p > r.Start && p > 0 && (text.[p - 1] = '\a' || text.[p - 1] = '\b') do p <- p - 1
-            p
-        let s0 = min r.Start at
-        let _, e = book.Replace(at, at, text, r)
-        // (A range that took in the last paragraph mark still does.)
-        r.Start <- s0; r.End <- (if r.End >= total then book.Story.Total else e); Some VEmpty
-    | "insertbefore" ->
-        let text = toText (defaultArg (arg args 0) (VString ""))
-        let e0 = r.End
-        let s, n = book.Replace(r.Start, r.Start, text, r)
-        r.Start <- s; r.End <- e0 + (n - s); Some VEmpty
-    | "insertparagraphafter" -> rangeCall book r "insertafter" [| VString "\r" |]
-    | "insertparagraphbefore" -> rangeCall book r "insertbefore" [| VString "\r" |]
-    | "insertparagraph" -> rangeSet book r "text" (VString "\r") |> ignore; Some VEmpty
-    | "insertbreak" ->
-        let ch = match intArg args 0 7 with 6 -> "\v" | _ -> "\f"
-        let s, e = book.Replace(r.Start, r.End, ch, r)
-        collapsedAt e; ignore s; Some VEmpty
-    | "delete" ->
-        if r.End > r.Start then
-            let s, _ = book.Replace(r.Start, r.End, "", r)
-            collapsedAt s
-        else
-            let count = intArg args 1 1
-            let s, _ = book.Replace(r.Start, moveBy book (intArg args 0 1) r.Start count, "", r)
-            collapsedAt s
-        Some (VLong 1)
-    | "collapse" ->
-        let direction = intArg args 0 1
-        // (The end of a range with the last paragraph mark is before that mark: nothing is after it.)
-        if direction = 0 then collapsedAt (min r.End (book.Story.Total - 1)) else collapsedAt r.Start
-        Some VEmpty
-    | "select" ->
-        book.Selection.Start <- r.Start; book.Selection.End <- r.End; book.Selection.ActiveAtStart <- false; Some VEmpty
-    | "setrange" ->
-        let s = intArg args 0 r.Start
-        let e = intArg args 1 r.End
-        r.Matched <- false
-        r.Start <- max 0 (min s e); r.End <- min book.Story.Total (max s e); Some VEmpty
-    | "move" ->
-        let unit = intArg args 0 1
-        let count = intArg args 1 1
-        let p =
-            if r.End > r.Start then
-                let collapsed = if count > 0 then r.End else r.Start
-                moveBy book unit collapsed (if count > 0 then count - 1 else count + 1)
-            else moveBy book unit r.Start count
-        collapsedAt p
-        Some (VLong count)
-    | "movestart" ->
-        let p = moveBy book (intArg args 0 1) r.Start (intArg args 1 1)
-        r.Start <- p
-        if r.End < p then r.End <- p
-        Some (VLong 1)
-    | "moveend" ->
-        let p = moveBy book (intArg args 0 1) r.End (intArg args 1 1)
-        r.End <- p
-        if r.Start > p then r.Start <- p
-        Some (VLong 1)
-    | "expand" ->
-        let unit = intArg args 0 2
-        let s, _ = spanAt book unit r.Start
-        let _, e = spanAt book unit (max r.Start (r.End - 1))
-        r.Start <- s; r.End <- max s e; Some (VLong 1)
-    | "startof" ->
-        let s, _ = spanAt book (intArg args 0 2) r.Start
-        if intArg args 1 0 = 1 then r.Start <- s else collapsedAt s
-        Some (VLong 1)
-    | "endof" ->
-        let _, e = spanAt book (intArg args 0 2) (max r.Start (r.End - 1))
-        if intArg args 1 0 = 1 then r.End <- e else collapsedAt e
-        Some (VLong 1)
-    | "next" | "previous" ->
-        let unit = intArg args 0 1
-        let count = intArg args 1 1
-        let p = if name = "next" then moveBy book unit r.End (count - 1) else moveBy book unit r.Start (-count)
-        if p >= book.Story.Total then Some VNothing
-        else
-            let s, e = spanAt book unit p
-            Some (rangeOf book s e)
-    | "information" ->
-        Some (information book r.Start r.End (intArg args 0 0))
-    | "computestatistics" -> Some (VLong (statistics book r.Start r.End (intArg args 0 0)))
-    | "inrange" | "isequal" ->
-        match arg args 0 |> Option.bind rangeBounds with
-        | Some (s, e) -> Some (VBoolean (if name = "inrange" then s <= r.Start && r.End <= e else s = r.Start && r.End = e))
-        | None -> fail 13 "Type mismatch"
-    | "converttotable" -> Some (convertToTable book r args)
-    | "words" | "characters" | "sentences" | "paragraphs" | "tables" | "cells" | "rows" when args.Length > 0 -> None
-    | _ -> None
+let private styleObject (book: MacroDocument) (id: string) = styleType.Wrap { Book = book; Id = id }
 
-and private information (book: MacroDocument) (s: int) (e: int) (kind: int) : Value =
+let private stylesType =
+    let lookup (book: MacroDocument) (key: Value) =
+        let styleName =
+            match scalarOf key with
+            | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
+            | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
+            | v -> toText v
+        if eq styleName "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
+            // (A new document's default paragraph style: Normal, as the document defaults make it.)
+            let normal = { plainStyle with Id = "Normal"; Name = Some "Normal"; IsDefault = true; BasedOn = None; Next = None; UiPriority = Some 0 }
+            book.SetFormatting { book.Document with Styles = book.Document.Styles @ [ normal ] }
+        match book.FindStyle styleName with
+        | Some s -> styleObject book s.Id
+        | None -> fail 5941 (sprintf "The requested member of the collection does not exist (style \"%s\")." styleName)
+    collectionType "Styles"
+        (fun (book: MacroDocument) -> book.Document.Styles |> List.map (fun s -> styleObject book s.Id) |> List.toArray)
+        (Some (fun book args -> match arg args 0 with Some key -> lookup book key | None -> unsupported "Styles" "Item"))
+        [ method "Add" [ "Name"; "Type" ] (fun book args ->
+            let styleName = toText (defaultArg (arg args 0) (VString "Style1"))
+            let kind = match intArg args 1 1 with 2 -> "character" | 3 -> "table" | _ -> "paragraph"
+            let id = compact styleName
+            if not (book.Document.Styles |> List.exists (fun s -> s.Id = id)) then
+                book.SetFormatting { book.Document with Styles = book.Document.Styles @ [ { plainStyle with Id = id; Name = Some styleName; StyleType = kind } ] }
+            styleObject book id) ]
+
+let private styleOfRange (book: MacroDocument) (r: LiveRange) : Value =
+    let ids = book.ParagraphIdsIn(r.Start, r.End) |> List.map (fun id -> book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style)) |> List.distinct
+    match ids with
+    | [ Some id ] ->
+        match book.Document.Styles |> List.tryFind (fun s -> s.Id = id) with
+        | Some s -> styleObject book s.Id
+        | None -> VString id
+    | [ None ] | [] -> VString "Normal"
+    | _ -> VNothing
+
+// ---- lists -------------------------------------------------------------------------------------------------------
+
+let private listFormatType =
+    let paragraphs (x: RangeState) = x.Book.ParagraphIdsIn(x.R.Start, x.R.End)
+    let first (x: RangeState) = paragraphs x |> List.tryHead |> Option.bind x.Book.Paragraph
+    /// A list style on the paragraphs (off where they have it already), or none.
+    let apply (x: RangeState) (style: ListStyle option) =
+        for id in paragraphs x do
+            x.Book.UpdateParagraph(id, fun p ->
+                let m = p.Metadata
+                match style with
+                | Some s -> { p with Metadata = { m with ListStyle = (if m.ListStyle = s then NoList else s); ListLevel = (if m.ListStyle = s then 0 else max 1 m.ListLevel) } }
+                | None -> { p with Metadata = { m with ListStyle = NoList; ListLevel = 0 } })
+    let applyDefault (style: ListStyle) (x: RangeState) (_: Value array) =
+        // (Word gives list paragraphs the List Paragraph style.)
+        let listParagraph = x.Book.FindStyle "List Paragraph"
+        let ids = paragraphs x
+        let removing = ids |> List.forall (fun id -> x.Book.Paragraph id |> Option.exists (fun p -> p.Metadata.ListStyle <> NoList))
+        if not removing then
+            for id in ids do
+                match x.Book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style) with
+                | None | Some "Normal" -> x.Book.ApplyParagraphStyle(id, listParagraph |> Option.map (fun s -> s.Id), None)
+                | Some _ -> ()
+        apply x (Some style)
+        VEmpty
+    let shift (step: int) (x: RangeState) (_: Value array) =
+        for id in paragraphs x do
+            x.Book.UpdateParagraph(id, fun p ->
+                if p.Metadata.ListStyle = NoList then p
+                else { p with Metadata = { p.Metadata with ListLevel = max 1 (min 9 (p.Metadata.ListLevel + step)) } })
+        VEmpty
+    HostMembers.Table<RangeState>("ListFormat", [
+        get "ListType" (fun x -> VLong (match first x with Some p -> (match p.Metadata.ListStyle with Bullet -> 2 | Numbered -> 3 | NoList -> 0) | None -> 0))
+        prop "ListLevelNumber"
+            (fun x -> VLong (match first x with Some p -> max 1 p.Metadata.ListLevel | None -> 1))
+            (fun x value ->
+                let level = max 1 (min 9 (toInt value))
+                for id in paragraphs x do
+                    x.Book.UpdateParagraph(id, fun p -> if p.Metadata.ListStyle = NoList then p else { p with Metadata = { p.Metadata with ListLevel = level } }))
+        method "ApplyBulletDefault" [] (applyDefault Bullet)
+        method "ApplyNumberDefault" [] (applyDefault Numbered)
+        method "RemoveNumbers" [] (fun x _ -> apply x None; VEmpty)
+        method "ListIndent" [] (shift 1)
+        method "ListOutdent" [] (shift -1) ])
+
+// ---- Find's Replacement -------------------------------------------------------------------------------------------
+
+let private replacementType =
+    HostMembers.Table<ReplacementState>("Replacement", [
+        prop "Text" (fun x -> VString x.Find.ReplacementText) (fun x value -> x.Find.ReplacementText <- toText value)
+        get "Font" (fun x -> fontObject x.Book (SpecFont x.Find.ReplacementFont))
+        prop "Highlight"
+            (fun x -> VLong (if x.Find.ReplacementHighlight < 0 then wdUndefined else x.Find.ReplacementHighlight))
+            (fun x value -> x.Find.ReplacementHighlight <- (if toBool value then 1 else 0))
+        prop "Style"
+            (fun x -> VString (defaultArg x.Find.ReplacementStyle ""))
+            (fun x value ->
+                x.Find.ReplacementStyle <-
+                    (match scalarOf value with
+                     | VInteger n | VLong n -> builtInStyleName n
+                     | v -> Some (toText v)))
+        get "ParagraphFormat" (fun x -> paragraphFormatObject x.Book (SpecParagraphs x.Find.ReplacementParagraph))
+        method "ClearFormatting" [] (fun x _ ->
+            let f = x.Find
+            f.ReplacementFont.Clear(); f.ReplacementHighlight <- -1; f.ReplacementStyle <- None; f.ReplacementParagraph.Clear()
+            VEmpty) ])
+
+// ---- the document's page setup, variables; the window, options ---------------------------------------------------
+
+let private pageSetupType =
+    let change (book: MacroDocument) (f: PageSetup -> PageSetup) = book.SetStructure { book.Document with PageSetup = f book.Document.PageSetup }
+    let length name (read: PageSetup -> float) (write: float -> PageSetup -> PageSetup) =
+        prop name (fun (book: MacroDocument) -> VDouble (ptOfPx (read book.Document.PageSetup))) (fun book value -> let v = pxOfPt (toFloat value) in change book (write v))
+    HostMembers.Table<MacroDocument>("PageSetup", [
+        length "TopMargin" (fun p -> p.MarginTop) (fun v p -> { p with MarginTop = v })
+        length "BottomMargin" (fun p -> p.MarginBottom) (fun v p -> { p with MarginBottom = v })
+        length "LeftMargin" (fun p -> p.MarginLeft) (fun v p -> { p with MarginLeft = v })
+        length "RightMargin" (fun p -> p.MarginRight) (fun v p -> { p with MarginRight = v })
+        length "PageWidth" (fun p -> p.PageWidth) (fun v p -> { p with PageWidth = v })
+        length "PageHeight" (fun p -> p.PageHeight) (fun v p -> { p with PageHeight = v })
+        length "HeaderDistance" (fun p -> p.HeaderDistance) (fun v p -> { p with HeaderDistance = v })
+        length "FooterDistance" (fun p -> p.FooterDistance) (fun v p -> { p with FooterDistance = v })
+        prop "Orientation"
+            (fun book -> let p = book.Document.PageSetup in VLong (if p.PageWidth > p.PageHeight then 1 else 0))
+            (fun book value ->
+                let landscape = toInt value = 1
+                change book (fun p -> if (p.PageWidth > p.PageHeight) = landscape then p else { p with PageWidth = p.PageHeight; PageHeight = p.PageWidth })) ])
+
+/// Document.Variables: values kept by name for the run (Add, Item(name).Value, Count).
+let private variableNames (book: MacroDocument) = [ for kv in book.Settings do if kv.Key.StartsWith "var:" then yield kv.Key.Substring 4 ]
+
+let private variableType =
+    HostMembers.Table<VariableState>("Variable",
+        [ prop "Value"
+            (fun v -> match v.Book.Settings.TryGetValue ("var:" + v.Key) with | true, value -> value | _ -> VEmpty)
+            (fun v value -> v.Book.Settings.["var:" + v.Key] <- VString (toText value))
+          get "Name" (fun v -> VString v.Key)
+          method "Delete" [] (fun v _ -> v.Book.Settings.Remove("var:" + v.Key) |> ignore; VEmpty) ],
+        defaultMember = "Value")
+
+let private variablesType =
+    let variable (book: MacroDocument) (key: string) = variableType.Wrap { Book = book; Key = key }
+    let find (book: MacroDocument) (key: string) = variableNames book |> List.tryFind (eq key)
+    let items (book: MacroDocument) = variableNames book |> List.map (variable book) |> List.toArray
+    collectionType "Variables" items
+        (Some (fun book args ->
+            match arg args 0 with
+            | Some (VString key) -> (match find book key with Some k -> variable book k | None -> fail 5825 "Object has been deleted.")
+            | _ -> itemAt "Variables" (items book) args))
+        [ method "Add" [ "Name"; "Value" ] (fun book args ->
+            let key = toText (defaultArg (arg args 0) (VString ""))
+            if (find book key).IsSome then fail 4172 "The variable name already exists."
+            book.Settings.["var:" + key] <- VString (toText (defaultArg (arg args 1) (VString "")))
+            variable book key) ]
+
+let private zoomType =
+    // (Any setting of the zoom is accepted: the host has its own.)
+    HostMembers.Table<unit>("Zoom", [ accepted "Percentage" (VLong 100) ],
+                            dynamic = ({ Read = (fun _ _ _ -> None); Write = (fun _ _ _ -> true) } : Dynamic<unit>))
+
+let private viewType =
+    let noEffect name = set name (fun (_: unit) _ -> ())
+    HostMembers.Table<unit>("View", [
+        accepted "Type" (VLong 3)
+        accepted "ShowAll" (VBoolean false)
+        accepted "ShowHiddenText" (VBoolean false)
+        accepted "ShowFieldCodes" (VBoolean false)
+        noEffect "ShowBookmarks"
+        noEffect "ShowParagraphs"
+        noEffect "Draft"
+        get "Zoom" (fun () -> zoomType.Wrap ()) ])
+
+let private paneType =
+    HostMembers.Table<unit>("Pane", [
+        get "View" (fun () -> viewType.Wrap ())
+        method "SmallScroll" [] (fun _ _ -> VEmpty)
+        method "LargeScroll" [] (fun _ _ -> VEmpty) ])
+
+let private optionsType =
+    let option name (fallback: Value) =
+        let key = (name: string).ToLowerInvariant()
+        prop name
+            (fun (book: MacroDocument) -> match book.Settings.TryGetValue key with | true, v -> v | _ -> fallback)
+            (fun book value -> book.Settings.[key] <- value)
+    HostMembers.Table<MacroDocument>("Options", [
+        option "DefaultHighlightColorIndex" (VLong 7)
+        option "ReplaceSelection" (VBoolean true)
+        option "CheckSpellingAsYouType" (VBoolean true)
+        option "CheckGrammarAsYouType" (VBoolean true)
+        option "AutoFormatAsYouTypeReplaceQuotes" (VBoolean true)
+        option "SmartCutPaste" (VBoolean true)
+        option "Pagination" (VBoolean true)
+        option "MeasurementUnit" (VLong 0)
+        option "AutoFormatAsYouTypeApplyNumberedLists" (VBoolean true) ])
+
+/// The unit conversions (Application.InchesToPoints, and the globals of those names).
+let private conversions =
+    [ "CentimetersToPoints", 72.0 / 2.54; "MillimetersToPoints", 72.0 / 25.4; "InchesToPoints", 72.0; "LinesToPoints", 12.0
+      "PicasToPoints", 12.0; "PointsToCentimeters", 2.54 / 72.0; "PointsToInches", 1.0 / 72.0; "PointsToMillimeters", 25.4 / 72.0 ]
+let private convert (factor: float) (args: Value array) = VDouble (toFloat (defaultArg (arg args 0) (VLong 0)) * factor)
+
+let private conversionType =
+    HostMembers.Table<ConversionState>("Conversion", [ method "Convert" [] (fun c args -> convert c.Factor args) ],
+                                       defaultMember = "Convert", typeNameOf = (fun c -> c.Conversion))
+
+let private doEventsType =
+    HostMembers.Table<unit>("DoEvents", [ method "DoEvents" [] (fun _ _ -> VLong 0) ], defaultMember = "DoEvents")
+
+
+// ---- the types of object that refer to one another -----------------------------------------------------------
+//
+// A Range has Paragraphs and a Paragraph a Range, a Table has Rows and a Row a Range...: these types are
+// reached through their references here, each set where its table is built below (once, as the module
+// is loaded, before any macro runs).
+
+let mutable private rangeType : HostMembers.Table<RangeState> = null
+let mutable private selectionType : HostMembers.Table<MacroDocument> = null
+let mutable private paragraphType : HostMembers.Table<RangeState> = null
+let mutable private paragraphsType : HostMembers.Table<WithinState> = null
+let mutable private wordsType : HostMembers.Table<WithinState> = null
+let mutable private charactersType : HostMembers.Table<WithinState> = null
+let mutable private sentencesType : HostMembers.Table<WithinState> = null
+let mutable private tablesType : HostMembers.Table<WithinState> = null
+let mutable private tableType : HostMembers.Table<TableState> = null
+let mutable private rowsType : HostMembers.Table<TableState> = null
+let mutable private rangeRowsType : HostMembers.Table<RangeState> = null
+let mutable private rowType : HostMembers.Table<RowState> = null
+let mutable private columnsType : HostMembers.Table<TableState> = null
+let mutable private columnType : HostMembers.Table<ColumnState> = null
+let mutable private cellsType : HostMembers.Table<CellsState> = null
+let mutable private cellType : HostMembers.Table<CellState> = null
+let mutable private findType : HostMembers.Table<FindObjectState> = null
+let mutable private bookmarksType : HostMembers.Table<WithinState> = null
+let mutable private bookmarkType : HostMembers.Table<BookmarkState> = null
+let mutable private documentType : HostMembers.Table<NamedState> = null
+let mutable private windowType : HostMembers.Table<NamedState> = null
+let mutable private documentsType : HostMembers.Table<MacroDocument> = null
+let mutable private applicationType : HostMembers.Table<MacroDocument> = null
+
+let private rangeObject (book: MacroDocument) (r: LiveRange) = rangeType.Wrap { Book = book; R = r }
+let private rangeOf (book: MacroDocument) (s: int) (e: int) = rangeObject book (book.Track(s, e))
+let private selectionObject (book: MacroDocument) = selectionType.Wrap book
+let private paragraphObject (book: MacroDocument) (r: LiveRange) = paragraphType.Wrap { Book = book; R = r }
+let private paragraphsObject (book: MacroDocument) (within: LiveRange option) = paragraphsType.Wrap { Book = book; Within = within }
+let private tablesObject (book: MacroDocument) (within: LiveRange option) = tablesType.Wrap { Book = book; Within = within }
+let private tableObject (book: MacroDocument) (tableId: string) = tableType.Wrap { Book = book; TableId = tableId }
+let private rowObject (book: MacroDocument) (tableId: string) (row: int) = rowType.Wrap { Book = book; TableId = tableId; Row = row }
+let private columnObject (book: MacroDocument) (tableId: string) (col: int) = columnType.Wrap { Book = book; TableId = tableId; Col = col }
+let private cellObject (book: MacroDocument) (c: CellRef) = cellType.Wrap { Book = book; Cell = c }
+let private cellsObject (book: MacroDocument) (cells: CellSet) = cellsType.Wrap { Book = book; Cells = cells }
+let private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) = findType.Wrap { Book = book; R = r; IsSelection = isSelection; Find = findStateOf r }
+let private bookmarksObject (book: MacroDocument) (within: LiveRange option) = bookmarksType.Wrap { Book = book; Within = within }
+let private documentObject (book: MacroDocument) = documentType.Wrap { Book = book }
+let private windowObject (book: MacroDocument) = windowType.Wrap { Book = book }
+let private documentsObject (book: MacroDocument) = documentsType.Wrap book
+let private applicationObject (book: MacroDocument) = applicationType.Wrap book
+
+/// The bounds of a Range, the Selection or a Bookmark.
+let private rangeBounds (value: Value) : (int * int) option =
+    match rangeType.TryState value with
+    | Some x -> Some (x.R.Start, x.R.End)
+    | None ->
+        match selectionType.TryState value with
+        | Some book -> Some (book.Selection.Start, book.Selection.End)
+        | None -> bookmarkType.TryState value |> Option.map (fun b -> b.S, b.E)
+
+let private textArg (args: Value array) = toText (defaultArg (arg args 0) (VString ""))
+
+// ---- Range ------------------------------------------------------------------------------------------------------
+
+let private information (book: MacroDocument) (s: int) (e: int) (kind: int) : Value =
     let segs = book.SegmentsIn(s, max s e)
     let inTable = segs |> List.exists (fun seg -> seg.Table <> "")
     match kind with
@@ -1998,521 +2258,9 @@ and private information (book: MacroDocument) (s: int) (e: int) (kind: int) : Va
     | 31 -> VBoolean (segs |> List.exists (fun seg -> seg.Mark = RowMark))
     | _ -> VEmpty
 
-and private styleOfRange (book: MacroDocument) (r: LiveRange) : Value =
-    let ids = book.ParagraphIdsIn(r.Start, r.End) |> List.map (fun id -> book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style)) |> List.distinct
-    match ids with
-    | [ Some id ] ->
-        match book.Document.Styles |> List.tryFind (fun s -> s.Id = id) with
-        | Some s -> styleObject book s.Id
-        | None -> VString id
-    | [ None ] | [] -> VString "Normal"
-    | _ -> VNothing
-
-and private setRangeStyle (book: MacroDocument) (r: LiveRange) (value: Value) =
-    let name =
-        match scalarOf value with
-        | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
-        | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5834 "Item with specified name does not exist.")
-        | other -> toText other
-    if eq name "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
-        for id in book.ParagraphIdsIn(r.Start, r.End) do book.ApplyParagraphStyle(id, None, None)
-    else
-        match book.FindStyle name with
-        | Some style when style.StyleType = "character" ->
-            book.Format(r.Start, r.End, fun s -> { s with Style = Some style.Id })
-        | Some style ->
-            let level = headingLevelOf style
-            for id in book.ParagraphIdsIn(r.Start, r.End) do book.ApplyParagraphStyle(id, Some style.Id, level)
-        | None ->
-            if eq name "List Bullet" || eq name "List Number" then
-                for id in book.ParagraphIdsIn(r.Start, r.End) do
-                    book.UpdateParagraph(id, fun p -> { p with Metadata = { p.Metadata with ListStyle = (if eq name "List Bullet" then Bullet else Numbered); ListLevel = max 1 p.Metadata.ListLevel } })
-            else fail 5834 (sprintf "Item with specified name does not exist (style \"%s\")." name)
-
-and private paragraphFormatObject (book: MacroDocument) (ids: unit -> string list) : Value =
-    let named (id: string) =
-        book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style) |> Option.bind (fun s -> book.Document.Styles |> List.tryFind (fun x -> x.Id = s))
-    let styleOf (id: string) : StyleFallback =
-        let doc = book.Document
-        let resolved =
-            match doc.Blocks |> List.tryFind (function Paragraph p | Heading (_, p) -> p.Id = id | _ -> false) with
-            | Some block -> Some (WordStyles.forBlockInDocument doc block)
-            | None -> book.Paragraph id |> Option.map (WordStyles.forTableCellParagraphInDocument doc)
-        { Fallback = resolved; Level = named id |> Option.bind headingLevelOf }
-    makeObject "ParagraphFormat"
-        (fun name ->
-            match name with
-            | "shading" -> Some (shadingObject book (ParagraphShading ids))
-            | "borders" -> Some (bordersObject book (ParagraphBorders ids))
-            | "style" ->
-                match ids () with
-                | id :: _ -> Some (VString (match named id with Some s -> styleDisplayName s | None -> "Normal"))
-                | [] -> Some VEmpty
-            | _ ->
-                let values =
-                    ids () |> List.choose (fun id -> book.Paragraph id |> Option.bind (fun p -> paragraphRead (styleOf id) name p.Metadata))
-                match values |> List.distinct with
-                | [ v ] -> Some v
-                | [] ->
-                    // (An end-of-row mark: the default paragraph style's format.)
-                    let doc = book.Document
-                    let normal = WordStyles.forBlockInDocument doc (Paragraph (newEmptyParagraph ()))
-                    paragraphRead { Fallback = Some normal; Level = None } name defaultMetadata
-                | _ -> Some (VLong wdUndefined))
-        (fun name value ->
-            match name with
-            | "style" ->
-                let all = ids ()
-                for id in all do
-                    let pos = book.PositionOf(id, 0)
-                    setRangeStyle book (LiveRange(pos, pos)) value
-                true
-            | _ ->
-                match paragraphChange name value with
-                | Some change ->
-                    for id in ids () do
-                        book.UpdateParagraph(id, fun p -> let m = change p.Metadata in if m = p.Metadata then p else { p with Metadata = m })
-                    true
-                | None -> false)
-        noCall None
-
-and private listFormatObject (book: MacroDocument) (r: LiveRange) : Value =
-    let apply (style: ListStyle option) =
-        for id in book.ParagraphIdsIn(r.Start, r.End) do
-            book.UpdateParagraph(id, fun p ->
-                let m = p.Metadata
-                match style with
-                | Some s -> { p with Metadata = { m with ListStyle = (if m.ListStyle = s then NoList else s); ListLevel = (if m.ListStyle = s then 0 else max 1 m.ListLevel) } }
-                | None -> { p with Metadata = { m with ListStyle = NoList; ListLevel = 0 } })
-    makeObject "ListFormat"
-        (fun name ->
-            match name with
-            | "listtype" ->
-                match book.ParagraphIdsIn(r.Start, r.End) |> List.tryHead |> Option.bind book.Paragraph with
-                | Some p -> Some (VLong (match p.Metadata.ListStyle with Bullet -> 2 | Numbered -> 3 | NoList -> 0))
-                | None -> Some (VLong 0)
-            | "listlevelnumber" ->
-                match book.ParagraphIdsIn(r.Start, r.End) |> List.tryHead |> Option.bind book.Paragraph with
-                | Some p -> Some (VLong (max 1 p.Metadata.ListLevel))
-                | None -> Some (VLong 1)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "listlevelnumber" ->
-                let level = max 1 (min 9 (toInt value))
-                for id in book.ParagraphIdsIn(r.Start, r.End) do
-                    book.UpdateParagraph(id, fun p -> if p.Metadata.ListStyle = NoList then p else { p with Metadata = { p.Metadata with ListLevel = level } })
-                true
-            | _ -> false)
-        (fun name _ ->
-            match name with
-            | "applybulletdefault" | "applynumberdefault" ->
-                // (Word gives list paragraphs the List Paragraph style.)
-                let style = book.FindStyle "List Paragraph"
-                let ids = book.ParagraphIdsIn(r.Start, r.End)
-                let removing = ids |> List.forall (fun id -> book.Paragraph id |> Option.exists (fun p -> p.Metadata.ListStyle <> NoList))
-                if not removing then
-                    for id in ids do
-                        match book.Paragraph id |> Option.bind (fun p -> p.Metadata.Style) with
-                        | None | Some "Normal" -> book.ApplyParagraphStyle(id, style |> Option.map (fun s -> s.Id), None)
-                        | Some _ -> ()
-                apply (Some (if name = "applybulletdefault" then Bullet else Numbered)); Some VEmpty
-            | "removenumbers" -> apply None; Some VEmpty
-            | "listindent" | "listoutdent" ->
-                for id in book.ParagraphIdsIn(r.Start, r.End) do
-                    book.UpdateParagraph(id, fun p ->
-                        if p.Metadata.ListStyle = NoList then p
-                        else { p with Metadata = { p.Metadata with ListLevel = max 1 (min 9 (p.Metadata.ListLevel + (if name = "listindent" then 1 else -1))) } })
-                Some VEmpty
-            | _ -> None)
-        None
-
-and private spansObject (book: MacroDocument) (typeName: string) (bounds: unit -> int * int) (unit: int) : Value =
-    let items () =
-        let s, e = bounds ()
-        let e = max e (if e = s then s + 1 else e)
-        let spans =
-            if unit = 1 then [| for p in s .. min (book.Story.Total - 1) (e - 1) -> p, p + 1 |]
-            else unitSpans book unit |> Array.filter (fun (a, b) -> a < e && b > s) |> Array.map (fun (a, b) -> max a s, min b e)
-        spans |> Array.map (fun (a, b) -> rangeOf book a b)
-    collectionObject typeName items (fun _ -> None) noSet noCall
-
-and private paragraphObject (book: MacroDocument) (r: LiveRange) : Value =
-    let ids () = book.ParagraphIdsIn(r.Start, r.End)
-    let format = paragraphFormatObject book ids
-    let formatHost = match format with VHostObject h -> h | _ -> failwith "format"
-    makeObject "Paragraph"
-        (fun name ->
-            match name with
-            | "range" -> Some (rangeObject book r)
-            | "format" -> Some format
-            | "style" -> Some (styleOfRange book r)
-            | "next" | "previous" -> None
-            | "outlinelevel" | "alignment" | "spacebefore" | "spaceafter" | "leftindent" | "rightindent" | "firstlineindent"
-            | "linespacing" | "linespacingrule" | "keepwithnext" | "keeptogether" | "pagebreakbefore" | "widowcontrol"
-            | "shading" | "borders" -> formatHost.GetMember name
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "style" -> setRangeStyle book r value; true
-            | _ -> (try formatHost.SetMember name value with _ -> false))
-        (fun name args ->
-            match name with
-            | "next" | "previous" ->
-                let count = intArg args 0 1
-                let st = book.Story
-                let paras = st.Segments |> Array.filter (fun s -> s.Mark <> RowMark)
-                let here = paras |> Array.tryFindIndex (fun s -> s.Start <= r.Start && r.Start < segmentEnd s) |> Option.defaultValue 0
-                let target = if name = "next" then here + count else here - count
-                if target < 0 || target >= paras.Length then Some VNothing
-                else Some (paragraphObject book (book.Track(paras.[target].Start, segmentEnd paras.[target])))
-            | "indent" | "outdent" ->
-                let step = if name = "indent" then 36.0 else -36.0
-                for id in ids () do
-                    book.UpdateParagraph(id, fun p -> { p with Metadata = { p.Metadata with IndentLeft = Some (max 0.0 (defaultArg p.Metadata.IndentLeft 0.0 + pxOfPt step)) } |> withFlag ParagraphExplicit.IndentLeft true })
-                Some VEmpty
-            | _ -> rangeCall book r name args)
-        None
-
-and private paragraphsObject (book: MacroDocument) (bounds: unit -> int * int) : Value =
-    let items () =
-        let s, e = bounds ()
-        // (An end-of-row mark is a paragraph to Word too.)
-        book.SegmentsIn(s, e)
-        |> List.map (fun seg -> paragraphObject book (book.Track(seg.Start, segmentEnd seg))) |> List.toArray
-    let format = paragraphFormatObject book (fun () -> let s, e = bounds () in book.ParagraphIdsIn(s, e))
-    let formatHost = match format with VHostObject h -> h | _ -> failwith "format"
-    collectionObject "Paragraphs" items
-        (fun name -> match name with "format" -> Some format | _ -> None)
-        (fun name value -> try formatHost.SetMember name value with _ -> false)
-        (fun name args ->
-            match name with
-            | "add" ->
-                let at =
-                    match arg args 0 with
-                    | Some v -> (match rangeBounds v with Some (s, _) -> s | None -> fail 13 "Type mismatch")
-                    | None -> book.Story.Total - 1
-                let s, e = book.Replace(at, at, "\r")
-                let st = book.Story
-                let seg = st.Segments.[locate st e]
-                Some (paragraphObject book (book.Track(seg.Start, segmentEnd seg)))
-            | "indent" | "outdent" | "space1" | "space15" | "space2" ->
-                let s, e = bounds ()
-                let change =
-                    match name with
-                    | "space1" -> (paragraphChange "linespacingrule" (VLong 0)).Value
-                    | "space15" -> (paragraphChange "linespacingrule" (VLong 1)).Value
-                    | "space2" -> (paragraphChange "linespacingrule" (VLong 2)).Value
-                    | step -> (fun m -> { m with IndentLeft = Some (max 0.0 (defaultArg m.IndentLeft 0.0 + pxOfPt (if step = "indent" then 36.0 else -36.0))) } |> withFlag ParagraphExplicit.IndentLeft true)
-                book.MapParagraphs(s, e, change); Some VEmpty
-            | _ -> None)
-
-and private rangeBounds (value: Value) : (int * int) option =
-    match value with
-    | VHostObject h ->
-        match h.GetMember "Start", h.GetMember "End" with
-        | Some s, Some e -> Some (toInt s, toInt e)
-        | _ -> None
-    | _ -> None
-
-// ---- tables ----------------------------------------------------------------------------------------------------
-
-and private cellObject (book: MacroDocument) (c: CellRef) : Value =
-    makeObject "Cell"
-        (fun name ->
-            match name with
-            | "range" -> let s, e = cellSpan book c in Some (rangeOf book s e)
-            | "shading" -> Some (shadingObject book (CellShading (fun () -> [ c ])))
-            | "borders" -> Some (bordersObject book (CellBorders (fun () -> [ c ])))
-            | "rowindex" -> Some (VLong (c.Row + 1))
-            | "columnindex" -> Some (VLong (c.Col + 1))
-            | "verticalalignment" ->
-                Some (VLong (match cellOf book c |> Option.bind (fun x -> x.VerticalAlignment) with Some "center" -> 1 | Some "bottom" -> 3 | _ -> 0))
-            | "width" -> Some (VDouble (cellOf book c |> Option.bind (fun x -> x.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
-            | "next" | "previous" -> None
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "verticalalignment" ->
-                let v = match toInt value with 1 -> Some "center" | 3 -> Some "bottom" | _ -> Some "top"
-                mapCells book [ c ] (fun x -> { x with VerticalAlignment = v }); true
-            | "width" ->
-                let px = pxOfPt (toFloat value)
-                mapCells book [ c ] (fun x -> { x with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } }); true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "select" -> let s, e = cellSpan book c in book.Selection.Start <- s; book.Selection.End <- e; Some VEmpty
-            | "next" | "previous" ->
-                match tableOf book c.TableId with
-                | Some t ->
-                    let cells = [ for r, row in List.indexed t.Rows do for col in 0 .. row.Cells.Length - 1 -> { c with Row = r; Col = col } ]
-                    let i = cells |> List.findIndex (fun x -> x.Row = c.Row && x.Col = c.Col)
-                    let j = if name = "next" then i + 1 else i - 1
-                    if j < 0 || j >= cells.Length then Some VNothing else Some (cellObject book cells.[j])
-                | None -> Some VNothing
-            | _ -> ignore args; None)
-        None
-
-and private tableObject (book: MacroDocument) (tableId: string) : Value =
-    let table () = match tableOf book tableId with Some t -> t | None -> fail 5941 "The table is no longer in the document."
-    let allCells () = [ for r, row in List.indexed (table ()).Rows do for col in 0 .. row.Cells.Length - 1 -> { TableId = tableId; Row = r; Col = col } ]
-    makeObject "Table"
-        (fun name ->
-            match name with
-            | "range" -> let s, e = tableSpan book tableId in Some (rangeOf book s e)
-            | "rows" -> Some (rowsObject book tableId)
-            | "columns" -> Some (columnsObject book tableId)
-            | "borders" -> Some (bordersObject book (TableBorders tableId))
-            | "shading" -> Some (shadingObject book (CellShading allCells))
-            | "style" -> Some (VString (match book.Settings.TryGetValue ("tablestyle:" + tableId) with | true, v -> toText v | _ -> "Table Grid"))
-            | "nestinglevel" -> Some (VLong 1)
-            | "uniform" -> Some (VBoolean true)
-            | "title" | "descr" -> Some (VString "")
-            | "preferredwidth" -> Some (VDouble 0.0)
-            | "preferredwidthtype" -> Some (VLong 1)
-            | "allowautofit" -> Some (VBoolean true)
-            | "applystyleheadingrows" | "applystylefirstcolumn" | "applystylelastrow" | "applystylelastcolumn" | "applystylerowbands" -> Some (VBoolean true)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "style" ->
-                let text = match scalarOf value with VInteger n | VLong n -> string n | v -> toText v
-                book.Settings.["tablestyle:" + tableId] <- VString text
-                if not (applyTableStyle book tableId text) then
-                    // (A style of the document: the reference is kept for the file.)
-                    match book.Document.Styles |> List.tryFind (fun s -> s.StyleType = "table" && (eq s.Id text || s.Name |> Option.exists (eq text))) with
-                    | Some s -> mapTable book tableId (fun t -> { t with StyleId = Some s.Id })
-                    | None -> ()
-                true
-            | "preferredwidthtype" -> book.Settings.["tablewidthtype:" + tableId] <- value; true
-            | "preferredwidth" ->
-                let kind = match book.Settings.TryGetValue ("tablewidthtype:" + tableId) with | true, v -> toInt v | _ -> 3
-                let width =
-                    if kind = 2 then { Kind = PercentWidth; Value = Some (toFloat value * 50.0) }
-                    else { Kind = DxaWidth; Value = Some (toFloat value * 20.0) }
-                mapTable book tableId (fun t -> { t with PreferredWidth = Some width }); true
-            | "allowautofit" | "title" | "descr" | "spacing" | "toppadding" | "bottompadding" | "leftpadding" | "rightpadding" -> true
-            | "applystyleheadingrows" | "applystylefirstcolumn" | "applystylelastrow" | "applystylelastcolumn" | "applystylerowbands" | "applystylecolumnbands" -> true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "cell" ->
-                let r = intArg args 0 1 - 1
-                let c = intArg args 1 1 - 1
-                let t = table ()
-                if r < 0 || r >= t.Rows.Length || c < 0 || c >= t.Rows.[r].Cells.Length then fail 5941 "The requested member of the collection does not exist."
-                Some (cellObject book { TableId = tableId; Row = r; Col = c })
-            | "autofitbehavior" ->
-                if intArg args 0 0 = 2 then mapTable book tableId (fun t -> { t with PreferredWidth = Some { Kind = PercentWidth; Value = Some 5000.0 } })
-                Some VEmpty
-            | "autoformat" ->
-                // (Word's table formats of Word 97 - wdTableFormatColorful2 and the like - as built-in styles.)
-                let format = intArg args 0 0
-                let style =
-                    match format with
-                    | 0 -> None
-                    | 9 ->
-                        // (Word 2019's Colorful 2: a dark red header row in white bold italic, pale yellow
-                        // rows, the first column bold italic, no borders but the bottom.)
-                        mapTable book tableId (fun t ->
-                            let line = Some ({ Style = Some "single"; Color = Some "#000000"; Width = Some (12.0 / 6.0) } : TableBorder)
-                            { t with
-                                Borders = Some { emptyTableBorders with Bottom = line }
-                                Rows = t.Rows |> List.mapi (fun r row -> { row with Cells = row.Cells |> List.map (fun c -> { c with BackgroundColor = Some (if r = 0 then "#800000" else "#FFFFCC"); Shading = None }) }) })
-                        let s0, e0 = rowSpan book tableId 0
-                        book.Format(s0, e0, fun st -> { TB.withExplicitItalic true (TB.withExplicitBold true st) with Color = Some "#FFFFFF" })
-                        match tableOf book tableId with
-                        | Some t ->
-                            for r in 1 .. t.Rows.Length - 1 do
-                                let cs, ce = cellSpan book { TableId = tableId; Row = r; Col = 0 }
-                                book.Format(cs, ce, fun st -> TB.withExplicitItalic true (TB.withExplicitBold true st))
-                        | None -> ()
-                        None
-                    | 1 | 2 | 3 -> Some "Plain Table 1"
-                    | 8 | 9 | 10 -> Some (sprintf "Grid Table 5 Dark - Accent %d" (format - 7))
-                    | 4 | 5 | 6 | 7 -> Some "List Table 3"
-                    | _ -> Some "Grid Table 4 - Accent 1"
-                style |> Option.iter (fun name -> applyTableStyle book tableId name |> ignore)
-                Some VEmpty
-            | "delete" ->
-                let s, e = tableSpan book tableId
-                book.SetStructure { book.Document with Blocks = book.Document.Blocks |> List.filter (function Table t -> t.Id <> tableId | _ -> true) }
-                ignore (s, e)
-                Some VEmpty
-            | "select" -> let s, e = tableSpan book tableId in book.Selection.Start <- s; book.Selection.End <- e; Some VEmpty
-            | "sort" ->
-                // (By the first column, or FieldNumber; the header row stays first when ExcludeHeader.)
-                let exclude = arg args 0 |> Option.map toBool |> Option.defaultValue false
-                let field = intArg args 1 1 - 1
-                let descending = intArg args 3 0 = 1
-                book.SetStructure (
-                    let doc = book.Document
-                    { doc with
-                        Blocks =
-                            doc.Blocks |> List.map (function
-                                | Table t when t.Id = tableId ->
-                                    let head, body = if exclude then List.truncate 1 t.Rows, List.skip (min 1 t.Rows.Length) t.Rows else [], t.Rows
-                                    let key (row: TableRow) =
-                                        row.Cells |> List.tryItem field |> Option.map (fun c -> c.Content |> List.map (fun p -> TB.toString p.Buffer) |> String.concat "\r") |> Option.defaultValue ""
-                                    let numeric (s: string) = match Double.TryParse(s, Globalization.NumberStyles.Any, Globalization.CultureInfo.InvariantCulture) with | true, d -> Some d | _ -> None
-                                    let sorted =
-                                        if body |> List.forall (fun row -> (numeric (key row)).IsSome) then body |> List.sortBy (fun row -> (numeric (key row)).Value)
-                                        else body |> List.sortWith (fun a b -> String.Compare(key a, key b, StringComparison.OrdinalIgnoreCase))
-                                    Table { t with Rows = head @ (if descending then List.rev sorted else sorted) }
-                                | other -> other) })
-                Some VEmpty
-            | _ -> None)
-        None
-
-and private rowObject (book: MacroDocument) (tableId: string) (row: int) : Value =
-    let cells () =
-        match tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) with
-        | Some r -> [ for c in 0 .. r.Cells.Length - 1 -> { TableId = tableId; Row = row; Col = c } ]
-        | None -> []
-    let mapRow change = mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.mapi (fun i r -> if i = row then change r else r) })
-    makeObject "Row"
-        (fun name ->
-            match name with
-            | "range" -> let s, e = rowSpan book tableId row in Some (rangeOf book s e)
-            | "cells" -> Some (collectionObject "Cells" (fun () -> cells () |> List.map (cellObject book) |> List.toArray) (fun _ -> None) noSet noCall)
-            | "shading" -> Some (shadingObject book (CellShading cells))
-            | "borders" -> Some (bordersObject book (CellBorders cells))
-            | "index" -> Some (VLong (row + 1))
-            | "headingformat" -> Some (VBoolean (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.exists (fun r -> r.IsHeader)))
-            | "height" -> Some (VDouble (tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) |> Option.bind (fun r -> r.Height) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
-            | "isfirst" -> Some (VBoolean (row = 0))
-            | "islast" -> Some (VBoolean (tableOf book tableId |> Option.exists (fun t -> row = t.Rows.Length - 1)))
-            | "alignment" -> Some (VLong 0)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "headingformat" -> let on = toBool value in mapRow (fun r -> { r with IsHeader = on }); true
-            | "height" -> let twips = toFloat value * 20.0 in mapRow (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }); true
-            | "heightrule" -> let rule = match toInt value with 2 -> "exact" | 1 -> "atLeast" | _ -> "auto" in mapRow (fun r -> { r with HeightRule = Some rule }); true
-            | "allowbreakacrosspages" -> let on = toBool value in mapRow (fun r -> { r with CanSplit = Some on }); true
-            | "alignment" -> setTableAlignment book tableId (toInt value); true
-            | _ -> false)
-        (fun name _ ->
-            match name with
-            | "delete" ->
-                let s, _ = rowSpan book tableId row
-                let doc = setCursor (book.ModelPosition s).BlockId 0 book.Document
-                book.SetStructure (deleteSelectedTableRow doc); Some VEmpty
-            | "select" -> let s, e = rowSpan book tableId row in book.Selection.Start <- s; book.Selection.End <- e; Some VEmpty
-            | _ -> None)
-        None
-
-and private setTableAlignment (book: MacroDocument) (tableId: string) (n: int) =
-    let a = match n with 1 -> Some "center" | 2 -> Some "right" | _ -> Some "left"
-    mapTable book tableId (fun t -> { t with Alignment = a })
-
-and private rowsObject (book: MacroDocument) (tableId: string) : Value =
-    let count () = match tableOf book tableId with Some t -> t.Rows.Length | None -> 0
-    collectionObject "Rows" (fun () -> [| for r in 0 .. count () - 1 -> rowObject book tableId r |])
-        (fun name ->
-            match name with
-            | "alignment" -> Some (VLong (match tableOf book tableId |> Option.bind (fun t -> t.Alignment) with Some "center" -> 1 | Some "right" -> 2 | _ -> 0))
-            | "headingformat" -> Some (VBoolean false)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "alignment" -> setTableAlignment book tableId (toInt value); true
-            | "leftindent" -> let px = pxOfPt (toFloat value) in mapTable book tableId (fun t -> { t with Indent = Some px }); true
-            | "allowbreakacrosspages" | "wraparoundtext" -> true
-            | "headingformat" -> let on = toBool value in mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.map (fun r -> { r with IsHeader = on }) }); true
-            | "height" -> let twips = toFloat value * 20.0 in mapTable book tableId (fun t -> { t with Rows = t.Rows |> List.map (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }) }); true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "add" ->
-                let before = arg args 0 |> Option.bind (fun v -> match v with VHostObject h -> h.GetMember "Index" | _ -> None) |> Option.map toInt
-                let n = count ()
-                let rowIndex, place = match before with Some i -> i - 1, insertTableRowBeforeSelection | None -> n - 1, insertTableRowAfterSelection
-                let s, _ = rowSpan book tableId rowIndex
-                let doc = setCursor (book.ModelPosition s).BlockId 0 book.Document
-                book.SetStructure (place doc)
-                Some (rowObject book tableId (match before with Some i -> i - 1 | None -> n))
-            | _ -> None)
-
-and private columnsObject (book: MacroDocument) (tableId: string) : Value =
-    let count () = match tableOf book tableId with Some t -> (t.Rows |> List.map (fun r -> r.Cells.Length) |> List.fold max 0) | None -> 0
-    let columnObject (col: int) =
-        let cells () =
-            match tableOf book tableId with
-            | Some t -> [ for r, row in List.indexed t.Rows do if col < row.Cells.Length then yield { TableId = tableId; Row = r; Col = col } ]
-            | None -> []
-        makeObject "Column"
-            (fun name ->
-                match name with
-                | "cells" -> Some (collectionObject "Cells" (fun () -> cells () |> List.map (cellObject book) |> List.toArray) (fun _ -> None) noSet noCall)
-                | "shading" -> Some (shadingObject book (CellShading cells))
-                | "borders" -> Some (bordersObject book (CellBorders cells))
-                | "index" -> Some (VLong (col + 1))
-                | "width" -> Some (VDouble (cells () |> List.tryHead |> Option.bind (cellOf book) |> Option.bind (fun c -> c.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
-                | _ -> None)
-            (fun name value ->
-                match name with
-                | "width" | "preferredwidth" ->
-                    let px = pxOfPt (toFloat value)
-                    mapCells book (cells ()) (fun c -> { c with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } })
-                    mapTable book tableId (fun t ->
-                        let n = count ()
-                        let grid = if t.GridColumns.Length = n then t.GridColumns else List.replicate n { Kind = AutoWidth; Value = None }
-                        { t with GridColumns = grid |> List.mapi (fun i g -> if i = col then { Kind = DxaWidth; Value = Some (px * 15.0) } else g) })
-                    true
-                | "preferredwidthtype" -> true
-                | _ -> false)
-            (fun name _ ->
-                match name with
-                | "select" -> Some VEmpty
-                | "delete" ->
-                    let s, _ = cellSpan book { TableId = tableId; Row = 0; Col = col }
-                    let doc = setCursor (book.ModelPosition s).BlockId 0 book.Document
-                    book.SetStructure (deleteSelectedTableColumn doc); Some VEmpty
-                | "autofit" -> Some VEmpty
-                | _ -> None)
-            None
-    collectionObject "Columns" (fun () -> [| for c in 0 .. count () - 1 -> columnObject c |])
-        (fun _ -> None)
-        (fun name _ -> match name with "preferredwidthtype" | "preferredwidth" -> true | _ -> false)
-        (fun name args ->
-            match name with
-            | "add" ->
-                let n = count ()
-                let s, _ = cellSpan book { TableId = tableId; Row = 0; Col = n - 1 }
-                let doc = setCursor (book.ModelPosition s).BlockId 0 book.Document
-                book.SetStructure (insertTableColumnAfterSelection doc)
-                ignore args
-                Some (columnObject n)
-            | "autofit" | "distributewidth" -> Some VEmpty
-            | _ -> None)
-
-and private tablesObject (book: MacroDocument) (bounds: unit -> int * int) : Value =
-    let items () =
-        let s, e = bounds ()
-        let e = max e (s + 1)
-        book.TableSpans() |> List.filter (fun (_, ts, te) -> ts < e && te > s) |> List.map (fun (id, _, _) -> tableObject book id) |> List.toArray
-    collectionObject "Tables" items (fun _ -> None) noSet
-        (fun name args ->
-            match name with
-            | "add" ->
-                let at =
-                    match arg args 0 |> Option.bind rangeBounds with
-                    | Some (s, _) -> s
-                    | None -> fail 13 "Type mismatch (Tables.Add needs a Range)"
-                let rows = max 1 (intArg args 1 1)
-                let cols = max 1 (intArg args 2 1)
-                let id = addTable book at rows cols
-                // (Word's default, wdWord8TableBehavior, makes a table without borders; wdWord9TableBehavior
-                // one in the Table Grid style.)
-                if intArg args 3 0 <> 1 then mapTable book id (fun t -> { t with Borders = None; StyleId = None })
-                Some (tableObject book id)
-            | _ -> None)
-
 /// A table of `rows` x `cols` where position `at` is: an empty paragraph there is the one after the
 /// table; a paragraph with text is split there.
-and private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : string =
+let private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : string =
     let st = book.Story
     let seg = st.Segments.[locate st at]
     if seg.Table <> "" then notAvailable "a table inside a table cell"
@@ -2561,7 +2309,7 @@ and private addTable (book: MacroDocument) (at: int) (rows: int) (cols: int) : s
     | _ -> ()
     match table with Table t -> t.Id | _ -> ""
 
-and private convertToTable (book: MacroDocument) (r: LiveRange) (args: Value array) : Value =
+let private convertToTable (book: MacroDocument) (r: LiveRange) (args: Value array) : Value =
     let separator =
         match arg args 0 with
         | Some (VString s) when s <> "" -> s
@@ -2581,672 +2329,981 @@ and private convertToTable (book: MacroDocument) (r: LiveRange) (args: Value arr
     cells |> List.iteri (fun ri row ->
         row |> Array.iteri (fun ci text ->
             if ci < cols && text <> "" then
-                let cs, ce = cellSpan book { TableId = tableId; Row = ri; Col = ci }
+                let cs, ce = cellSpan book ({ TableId = tableId; Row = ri; Col = ci } : CellRef)
                 book.Replace(cs, ce - 1, text) |> ignore))
     tableObject book tableId
 
-and private cellsInRange (book: MacroDocument) (r: LiveRange) : Value =
-    let items () =
-        book.SegmentsIn(r.Start, r.End) |> List.filter (fun s -> s.Table <> "" && s.Mark <> RowMark)
-        |> List.map (fun s -> { TableId = s.Table; Row = s.Row; Col = s.Col }) |> List.distinct
-    let cellsHost = CellShading items
-    collectionObject "Cells" (fun () -> items () |> List.map (cellObject book) |> List.toArray)
-        (fun name ->
-            match name with
-            | "shading" -> Some (shadingObject book cellsHost)
-            | "borders" -> Some (bordersObject book (CellBorders items))
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "verticalalignment" ->
-                let v = match toInt value with 1 -> Some "center" | 3 -> Some "bottom" | _ -> Some "top"
-                mapCells book (items ()) (fun x -> { x with VerticalAlignment = v }); true
-            | _ -> false)
-        (fun name _ -> match name with "merge" -> notAvailable "Cells.Merge" | _ -> None)
+let private collapsedAt (r: LiveRange) (p: int) = r.Start <- p; r.End <- p
 
-and private rowsInRange (book: MacroDocument) (r: LiveRange) : Value =
-    let rows () =
-        book.SegmentsIn(r.Start, r.End) |> List.filter (fun s -> s.Table <> "") |> List.map (fun s -> s.Table, s.Row) |> List.distinct
-    collectionObject "Rows" (fun () -> rows () |> List.map (fun (t, i) -> rowObject book t i) |> List.toArray) (fun _ -> None) noSet noCall
+/// Range.InsertAfter: the range takes in the text.
+let private insertAfter (book: MacroDocument) (r: LiveRange) (text: string) =
+    let total = book.Story.Total
+    // (A cell's or a row's range: the text goes before its end-of-cell mark.)
+    let at =
+        let story = book.Story.Text
+        let mutable p = min r.End (total - 1)
+        if r.End < total then
+            while p > r.Start && p > 0 && (story.[p - 1] = '\a' || story.[p - 1] = '\b') do p <- p - 1
+        p
+    let s0 = min r.Start at
+    let _, e = book.Replace(at, at, text, r)
+    // (A range that took in the last paragraph mark still does.)
+    r.Start <- s0; r.End <- (if r.End >= total then book.Story.Total else e)
+
+let private insertBefore (book: MacroDocument) (r: LiveRange) (text: string) =
+    let e0 = r.End
+    let s, n = book.Replace(r.Start, r.Start, text, r)
+    r.Start <- s; r.End <- e0 + (n - s)
+
+let private setRangeText (x: RangeState) (value: Value) =
+    let s, e = x.Book.Replace(x.R.Start, x.R.End, toText value, x.R)
+    x.R.Start <- s; x.R.End <- e; x.R.Matched <- false
+
+let private setRangeStart (x: RangeState) (value: Value) =
+    let v = max 0 (min x.Book.Story.Total (toInt value))
+    x.R.Matched <- false
+    x.R.Start <- v
+    if x.R.End < v then x.R.End <- v
+
+let private setRangeEnd (x: RangeState) (value: Value) =
+    let v = max 0 (min x.Book.Story.Total (toInt value))
+    x.R.Matched <- false
+    x.R.End <- v
+    if x.R.Start > v then x.R.Start <- v
+
+let private collapseRange (x: RangeState) (args: Value array) =
+    // (The end of a range with the last paragraph mark is before that mark: nothing is after it.)
+    if intArg args 0 1 = 0 then collapsedAt x.R (min x.R.End (x.Book.Story.Total - 1)) else collapsedAt x.R x.R.Start
+    VEmpty
+
+/// Range.Case: wdLowerCase, wdUpperCase, wdTitleWord, wdTitleSentence, wdToggleCase.
+let private changeCase (x: RangeState) (value: Value) =
+    let kind = toInt value
+    x.Book.MapText(x.R.Start, x.R.End, fun text i ->
+        let c = text.[i]
+        match kind with
+        | 0 -> Char.ToLowerInvariant c
+        | 1 -> Char.ToUpperInvariant c
+        | 2 -> if i = 0 || not (Char.IsLetterOrDigit text.[i - 1] || text.[i - 1] = '\'') then Char.ToUpperInvariant c else Char.ToLowerInvariant c
+        | 4 ->
+            let rec start j = if j < 0 then true elif Char.IsWhiteSpace text.[j] then start (j - 1) else text.[j] = '.' || text.[j] = '!' || text.[j] = '?'
+            if Char.IsLetter c && start (i - 1) then Char.ToUpperInvariant c else Char.ToLowerInvariant c
+        | 5 -> if Char.IsUpper c then Char.ToLowerInvariant c else Char.ToUpperInvariant c
+        | _ -> c)
+
+let private rangeMembers : Member<RangeState> list =
+    let duplicate (x: RangeState) = rangeOf x.Book x.R.Start x.R.End
+    let style (x: RangeState) = styleOfRange x.Book x.R
+    let setStyle (x: RangeState) (value: Value) = setRangeStyle x.Book x.R value
+    let paragraphIdsOf (x: RangeState) () = x.Book.ParagraphIdsIn(x.R.Start, x.R.End)
+    let ofRange (x: RangeState) = x.Book, x.R
+    let within (x: RangeState) : WithinState = { Book = x.Book; Within = Some x.R }
+    let moved (f: RangeState -> Value array -> unit) (x: RangeState) (args: Value array) = f x args; VLong 1
+    let nextOrPrevious (forward: bool) (x: RangeState) (args: Value array) =
+        let book = x.Book
+        let unit = intArg args 0 1
+        let count = intArg args 1 1
+        let p = if forward then moveBy book unit x.R.End (count - 1) else moveBy book unit x.R.Start (-count)
+        if p >= book.Story.Total then VNothing
+        else
+            let s, e = spanAt book unit p
+            rangeOf book s e
+    let compared (test: int * int -> RangeState -> bool) (x: RangeState) (args: Value array) =
+        match arg args 0 |> Option.bind rangeBounds with
+        | Some bounds -> VBoolean (test bounds x)
+        | None -> fail 13 "Type mismatch"
+    [ prop "Text" (fun x -> VString (x.Book.TextOf(x.R.Start, x.R.End))) setRangeText
+      prop "FormattedText" duplicate setRangeText
+      get "Duplicate" duplicate
+      prop "Start" (fun x -> VLong x.R.Start) setRangeStart
+      prop "End" (fun x -> VLong x.R.End) setRangeEnd
+      get "StoryLength" (fun x -> VLong x.Book.Story.Total)
+      get "StoryType" (fun _ -> VLong 1)
+      get "Font" (fun x -> fontObject x.Book (RangeFont x.R))
+      rangeFontProperty "Bold" ofRange
+      rangeFontProperty "Italic" ofRange
+      rangeFontProperty "Underline" ofRange
+      prop "HighlightColorIndex"
+        (fun x ->
+            let values = x.Book.StylesIn(x.R.Start, x.R.End) |> List.map (fun s -> indexOfHighlight s.Highlight) |> List.distinct
+            VLong (match values with [ v ] -> v | _ -> wdUndefined))
+        (fun x value -> let color = highlightOfIndex (toInt value) in x.Book.Format(x.R.Start, x.R.End, fun s -> { s with Highlight = color }))
+      prop "Case" (fun _ -> VLong wdUndefined) changeCase
+      get "ParagraphFormat" (fun x -> paragraphFormatObject x.Book (ParagraphsOf (Some x.R)))
+      prop "Style" style setStyle
+      prop "ParagraphStyle" style setStyle
+      prop "CharacterStyle" (fun _ -> VString "Default Paragraph Font") (fun _ _ -> ())
+      get "Paragraphs" (fun x -> paragraphsObject x.Book (Some x.R))
+      get "Words" (fun x -> wordsType.Wrap (within x))
+      get "Characters" (fun x -> charactersType.Wrap (within x))
+      get "Sentences" (fun x -> sentencesType.Wrap (within x))
+      get "Tables" (fun x -> tablesObject x.Book (Some x.R))
+      get "Cells" (fun x -> cellsObject x.Book (CellsInRange x.R))
+      get "Rows" (fun x -> rangeRowsType.Wrap x)
+      get "Find" (fun x -> findObject x.Book x.R false)
+      get "Document" (fun x -> documentObject x.Book)
+      get "Shading" (fun x -> shadingObject x.Book (ParagraphShading (paragraphIdsOf x)))
+      get "Borders" (fun x -> bordersObject x.Book (ParagraphBorders (paragraphIdsOf x)))
+      get "ListFormat" (fun x -> listFormatType.Wrap x)
+      get "Bookmarks" (fun x -> bookmarksObject x.Book (Some x.R))
+      get "IsEndOfRowMark" (fun x -> VBoolean (x.Book.SegmentsIn(x.R.Start, x.R.Start) |> List.exists (fun s -> s.Mark = RowMark)))
+      accepted "LanguageID" (VLong 1033)
+      set "NoProofing" (fun _ _ -> ())
+      get "Revisions" (fun _ -> emptyCollection ())
+      get "Fields" (fun _ -> emptyCollection ())
+      get "InlineShapes" (fun _ -> emptyCollection ())
+      get "Shapes" (fun _ -> emptyCollection ())
+
+      method "InsertAfter" [ "Text" ] (fun x args -> insertAfter x.Book x.R (textArg args); VEmpty)
+      method "InsertBefore" [ "Text" ] (fun x args -> insertBefore x.Book x.R (textArg args); VEmpty)
+      method "InsertParagraphAfter" [] (fun x _ -> insertAfter x.Book x.R "\r"; VEmpty)
+      method "InsertParagraphBefore" [] (fun x _ -> insertBefore x.Book x.R "\r"; VEmpty)
+      method "InsertParagraph" [] (fun x _ -> setRangeText x (VString "\r"); VEmpty)
+      method "InsertBreak" [ "Type" ] (fun x args ->
+          let ch = match intArg args 0 7 with 6 -> "\v" | _ -> "\f"
+          let _, e = x.Book.Replace(x.R.Start, x.R.End, ch, x.R)
+          collapsedAt x.R e
+          VEmpty)
+      method "Delete" [ "Unit"; "Count" ] (fun x args ->
+          let book, r = x.Book, x.R
+          if r.End > r.Start then
+              let s, _ = book.Replace(r.Start, r.End, "", r)
+              collapsedAt r s
+          else
+              let count = intArg args 1 1
+              let s, _ = book.Replace(r.Start, moveBy book (intArg args 0 1) r.Start count, "", r)
+              collapsedAt r s
+          VLong 1)
+      method "Collapse" [ "Direction" ] collapseRange
+      method "Select" [] (fun x _ ->
+          let selection = x.Book.Selection
+          selection.Start <- x.R.Start; selection.End <- x.R.End; selection.ActiveAtStart <- false
+          VEmpty)
+      method "SetRange" [ "Start"; "End" ] (fun x args ->
+          let s = intArg args 0 x.R.Start
+          let e = intArg args 1 x.R.End
+          x.R.Matched <- false
+          x.R.Start <- max 0 (min s e); x.R.End <- min x.Book.Story.Total (max s e)
+          VEmpty)
+      method "Move" [ "Unit"; "Count" ] (fun x args ->
+          let unit = intArg args 0 1
+          let count = intArg args 1 1
+          let p =
+              if x.R.End > x.R.Start then
+                  let collapsed = if count > 0 then x.R.End else x.R.Start
+                  moveBy x.Book unit collapsed (if count > 0 then count - 1 else count + 1)
+              else moveBy x.Book unit x.R.Start count
+          collapsedAt x.R p
+          VLong count)
+      method "MoveStart" [ "Unit"; "Count" ] (moved (fun x args ->
+          let p = moveBy x.Book (intArg args 0 1) x.R.Start (intArg args 1 1)
+          x.R.Start <- p
+          if x.R.End < p then x.R.End <- p))
+      method "MoveEnd" [ "Unit"; "Count" ] (moved (fun x args ->
+          let p = moveBy x.Book (intArg args 0 1) x.R.End (intArg args 1 1)
+          x.R.End <- p
+          if x.R.Start > p then x.R.Start <- p))
+      method "Expand" [ "Unit" ] (moved (fun x args ->
+          let unit = intArg args 0 2
+          let s, _ = spanAt x.Book unit x.R.Start
+          let _, e = spanAt x.Book unit (max x.R.Start (x.R.End - 1))
+          x.R.Start <- s; x.R.End <- max s e))
+      method "StartOf" [ "Unit"; "Extend" ] (moved (fun x args ->
+          let s, _ = spanAt x.Book (intArg args 0 2) x.R.Start
+          if intArg args 1 0 = 1 then x.R.Start <- s else collapsedAt x.R s))
+      method "EndOf" [ "Unit"; "Extend" ] (moved (fun x args ->
+          let _, e = spanAt x.Book (intArg args 0 2) (max x.R.Start (x.R.End - 1))
+          if intArg args 1 0 = 1 then x.R.End <- e else collapsedAt x.R e))
+      method "Next" [ "Unit"; "Count" ] (nextOrPrevious true)
+      method "Previous" [ "Unit"; "Count" ] (nextOrPrevious false)
+      method "Information" [ "Type" ] (fun x args -> information x.Book x.R.Start x.R.End (intArg args 0 0))
+      method "ComputeStatistics" [ "Statistic"; "IncludeFootnotesAndEndnotes" ] (fun x args -> VLong (statistics x.Book x.R.Start x.R.End (intArg args 0 0)))
+      method "InRange" [ "Range" ] (compared (fun (s, e) x -> s <= x.R.Start && x.R.End <= e))
+      method "IsEqual" [ "Range" ] (compared (fun (s, e) x -> s = x.R.Start && x.R.End = e))
+      method "ConvertToTable" [ "Separator"; "NumRows"; "NumColumns"; "InitialColumnWidth"; "Format"; "ApplyBorders" ] (fun x args -> convertToTable x.Book x.R args) ]
+
+rangeType <- HostMembers.Table<RangeState>("Range", rangeMembers, defaultMember = "Text")
+
+// ---- paragraphs, words, characters, sentences ---------------------------------------------------------------------
+
+let private indentBy (points: float) (m: BlockMetadata) =
+    { m with IndentLeft = Some (max 0.0 (defaultArg m.IndentLeft 0.0 + pxOfPt points)) } |> withFlag ParagraphExplicit.IndentLeft true
+
+paragraphType <-
+    let format (x: RangeState) : ParagraphFormatState = { Book = x.Book; Target = ParagraphsOf (Some x.R) }
+    let ids (x: RangeState) () = x.Book.ParagraphIdsIn(x.R.Start, x.R.End)
+    let step (count: int -> int) (x: RangeState) (args: Value array) =
+        let paras = x.Book.Story.Segments |> Array.filter (fun s -> s.Mark <> RowMark)
+        let here = paras |> Array.tryFindIndex (fun s -> s.Start <= x.R.Start && x.R.Start < segmentEnd s) |> Option.defaultValue 0
+        let target = here + count (intArg args 0 1)
+        if target < 0 || target >= paras.Length then VNothing
+        else paragraphObject x.Book (x.Book.Track(paras.[target].Start, segmentEnd paras.[target]))
+    let indent (points: float) (x: RangeState) (_: Value array) =
+        for id in ids x () do x.Book.UpdateParagraph(id, fun p -> { p with Metadata = indentBy points p.Metadata })
+        VEmpty
+    let own : Member<RangeState> list =
+        [ get "Range" (fun x -> rangeObject x.Book x.R)
+          get "Format" (fun x -> paragraphFormatType.Wrap (format x))
+          get "Shading" (fun x -> shadingObject x.Book (ParagraphShading (ids x)))
+          get "Borders" (fun x -> bordersObject x.Book (ParagraphBorders (ids x)))
+          prop "Style" (fun x -> styleOfRange x.Book x.R) (fun x value -> setRangeStyle x.Book x.R value)
+          method "Next" [ "Count" ] (step id)
+          method "Previous" [ "Count" ] (step (fun n -> -n))
+          method "Indent" [] (indent 36.0)
+          method "Outdent" [] (indent -36.0) ]
+        @ paragraphFormatProperties format
+    // (A paragraph's range's methods are the paragraph's: InsertAfter, Move...)
+    HostMembers.Table<RangeState>("Paragraph", extending own (rangeMembers |> List.filter (fun m -> m.Call.IsSome)))
+
+paragraphsType <-
+    let items (p: WithinState) =
+        let s, e = boundsOf p.Book p.Within
+        // (An end-of-row mark is a paragraph to Word too.)
+        p.Book.SegmentsIn(s, e) |> List.map (fun seg -> paragraphObject p.Book (p.Book.Track(seg.Start, segmentEnd seg))) |> List.toArray
+    let format (p: WithinState) : ParagraphFormatState = { Book = p.Book; Target = ParagraphsOf p.Within }
+    let mapAll (change: BlockMetadata -> BlockMetadata) (p: WithinState) (_: Value array) =
+        let s, e = boundsOf p.Book p.Within
+        p.Book.MapParagraphs(s, e, change)
+        VEmpty
+    collectionType "Paragraphs" items None
+        ([ get "Format" (fun p -> paragraphFormatType.Wrap (format p))
+           set "Style" (fun p value -> setParagraphStyles p.Book p.Within value)
+           method "Add" [ "Range" ] (fun p args ->
+               let book = p.Book
+               let at =
+                   match arg args 0 with
+                   | Some v -> (match rangeBounds v with Some (s, _) -> s | None -> fail 13 "Type mismatch")
+                   | None -> book.Story.Total - 1
+               let _, e = book.Replace(at, at, "\r")
+               let st = book.Story
+               let seg = st.Segments.[locate st e]
+               paragraphObject book (book.Track(seg.Start, segmentEnd seg)))
+           method "Indent" [] (mapAll (indentBy 36.0))
+           method "Outdent" [] (mapAll (indentBy -36.0))
+           method "Space1" [] (mapAll (lineSpacingRuleChange (VLong 0)))
+           method "Space15" [] (mapAll (lineSpacingRuleChange (VLong 1)))
+           method "Space2" [] (mapAll (lineSpacingRuleChange (VLong 2))) ]
+         // (The paragraphs' format, set through the collection: Paragraphs.SpaceAfter = 6.)
+         @ (paragraphProperties |> List.filter (fun p -> p.Change.IsSome) |> List.map (fun p -> set p.Name (fun s value -> writeParagraphFormat (format s) p value))))
+
+/// Words, Characters or Sentences of a range (`unit`: wdWord, wdCharacter, wdSentence).
+let private spansType (typeName: string) (unit: int) =
+    collectionType typeName
+        (fun (w: WithinState) ->
+            let book = w.Book
+            let s, e = boundsOf book w.Within
+            let e = max e (if e = s then s + 1 else e)
+            let spans =
+                if unit = 1 then [| for p in s .. min (book.Story.Total - 1) (e - 1) -> p, p + 1 |]
+                else unitSpans book unit |> Array.filter (fun (a, b) -> a < e && b > s) |> Array.map (fun (a, b) -> max a s, min b e)
+            spans |> Array.map (fun (a, b) -> rangeOf book a b))
+        None []
+
+wordsType <- spansType "Words" 2
+charactersType <- spansType "Characters" 1
+sentencesType <- spansType "Sentences" 3
+
+// ---- tables ----------------------------------------------------------------------------------------------------
+
+let private cellsOf (book: MacroDocument) (cells: CellSet) : CellRef list =
+    match cells with
+    | CellsInRange r ->
+        book.SegmentsIn(r.Start, r.End) |> List.filter (fun s -> s.Table <> "" && s.Mark <> RowMark)
+        |> List.map (fun s -> ({ TableId = s.Table; Row = s.Row; Col = s.Col } : CellRef)) |> List.distinct
+    | CellsOfRow (tableId, row) ->
+        match tableOf book tableId |> Option.bind (fun t -> List.tryItem row t.Rows) with
+        | Some r -> [ for c in 0 .. r.Cells.Length - 1 -> ({ TableId = tableId; Row = row; Col = c } : CellRef) ]
+        | None -> []
+    | CellsOfColumn (tableId, col) ->
+        match tableOf book tableId with
+        | Some t -> [ for r, row in List.indexed t.Rows do if col < row.Cells.Length then yield ({ TableId = tableId; Row = r; Col = col } : CellRef) ]
+        | None -> []
+
+let private verticalAlignmentOf (value: Value) = match toInt value with 1 -> Some "center" | 3 -> Some "bottom" | _ -> Some "top"
+
+let private columnCount (book: MacroDocument) (tableId: string) =
+    match tableOf book tableId with Some t -> (t.Rows |> List.map (fun r -> r.Cells.Length) |> List.fold max 0) | None -> 0
+
+let private setTableAlignment (book: MacroDocument) (tableId: string) (n: int) =
+    let a = match n with 1 -> Some "center" | 2 -> Some "right" | _ -> Some "left"
+    mapTable book tableId (fun t -> { t with Alignment = a })
+
+let private selectSpan (book: MacroDocument) (s: int, e: int) = book.Selection.Start <- s; book.Selection.End <- e; VEmpty
+
+/// The structure of a table changed with the caret at position `at` (insert a row before it...).
+let private changeTableAt (book: MacroDocument) (at: int) (change: Document -> Document) =
+    let doc = setCursor (book.ModelPosition at).BlockId 0 book.Document
+    book.SetStructure (change doc)
+
+cellType <-
+    let span (c: CellState) = cellSpan c.Book c.Cell
+    let width (c: CellState) = cellOf c.Book c.Cell |> Option.bind (fun x -> x.PreferredWidth) |> Option.bind (fun w -> w.Value)
+    let neighbour (step: int) (c: CellState) (_: Value array) =
+        match tableOf c.Book c.Cell.TableId with
+        | Some t ->
+            let cells = [ for r, row in List.indexed t.Rows do for col in 0 .. row.Cells.Length - 1 -> { c.Cell with Row = r; Col = col } ]
+            let i = cells |> List.findIndex (fun x -> x.Row = c.Cell.Row && x.Col = c.Cell.Col)
+            let j = i + step
+            if j < 0 || j >= cells.Length then VNothing else cellObject c.Book cells.[j]
+        | None -> VNothing
+    HostMembers.Table<CellState>("Cell", [
+        get "Range" (fun c -> let s, e = span c in rangeOf c.Book s e)
+        get "Shading" (fun c -> shadingObject c.Book (CellShading (fun () -> [ c.Cell ])))
+        get "Borders" (fun c -> bordersObject c.Book (CellBorders (fun () -> [ c.Cell ])))
+        get "RowIndex" (fun c -> VLong (c.Cell.Row + 1))
+        get "ColumnIndex" (fun c -> VLong (c.Cell.Col + 1))
+        prop "VerticalAlignment"
+            (fun c -> VLong (match cellOf c.Book c.Cell |> Option.bind (fun x -> x.VerticalAlignment) with Some "center" -> 1 | Some "bottom" -> 3 | _ -> 0))
+            (fun c value -> let v = verticalAlignmentOf value in mapCells c.Book [ c.Cell ] (fun x -> { x with VerticalAlignment = v }))
+        prop "Width"
+            (fun c -> VDouble (width c |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
+            (fun c value ->
+                let px = pxOfPt (toFloat value)
+                mapCells c.Book [ c.Cell ] (fun x -> { x with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } }))
+        method "Select" [] (fun c _ -> selectSpan c.Book (span c))
+        method "Next" [] (neighbour 1)
+        method "Previous" [] (neighbour -1) ])
+
+cellsType <-
+    let cells (x: CellsState) () = cellsOf x.Book x.Cells
+    collectionType "Cells" (fun x -> cells x () |> List.map (cellObject x.Book) |> List.toArray) None
+        [ get "Shading" (fun x -> shadingObject x.Book (CellShading (cells x)))
+          get "Borders" (fun x -> bordersObject x.Book (CellBorders (cells x)))
+          set "VerticalAlignment" (fun x value -> let v = verticalAlignmentOf value in mapCells x.Book (cells x ()) (fun c -> { c with VerticalAlignment = v }))
+          method "Merge" [] (fun _ _ -> notAvailable "Cells.Merge") ]
+
+rowType <-
+    let row (x: RowState) = tableOf x.Book x.TableId |> Option.bind (fun t -> List.tryItem x.Row t.Rows)
+    let cells (x: RowState) () = cellsOf x.Book (CellsOfRow (x.TableId, x.Row))
+    let span (x: RowState) = rowSpan x.Book x.TableId x.Row
+    let mapRow (x: RowState) (change: TableRow -> TableRow) =
+        mapTable x.Book x.TableId (fun t -> { t with Rows = t.Rows |> List.mapi (fun i r -> if i = x.Row then change r else r) })
+    HostMembers.Table<RowState>("Row", [
+        get "Range" (fun x -> let s, e = span x in rangeOf x.Book s e)
+        get "Cells" (fun x -> cellsObject x.Book (CellsOfRow (x.TableId, x.Row)))
+        get "Shading" (fun x -> shadingObject x.Book (CellShading (cells x)))
+        get "Borders" (fun x -> bordersObject x.Book (CellBorders (cells x)))
+        get "Index" (fun x -> VLong (x.Row + 1))
+        prop "HeadingFormat"
+            (fun x -> VBoolean (row x |> Option.exists (fun r -> r.IsHeader)))
+            (fun x value -> let on = toBool value in mapRow x (fun r -> { r with IsHeader = on }))
+        prop "Height"
+            (fun x -> VDouble (row x |> Option.bind (fun r -> r.Height) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
+            (fun x value -> let twips = toFloat value * 20.0 in mapRow x (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }))
+        set "HeightRule" (fun x value -> let rule = match toInt value with 2 -> "exact" | 1 -> "atLeast" | _ -> "auto" in mapRow x (fun r -> { r with HeightRule = Some rule }))
+        set "AllowBreakAcrossPages" (fun x value -> let on = toBool value in mapRow x (fun r -> { r with CanSplit = Some on }))
+        get "IsFirst" (fun x -> VBoolean (x.Row = 0))
+        get "IsLast" (fun x -> VBoolean (tableOf x.Book x.TableId |> Option.exists (fun t -> x.Row = t.Rows.Length - 1)))
+        prop "Alignment" (fun _ -> VLong 0) (fun x value -> setTableAlignment x.Book x.TableId (toInt value))
+        method "Delete" [] (fun x _ -> changeTableAt x.Book (fst (span x)) deleteSelectedTableRow; VEmpty)
+        method "Select" [] (fun x _ -> selectSpan x.Book (span x)) ])
+
+rowsType <-
+    let count (t: TableState) = match tableOf t.Book t.TableId with Some x -> x.Rows.Length | None -> 0
+    let mapRows (t: TableState) (change: TableRow -> TableRow) = mapTable t.Book t.TableId (fun x -> { x with Rows = x.Rows |> List.map change })
+    collectionType "Rows" (fun t -> [| for r in 0 .. count t - 1 -> rowObject t.Book t.TableId r |]) None
+        [ prop "Alignment"
+            (fun t -> VLong (match tableOf t.Book t.TableId |> Option.bind (fun x -> x.Alignment) with Some "center" -> 1 | Some "right" -> 2 | _ -> 0))
+            (fun t value -> setTableAlignment t.Book t.TableId (toInt value))
+          set "LeftIndent" (fun t value -> let px = pxOfPt (toFloat value) in mapTable t.Book t.TableId (fun x -> { x with Indent = Some px }))
+          set "AllowBreakAcrossPages" (fun _ _ -> ())
+          set "WrapAroundText" (fun _ _ -> ())
+          prop "HeadingFormat" (fun _ -> VBoolean false) (fun t value -> let on = toBool value in mapRows t (fun r -> { r with IsHeader = on }))
+          set "Height" (fun t value -> let twips = toFloat value * 20.0 in mapRows t (fun r -> { r with Height = Some twips; HeightRule = Some (defaultArg r.HeightRule "atLeast") }))
+          method "Add" [ "BeforeRow" ] (fun t args ->
+              let before = arg args 0 |> Option.bind rowType.TryState |> Option.map (fun r -> r.Row + 1)
+              let n = count t
+              let rowIndex, place = match before with Some i -> i - 1, insertTableRowBeforeSelection | None -> n - 1, insertTableRowAfterSelection
+              let s, _ = rowSpan t.Book t.TableId rowIndex
+              changeTableAt t.Book s place
+              rowObject t.Book t.TableId (match before with Some i -> i - 1 | None -> n)) ]
+
+rangeRowsType <-
+    let rows (x: RangeState) =
+        x.Book.SegmentsIn(x.R.Start, x.R.End) |> List.filter (fun s -> s.Table <> "") |> List.map (fun s -> s.Table, s.Row) |> List.distinct
+    collectionType "Rows" (fun x -> rows x |> List.map (fun (t, i) -> rowObject x.Book t i) |> List.toArray) None []
+
+columnType <-
+    let cells (x: ColumnState) () = cellsOf x.Book (CellsOfColumn (x.TableId, x.Col))
+    let setWidth (x: ColumnState) (value: Value) =
+        let px = pxOfPt (toFloat value)
+        mapCells x.Book (cells x ()) (fun c -> { c with PreferredWidth = Some { Kind = DxaWidth; Value = Some (px * 15.0) } })
+        mapTable x.Book x.TableId (fun t ->
+            let n = columnCount x.Book x.TableId
+            let grid = if t.GridColumns.Length = n then t.GridColumns else List.replicate n { Kind = AutoWidth; Value = None }
+            { t with GridColumns = grid |> List.mapi (fun i g -> if i = x.Col then { Kind = DxaWidth; Value = Some (px * 15.0) } else g) })
+    HostMembers.Table<ColumnState>("Column", [
+        get "Cells" (fun x -> cellsObject x.Book (CellsOfColumn (x.TableId, x.Col)))
+        get "Shading" (fun x -> shadingObject x.Book (CellShading (cells x)))
+        get "Borders" (fun x -> bordersObject x.Book (CellBorders (cells x)))
+        get "Index" (fun x -> VLong (x.Col + 1))
+        prop "Width"
+            (fun x -> VDouble (cells x () |> List.tryHead |> Option.bind (cellOf x.Book) |> Option.bind (fun c -> c.PreferredWidth) |> Option.bind (fun w -> w.Value) |> Option.map (fun twips -> twips / 20.0) |> Option.defaultValue 0.0))
+            setWidth
+        set "PreferredWidth" setWidth
+        set "PreferredWidthType" (fun _ _ -> ())
+        method "Select" [] (fun _ _ -> VEmpty)
+        method "Delete" [] (fun x _ ->
+            let s, _ = cellSpan x.Book ({ TableId = x.TableId; Row = 0; Col = x.Col } : CellRef)
+            changeTableAt x.Book s deleteSelectedTableColumn
+            VEmpty)
+        method "AutoFit" [] (fun _ _ -> VEmpty) ])
+
+columnsType <-
+    collectionType "Columns" (fun (t: TableState) -> [| for c in 0 .. columnCount t.Book t.TableId - 1 -> columnObject t.Book t.TableId c |]) None
+        [ set "PreferredWidthType" (fun _ _ -> ())
+          set "PreferredWidth" (fun _ _ -> ())
+          method "Add" [ "BeforeColumn" ] (fun t _ ->
+              let n = columnCount t.Book t.TableId
+              let s, _ = cellSpan t.Book ({ TableId = t.TableId; Row = 0; Col = n - 1 } : CellRef)
+              changeTableAt t.Book s insertTableColumnAfterSelection
+              columnObject t.Book t.TableId n)
+          method "AutoFit" [] (fun _ _ -> VEmpty)
+          method "DistributeWidth" [] (fun _ _ -> VEmpty) ]
+
+tableType <-
+    let table (t: TableState) = match tableOf t.Book t.TableId with Some x -> x | None -> fail 5941 "The table is no longer in the document."
+    let allCells (t: TableState) () = [ for r, row in List.indexed (table t).Rows do for col in 0 .. row.Cells.Length - 1 -> ({ TableId = t.TableId; Row = r; Col = col } : CellRef) ]
+    let setStyle (t: TableState) (value: Value) =
+        let book = t.Book
+        let text = match scalarOf value with VInteger n | VLong n -> string n | v -> toText v
+        book.Settings.["tablestyle:" + t.TableId] <- VString text
+        if not (applyTableStyle book t.TableId text) then
+            // (A style of the document: the reference is kept for the file.)
+            match book.Document.Styles |> List.tryFind (fun s -> s.StyleType = "table" && (eq s.Id text || s.Name |> Option.exists (eq text))) with
+            | Some s -> mapTable book t.TableId (fun x -> { x with StyleId = Some s.Id })
+            | None -> ()
+    let autoFormat (t: TableState) (args: Value array) =
+        // (Word's table formats of Word 97 - wdTableFormatColorful2 and the like - as built-in styles.)
+        let book, tableId = t.Book, t.TableId
+        let format = intArg args 0 0
+        let style =
+            match format with
+            | 0 -> None
+            | 9 ->
+                // (Word 2019's Colorful 2: a dark red header row in white bold italic, pale yellow
+                // rows, the first column bold italic, no borders but the bottom.)
+                mapTable book tableId (fun t ->
+                    let line = Some ({ Style = Some "single"; Color = Some "#000000"; Width = Some (12.0 / 6.0) } : TableBorder)
+                    { t with
+                        Borders = Some { emptyTableBorders with Bottom = line }
+                        Rows = t.Rows |> List.mapi (fun r row -> { row with Cells = row.Cells |> List.map (fun c -> { c with BackgroundColor = Some (if r = 0 then "#800000" else "#FFFFCC"); Shading = None }) }) })
+                let s0, e0 = rowSpan book tableId 0
+                book.Format(s0, e0, fun st -> { TB.withExplicitItalic true (TB.withExplicitBold true st) with Color = Some "#FFFFFF" })
+                match tableOf book tableId with
+                | Some x ->
+                    for r in 1 .. x.Rows.Length - 1 do
+                        let cs, ce = cellSpan book ({ TableId = tableId; Row = r; Col = 0 } : CellRef)
+                        book.Format(cs, ce, fun st -> TB.withExplicitItalic true (TB.withExplicitBold true st))
+                | None -> ()
+                None
+            | 1 | 2 | 3 -> Some "Plain Table 1"
+            | 8 | 9 | 10 -> Some (sprintf "Grid Table 5 Dark - Accent %d" (format - 7))
+            | 4 | 5 | 6 | 7 -> Some "List Table 3"
+            | _ -> Some "Grid Table 4 - Accent 1"
+        style |> Option.iter (fun name -> applyTableStyle book tableId name |> ignore)
+        VEmpty
+    let sort (t: TableState) (args: Value array) =
+        // (By the first column, or FieldNumber; the header row stays first when ExcludeHeader.)
+        let exclude = arg args 0 |> Option.map toBool |> Option.defaultValue false
+        let field = intArg args 1 1 - 1
+        let descending = intArg args 3 0 = 1
+        let doc = t.Book.Document
+        t.Book.SetStructure
+            { doc with
+                Blocks =
+                    doc.Blocks |> List.map (function
+                        | Table x when x.Id = t.TableId ->
+                            let head, body = if exclude then List.truncate 1 x.Rows, List.skip (min 1 x.Rows.Length) x.Rows else [], x.Rows
+                            let key (row: TableRow) =
+                                row.Cells |> List.tryItem field |> Option.map (fun c -> c.Content |> List.map (fun p -> TB.toString p.Buffer) |> String.concat "\r") |> Option.defaultValue ""
+                            let numeric (s: string) = match Double.TryParse(s, Globalization.NumberStyles.Any, Globalization.CultureInfo.InvariantCulture) with | true, d -> Some d | _ -> None
+                            let sorted =
+                                if body |> List.forall (fun row -> (numeric (key row)).IsSome) then body |> List.sortBy (fun row -> (numeric (key row)).Value)
+                                else body |> List.sortWith (fun a b -> String.Compare(key a, key b, StringComparison.OrdinalIgnoreCase))
+                            Table { x with Rows = head @ (if descending then List.rev sorted else sorted) }
+                        | other -> other) }
+        VEmpty
+    let noEffect name = set name (fun (_: TableState) _ -> ())
+    HostMembers.Table<TableState>("Table", [
+        get "Range" (fun t -> let s, e = tableSpan t.Book t.TableId in rangeOf t.Book s e)
+        get "Rows" (fun t -> rowsType.Wrap t)
+        get "Columns" (fun t -> columnsType.Wrap t)
+        get "Borders" (fun t -> bordersObject t.Book (TableBorders t.TableId))
+        get "Shading" (fun t -> shadingObject t.Book (CellShading (allCells t)))
+        prop "Style" (fun t -> VString (match t.Book.Settings.TryGetValue ("tablestyle:" + t.TableId) with | true, v -> toText v | _ -> "Table Grid")) setStyle
+        get "NestingLevel" (fun _ -> VLong 1)
+        get "Uniform" (fun _ -> VBoolean true)
+        accepted "Title" (VString "")
+        accepted "Descr" (VString "")
+        prop "PreferredWidthType" (fun _ -> VLong 1) (fun t value -> t.Book.Settings.["tablewidthtype:" + t.TableId] <- value)
+        prop "PreferredWidth" (fun _ -> VDouble 0.0) (fun t value ->
+            let kind = match t.Book.Settings.TryGetValue ("tablewidthtype:" + t.TableId) with | true, v -> toInt v | _ -> 3
+            let width =
+                if kind = 2 then { Kind = PercentWidth; Value = Some (toFloat value * 50.0) }
+                else { Kind = DxaWidth; Value = Some (toFloat value * 20.0) }
+            mapTable t.Book t.TableId (fun x -> { x with PreferredWidth = Some width }))
+        accepted "AllowAutoFit" (VBoolean true)
+        noEffect "Spacing"
+        noEffect "TopPadding"
+        noEffect "BottomPadding"
+        noEffect "LeftPadding"
+        noEffect "RightPadding"
+        accepted "ApplyStyleHeadingRows" (VBoolean true)
+        accepted "ApplyStyleFirstColumn" (VBoolean true)
+        accepted "ApplyStyleLastRow" (VBoolean true)
+        accepted "ApplyStyleLastColumn" (VBoolean true)
+        accepted "ApplyStyleRowBands" (VBoolean true)
+        noEffect "ApplyStyleColumnBands"
+        method "Cell" [ "Row"; "Column" ] (fun t args ->
+            let r = intArg args 0 1 - 1
+            let c = intArg args 1 1 - 1
+            let x = table t
+            if r < 0 || r >= x.Rows.Length || c < 0 || c >= x.Rows.[r].Cells.Length then fail 5941 "The requested member of the collection does not exist."
+            cellObject t.Book { TableId = t.TableId; Row = r; Col = c })
+        method "AutoFitBehavior" [ "Behavior" ] (fun t args ->
+            if intArg args 0 0 = 2 then mapTable t.Book t.TableId (fun x -> { x with PreferredWidth = Some { Kind = PercentWidth; Value = Some 5000.0 } })
+            VEmpty)
+        method "AutoFormat" [] autoFormat
+        method "Delete" [] (fun t _ ->
+            let book = t.Book
+            book.SetStructure { book.Document with Blocks = book.Document.Blocks |> List.filter (function Table x -> x.Id <> t.TableId | _ -> true) }
+            VEmpty)
+        method "Select" [] (fun t _ -> selectSpan t.Book (tableSpan t.Book t.TableId))
+        method "Sort" [ "ExcludeHeader"; "FieldNumber"; "SortFieldType"; "SortOrder" ] sort ])
+
+tablesType <-
+    let items (w: WithinState) =
+        let s, e = boundsOf w.Book w.Within
+        let e = max e (s + 1)
+        w.Book.TableSpans() |> List.filter (fun (_, ts, te) -> ts < e && te > s) |> List.map (fun (id, _, _) -> tableObject w.Book id) |> List.toArray
+    collectionType "Tables" items None
+        [ method "Add" [ "Range"; "NumRows"; "NumColumns"; "DefaultTableBehavior"; "AutoFitBehavior" ] (fun w args ->
+            let book = w.Book
+            let at =
+                match arg args 0 |> Option.bind rangeBounds with
+                | Some (s, _) -> s
+                | None -> fail 13 "Type mismatch (Tables.Add needs a Range)"
+            let rows = max 1 (intArg args 1 1)
+            let cols = max 1 (intArg args 2 1)
+            let id = addTable book at rows cols
+            // (Word's default, wdWord8TableBehavior, makes a table without borders; wdWord9TableBehavior
+            // one in the Table Grid style.)
+            if intArg args 3 0 <> 1 then mapTable book id (fun t -> { t with Borders = None; StyleId = None })
+            tableObject book id) ]
 
 // ---- Find ---------------------------------------------------------------------------------------------------
 
-and private findObject (book: MacroDocument) (r: LiveRange) (isSelection: bool) : Value =
-    let state = findStateOf r
-    let replacement =
-        makeObject "Replacement"
-            (fun name ->
-                match name with
-                | "text" -> Some (VString state.ReplacementText)
-                | "font" -> Some (fontObject book (SpecFont state.ReplacementFont))
-                | "highlight" -> Some (VLong (if state.ReplacementHighlight < 0 then wdUndefined else state.ReplacementHighlight))
-                | "style" -> Some (VString (defaultArg state.ReplacementStyle ""))
-                | "paragraphformat" -> Some (specParagraphFormat state.ReplacementParagraph)
-                | _ -> None)
-            (fun name value ->
-                match name with
-                | "text" -> state.ReplacementText <- toText value; true
-                | "highlight" -> state.ReplacementHighlight <- (if toBool value then 1 else 0); true
-                | "style" ->
-                    state.ReplacementStyle <-
-                        (match scalarOf value with
-                         | VInteger n | VLong n -> builtInStyleName n
-                         | v -> Some (toText v))
-                    true
-                | _ -> false)
-            (fun name _ ->
-                match name with
-                | "clearformatting" ->
-                    state.ReplacementFont.Clear(); state.ReplacementHighlight <- -1; state.ReplacementStyle <- None; state.ReplacementParagraph.Clear()
-                    Some VEmpty
-                | _ -> None)
-            None
-    let execute (args: Value array) : Value =
-        arg args 0 |> Option.iter (fun v -> state.Text <- toText v)
-        arg args 1 |> Option.iter (fun v -> state.MatchCase <- toBool v)
-        arg args 2 |> Option.iter (fun v -> state.MatchWholeWord <- toBool v)
-        arg args 3 |> Option.iter (fun v -> state.MatchWildcards <- toBool v)
-        arg args 6 |> Option.iter (fun v -> state.Forward <- toBool v)
-        arg args 7 |> Option.iter (fun v -> state.Wrap <- toInt v)
-        arg args 8 |> Option.iter (fun v -> state.Format <- toBool v)
-        arg args 9 |> Option.iter (fun v -> state.ReplacementText <- toText v)
-        let replace = intArg args 10 0
-        let total = book.Story.Total
-        if replace = 2 then
-            // Every match: in the range (the whole document for a caret that wraps, or a document's Content).
-            let s, e =
-                if r.End > r.Start && not r.Matched then r.Start, r.End
-                elif state.Wrap = 1 then 0, total
-                else r.Start, total
-            let matches = findAll book state s e
-            for m in List.rev matches do replaceMatch book state m |> ignore
-            state.Found <- not matches.IsEmpty
-            VBoolean state.Found
-        else
-            let region =
-                if state.Forward then
-                    if r.Matched || r.End = r.Start then r.End, total
-                    else r.Start, r.End
-                else
-                    if r.Matched || r.End = r.Start then 0, r.Start else r.Start, r.End
-            let candidates = findAll book state (fst region) (snd region)
-            let pick (ms: (int * int * Text.RegularExpressions.Match option) list) = if state.Forward then List.tryHead ms else List.tryLast ms
-            let found =
-                match pick candidates with
-                | Some m -> Some m
-                | None when state.Wrap = 1 ->
-                    let s, e = if state.Forward then 0, fst region else snd region, total
-                    pick (findAll book state s e)
-                | None -> None
-            match found with
-            | Some m ->
-                let (s, e, _) = m
-                let s, e = if replace = 1 then replaceMatch book state m else s, e
-                r.Start <- s; r.End <- e; r.Matched <- true
-                state.Found <- true
-                VBoolean true
-            | None ->
-                state.Found <- false
-                VBoolean false
-    makeObject "Find"
-        (fun name ->
-            match name with
-            | "text" -> Some (VString state.Text)
-            | "replacement" -> Some replacement
-            | "forward" -> Some (VBoolean state.Forward)
-            | "wrap" -> Some (VLong state.Wrap)
-            | "format" -> Some (VBoolean state.Format)
-            | "matchcase" -> Some (VBoolean state.MatchCase)
-            | "matchwholeword" -> Some (VBoolean state.MatchWholeWord)
-            | "matchwildcards" -> Some (VBoolean state.MatchWildcards)
-            | "matchsoundslike" | "matchallwordforms" | "matchprefix" | "matchsuffix" | "matchdiacritics" | "matchkashida" | "matchalefhamza" | "matchcontrol" | "matchbyte" | "matchfuzzy" | "ignorespace" | "ignorepunct" -> Some (VBoolean false)
-            | "found" -> Some (VBoolean state.Found)
-            | "font" -> Some (fontObject book (SpecFont state.Font))
-            | "highlight" -> Some (VLong (if state.Highlight < 0 then wdUndefined else state.Highlight))
-            | "parent" -> Some (if isSelection then selectionObject book else rangeObject book r)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "text" -> state.Text <- toText value; true
-            | "forward" -> state.Forward <- toBool value; true
-            | "wrap" -> state.Wrap <- toInt value; true
-            | "format" -> state.Format <- toBool value; true
-            | "matchcase" -> state.MatchCase <- toBool value; true
-            | "matchwholeword" -> state.MatchWholeWord <- toBool value; true
-            | "matchwildcards" -> state.MatchWildcards <- toBool value; true
-            | "matchsoundslike" | "matchallwordforms" | "matchprefix" | "matchsuffix" | "matchdiacritics" | "matchkashida" | "matchalefhamza" | "matchcontrol" | "matchbyte" | "matchfuzzy" | "ignorespace" | "ignorepunct" -> true
-            | "highlight" -> state.Highlight <- (if toBool value then 1 else 0); true
-            | "style" -> true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "execute" -> Some (execute args)
-            | "clearformatting" -> state.Font.Clear(); state.Highlight <- -1; Some VEmpty
-            | "clearallfuzzyoptions" | "setallfuzzyoptions" -> Some VEmpty
-            | _ -> None)
-        None
+let private findExecute (f: FindObjectState) (args: Value array) : Value =
+    let book, r, state = f.Book, f.R, f.Find
+    arg args 0 |> Option.iter (fun v -> state.Text <- toText v)
+    arg args 1 |> Option.iter (fun v -> state.MatchCase <- toBool v)
+    arg args 2 |> Option.iter (fun v -> state.MatchWholeWord <- toBool v)
+    arg args 3 |> Option.iter (fun v -> state.MatchWildcards <- toBool v)
+    arg args 6 |> Option.iter (fun v -> state.Forward <- toBool v)
+    arg args 7 |> Option.iter (fun v -> state.Wrap <- toInt v)
+    arg args 8 |> Option.iter (fun v -> state.Format <- toBool v)
+    arg args 9 |> Option.iter (fun v -> state.ReplacementText <- toText v)
+    let replace = intArg args 10 0
+    let total = book.Story.Total
+    if replace = 2 then
+        // Every match: in the range (the whole document for a caret that wraps, or a document's Content).
+        let s, e =
+            if r.End > r.Start && not r.Matched then r.Start, r.End
+            elif state.Wrap = 1 then 0, total
+            else r.Start, total
+        let matches = findAll book state s e
+        for m in List.rev matches do replaceMatch book state m |> ignore
+        state.Found <- not matches.IsEmpty
+        VBoolean state.Found
+    else
+        let region =
+            if state.Forward then
+                if r.Matched || r.End = r.Start then r.End, total
+                else r.Start, r.End
+            else
+                if r.Matched || r.End = r.Start then 0, r.Start else r.Start, r.End
+        let candidates = findAll book state (fst region) (snd region)
+        let pick (ms: (int * int * Text.RegularExpressions.Match option) list) = if state.Forward then List.tryHead ms else List.tryLast ms
+        let found =
+            match pick candidates with
+            | Some m -> Some m
+            | None when state.Wrap = 1 ->
+                let s, e = if state.Forward then 0, fst region else snd region, total
+                pick (findAll book state s e)
+            | None -> None
+        match found with
+        | Some m ->
+            let (s, e, _) = m
+            let s, e = if replace = 1 then replaceMatch book state m else s, e
+            r.Start <- s; r.End <- e; r.Matched <- true
+            state.Found <- true
+            VBoolean true
+        | None ->
+            state.Found <- false
+            VBoolean false
 
-and private specParagraphFormat (spec: Dictionary<string, Value>) : Value =
-    makeObject "ParagraphFormat"
-        (fun name -> match spec.TryGetValue name with | true, v -> Some v | _ -> (paragraphRead noFallback name defaultMetadata |> Option.map (fun _ -> VLong wdUndefined)))
-        (fun name value -> match paragraphChange name value with Some _ -> spec.[name] <- value; true | None -> false)
-        noCall None
+findType <-
+    let flag name (read: FindState -> bool) (write: FindState -> bool -> unit) =
+        prop name (fun (f: FindObjectState) -> VBoolean (read f.Find)) (fun f value -> write f.Find (toBool value))
+    let noEffect name = method name [] (fun (_: FindObjectState) _ -> VEmpty)
+    let ignored =
+        [ "MatchSoundsLike"; "MatchAllWordForms"; "MatchPrefix"; "MatchSuffix"; "MatchDiacritics"; "MatchKashida"; "MatchAlefHamza"
+          "MatchControl"; "MatchByte"; "MatchFuzzy"; "IgnoreSpace"; "IgnorePunct" ]
+    HostMembers.Table<FindObjectState>("Find",
+        [ prop "Text" (fun f -> VString f.Find.Text) (fun f value -> f.Find.Text <- toText value)
+          get "Replacement" (fun f -> replacementType.Wrap { Book = f.Book; Find = f.Find })
+          flag "Forward" (fun s -> s.Forward) (fun s v -> s.Forward <- v)
+          prop "Wrap" (fun f -> VLong f.Find.Wrap) (fun f value -> f.Find.Wrap <- toInt value)
+          flag "Format" (fun s -> s.Format) (fun s v -> s.Format <- v)
+          flag "MatchCase" (fun s -> s.MatchCase) (fun s v -> s.MatchCase <- v)
+          flag "MatchWholeWord" (fun s -> s.MatchWholeWord) (fun s v -> s.MatchWholeWord <- v)
+          flag "MatchWildcards" (fun s -> s.MatchWildcards) (fun s v -> s.MatchWildcards <- v)
+          get "Found" (fun f -> VBoolean f.Find.Found)
+          get "Font" (fun f -> fontObject f.Book (SpecFont f.Find.Font))
+          prop "Highlight"
+            (fun f -> VLong (if f.Find.Highlight < 0 then wdUndefined else f.Find.Highlight))
+            (fun f value -> f.Find.Highlight <- (if toBool value then 1 else 0))
+          get "Parent" (fun f -> if f.IsSelection then selectionObject f.Book else rangeObject f.Book f.R)
+          set "Style" (fun _ _ -> ())
+          method "Execute" [ "FindText"; "MatchCase"; "MatchWholeWord"; "MatchWildcards"; "MatchSoundsLike"; "MatchAllWordForms"
+                             "Forward"; "Wrap"; "Format"; "ReplaceWith"; "Replace"; "MatchKashida"; "MatchDiacritics"; "MatchAlefHamza"; "MatchControl" ]
+            findExecute
+          method "ClearFormatting" [] (fun f _ -> f.Find.Font.Clear(); f.Find.Highlight <- -1; VEmpty)
+          noEffect "ClearAllFuzzyOptions"
+          noEffect "SetAllFuzzyOptions" ]
+        @ (ignored |> List.map (fun name -> accepted name (VBoolean false))))
 
 // ---- Selection ---------------------------------------------------------------------------------------------
 
-and private selectionObject (book: MacroDocument) : Value =
-    let r () = book.Selection
-    let collapsedAt p = let s = r () in s.Start <- p; s.End <- p; s.ActiveAtStart <- false
+selectionType <-
+    let asRange (book: MacroDocument) : RangeState = { Book = book; R = book.Selection }
+    let collapsedAt (book: MacroDocument) (p: int) = let s = book.Selection in s.Start <- p; s.End <- p; s.ActiveAtStart <- false
     /// Move the selection's active end to `p` (extend) or the caret to `p`.
-    let moveTo (p: int) (extend: bool) =
-        let s = r ()
-        let total = book.Story.Total
-        let p = max 0 (min (total - 1) p)
+    let moveTo (book: MacroDocument) (p: int) (extend: bool) =
+        let s = book.Selection
+        let p = max 0 (min (book.Story.Total - 1) p)
         if extend then
             let anchor = if s.ActiveAtStart then s.End else s.Start
             s.Start <- min anchor p; s.End <- max anchor p
             s.ActiveAtStart <- p < anchor
-        else collapsedAt p
-    let active () = let s = r () in if s.ActiveAtStart then s.Start else s.End
-    let typeText (text: string) =
-        let s = r ()
+        else collapsedAt book p
+    let active (book: MacroDocument) = let s = book.Selection in if s.ActiveAtStart then s.Start else s.End
+    let typeText (book: MacroDocument) (text: string) =
+        let s = book.Selection
         if book.PendingAt <> s.Start || s.End > s.Start then book.Pending.Clear()
         let a, e = book.Replace(s.Start, s.End, text, s)
         if book.Pending.Count > 0 then book.Format(a, e, specChange book.Pending)
-        collapsedAt e
+        collapsedAt book e
         book.PendingAt <- e
-    let lineStart p = let st = book.Story in st.Segments.[locate st p].Start
-    let lineEnd p = let st = book.Story in let seg = st.Segments.[locate st p] in seg.TextStart + seg.Length
-    makeObject "Selection"
-        (fun name ->
-            match name with
-            | "font" ->
-                let s = r ()
-                if s.End = s.Start then
-                    if book.PendingAt <> s.Start then
-                        book.Pending.Clear()
-                        book.PendingAt <- s.Start
-                    // (At a caret: what is typed next gets it; reading it gives the caret's formatting.)
-                    let pending = SpecFont book.Pending
-                    let caret = fontObject book (RangeFont s)
-                    let caretHost = match caret with VHostObject h -> h | _ -> failwith "font"
-                    Some (makeObject "Font"
-                            (fun n -> match book.Pending.TryGetValue n with | true, v -> Some v | _ -> caretHost.GetMember n)
-                            (fun n v -> match fontObject book pending with VHostObject h -> h.SetMember n v | _ -> false)
-                            noCall None)
-                else Some (fontObject book (RangeFont s))
-            | "range" -> Some (rangeOf book (r ()).Start (r ()).End)
-            | "find" -> Some (findObject book (r ()) true)
-            | "type" -> Some (VLong (if (r ()).End > (r ()).Start then 2 else 1))
-            | "storytype" -> Some (VLong 1)
-            | "active" -> Some (VBoolean true)
-            | "isendofrowmark" -> Some (VBoolean false)
-            | _ -> rangeGet book (r ()) name)
-        (fun name value ->
-            match name with
-            | "start" | "end" ->
-                book.Pending.Clear()
-                rangeSet book (r ()) name value
-            | _ -> rangeSet book (r ()) name value)
-        (fun name args ->
-            let extend index = intArg args index 0 = 1
-            match name with
-            | "typetext" -> typeText (toText (defaultArg (arg args 0) (VString ""))); Some VEmpty
-            | "typeparagraph" -> typeText "\r"; Some VEmpty
-            | "typebackspace" ->
-                let s = r ()
-                if s.End > s.Start then
-                    book.Replace(s.Start, s.End, "", s) |> ignore
-                    collapsedAt s.Start
-                elif s.Start > 0 then
-                    let p, _ = book.Replace(s.Start - 1, s.Start, "", s)
-                    collapsedAt p
-                Some VEmpty
-            | "insertparagraph" | "insertparagraphafter" | "insertafter" | "insertbefore" | "insertparagraphbefore" | "insertbreak" ->
-                rangeCall book (r ()) name args
-            | "homekey" | "endkey" ->
-                let unit = intArg args 0 5
-                let s = r ()
-                let p =
-                    match unit, name with
-                    | 6, "homekey" -> 0
-                    | 6, _ -> book.Story.Total - 1
-                    | 10, "homekey" | 15, "homekey" -> fst (spanAt book unit s.Start)
-                    | 10, _ | 15, _ -> snd (spanAt book unit s.Start) - 1
-                    | _, "homekey" -> lineStart s.Start
-                    | _, _ -> lineEnd (active ())
-                moveTo p (extend 1)
-                Some (VLong 1)
-            | "moveright" | "moveleft" ->
-                let unit = intArg args 0 1
-                let count = intArg args 1 1
-                let count = if name = "moveleft" then -count else count
-                let s = r ()
-                let ext = extend 2
-                if not ext && s.End > s.Start then
-                    let collapsed = if count > 0 then s.End else s.Start
-                    collapsedAt (moveBy book unit collapsed (if count > 0 then count - 1 else count + 1))
-                elif unit = 12 then
-                    // (A cell to the right: the next cell, selected as Word selects it.)
-                    let spans = unitSpans book 12
-                    let i = spans |> Array.tryFindIndex (fun (a, b) -> a <= s.Start && s.Start < b) |> Option.defaultValue -1
-                    let j = i + count
-                    if j >= 0 && j < spans.Length then
-                        let a, b = spans.[j]
-                        s.Start <- a; s.End <- b - 1; s.ActiveAtStart <- false
-                else moveTo (moveBy book unit (active ()) count) ext
-                Some (VLong (abs count))
-            | "moveup" | "movedown" ->
-                let unit = intArg args 0 5
-                let count = intArg args 1 1
-                let count = if name = "moveup" then -count else count
-                let unit = if unit = 5 || unit = 7 then 4 else unit
-                let from = active ()
-                let target =
-                    if count > 0 then moveBy book unit from count
-                    else moveBy book unit (lineStart from) (count + (if lineStart from = from then 0 else 1))
-                moveTo target (extend 2)
-                Some (VLong (abs count))
-            | "wholestory" -> let s = r () in s.Start <- 0; s.End <- book.Story.Total; Some VEmpty
-            | "collapse" -> book.Pending.Clear(); rangeCall book (r ()) name args
-            | "delete" ->
-                let s = r ()
-                if s.End > s.Start then
-                    book.Replace(s.Start, s.End, "", s) |> ignore
-                    collapsedAt s.Start
-                else
-                    let count = intArg args 1 1
-                    book.Replace(s.Start, moveBy book (intArg args 0 1) s.Start count, "", s) |> ignore
-                    collapsedAt s.Start
-                Some (VLong 1)
-            | "escapekey" -> collapsedAt (r ()).Start; Some VEmpty
-            | "extend" -> Some VEmpty
-            | "selectrow" | "selectcell" | "selectcolumn" ->
-                let s = r ()
-                let a, b = spanAt book (if name = "selectrow" then 10 else 12) s.Start
-                s.Start <- a; s.End <- b; Some VEmpty
-            | "goto" -> Some VEmpty
-            | "copy" | "cut" | "paste" | "pasteandformat" -> notAvailable ("Selection." + name + " (the clipboard)")
-            | _ -> rangeCall book (r ()) name args)
-        None
+        VEmpty
+    let lineStart (book: MacroDocument) p = let st = book.Story in st.Segments.[locate st p].Start
+    let lineEnd (book: MacroDocument) p = let st = book.Story in let seg = st.Segments.[locate st p] in seg.TextStart + seg.Length
+    let extend (args: Value array) index = intArg args index 0 = 1
+    let homeOrEnd (home: bool) (book: MacroDocument) (args: Value array) =
+        let unit = intArg args 0 5
+        let s = book.Selection
+        let p =
+            match unit with
+            | 6 -> if home then 0 else book.Story.Total - 1
+            | 10 | 15 -> if home then fst (spanAt book unit s.Start) else snd (spanAt book unit s.Start) - 1
+            | _ -> if home then lineStart book s.Start else lineEnd book (active book)
+        moveTo book p (extend args 1)
+        VLong 1
+    let sideways (sign: int) (book: MacroDocument) (args: Value array) =
+        let unit = intArg args 0 1
+        let count = sign * intArg args 1 1
+        let s = book.Selection
+        let ext = extend args 2
+        if not ext && s.End > s.Start then
+            let collapsed = if count > 0 then s.End else s.Start
+            collapsedAt book (moveBy book unit collapsed (if count > 0 then count - 1 else count + 1))
+        elif unit = 12 then
+            // (A cell to the right: the next cell, selected as Word selects it.)
+            let spans = unitSpans book 12
+            let i = spans |> Array.tryFindIndex (fun (a, b) -> a <= s.Start && s.Start < b) |> Option.defaultValue -1
+            let j = i + count
+            if j >= 0 && j < spans.Length then
+                let a, b = spans.[j]
+                s.Start <- a; s.End <- b - 1; s.ActiveAtStart <- false
+        else moveTo book (moveBy book unit (active book) count) ext
+        VLong (abs count)
+    let upOrDown (sign: int) (book: MacroDocument) (args: Value array) =
+        let unit = intArg args 0 5
+        let count = sign * intArg args 1 1
+        let unit = if unit = 5 || unit = 7 then 4 else unit
+        let from = active book
+        let target =
+            if count > 0 then moveBy book unit from count
+            else moveBy book unit (lineStart book from) (count + (if lineStart book from = from then 0 else 1))
+        moveTo book target (extend args 2)
+        VLong (abs count)
+    let selectSpanOf (unit: int) (book: MacroDocument) (_: Value array) =
+        let s = book.Selection
+        let a, b = spanAt book unit s.Start
+        s.Start <- a; s.End <- b
+        VEmpty
+    let clipboard name = method name [] (fun (_: MacroDocument) _ -> notAvailable ("Selection." + name.ToLowerInvariant() + " (the clipboard)"))
+    let own : Member<MacroDocument> list =
+        [ get "Font" (fun book ->
+            let s = book.Selection
+            if s.End = s.Start then
+                if book.PendingAt <> s.Start then
+                    book.Pending.Clear()
+                    book.PendingAt <- s.Start
+                fontObject book (CaretFont s)
+            else fontObject book (RangeFont s))
+          get "Range" (fun book -> rangeOf book book.Selection.Start book.Selection.End)
+          get "Find" (fun book -> findObject book book.Selection true)
+          get "Type" (fun book -> VLong (if book.Selection.End > book.Selection.Start then 2 else 1))
+          get "Active" (fun _ -> VBoolean true)
+          get "IsEndOfRowMark" (fun _ -> VBoolean false)
+          prop "Start" (fun book -> VLong book.Selection.Start) (fun book value -> book.Pending.Clear(); setRangeStart (asRange book) value)
+          prop "End" (fun book -> VLong book.Selection.End) (fun book value -> book.Pending.Clear(); setRangeEnd (asRange book) value)
+          method "TypeText" [ "Text" ] (fun book args -> typeText book (textArg args))
+          method "TypeParagraph" [] (fun book _ -> typeText book "\r")
+          method "TypeBackspace" [] (fun book _ ->
+              let s = book.Selection
+              if s.End > s.Start then
+                  book.Replace(s.Start, s.End, "", s) |> ignore
+                  collapsedAt book s.Start
+              elif s.Start > 0 then
+                  let p, _ = book.Replace(s.Start - 1, s.Start, "", s)
+                  collapsedAt book p
+              VEmpty)
+          method "HomeKey" [ "Unit"; "Extend" ] (homeOrEnd true)
+          method "EndKey" [ "Unit"; "Extend" ] (homeOrEnd false)
+          method "MoveRight" [ "Unit"; "Count"; "Extend" ] (sideways 1)
+          method "MoveLeft" [ "Unit"; "Count"; "Extend" ] (sideways -1)
+          method "MoveDown" [ "Unit"; "Count"; "Extend" ] (upOrDown 1)
+          method "MoveUp" [ "Unit"; "Count"; "Extend" ] (upOrDown -1)
+          method "WholeStory" [] (fun book _ -> let s = book.Selection in s.Start <- 0; s.End <- book.Story.Total; VEmpty)
+          method "Collapse" [ "Direction" ] (fun book args -> book.Pending.Clear(); collapseRange (asRange book) args)
+          method "Delete" [ "Unit"; "Count" ] (fun book args ->
+              let s = book.Selection
+              if s.End > s.Start then
+                  book.Replace(s.Start, s.End, "", s) |> ignore
+                  collapsedAt book s.Start
+              else
+                  let count = intArg args 1 1
+                  book.Replace(s.Start, moveBy book (intArg args 0 1) s.Start count, "", s) |> ignore
+                  collapsedAt book s.Start
+              VLong 1)
+          method "EscapeKey" [] (fun book _ -> collapsedAt book book.Selection.Start; VEmpty)
+          method "Extend" [] (fun _ _ -> VEmpty)
+          method "SelectRow" [] (selectSpanOf 10)
+          method "SelectCell" [] (selectSpanOf 12)
+          method "SelectColumn" [] (selectSpanOf 12)
+          method "GoTo" [] (fun _ _ -> VEmpty)
+          clipboard "Copy"
+          clipboard "Cut"
+          clipboard "Paste"
+          clipboard "PasteAndFormat" ]
+    // (The Selection is a Range too: its text, formatting, InsertAfter, Move...)
+    HostMembers.Table<MacroDocument>("Selection", extending own (rangeMembers |> List.map (lift asRange)), defaultMember = "Text")
 
-// ---- bookmarks, styles ----------------------------------------------------------------------------------------
+// ---- bookmarks ------------------------------------------------------------------------------------------------
 
-and private bookmarksObject (book: MacroDocument) (within: LiveRange option) : Value =
-    let infos () =
-        bookmarkInfos book.Document
-        |> List.map (fun info -> info, book.PositionOf(info.BlockId, info.StartOffset), book.PositionOf(info.BlockId, info.EndOffset))
-        |> List.filter (fun (_, s, e) -> match within with Some r -> s >= r.Start && e <= r.End | None -> true)
+bookmarkType <-
+    HostMembers.Table<BookmarkState>("Bookmark",
+        [ get "Name" (fun b -> VString b.Info.Name)
+          get "Range" (fun b -> rangeOf b.Book b.S b.E)
+          get "Start" (fun b -> VLong b.S)
+          get "End" (fun b -> VLong b.E)
+          get "Empty" (fun b -> VBoolean (b.S = b.E))
+          method "Delete" [] (fun b _ -> b.Book.SetFormatting (removeBookmark b.Info.Id b.Book.Document); VEmpty)
+          method "Select" [] (fun b _ -> selectSpan b.Book (b.S, b.E)) ],
+        defaultMember = "Name")
+
+bookmarksType <-
+    let infos (w: WithinState) =
+        bookmarkInfos w.Book.Document
+        |> List.map (fun info -> info, w.Book.PositionOf(info.BlockId, info.StartOffset), w.Book.PositionOf(info.BlockId, info.EndOffset))
+        |> List.filter (fun (_, s, e) -> match w.Within with Some r -> s >= r.Start && e <= r.End | None -> true)
         |> List.sortBy (fun (_, s, _) -> s)
-    let bookmark (info: BookmarkInfo, s: int, e: int) =
-        makeObject "Bookmark"
-            (fun name ->
-                match name with
-                | "" | "_default" | "name" -> Some (VString info.Name)
-                | "range" -> Some (rangeOf book s e)
-                | "start" -> Some (VLong s)
-                | "end" -> Some (VLong e)
-                | "empty" -> Some (VBoolean (s = e))
-                | _ -> None)
-            noSet
-            (fun name _ ->
-                match name with
-                | "delete" -> book.SetFormatting (removeBookmark info.Id book.Document); Some VEmpty
-                | "select" -> book.Selection.Start <- s; book.Selection.End <- e; Some VEmpty
-                | _ -> None)
-            None
-    collectionObject "Bookmarks" (fun () -> infos () |> List.map bookmark |> List.toArray)
-        (fun _ -> None) noSet
-        (fun name args ->
-            match name with
-            | "" | "_default" | "item" ->
-                match arg args 0 with
-                | Some (VString key) ->
-                    match infos () |> List.tryFind (fun (info, _, _) -> eq info.Name key) with
-                    | Some b -> Some (bookmark b)
-                    | None -> fail 5941 (sprintf "The requested member of the collection does not exist (bookmark \"%s\")." key)
-                | _ -> None
-            | "exists" ->
-                let key = toText (defaultArg (arg args 0) (VString ""))
-                Some (VBoolean (infos () |> List.exists (fun (info, _, _) -> eq info.Name key)))
-            | "add" ->
-                let name' = toText (defaultArg (arg args 0) (VString ""))
-                if name' = "" || not (Char.IsLetter name'.[0]) then fail 5828 "Bookmark names must begin with a letter."
-                let s, e =
-                    match arg args 1 |> Option.bind rangeBounds with
-                    | Some b -> b
-                    | None -> book.Selection.Start, book.Selection.End
-                // An old one of that name goes; the new one is on the text of its first paragraph.
-                match infos () |> List.tryFind (fun (info, _, _) -> eq info.Name name') with
-                | Some (info, _, _) -> book.SetFormatting (removeBookmark info.Id book.Document)
-                | None -> ()
-                let seg = book.Story.Segments.[locate book.Story s]
-                if seg.Para <> "" then
-                    let a = s - seg.TextStart
-                    let b = min (seg.TextStart + seg.Length) e - seg.TextStart
-                    let id = string (book.NextBookmarkId())
-                    book.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.setBookmark a (max 0 (b - a)) id name' p.Buffer })
-                match infos () |> List.tryFind (fun (info, _, _) -> eq info.Name name') with
-                | Some b -> Some (bookmark b)
-                | None -> Some VNothing
-            | _ -> None)
+    let named (w: WithinState) (key: string) = infos w |> List.tryFind (fun (info, _, _) -> eq info.Name key)
+    let bookmark (book: MacroDocument) (info: BookmarkInfo, s: int, e: int) = bookmarkType.Wrap { Book = book; Info = info; S = s; E = e }
+    let items (w: WithinState) = infos w |> List.map (bookmark w.Book) |> List.toArray
+    collectionType "Bookmarks" items
+        (Some (fun w args ->
+            match arg args 0 with
+            | Some (VString key) ->
+                match named w key with
+                | Some b -> bookmark w.Book b
+                | None -> fail 5941 (sprintf "The requested member of the collection does not exist (bookmark \"%s\")." key)
+            | _ -> itemAt "Bookmarks" (items w) args))
+        [ method "Exists" [ "Name" ] (fun w args -> VBoolean (named w (textArg args)).IsSome)
+          method "Add" [ "Name"; "Range" ] (fun w args ->
+              let book = w.Book
+              let name' = textArg args
+              if name' = "" || not (Char.IsLetter name'.[0]) then fail 5828 "Bookmark names must begin with a letter."
+              let s, e =
+                  match arg args 1 |> Option.bind rangeBounds with
+                  | Some b -> b
+                  | None -> book.Selection.Start, book.Selection.End
+              // An old one of that name goes; the new one is on the text of its first paragraph.
+              match named w name' with
+              | Some (info, _, _) -> book.SetFormatting (removeBookmark info.Id book.Document)
+              | None -> ()
+              let seg = book.Story.Segments.[locate book.Story s]
+              if seg.Para <> "" then
+                  let a = s - seg.TextStart
+                  let b = min (seg.TextStart + seg.Length) e - seg.TextStart
+                  let id = string (book.NextBookmarkId())
+                  book.UpdateParagraph(seg.Para, fun p -> { p with Buffer = TB.setBookmark a (max 0 (b - a)) id name' p.Buffer })
+              match named w name' with
+              | Some b -> bookmark book b
+              | None -> VNothing) ]
 
-and private styleObject (book: MacroDocument) (id: string) : Value =
-    let style () = book.Document.Styles |> List.tryFind (fun s -> s.Id = id)
-    makeObject "Style"
-        (fun name ->
-            match name with
-            | "" | "_default" | "namelocal" | "name" -> Some (VString (match style () with Some s -> styleDisplayName s | None -> id))
-            | "font" -> Some (fontObject book (StyleFont id))
-            | "paragraphformat" -> Some (styleParagraphFormat book id)
-            | "type" -> Some (VLong (match style () |> Option.map (fun s -> s.StyleType) with Some "character" -> 2 | Some "table" -> 3 | _ -> 1))
-            | "baseStyle" | "basestyle" -> Some (VString (style () |> Option.bind (fun s -> s.BasedOn) |> Option.defaultValue ""))
-            | "builtin" -> Some (VBoolean true)
-            | "inuse" -> Some (VBoolean true)
-            | "quickstyle" -> Some (VBoolean (style () |> Option.exists (fun s -> s.IsQuickStyle)))
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "quickstyle" | "automaticallyupdate" | "nofollowup" -> true
-            | "nextparagraphstyle" -> book.ChangeStyle(id, fun s -> { s with Next = Some (toText value |> compact) }); true
-            | "basestyle" -> book.ChangeStyle(id, fun s -> { s with BasedOn = Some (toText value |> compact) }); true
-            | _ -> false)
-        noCall None
+// ---- the document, its window, the application -----------------------------------------------------------------
 
-and private styleParagraphFormat (book: MacroDocument) (id: string) : Value =
-    makeObject "ParagraphFormat"
-        (fun name ->
-            let s = book.Document.Styles |> List.tryFind (fun x -> x.Id = id)
-            paragraphRead (match s with Some x -> fallbackOfNamed x | None -> noFallback) name defaultMetadata)
-        (fun name value ->
-            match name with
-            | "alignment" -> book.ChangeStyle(id, fun s -> { s with Alignment = Some (alignmentOf (toInt value)) }); true
-            | "spacebefore" -> book.ChangeStyle(id, fun s -> { s with SpacingBefore = Some (toFloat value) }); true
-            | "spaceafter" -> book.ChangeStyle(id, fun s -> { s with SpacingAfter = Some (toFloat value) }); true
-            | "leftindent" -> book.ChangeStyle(id, fun s -> { s with IndentLeft = Some (pxOfPt (toFloat value)) }); true
-            | "rightindent" -> book.ChangeStyle(id, fun s -> { s with IndentRight = Some (pxOfPt (toFloat value)) }); true
-            | "firstlineindent" -> book.ChangeStyle(id, fun s -> { s with FirstLineIndent = Some (pxOfPt (toFloat value)) }); true
-            | "keepwithnext" -> book.ChangeStyle(id, fun s -> { s with KeepNext = Some (toBool value) }); true
-            | "keeptogether" -> book.ChangeStyle(id, fun s -> { s with KeepLines = Some (toBool value) }); true
-            | "linespacing" -> book.ChangeStyle(id, fun s -> { s with LineSpacing = Some (toFloat value / 12.0); LineSpacingRule = Some "auto" }); true
-            | "linespacingrule" -> true
-            | _ -> false)
-        noCall None
+documentType <-
+    let whole (d: NamedState) : WithinState = { Book = d.Book; Within = None }
+    let empty name = get name (fun (_: NamedState) -> emptyCollection ())
+    let noEffect name = set name (fun (_: NamedState) _ -> ())
+    let nothing name = method name [] (fun (_: NamedState) _ -> VEmpty)
+    let notRun name parameters =
+        method name parameters (fun (d: NamedState) _ ->
+            d.Book.Hooks.Output (sprintf "(Document.%s is not run here: the host saves the document)" ((name: string).ToLowerInvariant()))
+            VEmpty)
+    HostMembers.Table<NamedState>("Document",
+        [ get "Content" (fun d -> rangeOf d.Book 0 d.Book.Story.Total)
+          get "Paragraphs" (fun d -> paragraphsObject d.Book None)
+          get "Words" (fun d -> wordsType.Wrap (whole d))
+          get "Characters" (fun d -> charactersType.Wrap (whole d))
+          get "Sentences" (fun d -> sentencesType.Wrap (whole d))
+          get "Tables" (fun d -> tablesObject d.Book None)
+          get "Bookmarks" (fun d -> bookmarksObject d.Book None)
+          get "Styles" (fun d -> stylesType.Wrap d.Book)
+          get "PageSetup" (fun d -> pageSetupType.Wrap d.Book)
+          get "Variables" (fun d -> variablesType.Wrap d.Book)
+          get "Name" (fun d -> VString d.Book.Hooks.FileName)
+          get "FullName" (fun d -> VString d.Book.Hooks.FileName)
+          get "Path" (fun _ -> VString "")
+          accepted "Saved" (VBoolean false)
+          get "ReadOnly" (fun _ -> VBoolean false)
+          accepted "TrackRevisions" (VBoolean false)
+          get "Application" (fun d -> applicationObject d.Book)
+          get "ActiveWindow" (fun d -> windowObject d.Book)
+          get "Selection" (fun d -> selectionObject d.Book)
+          empty "InlineShapes"
+          empty "Shapes"
+          empty "Fields"
+          empty "Comments"
+          empty "Revisions"
+          empty "Footnotes"
+          empty "Endnotes"
+          empty "Hyperlinks"
+          empty "TablesOfContents"
+          empty "Lists"
+          noEffect "ShowGrammaticalErrors"
+          noEffect "ShowSpellingErrors"
+          noEffect "SpellingChecked"
+          noEffect "GrammarChecked"
+          method "Range" [ "Start"; "End" ] (fun d args ->
+              let total = d.Book.Story.Total
+              let s = intArg args 0 0
+              let e = intArg args 1 (if arg args 0 |> Option.isSome && args.Length = 1 then s else total)
+              let e = if args.Length = 0 then total else e
+              rangeOf d.Book (max 0 (min total s)) (max 0 (min total e)))
+          method "ComputeStatistics" [ "Statistic"; "IncludeFootnotesAndEndnotes" ] (fun d args -> VLong (statistics d.Book 0 d.Book.Story.Total (intArg args 0 0)))
+          nothing "Activate"
+          nothing "Select"
+          nothing "Repaginate"
+          nothing "UndoClear"
+          notRun "Save" []
+          notRun "SaveAs" [ "FileName"; "FileFormat" ]
+          notRun "SaveAs2" [ "FileName"; "FileFormat" ]
+          notRun "Close" [ "SaveChanges" ]
+          notRun "PrintOut" []
+          notRun "ExportAsFixedFormat" []
+          method "Undo" [] (fun _ _ -> VBoolean false)
+          method "Redo" [] (fun _ _ -> VBoolean false) ])
 
-and private stylesObject (book: MacroDocument) : Value =
-    let lookup (key: Value) =
-        let name =
-            match scalarOf key with
-            | VInteger n | VLong n -> (match builtInStyleName n with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
-            | VDouble d -> (match builtInStyleName (int d) with Some s -> s | None -> fail 5941 "The requested member of the collection does not exist.")
-            | v -> toText v
-        if eq name "Normal" && not (book.Document.Styles |> List.exists (fun s -> s.Id = "Normal")) then
-            // (A new document's default paragraph style: Normal, as the document defaults make it.)
-            let normal = { plainStyle with Id = "Normal"; Name = Some "Normal"; IsDefault = true; BasedOn = None; Next = None; UiPriority = Some 0 }
-            book.SetFormatting { book.Document with Styles = book.Document.Styles @ [ normal ] }
-        match book.FindStyle name with
-        | Some s -> styleObject book s.Id
-        | None -> fail 5941 (sprintf "The requested member of the collection does not exist (style \"%s\")." name)
-    collectionObject "Styles"
-        (fun () -> book.Document.Styles |> List.map (fun s -> styleObject book s.Id) |> List.toArray)
-        (fun _ -> None) noSet
-        (fun name args ->
-            match name with
-            | "" | "_default" | "item" -> arg args 0 |> Option.map lookup
-            | "add" ->
-                let name' = toText (defaultArg (arg args 0) (VString "Style1"))
-                let kind = match intArg args 1 1 with 2 -> "character" | 3 -> "table" | _ -> "paragraph"
-                let id = compact name'
-                if not (book.Document.Styles |> List.exists (fun s -> s.Id = id)) then
-                    book.SetFormatting { book.Document with Styles = book.Document.Styles @ [ { plainStyle with Id = id; Name = Some name'; StyleType = kind } ] }
-                Some (styleObject book id)
-            | _ -> None)
+windowType <-
+    let display name = accepted name (VBoolean true)
+    let nothing name = method name [] (fun (_: NamedState) _ -> VEmpty)
+    HostMembers.Table<NamedState>("Window",
+        [ get "View" (fun _ -> viewType.Wrap ())
+          get "ActivePane" (fun _ -> paneType.Wrap ())
+          get "Selection" (fun w -> selectionObject w.Book)
+          prop "Caption" (fun w -> VString w.Book.Hooks.FileName) (fun _ _ -> ())
+          accepted "WindowState" (VLong 0)
+          display "DisplayRulers"
+          display "DisplayVerticalRuler"
+          display "DisplayHorizontalScrollBar"
+          display "DisplayVerticalScrollBar"
+          nothing "Activate"
+          nothing "ScrollIntoView"
+          nothing "SmallScroll"
+          nothing "LargeScroll" ])
 
-// ---- the document, the application ---------------------------------------------------------------------------
+documentsType <-
+    collectionType "Documents" (fun (book: MacroDocument) -> [| documentObject book |])
+        (Some (fun book args ->
+            match arg args 0 with
+            | Some (VString _) | Some (VLong 1) | Some (VDouble 1.0) -> documentObject book
+            | _ -> noSuchMember ()))
+        [ method "Add" [ "Template"; "NewTemplate"; "DocumentType"; "Visible" ] (fun book _ ->
+            // (One document is open in the editor: a new document is the editor's, made empty.)
+            let para = newEmptyParagraph ()
+            book.SetStructure { book.Document with Blocks = [ Paragraph para ] }
+            book.Selection.Start <- 0; book.Selection.End <- 0
+            documentObject book)
+          method "Open" [] (fun _ _ -> notAvailable "Documents.Open (files)") ]
 
-and private documentObject (book: MacroDocument) : Value =
-    let content () = rangeOf book 0 book.Story.Total
-    let pageSetup () =
-        let px (v: float) = VDouble (ptOfPx v)
-        makeObject "PageSetup"
-            (fun name ->
-                let p = book.Document.PageSetup
-                match name with
-                | "topmargin" -> Some (px p.MarginTop)
-                | "bottommargin" -> Some (px p.MarginBottom)
-                | "leftmargin" -> Some (px p.MarginLeft)
-                | "rightmargin" -> Some (px p.MarginRight)
-                | "pagewidth" -> Some (px p.PageWidth)
-                | "pageheight" -> Some (px p.PageHeight)
-                | "orientation" -> Some (VLong (if p.PageWidth > p.PageHeight then 1 else 0))
-                | "headerdistance" -> Some (px p.HeaderDistance)
-                | "footerdistance" -> Some (px p.FooterDistance)
-                | _ -> None)
-            (fun name value ->
-                let v = pxOfPt (toFloat value)
-                let set change = book.SetStructure { book.Document with PageSetup = change book.Document.PageSetup }; true
-                match name with
-                | "topmargin" -> set (fun p -> { p with MarginTop = v })
-                | "bottommargin" -> set (fun p -> { p with MarginBottom = v })
-                | "leftmargin" -> set (fun p -> { p with MarginLeft = v })
-                | "rightmargin" -> set (fun p -> { p with MarginRight = v })
-                | "pagewidth" -> set (fun p -> { p with PageWidth = v })
-                | "pageheight" -> set (fun p -> { p with PageHeight = v })
-                | "headerdistance" -> set (fun p -> { p with HeaderDistance = v })
-                | "footerdistance" -> set (fun p -> { p with FooterDistance = v })
-                | "orientation" ->
-                    let landscape = toInt value = 1
-                    set (fun p -> if (p.PageWidth > p.PageHeight) = landscape then p else { p with PageWidth = p.PageHeight; PageHeight = p.PageWidth })
-                | _ -> false)
-            noCall None
-    makeObject "Document"
-        (fun name ->
-            match name with
-            | "content" -> Some (content ())
-            | "paragraphs" -> Some (paragraphsObject book (fun () -> 0, book.Story.Total))
-            | "words" -> Some (spansObject book "Words" (fun () -> 0, book.Story.Total) 2)
-            | "characters" -> Some (spansObject book "Characters" (fun () -> 0, book.Story.Total) 1)
-            | "sentences" -> Some (spansObject book "Sentences" (fun () -> 0, book.Story.Total) 3)
-            | "tables" -> Some (tablesObject book (fun () -> 0, book.Story.Total))
-            | "bookmarks" -> Some (bookmarksObject book None)
-            | "styles" -> Some (stylesObject book)
-            | "pagesetup" -> Some (pageSetup ())
-            | "variables" -> Some (variablesObject book)
-            | "name" -> Some (VString book.Hooks.FileName)
-            | "fullname" -> Some (VString book.Hooks.FileName)
-            | "path" -> Some (VString "")
-            | "saved" -> Some (VBoolean false)
-            | "readonly" -> Some (VBoolean false)
-            | "trackrevisions" -> Some (VBoolean false)
-            | "application" -> Some (applicationObject book)
-            | "activewindow" -> Some (windowObject book)
-            | "selection" -> Some (selectionObject book)
-            | "range" | "computestatistics" | "undo" -> None
-            | "inlineshapes" | "shapes" | "fields" | "comments" | "revisions" | "footnotes" | "endnotes" | "hyperlinks" | "tablesofcontents" | "lists" ->
-                Some (collectionObject "Collection" (fun () -> [||]) (fun _ -> None) noSet noCall)
-            | _ -> None)
-        (fun name _ ->
-            match name with
-            | "saved" | "trackrevisions" | "showgrammaticalerrors" | "showspellingerrors" | "spellingchecked" | "grammarchecked" -> true
-            | _ -> false)
-        (fun name args ->
-            match name with
-            | "range" ->
-                let total = book.Story.Total
-                let s = intArg args 0 0
-                let e = intArg args 1 (if arg args 0 |> Option.isSome && args.Length = 1 then s else total)
-                let e = if args.Length = 0 then total else e
-                Some (rangeOf book (max 0 (min total s)) (max 0 (min total e)))
-            | "computestatistics" -> Some (VLong (statistics book 0 book.Story.Total (intArg args 0 0)))
-            | "activate" | "select" | "repaginate" | "undoclear" -> Some VEmpty
-            | "save" | "saveas" | "saveas2" | "close" | "printout" | "exportasfixedformat" ->
-                book.Hooks.Output (sprintf "(Document.%s is not run here: the host saves the document)" name)
-                Some VEmpty
-            | "undo" | "redo" -> Some (VBoolean false)
-            | _ -> None)
-        None
-
-/// Document.Variables: values kept by name for the run (Add, Item(name).Value, Count).
-and private variablesObject (book: MacroDocument) : Value =
-    let names () = [ for kv in book.Settings do if kv.Key.StartsWith "var:" then yield kv.Key.Substring 4 ]
-    let variable (key: string) =
-        makeObject "Variable"
-            (fun name ->
-                match name with
-                | "" | "_default" | "value" -> (match book.Settings.TryGetValue ("var:" + key) with | true, v -> Some v | _ -> Some VEmpty)
-                | "name" -> Some (VString key)
-                | _ -> None)
-            (fun name value ->
-                match name with
-                | "" | "_default" | "value" -> book.Settings.["var:" + key] <- VString (toText value); true
-                | _ -> false)
-            (fun name _ -> match name with "delete" -> book.Settings.Remove("var:" + key) |> ignore; Some VEmpty | _ -> None)
-            None
-    let find (key: string) = names () |> List.tryFind (eq key)
-    collectionObject "Variables" (fun () -> names () |> List.map variable |> List.toArray) (fun _ -> None) noSet
-        (fun name args ->
-            match name with
-            | "" | "_default" | "item" ->
-                match arg args 0 with
-                | Some (VString key) -> (match find key with Some k -> Some (variable k) | None -> fail 5825 "Object has been deleted.")
-                | _ -> None
-            | "add" ->
-                let key = toText (defaultArg (arg args 0) (VString ""))
-                if (find key).IsSome then fail 4172 "The variable name already exists."
-                book.Settings.["var:" + key] <- VString (toText (defaultArg (arg args 1) (VString "")))
-                Some (variable key)
-            | _ -> None)
-
-and private windowObject (book: MacroDocument) : Value =
-    let view =
-        makeObject "View"
-            (fun name -> match name with "type" -> Some (VLong 3) | "showall" | "showhiddentext" | "showfieldcodes" -> Some (VBoolean false) | "zoom" -> Some (makeObject "Zoom" (fun n -> if n = "percentage" then Some (VLong 100) else None) (fun _ _ -> true) noCall None) | _ -> None)
-            (fun name _ -> match name with "type" | "showall" | "showhiddentext" | "showfieldcodes" | "showbookmarks" | "showparagraphs" | "draft" -> true | _ -> false)
-            noCall None
-    makeObject "Window"
-        (fun name ->
-            match name with
-            | "view" -> Some view
-            | "activepane" -> Some (makeObject "Pane" (fun n -> if n = "view" then Some view else None) noSet (fun n _ -> if n = "smallscroll" || n = "largescroll" then Some VEmpty else None) None)
-            | "selection" -> Some (selectionObject book)
-            | "caption" -> Some (VString book.Hooks.FileName)
-            | "windowstate" -> Some (VLong 0)
-            | "displayrulers" | "displayverticalruler" | "displayhorizontalscrollbar" | "displayverticalscrollbar" -> Some (VBoolean true)
-            | _ -> None)
-        (fun name _ -> match name with "windowstate" | "caption" | "displayrulers" | "displayverticalruler" | "displayhorizontalscrollbar" | "displayverticalscrollbar" -> true | _ -> false)
-        (fun name _ -> match name with "activate" | "scrollintoview" | "smallscroll" | "largescroll" -> Some VEmpty | _ -> None)
-        None
-
-and private optionsObject (book: MacroDocument) : Value =
-    let known = [ "defaulthighlightcolorindex", VLong 7; "replaceselection", VBoolean true; "checkspellingasyoutype", VBoolean true
-                  "checkgrammarasyoutype", VBoolean true; "autoformatasyoutypereplacequotes", VBoolean true; "smartcutpaste", VBoolean true
-                  "pagination", VBoolean true; "measurementunit", VLong 0; "autoformatasyoutypeapplynumberedlists", VBoolean true ]
-    makeObject "Options"
-        (fun name ->
-            match book.Settings.TryGetValue name with
-            | true, v -> Some v
-            | _ -> known |> List.tryPick (fun (k, v) -> if k = name then Some v else None))
-        (fun name value ->
-            if known |> List.exists (fun (k, _) -> k = name) then
-                book.Settings.[name] <- value
-                true
-            else false)
-        noCall None
-
-and private applicationObject (book: MacroDocument) : Value =
-    let flag name fallback = match book.Settings.TryGetValue ("app:" + name) with | true, v -> v | _ -> fallback
-    makeObject "Application"
-        (fun name ->
-            match name with
-            | "activedocument" | "thisdocument" -> Some (documentObject book)
-            | "documents" -> Some (documentsObject book)
-            | "selection" -> Some (selectionObject book)
-            | "options" -> Some (optionsObject book)
-            | "activewindow" -> Some (windowObject book)
-            | "name" -> Some (VString "Microsoft Word")
-            | "version" -> Some (VString "16.0")
-            | "build" -> Some (VString "16.0")
-            | "username" -> Some (flag "username" (VString "User"))
-            | "userinitials" -> Some (VString "U")
-            | "pathseparator" -> Some (VString "\\")
-            | "screenupdating" -> Some (flag "screenupdating" (VBoolean true))
-            | "displayalerts" -> Some (flag "displayalerts" (VLong -1))
-            | "visible" -> Some (VBoolean true)
-            | "statusbar" -> Some (flag "statusbar" (VString ""))
-            | "caption" -> Some (VString "Microsoft Word")
-            | "application" -> Some (applicationObject book)
-            | _ -> None)
-        (fun name value ->
-            match name with
-            | "screenupdating" | "displayalerts" | "username" | "visible" | "windowstate" | "displaystatusbar" ->
-                book.Settings.["app:" + name] <- value; true
-            | "statusbar" -> book.Settings.["app:statusbar"] <- value; true
-            | _ -> false)
-        (fun name args ->
-            let pts factor = Some (VDouble (toFloat (defaultArg (arg args 0) (VLong 0)) * factor))
-            match name with
-            | "centimeterstopoints" -> pts (72.0 / 2.54)
-            | "millimeterstopoints" -> pts (72.0 / 25.4)
-            | "inchestopoints" -> pts 72.0
-            | "linestopoints" -> pts 12.0
-            | "picastopoints" -> pts 12.0
-            | "pointstocentimeters" -> pts (2.54 / 72.0)
-            | "pointstoinches" -> pts (1.0 / 72.0)
-            | "pointstomillimeters" -> pts (25.4 / 72.0)
-            | "screenrefresh" | "activate" | "quit" | "scroll" | "wait" -> Some VEmpty
-            | _ -> None)
-        None
-
-and private documentsObject (book: MacroDocument) : Value =
-    collectionObject "Documents" (fun () -> [| documentObject book |])
-        (fun _ -> None) noSet
-        (fun name args ->
-            match name with
-            | "add" ->
-                // (One document is open in the editor: a new document is the editor's, made empty.)
-                let para = newEmptyParagraph ()
-                book.SetStructure { book.Document with Blocks = [ Paragraph para ] }
-                book.Selection.Start <- 0; book.Selection.End <- 0
-                ignore args
-                Some (documentObject book)
-            | "open" -> notAvailable "Documents.Open (files)"
-            | "" | "_default" | "item" ->
-                match arg args 0 with
-                | Some (VString _) | Some (VLong 1) | Some (VDouble 1.0) -> Some (documentObject book)
-                | _ -> noSuchMember ()
-            | _ -> None)
+applicationType <-
+    let key (name: string) = "app:" + name.ToLowerInvariant()
+    let setting name (fallback: Value) =
+        prop name (fun (book: MacroDocument) -> match book.Settings.TryGetValue (key name) with | true, v -> v | _ -> fallback)
+                  (fun book value -> book.Settings.[key name] <- value)
+    let kept name = set name (fun (book: MacroDocument) value -> book.Settings.[key name] <- value)
+    let text name (value: string) = get name (fun (_: MacroDocument) -> VString value)
+    let nothing name = method name [] (fun (_: MacroDocument) _ -> VEmpty)
+    HostMembers.Table<MacroDocument>("Application",
+        [ get "ActiveDocument" documentObject
+          get "ThisDocument" documentObject
+          get "Documents" documentsObject
+          get "Selection" selectionObject
+          get "Options" (fun book -> optionsType.Wrap book)
+          get "ActiveWindow" windowObject
+          text "Name" "Microsoft Word"
+          text "Version" "16.0"
+          text "Build" "16.0"
+          setting "UserName" (VString "User")
+          text "UserInitials" "U"
+          text "PathSeparator" "\\"
+          setting "ScreenUpdating" (VBoolean true)
+          setting "DisplayAlerts" (VLong -1)
+          prop "Visible" (fun _ -> VBoolean true) (fun book value -> book.Settings.[key "Visible"] <- value)
+          kept "WindowState"
+          kept "DisplayStatusBar"
+          setting "StatusBar" (VString "")
+          text "Caption" "Microsoft Word"
+          get "Application" applicationObject
+          nothing "ScreenRefresh"
+          nothing "Activate"
+          nothing "Quit"
+          nothing "Scroll"
+          nothing "Wait" ]
+        @ (conversions |> List.map (fun (name, factor) -> method name [] (fun _ args -> convert factor args))))
 
 /// The objects a macro starts from, by name (Application, ActiveDocument, ThisDocument, Selection,
 /// Documents, Options, ActiveWindow, the unit conversions), and the wd* constants.
 let hostGlobals (book: MacroDocument) : (string * Value) list =
-    let app = applicationObject book
-    let appHost = match app with VHostObject h -> h | _ -> failwith "application"
-    let forward (name: string) =
-        // (A global that is what Application has now: its members, its default call and For Each.)
-        let current () = match appHost.GetMember name with Some (VHostObject h) -> h | _ -> failwith name
-        VHostObject (Host(name,
-                          (fun m -> (current ()).GetMember m),
-                          (fun m v -> (current ()).SetMember m v),
-                          (fun m args -> (current ()).CallMethod m args),
-                          Some (fun () -> match (current ()).Enumerate () with Some items -> items | None -> raiseVbError 451)) :> IHostObject)
-    let conversion (name: string) =
-        VHostObject (Host(name, (fun _ -> None), (fun _ _ -> false),
-                          (fun m args -> if m = "" || eq m "_Default" then appHost.CallMethod name args else unsupported name m), None) :> IHostObject)
-    [ "Application", app
-      "ActiveDocument", forward "ActiveDocument"
-      "ThisDocument", forward "ActiveDocument"
-      "Selection", forward "Selection"
-      "Documents", forward "Documents"
-      "Options", forward "Options"
-      "ActiveWindow", forward "ActiveWindow"
-      "CentimetersToPoints", conversion "CentimetersToPoints"
-      "MillimetersToPoints", conversion "MillimetersToPoints"
-      "InchesToPoints", conversion "InchesToPoints"
-      "LinesToPoints", conversion "LinesToPoints"
-      "PointsToCentimeters", conversion "PointsToCentimeters"
-      "PointsToInches", conversion "PointsToInches"
-      "DoEvents", VHostObject (Host("DoEvents", (fun _ -> Some (VLong 0)), (fun _ _ -> false), (fun _ _ -> Some (VLong 0)), None) :> IHostObject) ]
+    let globalConversions = [ "CentimetersToPoints"; "MillimetersToPoints"; "InchesToPoints"; "LinesToPoints"; "PointsToCentimeters"; "PointsToInches" ]
+    [ "Application", applicationObject book
+      "ActiveDocument", documentObject book
+      "ThisDocument", documentObject book
+      "Selection", selectionObject book
+      "Documents", documentsObject book
+      "Options", optionsType.Wrap book
+      "ActiveWindow", windowObject book ]
+    @ [ for name, factor in conversions do
+          if List.contains name globalConversions then yield name, conversionType.Wrap { Conversion = name; Factor = factor } ]
+    @ [ "DoEvents", doEventsType.Wrap () ]
     @ constants
+
 
 // ---- running macros ---------------------------------------------------------------------------------------------
 

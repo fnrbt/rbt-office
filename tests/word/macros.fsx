@@ -86,6 +86,16 @@ End Sub""" |> ok "content text"
 check "content text: paragraphs" (texts d3) [ "1. First"; "Second"; "Third" ]
 check "content text: output" (List.ofSeq output) [ " 3 "; "Second\r" ]
 
+// TypeName of the globals, as Word gives them; an unknown member names the type.
+run (docOf [ "x" ]) """
+Sub Main()
+    Debug.Print TypeName(ActiveDocument); " "; TypeName(ThisDocument); " "; TypeName(ActiveWindow); " "; TypeName(ActiveDocument.Paragraphs(1))
+    On Error Resume Next
+    ActiveDocument.Nope = 1
+    Debug.Print Err.Number; Err.Description
+End Sub""" |> ok "type names" |> ignore
+check "type names" (List.ofSeq output) [ "Document Document Window Paragraph"; " 438 Object doesn't support this property or method (Document.Nope)" ]
+
 // ---- character formatting -------------------------------------------------------------------------------------
 let d4 =
     run (docOf [ "Hello world" ]) """
