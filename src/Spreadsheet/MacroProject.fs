@@ -38,6 +38,35 @@ type private Project(modules: ModuleSource list) =
             match program with
             | Result.Ok p -> outcomeOf (p.Run(workbook, hooks, name))
             | Result.Error _ -> (compileFailure ()).Value
+        member _.Start(workbook, hooks, name) =
+            match program with
+            | Result.Error _ ->
+                let failure = (compileFailure ()).Value
+                { new IMacroRun with
+                    member _.Step _ = Some failure
+                    member _.Frame() = None
+                    member _.WaitMs() = 0.0
+                    member _.Cancel() = () }
+            | Result.Ok p ->
+                let begun = p.Begin(workbook, hooks, name, [])
+                let mutable ended : MacroOutcome option =
+                    match begun with
+                    | Result.Error failure -> Some (MacroFailed (failureOf failure))
+                    | Result.Ok () -> None
+                { new IMacroRun with
+                    member _.Step maxInstructions =
+                        match ended with
+                        | Some outcome -> Some outcome
+                        | None ->
+                            match p.Step maxInstructions with
+                            | Running -> None
+                            | Paused _ -> None   // (Stop: no debugger is attached; the next slice carries on.)
+                            | status ->
+                                ended <- Some (outcomeOf (p.Result status))
+                                ended
+                    member _.Frame() = if ended.IsSome then None else p.Frame()
+                    member _.WaitMs() = if ended.IsSome then 0.0 else p.WaitMs()
+                    member _.Cancel() = p.Cancel() }
         member _.Immediate(workbook, hooks, line) =
             match program with
             | Result.Ok p -> outcomeOf (p.Immediate(workbook, hooks, line))

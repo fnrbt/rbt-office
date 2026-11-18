@@ -315,6 +315,8 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     let mutable dirty = false
     let hints = ResizeArray<SheetId * CellAddress>()
     let mutable selection : (SheetId * int * int * int * int) option = None
+    // (Counts the changes, for a host that shows the workbook while the macro runs.)
+    let mutable version = 0
     // (Keyed by lower-cased name: Fable has no case-insensitive comparer.)
     let settingValues = Collections.Generic.Dictionary<string, Value>()
     // The charts the run made, by their relationship id: their sheet and what they show.
@@ -366,7 +368,10 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     member _.Workbook = calculate (); workbook
     member _.SheetOrder = workbook.SheetOrder
     member _.ActiveSheet = workbook.ActiveSheet
-    member _.SetActiveSheet(sheetId: SheetId) = workbook <- setActiveSheet sheetId workbook
+    member _.SetActiveSheet(sheetId: SheetId) =
+        if workbook.ActiveSheet <> sheetId then version <- version + 1
+        workbook <- setActiveSheet sheetId workbook
+    member _.Version = version
     member _.Sheet(sheetId: SheetId) =
         resolve sheetId
         match Map.tryFind sheetId workbook.Sheets with
@@ -387,6 +392,7 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
         let next = if cell.IsSome && (row >= next.RowCount || col >= next.ColCount) then { next with RowCount = max next.RowCount (row + 1); ColCount = max next.ColCount (col + 1) } else next
         workbook <- updateSheetModel sheetId next workbook
         dirty <- true
+        version <- version + 1
         hints.Add((sheetId, address))
     /// The sheet grown to show a cell (the grid shows RowCount x ColCount; a macro may write past them).
     member this.Grow(sheetId: SheetId, row: int, col: int) =
@@ -396,13 +402,16 @@ type MacroWorkbook(initial: Workbook, initialHooks: MacroHooks) =
     /// A change of formats, sizes or merges: no formula reads them.
     member this.ChangeModel(sheetId: SheetId, change: SpreadsheetModel -> SpreadsheetModel) =
         workbook <- updateSheetModel sheetId (change (this.Model sheetId)) workbook
+        version <- version + 1
     member this.Structure(sheetId: SheetId, edit: StructureEdit) =
         resolve sheetId
         let next, _ = applyStructureEdit sheetId edit workbook
         workbook <- next
+        version <- version + 1
         engine <- None
         dirty <- true
     member _.ChangeWorkbook(change: Workbook -> Workbook) =
+        version <- version + 1
         workbook <- change workbook
         engine <- None
         dirty <- true
@@ -989,12 +998,13 @@ let rec private rangeObject (book: MacroWorkbook) (r: RangeRef) : Value =
         let model = book.Model r.Sheet
         let address = { Row = r.Top; Col = r.Left }
         let own = SheetOps.effectiveFormat model address
-        let value = cellAt r.Top r.Left |> Option.map (fun c -> c.Value) |> Option.defaultValue CellValue.Empty
-        match getConditionalFormat address value model with
-        | Some cf -> { own with BgColor = (match cf.BgColor with Some c -> Some c | None -> own.BgColor)
-                                TextColor = (match cf.TextColor with Some c -> Some c | None -> own.TextColor)
-                                Bold = own.Bold || cf.Bold; Italic = own.Italic || cf.Italic }
-        | None -> own
+        if model.ConditionalFormats.IsEmpty then own
+        else
+            cellAt r.Top r.Left |> ignore  // (calculated first)
+            let context = ConditionalFormatting.createContext evaluateFormulaAt (book.Model r.Sheet)
+            match ConditionalFormatting.effectAt context address with
+            | Some effect -> ConditionalFormatting.applyEffect effect own
+            | None -> own
     let displayFormatObject () =
         host "DisplayFormat"
             (fun name ->
@@ -2097,7 +2107,14 @@ let private applicationObject (book: MacroWorkbook) =
                 match rangeRefOf args.[0] with
                 | Some r -> book.SetActiveSheet r.Sheet; book.Selection <- Some (r.Sheet, r.Top, r.Left, r.Bottom, r.Right); Some VEmpty
                 | None -> Some VEmpty
-            elif eq name "OnTime" || eq name "Wait" then Some VEmpty
+            elif eq name "Wait" then
+                // (A run a slice at a time waits until then: MacroProgram.WaitMs; a run to the end does not.)
+                let target = if args.Length > 0 then toFloat args.[0] else 0.0
+                let now = (DateTime.Now - DateTime(1899, 12, 30)).TotalDays
+                let until = if target < 1.0 then Math.Floor now + target else target
+                book.SetSetting("__waitUntil", VDouble until)
+                Some (VBoolean true)
+            elif eq name "OnTime" then Some VEmpty
             elif eq name "InputBox" then
                 let prompt = if args.Length > 0 then toText args.[0] else ""
                 let title = if args.Length > 1 && not (isMissing args.[1]) then toText args.[1] else "Microsoft Excel"
@@ -2243,6 +2260,7 @@ let macroModule (streamName: string) (source: string) : ModuleSource =
 /// A workbook's VBA project compiled against Excel's object model, with its module-level state kept
 /// between runs (as Excel keeps it while the workbook is open). One run at a time.
 type MacroProgram private (project: Project, book: MacroWorkbook, session: Session) =
+    let mutable lastFrame = -1
     let hooksOf (book: MacroWorkbook) : RuntimeHooks =
         { Print = (fun text -> book.Hooks.Output text)
           MsgBox = (fun prompt buttons title -> book.Hooks.MessageBox prompt buttons title)
@@ -2301,6 +2319,7 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
     /// Begin running `name` with arguments on the workbook; drive it with `Step`, end with `Result`.
     member _.Begin(workbook: Workbook, hooks: MacroHooks, name: string, args: Value list) : Result<unit, VbFailure> =
         book.Reset(workbook, hooks)
+        lastFrame <- book.Version
         session.SetHooks(hooksOf book)
         session.Call(name, args)
     /// Begin an Immediate-window line (`?expr`, `Print expr`, statements) on the workbook.
@@ -2309,6 +2328,22 @@ type MacroProgram private (project: Project, book: MacroWorkbook, session: Sessi
         session.SetHooks(hooksOf book)
         session.Immediate(line, ?moduleName = moduleName)
     member _.Step(maxInstructions: int) = session.Step maxInstructions
+    /// The workbook so far, when it changed since the last frame and the screen is on (ScreenUpdating).
+    member _.Frame() : Workbook option =
+        match book.Setting "ScreenUpdating" with
+        | Some (VBoolean false) -> None
+        | _ ->
+            if book.Version = lastFrame then None
+            else
+                lastFrame <- book.Version
+                Some book.Workbook
+    /// How much longer Application.Wait asked to wait, in milliseconds (0: not waiting).
+    member _.WaitMs() : float =
+        match book.Setting "__waitUntil" with
+        | Some (VDouble until) ->
+            let left = (until - (DateTime.Now - DateTime(1899, 12, 30)).TotalDays) * 86400000.0
+            if left <= 0.0 then book.SetSetting("__waitUntil", VEmpty); 0.0 else left
+        | _ -> 0.0
     member _.Cancel() = session.Cancel()
     member _.Location = session.Location
     member _.IsRunning = session.IsRunning

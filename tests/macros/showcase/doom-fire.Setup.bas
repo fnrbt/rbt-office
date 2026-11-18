@@ -1,6 +1,6 @@
 ' Written for the showcase (not from the source): what the gist's workbook had - the fire palette in A28:AI28
 ' (the first 35 colours of Doom's fire palette, black to white-hot, as Fabien Sanglard lists them) - and
-' small square cells for the 78 x 26 fire.
+' small square cells for the 78 x 26 fire, its values hidden.
 Sub Setup()
     Dim palette, i
     palette = Array("070707", "1F0707", "2F0F07", "470F07", "571707", "671F07", "771F07", "8F2707", "9F2F07", _
@@ -12,4 +12,6 @@ Sub Setup()
     Next
     Columns("A:BZ").ColumnWidth = 1.29
     Rows("1:28").RowHeight = 11.25
+    ' (The heat each cell holds is its value: hidden, as the fire is in its colours.)
+    Range("A1:BZ26").NumberFormat = ";;;"
 End Sub

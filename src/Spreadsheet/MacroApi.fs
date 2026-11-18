@@ -40,6 +40,19 @@ type MacroOutcome =
     | MacroDone of workbook: Workbook * selection: (SheetId * int * int * int * int) option
     | MacroFailed of MacroFailure
 
+/// A macro run a slice at a time, so a host can show what it has done so far between slices (as Excel
+/// repaints while a macro runs) and stop it.
+type IMacroRun =
+    /// Run up to `maxInstructions` more: None while it is still running, then how it ended.
+    abstract Step: maxInstructions: int -> MacroOutcome option
+    /// The workbook as the macro has left it so far (calculated) when it changed since the last frame and the
+    /// macro has not switched the screen off (Application.ScreenUpdating = False); None otherwise.
+    abstract Frame: unit -> Workbook option
+    /// How much longer the macro asked to wait (Application.Wait), in milliseconds; 0 when it is not waiting.
+    abstract WaitMs: unit -> float
+    /// Stop it: the next Step ends it (error 18, as Excel's Esc / Ctrl+Break).
+    abstract Cancel: unit -> unit
+
 /// A module of a project: "standard", "class" or "document" (ThisWorkbook, a sheet's module), its
 /// source with the Attribute lines, and its code as the VBA editor shows it (without them).
 type MacroModuleInfo = { Name: string; Kind: string; Source: string; Code: string }
@@ -54,6 +67,9 @@ type IMacroProject =
     /// Whether it has that procedure (`Name` or `Module.Name`).
     abstract Has: string -> bool
     abstract Run: workbook: Workbook * hooks: MacroHooks * name: string -> MacroOutcome
+    /// Start `name` on the workbook, to be run a slice at a time (no limit on its instructions: the host
+    /// stops it with Cancel).
+    abstract Start: workbook: Workbook * hooks: MacroHooks * name: string -> IMacroRun
     /// An Immediate-window line (`?expression`, `Print expression`, statements); a value goes to Output.
     abstract Immediate: workbook: Workbook * hooks: MacroHooks * line: string -> MacroOutcome
     /// An event handler with an optional Target range; None when the project has no such handler.

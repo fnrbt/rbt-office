@@ -759,6 +759,8 @@ type Spreadsheet(container: Element) as this =
     // VBA engine) on first use; until then only whether the workbook has one is known.
     let mutable macroPreserved: XlsxReader.WorkbookPreservation option = None
     let mutable macroProject: Rbt.Spreadsheet.MacroApi.IMacroProject option = None
+    /// The macro running now (RunMacro runs a slice at a time, showing what it does): the grid is read-only meanwhile.
+    let mutable macroRunning: Rbt.Spreadsheet.MacroApi.IMacroRun option = None
     let mutable macroProjectLoad: JS.Promise<Rbt.Spreadsheet.MacroApi.IMacroProject> option = None
     // The code names of the sheets (their modules, for Worksheet_Change ...) and of the workbook.
     let mutable sheetCodeNames: Map<SheetId, string> = Map.empty
@@ -967,7 +969,7 @@ type Spreadsheet(container: Element) as this =
             | _ -> "worksheet"
     let refreshSheetLock () =
         sheetLocked <- sheetKindAt activeSheetIndex <> "worksheet"
-        readOnly <- viewerMode || sheetLocked
+        readOnly <- viewerMode || sheetLocked || macroRunning.IsSome
 
     /// Put the sheet at `index` in place of its stand-in (converting it now
     /// unless a formula already made it). Not a change of the workbook: what
@@ -7800,8 +7802,78 @@ type Spreadsheet(container: Element) as this =
     /// { ok: true } or { ok: false, number, description, module, procedure, line } (Excel's Err.Number and
     /// Err.Description, and where it stopped); once the macros are loaded it runs at once. Throws when
     /// macros are not enabled.
+    ///
+    /// The macro runs a slice at a time: between slices the grid shows what it has done so far (unless it
+    /// switched ScreenUpdating off), Application.Wait waits, and StopMacro stops it. Meanwhile the grid is
+    /// read-only; its history gets the one step when the macro ends.
     member this.RunMacro(name: string) : JS.Promise<obj> =
-        this.RunWhenLoaded(name, (fun project start hooks -> project.Run(start, hooks, name)), "Run macro " + name)
+        if not macrosEnabled then Host.hostFail "RunMacro" "macros are not enabled (EnableMacros)"
+        if macroRunning.IsSome then Host.hostFail "RunMacro" "a macro is running (StopMacro)"
+        match macroProject with
+        | Some _ -> this.RunStepped(name)
+        | None -> (this.LoadMacros()).``then``(fun () -> this.RunStepped(name)) |> unbox<JS.Promise<obj>>
+
+    /// Whether a macro is running (RunMacro).
+    member _.MacroRunning = macroRunning.IsSome
+
+    /// Stop the macro that is running: it ends as one stopped by Esc in Excel (error 18), and nothing of it is kept.
+    member _.StopMacro() = macroRunning |> Option.iter (fun run -> run.Cancel())
+
+    member private this.RunStepped(name: string) : JS.Promise<obj> =
+        match macroProject with
+        | None -> Fable.Core.JS.Constructors.Promise.resolve (createObj [ "ok" ==> false; "number" ==> 0; "description" ==> "The macros are not loaded" ])
+        | Some project ->
+            if model.EditingCell.IsSome then finishEditing true |> ignore
+            observeRevision ()
+            let start = currentWorkbookSnapshot ()
+            let hooks = { macroHooks with Output = (fun text -> macroLog.Add text; macroHooks.Output text) }
+            let run = project.Start(start, hooks, name)
+            macroRunning <- Some run
+            refreshSheetLock ()
+            let shown = ref false
+            Fable.Core.JS.Constructors.Promise.Create(fun resolve _ ->
+                let finish (outcome: Rbt.Spreadsheet.MacroApi.MacroOutcome) =
+                    macroRunning <- None
+                    match outcome with
+                    | Rbt.Spreadsheet.MacroApi.MacroDone (result, selection) ->
+                        if not (obj.ReferenceEquals(result, start)) then
+                            session.CommitApplied({ Description = "Run macro " + name; Workbook = result })
+                        installBook session.Workbook
+                        match selection with
+                        | Some (sheet, top, left, bottom, right) when sheet = sheetIdForIndex activeSheetIndex ->
+                            selectFromTo { Row = top; Col = left } { Row = bottom; Col = right }
+                        | _ -> ()
+                        render()
+                        resolve (createObj [ "ok" ==> true ])
+                    | Rbt.Spreadsheet.MacroApi.MacroFailed f ->
+                        // (Nothing of it is kept: the grid shows the workbook as it was.)
+                        if shown.Value then installBook session.Workbook
+                        refreshSheetLock ()
+                        render()
+                        macroLog.Add f.Text
+                        resolve (createObj [ "ok" ==> false; "number" ==> f.Number; "description" ==> f.Description; "module" ==> f.Module; "procedure" ==> f.Procedure; "line" ==> f.Line ])
+                // (Showing a frame costs time the macro does not get: the slices run three times as long as
+                // the last frame took to show, and at least 30 ms - about 25 frames a second at most.)
+                let paintMs = ref 10.0
+                let rec pump () =
+                    // In steps small enough to notice a Wait soon after it.
+                    let sliceEnd = nowMs () + max 30.0 (3.0 * paintMs.Value)
+                    let mutable outcome = None
+                    while outcome.IsNone && nowMs () < sliceEnd && run.WaitMs() <= 0.0 do
+                        outcome <- run.Step 4000
+                    match outcome with
+                    | Some ended -> finish ended
+                    | None ->
+                        let painting = nowMs ()
+                        match run.Frame() with
+                        | Some frame ->
+                            installBook frame
+                            shown.Value <- true
+                            render()
+                            paintMs.Value <- nowMs () - painting
+                        | None -> ()
+                        setTimeoutMs pump (int (min 1000.0 (run.WaitMs()))) |> ignore
+                pump ())
 
     /// Run a line as the VBA editor's Immediate window does (`?expression`, `Print expression`, or
     /// statements) on the workbook: what it changes is one undo step. Resolves as RunMacro.
