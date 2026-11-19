@@ -1738,10 +1738,12 @@ module Table =
         | Some "triple" -> 5.0 * width
         | _ -> width
 
-    // (The rows of the table last asked about, by reference: a row's place in its table, and the row before it.)
-    let mutable private indexedTable : TableBlock option = None
-    let mutable private indexedRowArray : TableRow array = [||]
-    let private indexedRows = Dictionary<TableRow, int>(HashIdentity.Reference)
+    /// The rows of one table by reference: a row's index, and the rows in order.
+    type private RowIndex = { IndexedTable: TableBlock; Indexes: Dictionary<TableRow, int>; Rows: TableRow array }
+
+    // (The index of the table last asked about. Layouts run on several threads: an index is never
+    // changed once made, a new one replaces it whole, and a reader keeps the one it took.)
+    let mutable private lastRowIndex : RowIndex option = None
 
     /// Whether the row is the table's last, and the row before it (None: the first, or not one of the table's rows).
     let private rowPlaceIn (table: TableBlock) (row: TableRow) =
@@ -1749,15 +1751,18 @@ module Table =
         | [] | [ _ ] -> true, None
         | first :: _ when obj.ReferenceEquals(first, row) -> false, None
         | _ ->
-            match indexedTable with
-            | Some known when obj.ReferenceEquals(known, table) -> ()
-            | _ ->
-                indexedRows.Clear()
-                indexedRowArray <- List.toArray table.Rows
-                indexedRowArray |> Array.iteri (fun index tableRow -> indexedRows.[tableRow] <- index)
-                indexedTable <- Some table
-            match indexedRows.TryGetValue row with
-            | true, index -> index = indexedRowArray.Length - 1, (if index > 0 then Some indexedRowArray.[index - 1] else None)
+            let index =
+                match lastRowIndex with
+                | Some known when obj.ReferenceEquals(known.IndexedTable, table) -> known
+                | _ ->
+                    let rows = List.toArray table.Rows
+                    let indexes = Dictionary<TableRow, int>(HashIdentity.Reference)
+                    rows |> Array.iteri (fun position tableRow -> indexes.[tableRow] <- position)
+                    let made = { IndexedTable = table; Indexes = indexes; Rows = rows }
+                    lastRowIndex <- Some made
+                    made
+            match index.Indexes.TryGetValue row with
+            | true, position -> position = index.Rows.Length - 1, (if position > 0 then Some index.Rows.[position - 1] else None)
             | _ -> false, None
 
     /// The borders a row's content is below and the table's last row above (Word: fixtures
