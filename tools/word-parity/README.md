@@ -54,3 +54,7 @@ rule in Word (`docs/layout-parity-flow.md`). `fixtures/row-break.py` writes
 `tests/word/fixtures/row-break/` (where a table row breaks across pages); its
 docstring has the regenerate / ask Word / extract-labels steps, and
 `tests/word/row-break.fsx` checks our layout against Word's pages of them.
+`fixtures/float-wrap.py` writes `tests/word/fixtures/float-wrap/` (text round
+floating pictures and shapes); where Word's lines and pictures are in its PDFs
+comes from `pdf-geometry.py` (each line's pieces across and down, each picture's
+box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against.
