@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The browser dist: one Fable compile of every browser project, so dist holds one compiled
+       copy of each module and one fable-library, and values cross the public entry points freely
+       (scripts/layout-dist.mjs moves the output to dist's public layout). It has no code of its
+       own but the empty module Fable needs to compile a project. -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>preview</LangVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="Dist.fs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Office.Formats/Rbt.OfficeFormat.fsproj" />
+    <ProjectReference Include="../OfficeUi/Rbt.OfficeUi.fsproj" />
+    <ProjectReference Include="../FableUI/Rbt.FableUI.fsproj" />
+    <ProjectReference Include="../Word/Rbt.Word.fsproj" />
+    <ProjectReference Include="../ShaperText/Rbt.Word.ShaperText.fsproj" />
+    <ProjectReference Include="../Word.Pdf/Rbt.Word.Pdf.fsproj" />
+    <ProjectReference Include="../Spreadsheet/Rbt.Spreadsheet.fsproj" />
+    <ProjectReference Include="../Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj" />
+  </ItemGroup>
+</Project>

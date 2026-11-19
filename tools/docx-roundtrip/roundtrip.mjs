@@ -80,8 +80,7 @@
 // they were read from, the new cells' from the model.
 //
 // Usage:
-//   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
-//   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
+//   bash scripts/build-dist.sh $DIST   (pnpm run build:fable builds dist)
 //   node tools/docx-roundtrip/roundtrip.mjs --dist $DIST [--out DIR] [--verbose] [--synthetic] [--xml-summary] [--report-only] [--reasons] [--only-pass TEXT] [fixture.docx ...]
 //
 // With no fixture arguments it runs the built-in synthetic documents (one per

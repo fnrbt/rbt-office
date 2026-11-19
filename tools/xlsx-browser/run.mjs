@@ -15,15 +15,13 @@
 // cells, formats, ...).
 //
 // Usage:
-//   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
-//   dotnet fable src/Spreadsheet.Pdf --outDir $DIST/spreadsheet-pdf --lang JavaScript --noCache
-//   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
+//   bash scripts/build-dist.sh $DIST   (pnpm run build:fable builds dist)
 //   RB_WORD_FONT_DIR=/usr/share/fonts/truetype/liberation node tools/xlsx-browser/run.mjs --dist $DIST --only shell-print-pdf,shell-print-pdf-failure
 //   BROWSER=firefox node tools/xlsx-browser/run.mjs --dist $DIST --only shell-selection-commands,shell-insert-chart
 // (--only runs the named component checks (comma separated), or "roundtrip" for the reader / writer part.)
-// The Spreadsheet bundle carries its own compiled copy of the XLSX reader and
-// writer (Office.Formats is a project reference of it); the checks read the
-// exported bytes back with the Office.Formats bundle.
+// The Spreadsheet modules use the same compiled XLSX reader and writer as
+// office-formats/src/Main.js (dist is one compile); the checks read the
+// exported bytes back through Main.js.
 // With no files it takes every workbook under tests/real-world and
 // tests/test-documents-excel that has a part under xl/media, xl/charts or
 // xl/drawings. Environment: PLAYWRIGHT, JSZIP_DIR, PORT (default 16023); for the sheet-pdf check RB_WORD_FONT_DIR (fonts),
