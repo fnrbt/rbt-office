@@ -1189,15 +1189,12 @@ let private tryLastLine lines =
             last <- line
         Some last
 
-/// How much of a paragraph has to fit above the bottom of the page: down to its
-/// last line's text (lineVisibleFitHeight) - its spacing after may fall below it
-/// (Word 2019: one-line paragraphs 12pt apart, the last one's text 4pt above the
-/// bottom margin and its spacing after 8pt below it, stays on the page).
-let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: BlockLayout) =
-    let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
-    match tryLastLine layout.Lines with
-    | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
-    | None -> max 0.0 (layout.Height - spacingAfter)
+/// How much of a line has to be above the bottom of the page for it to stay
+/// there: its text (lineVisibleFitHeight) - or, at an exact line height, all
+/// of it (Word 2019, tests/word/row-break.fsx exact-body: 40pt lines on 100pt
+/// of room, two stay; on 60pt, one).
+let private lineFitHeight exactLines (line: MeasuredLine) =
+    if exactLines then line.Height else lineVisibleFitHeight line
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
     let canSplit = row.CanSplit |> Option.defaultValue true
@@ -1212,49 +1209,65 @@ let private paginateTableRowWithFootnotes settings footnotesByPage (row: TableRo
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
 
-let private splitTableRowNeedsNextPage settings rowY contentBottom (measurement: TableRowMeasurement) =
+/// Where Word breaks a table row that does not fit (2019; the fixtures of
+/// tools/word-parity/fixtures/row-break.py, tests/word/row-break.fsx): each of
+/// its cells breaks by itself, at its own last break that fits - between the
+/// lines of a paragraph (widow control as it says), between the rows of a
+/// nested table or inside one of them by this same rule; vertical merges set no
+/// bounds. Only when a cell would keep nothing on the page - its first line,
+/// first nested row (cantSplit), orphan control - does the whole row go to the
+/// next page. `measurement` is the row laid out from `rowY` with its lines
+/// paged; a row at the top of its page (below `headerHeight` of repeated
+/// header rows) stays where it is.
+let private splitRowLeavesCellEmpty settings headerHeight rowY (measurement: TableRowMeasurement) =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
     let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-    if rowY <= contentTop + pageFitTolerance then
+    if rowY <= contentTop + headerHeight + pageFitTolerance then
         false
     else
-        let mutable hasLines = false
-        let mutable anyLineFits = false
-        for group in measurement.CellGroups do
+        let page = pageIndexForY settings rowY
+        measurement.CellGroups
+        |> List.exists (fun group ->
+            let mutable firstY = infinity
             for layout in group.Layouts do
                 for line in layout.Lines do
-                    hasLines <- true
-                    if rowY + line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance then
-                        anyLineFits <- true
-        hasLines && not anyLineFits
+                    if line.Y < firstY then firstY <- line.Y
+            not (System.Double.IsInfinity firstY) && pageIndexForY settings firstY > page)
 
-let private moveWidowParagraphToNextPage settings (lines: MeasuredLine list) =
-    let shiftToNextPage (firstY: float) (lines: MeasuredLine list) : MeasuredLine list =
-        let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstY
-        let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
-        let delta = nextY - firstY
-        shiftLinesY delta lines
-
+/// Widow and orphan control (w:widowControl) where a paragraph's lines first
+/// cross the bottom of a page: a first line alone at the bottom (an orphan)
+/// goes to the next page with the rest; a last line alone on the next page (a
+/// widow) takes the line before it along - and the whole paragraph goes when
+/// that would leave one line behind. Word 2019, tests/word/row-break.fsx
+/// widow-*: a 10-line paragraph with room for 9 keeps 8; a 4-line one with
+/// room for 3 keeps 2, in the body and in a table cell alike. With keepLines
+/// (keep lines together; the body's paragraphs see to it themselves) a
+/// paragraph that would break goes whole.
+let private breakParagraphLines settings widowControl keepLines exactLines (lines: MeasuredLine list) =
     match lines with
-    | first :: second :: _ ->
+    | first :: _ :: _ ->
+        let lineArray = List.toArray lines
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) first.Y
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
         let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
-        let lineFits (line: MeasuredLine) = line.Y + lineVisibleFitHeight line <= contentBottom + pageFitTolerance
-        if first.Y > contentTop && lineFits first && not (lineFits second) then
-            shiftToNextPage first.Y lines
+        let lineFits (line: MeasuredLine) = line.Y + lineFitHeight exactLines line <= contentBottom + pageFitTolerance
+        let mutable fitCount = 0
+        while fitCount < lineArray.Length && lineFits lineArray.[fitCount] do
+            fitCount <- fitCount + 1
+        let count = lineArray.Length
+        // The lines from `keep` on start the next page.
+        let keep =
+            if fitCount = 0 || fitCount = count then count
+            elif keepLines then 0
+            elif not widowControl then count
+            elif fitCount = 1 then 0
+            elif fitCount = count - 1 then (if count - 2 >= 2 then count - 2 else 0)
+            else count
+        if keep >= count || (keep = 0 && first.Y <= contentTop) then lines
         else
-            let mutable fitCount = 0
-            let mutable stillFitting = true
-            for line in lines do
-                if stillFitting && lineFits line then
-                    fitCount <- fitCount + 1
-                else
-                    stillFitting <- false
-            if first.Y > contentTop && lines.Length <= 4 && fitCount = lines.Length - 1 then
-                shiftToNextPage first.Y lines
-            else
-                lines
+            let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
+            let delta = nextY - lineArray.[keep].Y
+            lineArray |> Array.mapi (fun index line -> if index < keep then line else { line with Y = line.Y + delta }) |> Array.toList
     | _ -> lines
 
 let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
@@ -1309,10 +1322,10 @@ let private pageBreakIsRenderedMark (paragraphStyle: ParagraphStyle) (metadata: 
     && metadata.RenderedPageBreakBefore.IsSome
     && paragraphStyle.PageBreakBefore <> Some true
 
-let private paginateLines settings widowControl (renderedBreakPage: int option) (lines: MeasuredLine list) =
+let private paginateLines settings widowControl keepLines exactLines (renderedBreakPage: int option) (lines: MeasuredLine list) =
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
-    let lines = if widowControl then moveWidowParagraphToNextPage settings lines else lines
+    let lines = if widowControl || keepLines then breakParagraphLines settings widowControl keepLines exactLines lines else lines
     let unpagedMeasurement = settings.PageHeight >= unpagedMeasurementPageHeight
     let pagedLines = ResizeArray<MeasuredLine>()
     for line in lines do
@@ -1332,7 +1345,7 @@ let private paginateLines settings widowControl (renderedBreakPage: int option) 
         // million pixels down and report that as the row height.
         let renderedBreakBefore =
             not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
-        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineVisibleFitHeight line > contentBottom + pageFitTolerance) then
+        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + pageFitTolerance) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -1504,6 +1517,21 @@ let private resolveLineSpacing (paragraphStyle: ParagraphStyle) (rawMetadata: Bl
             else
                 struct (value, "auto", 0.0)
         | None -> struct (1.0, "auto", 0.0)
+
+/// Whether a paragraph's lines are of an exact height (w:lineRule="exact").
+let private hasExactLines (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
+    let struct (_, rule, _) = resolveLineSpacing paragraphStyle metadata 1.0
+    rule = "exact"
+
+/// How much of a paragraph has to fit above the bottom of the page: down to its
+/// last line's text (lineFitHeight) - its spacing after may fall below it
+/// (Word 2019: one-line paragraphs 12pt apart, the last one's text 4pt above the
+/// bottom margin and its spacing after 8pt below it, stays on the page).
+let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: BlockLayout) =
+    let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
+    match tryLastLine layout.Lines with
+    | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineFitHeight (hasExactLines paragraphStyle layout.Metadata) lastLine)
+    | None -> max 0.0 (layout.Height - spacingAfter)
 
 let private resolvedLineHeightForSettings (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) textStyle fontSize hasExplicitLineSpacing defaultParagraphSpacing =
     let struct (multiple, rule, pixels) = resolveLineSpacing paragraphStyle rawMetadata fontSize
@@ -3387,7 +3415,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         else adjustedLines
 
     let pagedLines =
-        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) para.Metadata.RenderedPageBreakBefore adjustedLines
+        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact") para.Metadata.RenderedPageBreakBefore adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
@@ -3883,10 +3911,15 @@ let internal tableMeasureScopeFrom (memo: ParagraphLayoutMemo option) (initialCo
 let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: ParagraphLayoutMemo option) (rowListCounters: ListCounters voption) (spanningCells: bool array) (mergeExtraHeight: float) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (columnMetrics: TableColumnMetrics) (outerLeft: float) (tableLeftOffset: float) (row: TableRow) rowY tableContinuationHeaderHeight (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) =
     let trackListCounters = rowListCounters.IsSome
     let mutable listCounters: ListCounters = match rowListCounters with ValueSome counters -> counters | ValueNone -> Map.empty
+    // A cantSplit row is not broken - unless it starts a page and is taller than
+    // that: Word breaks it there at the page's bottom (row-break.fsx tall-cantsplit).
+    let startsPage =
+        let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
+        rowY <= WordLayout.Page.contentTop settings.PaddingTop pageTop + max tableContinuationHeaderHeight settings.TableContinuationHeaderHeight + pageFitTolerance
     let cellSettings = {
         settings with
             InTableCell = true
-            MarginBottom = if row.CanSplit = Some false then -1000000.0 else settings.MarginBottom
+            MarginBottom = if row.CanSplit = Some false && not startsPage then -1000000.0 else settings.MarginBottom
             TableContinuationHeaderHeight = tableContinuationHeaderHeight
     }
     let numColumns = columnMetrics.Count
@@ -3975,8 +4008,26 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                             listCounters <- advanceListCountersThroughRow listCounters nestedRow
                         let nestedRowExtra = if nestedRowIndex < nestedExtra.Length then nestedExtra.[nestedRowIndex] else 0.0
                         nestedRowIndex <- nestedRowIndex + 1
+                        let measureAt y =
+                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) memo nestedRowCounters (nestedSpanning nestedRow) nestedRowExtra cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow y 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                        let measurement = measureAt nestedY
+                        // A nested row breaks as a row of the body does (splitRowLeavesCellEmpty): a
+                        // cantSplit one that does not fit, or one a cell of which would keep nothing
+                        // on the page, starts the next page.
                         let measurement =
-                            measureTableRowWithStyleAtDepth (nestedTableLayoutDepth + 1) memo nestedRowCounters (nestedSpanning nestedRow) nestedRowExtra cellSettings measureText measureRange nestedTable nestedColumnMetrics nestedOuterLeft nestedHorizontalOffset nestedRow nestedY 0.0 paragraphStyleForParagraph effectiveBufferForParagraph
+                            if cellSettings.PageHeight >= unpagedMeasurementPageHeight then measurement
+                            else
+                                let pageTop = WordLayout.Page.pageTopForY (pageHeight cellSettings) nestedY
+                                let contentBottom = WordLayout.Page.contentBottom (pageHeight cellSettings) cellSettings.MarginBottom pageTop
+                                let crosses = nestedY + measurement.Height > contentBottom + pageFitTolerance
+                                let moves =
+                                    crosses
+                                    && (if nestedRow.CanSplit = Some false then nestedY > WordLayout.Page.contentTop cellSettings.PaddingTop pageTop + cellSettings.TableContinuationHeaderHeight + pageFitTolerance
+                                        else splitRowLeavesCellEmpty cellSettings cellSettings.TableContinuationHeaderHeight nestedY measurement)
+                                if moves then
+                                    nestedY <- advanceToNextPage cellSettings nestedY + cellSettings.TableContinuationHeaderHeight
+                                    measureAt nestedY
+                                else measurement
                         for group in measurement.CellGroups do
                             let offset = WordLayout.Table.verticalContentOffset group.VerticalAlignment measurement.Height group.PaddingTop group.PaddingBottom group.ContentHeight
                             let adjustedLayouts =
@@ -4839,11 +4890,12 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
         let pagedRowY = paginateTableRow settings row rowY rowHeight
         let contentBottom = contentBottomForY settings rowY
         let pagedRowY = keepRowWithNextY settings headerHeight contentBottom planRowArray (tableRowKeepsWithNext styleContext) measureRowLocal rowIndex rowY rowHeight pagedRowY
+        let splitHere = lazy (measureRow row rowY continuationHeaderHeight)
         let pagedRowY =
             if pagedRowY = rowY
                && (row.CanSplit |> Option.defaultValue true)
                && rowY + rowHeight > contentBottom
-               && splitTableRowNeedsNextPage settings rowY contentBottom rowLocalMeasurement then
+               && splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value then
                 advanceToNextPage settings rowY
             else
                 pagedRowY
@@ -4853,12 +4905,14 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
             else
                 pagedRowY
         let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
-        let rowFitsAfterMove = rowContentY <> rowY
+        // (A row moved to a page it does not fit on either is broken there.)
+        let rowFitsAfterMove = rowContentY <> rowY && rowContentY + rowHeight <= contentBottomForY settings rowContentY + pageFitTolerance
         if rowFitsAtCurrentY || rowFitsAfterMove then
             plannedY <- rowContentY
             plannedMeasurement <- moveTableRowMeasurementToY rowContentY rowLocalMeasurement
         else
-            plannedMeasurement <- measureRow row rowY continuationHeaderHeight
+            plannedY <- rowContentY
+            plannedMeasurement <- if rowContentY = rowY then splitHere.Value else measureRow row rowContentY continuationHeaderHeight
             rowHeight <- plannedMeasurement.Height
         let repeatedHeaderHeight = if row.IsHeader then 0.0 else headerHeight
         // (A merged cell that is split with its rows can make the last of them taller, as in the layout pass.)
@@ -5733,11 +5787,12 @@ let private layoutDocumentPassKept
                     let pagedRowY = paginateTableRowWithFootnotes settings (withRowNotes pagedRowY) row pagedRowY rowHeight
                     let contentBottom = contentBottomWithFootnotes settings (withRowNotes rowY) rowY
                     let pagedRowY = keepRowWithNextY settings headerHeight contentBottom tableRowArray rowKeepsWithNext measureRowLocal rowIndex rowY rowHeight pagedRowY
+                    let splitHere = lazy (measureRow row rowY continuationHeaderHeight)
                     let pagedRowY =
                         if pagedRowY = rowY
                            && (row.CanSplit |> Option.defaultValue true)
                            && rowY + rowHeight > contentBottom
-                           && splitTableRowNeedsNextPage settings rowY contentBottom rowLocalMeasurement then
+                           && splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value then
                             advanceToNextPage settings rowY
                         else
                             pagedRowY
@@ -5747,14 +5802,17 @@ let private layoutDocumentPassKept
                         else
                             pagedRowY
                     let rowFitsAtCurrentY = rowContentY = rowY && rowY + rowHeight <= contentBottom
-                    let rowFitsAfterMove = rowContentY <> rowY
+                    // (A row moved to a page it does not fit on either is broken there.)
+                    let rowFitsAfterMove = rowContentY <> rowY && rowContentY + rowHeight <= contentBottomForY settings rowContentY + pageFitTolerance
+                    if rowContentY <> rowY && not row.IsHeader && not headerRows.IsEmpty then
+                        addHeaderLayoutsAt pagedRowY
                     if rowFitsAtCurrentY || rowFitsAfterMove then
-                        if rowFitsAfterMove && not row.IsHeader && not headerRows.IsEmpty then
-                            addHeaderLayoutsAt pagedRowY
                         cellLayoutGroups <- (moveTableRowMeasurementToY rowContentY rowLocalMeasurement).CellGroups
                         rowY <- rowContentY
                     else
-                        measuredRow <- measureRow row rowY continuationHeaderHeight
+                        let moved = rowContentY <> rowY
+                        rowY <- rowContentY
+                        measuredRow <- if moved then measureRow row rowY continuationHeaderHeight else splitHere.Value
                         rowHeight <- measuredRow.Height
                         cellLayoutGroups <- measuredRow.CellGroups
                         if not row.IsHeader && not headerRows.IsEmpty then
