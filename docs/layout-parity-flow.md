@@ -34,7 +34,16 @@ One line per hypothesis, refuted ones too. Status: testing, confirmed (implement
 | A line stays on the page when its text at single spacing fits; the extra of its spacing multiple and the paragraph's space after need not | confirmed | 1.15-1.62x lines kept up to 5pt past the margin; a single-spaced line 1.6pt over moved |
 | The body starts below the header and ends above the footer as they are laid out | confirmed | docx4j-sample-docx body at 62.9pt in Word (bdcf1198) |
 | A word in several runs breaks only where it would in one run (a space, after a hyphen) | confirmed | Word's own wrapping of per-letter colour runs (5eebf850) |
-| A row breaks only where all its cells can: a paragraph between lines, a nested table between its rows, never inside a vertical-merge group | testing | calibre family: Word moves an outer row whose nested table has a vMerge, splits it without |
+| A row breaks only where every cell can break at the same position | refuted | fixtures `row-break` (221, `tools/word-parity/fixtures/row-break.py`): `cell-two` (40pt lines beside 20pt), `nest2-text`, `widow-two_f23` - each cell breaks at its own last line that fits |
+| A vertical-merge group has no break point inside it | refuted | `top-merge*`, `top-merge-tall*`, `nest-merge{1-2,3-6,7-9,1-10}`, `small-nest-merge3-6`, `tall-nestmerge*`, `depth2-merge`: merge groups break apart, top level and nested; the calibre variants with and without the merge move alike |
+| Each cell breaks on its own at its last break that fits; a nested table between rows or inside a row by the same rule | confirmed | `cell-text`, `cell-two`, `nest-plain`, `nest2-text`, `depth2-merge`, `small-nest-plain` |
+| A row moves whole only when some cell would keep nothing on the page (a nested row likewise in its cell); one at a page's top (or under repeated headers) stays and breaks | confirmed | `first-tall`, `first-space`, `nest-first-cantsplit`, `nest-first-orphan_f31`, `widow-two_f31`, `keeplines-two_f28-30`, `nest-orphan_f30`, `header-first-tall` |
+| A nested cantSplit row that does not fit moves to the next page within the split outer row | confirmed | `nest-cantsplit_f27-30` |
+| A cantSplit row moves whole; one taller than a page starts the next page and breaks at its bottom | confirmed | `top-cantsplit`, `tall-cantsplit_f10` |
+| Widow control: an orphan goes on with the rest; a widow pulls one line along (n-1 fit: n-2 kept, or all go if that leaves one); body and cells alike | confirmed | `widow-body`, `widow-on`, `widow-two`, `widow-off`, `nest-first-orphan_f29` |
+| No `w:widowControl` in paragraph, styles or defaults: on (against the spec's default) | confirmed | `widow-unset*` |
+| A line of exact height fits only whole, not by its text | confirmed | `exact-body` (40pt lines: 100pt keeps 2, 60pt 1, 20pt 0), `cell-two`, `first-tall` |
+| The calibre family's moved row is the embedded Ubuntu font, not a row rule | open | Word moves it in all three variants (original, no merge, no "Three"); with `--embedded-fonts` our page 4 is Word's |
 | Word drops the first paragraph's automatic space before | open | seen in Word, not yet probed |
 | A list marker's font does not make its line taller (only the text does) | refuted | fixtures `list-marker-height`: Word's pitch is 15.44pt plain, with a Calibri bullet and numbered, but 16.03pt with Word's Symbol bullet and 21.05pt with a 16pt Symbol bullet - the marker counts. Ours: 16.07pt, already right |
 | The footnote block ends at the bottom margin: its last line's bottom is the page height less the bottom margin, and the body may run down to it less the separator | testing | docx4j-getting-started (45 -> 46 pages): every paragraph of page 4 within 0.5pt of Word's, but our footnotes start 4.16-4.37pt above Word's on pages 4, 10 and 12 and end ~4.5pt above 720pt - so Word fits one more body line (`para-positions.vbs`, the footnotes' `Information(6)`) |
@@ -48,13 +57,13 @@ page count, 51 with every page starting at Word's line), worked a round at a tim
 
 | Documents | Word / ours | First divergence | Round |
 |---|---|---|---|
-| calibre family (calibre-demo x2, calibre-demo-docx, complex-tables, wikipedia-sample, microsoft-word-sample, sample-formatted) | 8 / 9 | p4: a row with a nested, vertically merged table | row-split rule (running); then embedded fonts (Ubuntu) |
+| calibre family (calibre-demo x2, calibre-demo-docx, complex-tables, wikipedia-sample, microsoft-word-sample, sample-formatted) | 8 / 9 | p4: a row with a nested, vertically merged table | row rule done (canvas: all 8 pages start right, one extra at the end); next: embedded fonts (Ubuntu) |
 | docx4j-getting-started | 45 / 46 | p4: the footnote block | footnote block (running) |
-| docx4j-headers-footers | 31 / 36 | p12, the attribute tables | next |
-| test-long-document | 8 / 7 | p4: ~1pt more per 468pt line | text measurement / kerning |
-| docx4j-legal-contributor | 3 / 4 | p3 | |
+| docx4j-headers-footers | 31 / 34 (was 36) | p12, the attribute tables | next |
+| test-long-document | 8 / 8, 7 starts (was 7 / 3) | widow control, not kerning | mostly done by the row round |
+| docx4j-legal-contributor | 3 / 4 canvas, 3 / 3 ShaperText | p3 | |
 | file-sample | 2 / 3 | | |
-| docx-5mb | 4 / 3 | p4 | |
+| docx-5mb | 4 / 4, all starts | - | done by the row round |
 | docx4j-conventions | 9 / 9, 5 starts | p6 | |
 | docx4j-repeating-section | 8 / 8, 7 starts | p8 | |
 | docx4j-binding-simple | 1 / 1, 0 starts | p1's text: content-control data binding, not layout | |
