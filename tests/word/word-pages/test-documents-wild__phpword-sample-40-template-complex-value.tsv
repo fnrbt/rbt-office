@@ -1,0 +1,2 @@
+pages	1
+1	0			This whole line will be replaced by ${title}	And here is a link: ${link}

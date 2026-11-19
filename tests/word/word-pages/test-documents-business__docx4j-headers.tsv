@@ -1,0 +1,9 @@
+pages	8
+1	0	Header and footer test		Header and footer test	Header and footer test
+2	25	Page 2		Page 2	Note the disparity between the UI and the XML!
+3	124	In this section, we've got same as previous.		In this section, we've got same as previous.	In this section, we've got same as previous.
+4	171	Page 2		Page 2	Page 2
+5	180	Some content		Some content	Some content
+6	195	Page 2	Page 2	Page 2	Page 2
+7	203				Page 2
+8	205	Page 2	That's all folks	Page 2	That's all folks

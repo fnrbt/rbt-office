@@ -1,0 +1,6 @@
+pages	5
+1	0	Creating SmartArt with docx4j	it is hard to produce a dataModel which the Office applications will accept.	Creating SmartArt with docx4j	it is hard to produce a dataModel which the Office applications will accept.
+2	1772	We need a simpler format to describe this data, so it can be used to generate corresponding SmartArt (ie Microsoft's	<odgm:textBody/>	We need a simpler format to describe this data, so it can be used to generate corresponding SmartArt (ie Microsoft's	<odgm:textBody/>
+3	3432	<odgm:list>	may contain	<odgm:list>	may contain
+4	6734	text	which is capable of converting our hierarchical/nested format into a tree of dgm:layoutNode.  For example:	text	which is capable of converting our hierarchical/nested format into a tree of dgm:layoutNode.  For example:
+5	9103	<?xml version="1.0" encoding="UTF-8"?>		<?xml version="1.0" encoding="UTF-8"?>	conjunction with our initial xml, which it reads again) to a diagram data part.

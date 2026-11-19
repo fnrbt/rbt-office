@@ -1,0 +1,6 @@
+pages	5
+1	0	Docx sample document	Level 1	Docx sample document	Level 1
+2	902	Level 2	Gif (scaled):	Level 2	Gif (scaled):
+3	978	/	/	Png (from http://davidpritchard.org/images/pacsoc-s1b.png )	Png (from http://davidpritchard.org/images/pacsoc-s1b.png )
+4	1107			(TODO: we really should have both 2003 & 2007 pictures)	(TODO: we really should have both 2003 & 2007 pictures)
+5	1167	That was a page break		That was a page break	and here it continues

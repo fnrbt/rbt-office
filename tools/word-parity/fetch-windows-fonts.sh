@@ -69,3 +69,19 @@ done
 
 chmod u+rw,go-rwx "$out_dir"/* || true
 printf 'windows fonts copied to %s\n' "$out_dir"
+
+# More faces the corpus documents name (Consolas, Courier New, Tahoma, Georgia,
+# Trebuchet MS, Lucida Console, Arial Black, the symbol fonts), for the page
+# comparison only (tools/word-parity/page-parity.mjs registers them as web
+# fonts). Kept apart so that the native font lookup and the browser checks,
+# which read $out_dir, see the same faces as before.
+extra_dir="${RB_WORD_EXTRA_FONT_DIR:-$(dirname "$out_dir")/windows-extra}"
+extra=(ariblk.ttf consola.ttf consolab.ttf consolai.ttf consolaz.ttf cour.ttf courbd.ttf courbi.ttf couri.ttf
+  georgia.ttf georgiab.ttf georgiai.ttf georgiaz.ttf lucon.ttf tahoma.ttf tahomabd.ttf trebuc.ttf trebucbd.ttf
+  trebucbi.ttf trebucit.ttf symbol.ttf wingding.ttf seguisym.ttf)
+mkdir -p "$extra_dir"
+for font in "${extra[@]}"; do
+  scp -q "${vm}:C:/Windows/Fonts/${font}" "${extra_dir}/${font}" || printf '  warning: failed to copy %s\n' "$font" >&2
+done
+chmod u+rw,go-rwx "$extra_dir"/* || true
+printf 'extra windows fonts copied to %s\n' "$extra_dir"
