@@ -11,7 +11,9 @@ try {
     const zip = await window.JSZip.loadAsync(await bytesOf('/fixture?name=' + encodeURIComponent('synthetic/tables.docx')));
     const xml = await zip.file('word/document.xml').async('string');
     const open = xml.indexOf('>', xml.indexOf('<w:body')) + 1, sect = xml.lastIndexOf('<w:sectPr');
-    const p = (text) => `<w:p><w:r><w:t>${text}</w:t></w:r></w:p>`;
+    // (Lines of exactly 24px and no spacing: the tables stand at whole pixels, whatever single spacing comes to -
+    // a border's pixels are counted below.)
+    const p = (text) => `<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="360" w:lineRule="exact"/></w:pPr><w:r><w:t>${text}</w:t></w:r></w:p>`;
     const borders = (val, sz, color = '000000') => ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map((side) => `<w:${side} w:val="${val}" w:sz="${sz}" w:space="0" w:color="${color}"/>`).join('');
     const cell = (text, tcBorders = '') => `<w:tc><w:tcPr><w:tcW w:w="2400" w:type="dxa"/>${tcBorders ? `<w:tcBorders>${tcBorders}</w:tcBorders>` : ''}</w:tcPr>${p(text)}</w:tc>`;
     const table = (tblBorders, rows) => `<w:tbl><w:tblPr><w:tblW w:w="4800" w:type="dxa"/><w:tblBorders>${tblBorders}</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>${rows.map((row) => `<w:tr><w:trPr><w:trHeight w:val="600" w:hRule="exact"/></w:trPr>${row.join('')}</w:tr>`).join('')}</w:tbl>`;
