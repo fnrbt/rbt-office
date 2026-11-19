@@ -4,12 +4,8 @@
 // cannot reach this code (it is #if FABLE_COMPILER / jsNative).
 //
 // Usage:
-//   dotnet fable src/Office.Formats --outDir $DIST/office-formats --lang JavaScript --noCache
-//   dotnet fable src/Word           --outDir $DIST/word           --lang JavaScript --noCache
-//   dotnet fable src/Word.Pdf       --outDir $DIST/word-pdf       --lang JavaScript --noCache
-//   node scripts/share-bundle-modules.mjs $DIST/word-pdf $DIST/word Pdf.js Browser.js
-//   dotnet fsi scripts/stage-word-pdf-data.fsx $DIST/word-pdf
-//   export RB_WORD_FONT_DIR=/path/to/fonts # shell-pdf: a host face (calibri.ttf or LiberationSans-Regular.ttf); dist/fonts (cp -r fonts) for the default faces
+//   bash scripts/build-dist.sh $DIST   (pnpm run build:fable builds dist)
+//   export RB_WORD_FONT_DIR=/path/to/fonts # shell-pdf: a host face (calibri.ttf or LiberationSans-Regular.ttf); $DIST/fonts for the default faces
 //   node tools/word-browser/run.mjs --dist $DIST [check ...]
 //   BROWSER=firefox node tools/word-browser/run.mjs --dist $DIST [check ...]   (or BROWSER=webkit)
 //

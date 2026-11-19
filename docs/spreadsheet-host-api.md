@@ -1058,7 +1058,7 @@ archive reads, so a later replacement cannot mix another workbook into that expo
 Raw `ExportXlsx` does not itself commit an active input buffer.
 
 ### PDF and printing (in the browser)
-The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the one the .NET hosts and `tools/spreadsheet-pdf-runner` use) is in the browser build as `dist/spreadsheet-pdf`. It shares the modules of `dist/spreadsheet` (`scripts/share-bundle-modules.mjs`: it has only its own `Pdf.js` and the PDF and font-subsetting libraries, about 650 kB of JavaScript) and is loaded by the component with the first `ExportPdf` / `PrintPdf` (a dynamic `import("../spreadsheet-pdf/Pdf.js")`, which a bundler turns into a chunk of its own); a page that never asks for a PDF never loads it.
+The spreadsheet's PDF writer (`src/Spreadsheet.Pdf`, the one the .NET hosts and `tools/spreadsheet-pdf-runner` use) is in the browser build as `dist/spreadsheet-pdf`. It is part of dist's one compile (`scripts/build-dist.sh`), so it uses the grid's own modules (it adds only its `Pdf.js` and the PDF and font-subsetting libraries, about 650 kB of JavaScript) and is loaded by the component with the first `ExportPdf` / `PrintPdf` (a dynamic `import("../spreadsheet-pdf/Pdf.js")`, which a bundler turns into a chunk of its own); a page that never asks for a PDF never loads it.
 
 | Member | Arguments | Returns | Notes |
 |---|---|---|---|

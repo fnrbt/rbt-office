@@ -56,12 +56,17 @@ upgrade, 2026-11-19: what Fable 5 changed is said where it applies (*Fable 5* be
 - **Strings indexed by position**: under Fable 5 `s.[i]` is `getCharAtIndex(s, i)`, a call that checks
   the bounds and throws as .NET does (Fable 4: `s[i]`, `undefined` beyond the end). In a scanner that
   reads every character, `s.[i]` costs a call per character; leave it unless a profile shows it.
-- **Lists across bundles**: each bundle of `dist` has its own fable-library, and Fable 5's list
-  equality and comparison test `instanceof FSharpList`, so a list made by the office-formats bundle
-  was never equal to one of the spreadsheet bundle (a host that reads with one and imports with the
-  other: `InstallImportedWorkbook`). `scripts/patch-fable-library.mjs` (run by `build:fable`)
-  restores Fable 4's walk of any list. Records, unions, `Map` and `Set` of two bundles were never
-  equal (their tests compare constructors): convert reader values into the model's own types.
+- **One module graph in `dist`**: values of F# types are only equal, comparable and matchable
+  within one copy of the code that defines them: fable-library's list equality tests
+  `instanceof FSharpList` (Fable 5), records, unions, `Map` and `Set` compare constructors. So `dist`
+  is one Fable compile (`src/Dist/Rbt.Dist.fsproj` references every browser project;
+  `scripts/build-dist.sh`), with one copy of each module and one fable-library, and every public path
+  (`dist/office-formats/src/Main.js`, `dist/spreadsheet/XlsxImporter.js`, `dist/word/FableUI/Dom.js` ...)
+  reaches the same modules: a workbook read through one entry point and installed through another
+  (`InstallImportedWorkbook(importWorkbook(...))`) is the same types. Keep it so: a browser project
+  is a reference of `Rbt.Dist.fsproj` and a folder of `scripts/layout-dist.mjs`, never a Fable compile
+  of its own into `dist`, and nothing patches fable-library. A host that bundles two builds of
+  `@rbt/office` (two versions) has two graphs again.
 - **Function values in options and records**: Fable keeps a function stored in an option, a
   record or a module value curried, and wraps it (`uncurry5`, plus a `WeakMap` entry) each time
   it is passed where an uncurried function is expected. In a per-cell or per-glyph call, pass a
