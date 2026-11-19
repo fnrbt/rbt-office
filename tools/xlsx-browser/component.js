@@ -209,6 +209,13 @@ window.componentChecks = checks;
 
 // ---- ExportXlsx ----------------------------------------------------------------
 
+// A copy / cut / paste event carrying a DataTransfer of the check's. (Firefox gives a synthetic
+// ClipboardEvent a DataTransfer of its own, without the data of its init; the event's own property is the one handlers read.)
+const clipboardEvent = (type, clipboardData) => {
+    const event = new ClipboardEvent(type, { clipboardData, bubbles: true, cancelable: true });
+    Object.defineProperty(event, 'clipboardData', { value: clipboardData });
+    return event;
+};
 const excel = OF.excel;
 const sum = (bytes) => { let s = 0; for (const b of bytes) s = (s + b) | 0; return s; };
 // What the reader sees of a workbook, sheet by sheet.
@@ -1215,7 +1222,7 @@ checks['grid-clipboard'] = async () => {
         const clipboard = (type, data = {}) => {
             const transfer = new DataTransfer();
             for (const [flavour, text] of Object.entries(data)) transfer.setData(flavour, text);
-            const event = new ClipboardEvent(type, { clipboardData: transfer, bubbles: true, cancelable: true });
+            const event = clipboardEvent(type, transfer);
             content.dispatchEvent(event);
             return { text: transfer.getData('text/plain'), html: transfer.getData('text/html'), handled: event.defaultPrevented };
         };
@@ -1297,7 +1304,7 @@ checks['grid-clipboard-cross-sheet-copy'] = async () => {
         grid.SelectCell(1, 2); grid.ApplyBgColor('#DDEBF7');
         grid.SelectRange(1, 1, 1, 2);
         const transfer = new DataTransfer();
-        const copyEvent = new ClipboardEvent('copy', { clipboardData: transfer, bubbles: true, cancelable: true });
+        const copyEvent = clipboardEvent('copy', transfer);
         parts(host).content.dispatchEvent(copyEvent);
         const copiedText = transfer.getData('text/plain'), copiedHtml = transfer.getData('text/html');
         check('copy event exposes the matching system text', [copyEvent.defaultPrevented, copiedText], [true, '26\t27']);
@@ -1606,16 +1613,16 @@ checks['grid-read-only'] = async () => {
         const header = host.querySelector('.col-header-text');
         header.dispatchEvent(new MouseEvent('click', { bubbles: true }));
         const transfer = new DataTransfer(); transfer.setData('text/plain', 'pasted');
-        content.dispatchEvent(new ClipboardEvent('paste', { clipboardData: transfer, bubbles: true, cancelable: true }));
+        content.dispatchEvent(clipboardEvent('paste', transfer));
         press(host, 'z', { ctrlKey: true }); press(host, 'd', { ctrlKey: true });
         check('a header click does not sort, a paste does not paste', [grid.GetModel().Cells === before.Cells, grid.GetModel().SortState == null, changes.length], [true, true, 0]);
         // Copy works; cut copies without clearing.
         grid.SelectRange(1, 1, 3, 4);
         const out = new DataTransfer();
-        content.dispatchEvent(new ClipboardEvent('copy', { clipboardData: out, bubbles: true, cancelable: true }));
+        content.dispatchEvent(clipboardEvent('copy', out));
         check('copy works', out.getData('text/plain') === grid.GetSelectionText() && out.getData('text/html').startsWith('<table>'), true);
         const cutOut = new DataTransfer();
-        content.dispatchEvent(new ClipboardEvent('cut', { clipboardData: cutOut, bubbles: true, cancelable: true }));
+        content.dispatchEvent(clipboardEvent('cut', cutOut));
         check('a cut copies and leaves the cells', [cutOut.getData('text/plain') === out.getData('text/plain'), grid.GetModel().Cells === before.Cells], [true, true]);
         // Sheets.
         const visible = grid.SheetVisibility(), other = grid.GetSheetNames().findIndex((_, index) => index !== grid.GetActiveSheetIndex() && visible[index]);
@@ -1753,13 +1760,13 @@ checks['grid-clipboard-without-events'] = async () => {
         const before = { writes: held.writes, reads: held.reads };
         press(host, 'c', { ctrlKey: true });
         const transfer = new DataTransfer();
-        content.dispatchEvent(new ClipboardEvent('copy', { clipboardData: transfer, bubbles: true, cancelable: true }));
+        content.dispatchEvent(clipboardEvent('copy', transfer));
         await settle();
         check('with a copy event the asynchronous clipboard is not used', [held.writes - before.writes, transfer.getData('text/plain')], [0, 'Apples\t12']);
         grid.SelectCell(12, 0);
         press(host, 'v', { ctrlKey: true });
         const incoming = new DataTransfer(); incoming.setData('text/plain', 'from the event');
-        content.dispatchEvent(new ClipboardEvent('paste', { clipboardData: incoming, bubbles: true, cancelable: true }));
+        content.dispatchEvent(clipboardEvent('paste', incoming));
         await settle();
         check('with a paste event it is pasted once, from the event', [held.reads - before.reads, await valueAt(grid, 12, 0), grid.CanUndo() && (grid.Undo(), await valueAt(grid, 12, 0))], [0, 'from the event', '']);
         // Read-only: copy works, cut copies, paste does nothing.

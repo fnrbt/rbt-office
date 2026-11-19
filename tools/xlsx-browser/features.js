@@ -144,9 +144,10 @@ checks['x14-rules'] = async () => {
             const box = (element) => { const r = element.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; };
             const cellBox = box(node(4, 0)), barBox = box(node(4, 0).querySelector('.spreadsheet-cf-bar')), negBox = box(node(0, 0).querySelector('.spreadsheet-cf-bar'));
             check('bars: on screen the positive bar reaches the right edge, the negative bar the left', [Math.abs(barBox[1] - cellBox[1]) <= 2, Math.abs(negBox[0] - box(node(0, 0))[0]) <= 2, Math.abs(negBox[1] - barBox[0]) <= 1], [true, true, true]);
-            // Pixels: the middle of the positive bar is its colour.
+            // Pixels: the positive bar is its colour - near its left end, clear of the value drawn over
+            // it (where the value's glyphs sit in the bar's height depends on the browser's font metrics).
             const hostBox = host.getBoundingClientRect(), bar = node(4, 0).querySelector('.spreadsheet-cf-bar').getBoundingClientRect();
-            const png = await window.screenshotRegion(Math.round(bar.left + bar.width / 2 - 2), Math.round(bar.top + 3), 4, 2);
+            const png = await window.screenshotRegion(Math.round(bar.left + 4), Math.round(bar.top + 3), 4, 2);
             const image = new Image(); await new Promise((resolve) => { image.onload = resolve; image.src = 'data:image/png;base64,' + png; });
             const canvas = document.createElement('canvas'); canvas.width = 4; canvas.height = 2; canvas.getContext('2d').drawImage(image, 0, 0);
             const pixel = [...canvas.getContext('2d').getImageData(1, 1, 1, 1).data].slice(0, 3);

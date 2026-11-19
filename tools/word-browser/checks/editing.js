@@ -128,7 +128,12 @@ try {
         const text = () => Word.getText(editor);
         const boldIn = (block, from, to) => { Word.setSelection(editor, block, from, block, to); return Word.getSelectionFormat(editor).Bold; };
         const blockOf = (start) => Word.getLayoutLines(editor).find((line) => (line.Text ?? '').startsWith(start)).BlockId;
-        const clipboardEvent = (type, data) => { const event = new ClipboardEvent(type, { clipboardData: data, bubbles: true, cancelable: true }); proxy.dispatchEvent(event); return event.defaultPrevented; };
+        const clipboardEvent = (type, data) => {
+            const event = new ClipboardEvent(type, { clipboardData: data, bubbles: true, cancelable: true });
+            // (Firefox gives a synthetic ClipboardEvent a DataTransfer of its own, without the init's data.)
+            Object.defineProperty(event, 'clipboardData', { value: data });
+            proxy.dispatchEvent(event); return event.defaultPrevented;
+        };
         const paste = (plain, html) => { const data = new DataTransfer(); if (plain) data.setData('text/plain', plain); if (html) data.setData('text/html', html); return clipboardEvent('paste', data); };
         Word.setSelection(editor, ids[0], 6, ids[0], 10);
         Word.toggleBold(editor);

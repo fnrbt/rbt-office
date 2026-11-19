@@ -11,7 +11,7 @@
 //   dotnet fsi scripts/stage-word-pdf-data.fsx $DIST/word-pdf
 //   export RB_WORD_FONT_DIR=/path/to/fonts # shell-pdf: a host face (calibri.ttf or LiberationSans-Regular.ttf); dist/fonts (cp -r fonts) for the default faces
 //   node tools/word-browser/run.mjs --dist $DIST [check ...]
-//   BROWSER=firefox node tools/word-browser/run.mjs --dist $DIST [check ...]
+//   BROWSER=firefox node tools/word-browser/run.mjs --dist $DIST [check ...]   (or BROWSER=webkit)
 //
 // Checks (tools/word-browser/checks/<name>.js, all by default):
 //   explicit-format  toggle bold off under a bold style, save, undo/redo

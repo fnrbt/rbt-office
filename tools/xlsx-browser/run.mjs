@@ -19,7 +19,7 @@
 //   dotnet fable src/Spreadsheet.Pdf --outDir $DIST/spreadsheet-pdf --lang JavaScript --noCache
 //   dotnet fable src/Spreadsheet    --outDir $DIST/spreadsheet    --lang JavaScript --noCache
 //   RB_WORD_FONT_DIR=/usr/share/fonts/truetype/liberation node tools/xlsx-browser/run.mjs --dist $DIST --only shell-print-pdf,shell-print-pdf-failure
-//   BROWSER=firefox node tools/xlsx-browser/run.mjs --dist $DIST --only shell-selection-commands,shell-insert-chart
+//   BROWSER=firefox node tools/xlsx-browser/run.mjs --dist $DIST --only shell-selection-commands,shell-insert-chart   (or BROWSER=webkit)
 // (--only runs the named component checks (comma separated), or "roundtrip" for the reader / writer part.)
 // The Spreadsheet bundle carries its own compiled copy of the XLSX reader and
 // writer (Office.Formats is a project reference of it); the checks read the
@@ -130,12 +130,13 @@ const server = http.createServer((req, res) => {
 if (!fs.existsSync(path.join(dist, 'office-formats/src/Main.js'))) { console.error(`missing office-formats/src/Main.js under ${dist}; Fable-compile first (see header)`); process.exit(2); }
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
-// PDF checks need full Chromium's built-in PDF viewer; the legacy headless shell never loads PDF iframes.
+// PDF checks need a browser's own PDF viewer: full Chromium's (the legacy headless shell never loads PDF iframes), Firefox's pdf.js.
 const pdfViewerNeeded = !only || only.split(',').some((name) => name === 'sheet-pdf' || name === 'shell-print-pdf');
 const browserName = process.env.BROWSER ?? 'chromium';
 const browserType = playwright[browserName] ?? playwright.default?.[browserName];
 if (!browserType?.launch) throw new Error(`Unknown Playwright browser: ${browserName}`);
-const browser = await browserType.launch(browserName === 'chromium' && pdfViewerNeeded ? { channel: 'chromium' } : {});
+// (Playwright's Firefox turns its PDF viewer off, so that PDFs download: the print check needs it on.)
+const browser = await browserType.launch(!pdfViewerNeeded ? {} : browserName === 'chromium' ? { channel: 'chromium' } : browserName === 'firefox' ? { firefoxUserPrefs: { 'pdfjs.disabled': false } } : {});
 console.log(`Browser: ${browserName} ${browser.version()}`);
 let failed = 0, pictures = 0, charts = 0, componentChecks = 0;
 try {
@@ -177,8 +178,18 @@ try {
         const debuggerSession = browserName === 'chromium' ? await componentTab.context().newCDPSession(componentTab) : null;
         if (debuggerSession) await debuggerSession.send('Debugger.enable');
         // For the checks that a disposed grid can be collected: a full garbage collection on request.
+        // (Firefox and WebKit have no such request through Playwright: there memory is churned until
+        // the engine collects on its own; the checks that look for the collection try a few times.)
         await componentTab.exposeFunction('collectGarbage', async () => {
-            if (!debuggerSession) throw new Error('This check requires Chromium CDP garbage collection');
+            if (!debuggerSession) {
+                // (Twice, with a pause between: Firefox frees what DOM nodes and script hold of each other
+                // in its cycle collector, which runs after a collection, on its own schedule.)
+                for (let round = 0; round < 2; round++) {
+                    await componentTab.evaluate(() => { for (let i = 0; i < 48; i++) new Uint8Array(16 << 20).fill(i); let a = []; for (let i = 0; i < 400000; i++) a.push({ i }); a = null; });
+                    await componentTab.waitForTimeout(1500);
+                }
+                return;
+            }
             await debuggerSession.send('HeapProfiler.enable');
             await debuggerSession.send('HeapProfiler.collectGarbage');
         });
