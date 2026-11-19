@@ -3,7 +3,9 @@
 // and the first and last line of every page against Word's.
 //
 //   node tools/word-parity/page-parity.mjs --dist dist [--refresh-word] [--json out.json] [--detail] [name-filter ...]
-//   node tools/word-parity/page-parity.mjs --dist dist --lines <name>   (our lines of one document: page, y, height, block, text)
+//   node tools/word-parity/page-parity.mjs --dist dist --dir <folder> [--refresh-word]   (the .docx of a folder, Word's TSVs in <folder>/word)
+//   node tools/word-parity/page-parity.mjs --dist dist --embedded-fonts ...   (also the fonts a document embeds, as a host that loads them would)
+//   node tools/word-parity/page-parity.mjs --dist dist --lines <name>   (our lines of one document: page, y on the page in px, height, block, text)
 //
 // Word's side is tests/word/word-pages/<dir>__<name>.tsv (committed), written by
 // tools/word-parity/page-lines.vbs on the Windows VM: Word 16 / 2019 opens each
@@ -43,31 +45,37 @@ const jsonOut = opt('--json');
 const refresh = flag('--refresh-word');
 const detail = flag('--detail');
 const linesFor = opt('--lines');
+const docDir = opt('--dir');
+const embedFonts = flag('--embedded-fonts');
 const filters = args;
 const port = Number(process.env.PORT ?? 16031);
-const refDir = path.join(repo, 'tests/word/word-pages');
+const refDir = docDir ? path.join(path.resolve(docDir), 'word') : path.join(repo, 'tests/word/word-pages');
 const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(repo, 'artifacts/fonts/windows'));
 const fontDirs = [fontDir, path.resolve(process.env.RB_WORD_EXTRA_FONT_DIR ?? path.join(path.dirname(fontDir), 'windows-extra'))]
     .filter((d) => fs.existsSync(d));
 
-// The corpus: every .docx of tests/test-documents*/, keyed <dir>__<name>.
+// The corpus: every .docx of tests/test-documents*/, keyed <dir>__<name> (with --dir, that folder's, keyed <name>).
 const corpus = [];
-for (const dir of fs.readdirSync(path.join(repo, 'tests')).filter((d) => d.startsWith('test-documents')).sort())
-    for (const file of fs.readdirSync(path.join(repo, 'tests', dir)).filter((f) => f.endsWith('.docx')).sort())
-        corpus.push({ key: `${dir}__${file.slice(0, -5)}`, file: path.join('tests', dir, file) });
+if (docDir)
+    for (const file of fs.readdirSync(docDir).filter((f) => f.endsWith('.docx')).sort())
+        corpus.push({ key: file.slice(0, -5), file: path.resolve(docDir, file) });
+else
+    for (const dir of fs.readdirSync(path.join(repo, 'tests')).filter((d) => d.startsWith('test-documents')).sort())
+        for (const file of fs.readdirSync(path.join(repo, 'tests', dir)).filter((f) => f.endsWith('.docx')).sort())
+            corpus.push({ key: `${dir}__${file.slice(0, -5)}`, file: path.join(repo, 'tests', dir, file) });
 const selected = corpus.filter((d) => !filters.length || filters.some((f) => d.key.includes(f)));
 
 if (refresh) {
     const vm = process.env.WORD_VM ?? 'winvm';
-    const remote = `${process.env.WORD_VM_DIR ?? 'C:/Users/olivia/RbtExcelParity'}/pageparity`;
+    const remote = `${process.env.WORD_VM_DIR ?? 'C:/Users/olivia/RbtExcelParity'}/${docDir ? 'pageparity-dir' : 'pageparity'}`;
     const stage = fs.mkdtempSync(path.join(process.env.TMPDIR ?? '/tmp', 'page-parity-'));
-    for (const d of selected) fs.copyFileSync(path.join(repo, d.file), path.join(stage, d.key + '.docx'));
+    for (const d of selected) fs.copyFileSync(d.file, path.join(stage, d.key + '.docx'));
     const run = (cmd, a) => { const r = spawnSync(cmd, a, { stdio: ['ignore', 'inherit', 'inherit'] }); if (r.status !== 0) throw new Error(`${cmd} ${a.join(' ')} failed`); };
     run('ssh', [vm, `powershell -NoProfile -Command "Remove-Item -Recurse -Force -ErrorAction SilentlyContinue '${remote}'; New-Item -ItemType Directory -Force -Path '${remote}/docs' | Out-Null"`]);
     run('scp', ['-q', path.join(here, 'page-lines.vbs'), `${vm}:${remote}/`]);
     run('scp', ['-q', ...selected.map((d) => path.join(stage, d.key + '.docx')), `${vm}:${remote}/docs/`]);
     run('ssh', [vm, `cscript //nologo ${remote}/page-lines.vbs ${remote}/docs ${remote}/out pdf`]);
-    const pdfDir = path.join(repo, 'artifacts/word-pages');
+    const pdfDir = docDir ? refDir : path.join(repo, 'artifacts/word-pages');
     fs.mkdirSync(pdfDir, { recursive: true });
     run('scp', ['-q', `${vm}:${remote}/out/*`, pdfDir]);
     fs.mkdirSync(refDir, { recursive: true });
@@ -138,11 +146,41 @@ for (const f of ${JSON.stringify(faces)}) {
 const Word = (await import('/word/Word.js')).default;
 const main = await import('/office-formats/src/Main.js');
 const OF = typeof main.default === 'function' ? main.default() : main.default;
-window.layoutOf = async (url) => {
+// The fonts a document embeds (word/fonts/*.odttf, obfuscated with the key fontTable.xml gives), as web fonts.
+const embedded = async (bytes) => {
+    if (!window.embedFonts) return [];
+    const zip = await window.JSZip.loadAsync(bytes);
+    const table = await zip.file('word/fontTable.xml')?.async('string');
+    const rels = await zip.file('word/_rels/fontTable.xml.rels')?.async('string');
+    if (!table || !rels) return [];
+    const targets = {};
+    for (const m of rels.matchAll(/<Relationship [^>]*>/g)) { const id = /Id="([^"]+)"/.exec(m[0])?.[1], t = /Target="([^"]+)"/.exec(m[0])?.[1]; if (id && t) targets[id] = t; }
+    const added = [];
+    for (const font of table.matchAll(/<w:font w:name="([^"]+)"[^>]*>([\\s\\S]*?)<\\/w:font>/g)) {
+        for (const e of font[2].matchAll(/<w:embed(Regular|Bold|Italic|BoldItalic) r:id="([^"]+)" w:fontKey="\\{([^}]+)\\}"/g)) {
+            const file = zip.file('word/' + targets[e[2]]);
+            if (!file) continue;
+            const data = new Uint8Array(await file.async('uint8array'));
+            const hex = e[3].replace(/-/g, '');
+            const key = []; for (let i = 0; i < 32; i += 2) key.push(parseInt(hex.slice(i, i + 2), 16));
+            key.reverse();
+            for (let i = 0; i < 32; i++) data[i] ^= key[i % 16];
+            const face = new FontFace(font[1], data, { weight: e[1].startsWith('Bold') ? 'bold' : 'normal', style: e[1].endsWith('Italic') ? 'italic' : 'normal' });
+            try { await face.load(); document.fonts.add(face); added.push(face); } catch { }
+        }
+    }
+    return added;
+};
+const editorOf = async (url) => {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    const added = await embedded(bytes);
     const editor = Word.initializeCanvas(document.createElement('canvas'));
     Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
     Word.completeLayout(editor);
+    return { editor, done: () => { for (const f of added) document.fonts.delete(f); } };
+};
+window.layoutOf = async (url) => {
+    const { editor, done } = await editorOf(url);
     const count = Word.getPageCount(editor);
     const pages = [];
     for (const line of Word.getLayoutLines(editor)) {
@@ -153,15 +191,14 @@ window.layoutOf = async (url) => {
         if (p.first === '') p.first = line.Text;
         p.last = line.Text;
     }
+    done();
     return { count, pages: Array.from({ length: Math.max(count, pages.length) }, (_, i) => pages[i] ?? { lines: 0, first: '', last: '' }) };
 };
 window.linesOf = async (url) => {
-    const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    const editor = Word.initializeCanvas(document.createElement('canvas'));
-    Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
-    Word.completeLayout(editor);
-    return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.Y * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId, l.Text]);
+    const { editor } = await editorOf(url);
+    return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.PageY * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId + "@" + Math.round(l.BlockHeight * 75) / 100, l.Text, (l.Segments ?? []).map((s) => s.Text + "=" + Math.round(s.Width * 75) / 100).join(" ").slice(0, 120)]);
 };
+window.embedFonts = ${embedFonts};
 window.ready = true;
 </script>`;
 
@@ -180,7 +217,8 @@ const server = http.createServer((req, res) => {
         const file = dir && path.join(dir, path.basename(decodeURIComponent(fontMatch[2])));
         return file && fs.existsSync(file) ? send(200, 'font/ttf', fs.readFileSync(file)) : send(404, 'text/plain', 'no font');
     }
-    for (const [prefix, root] of [['/repo/', repo], ['/', dist]]) {
+    if (url.pathname === '/doc') { const d = corpus[Number(url.searchParams.get('i'))]; return d ? send(200, 'application/octet-stream', fs.readFileSync(d.file)) : send(404, 'text/plain', 'no document'); }
+    for (const [prefix, root] of [['/', dist]]) {
         if (!url.pathname.startsWith(prefix)) continue;
         const file = path.join(root, path.normalize(decodeURIComponent(url.pathname.slice(prefix.length))));
         if (file.startsWith(root) && fs.existsSync(file) && fs.statSync(file).isFile())
@@ -204,14 +242,14 @@ try {
     await tab.waitForFunction('window.ready === true', null, { timeout: 120000 });
     if (linesFor) {
         const d = corpus.find((c) => c.key.includes(linesFor));
-        for (const l of await tab.evaluate((u) => window.linesOf(u), '/repo/' + d.file.split(path.sep).join('/'))) console.log(l.join('\t'));
+        for (const l of await tab.evaluate((u) => window.linesOf(u), '/doc?i=' + corpus.indexOf(d))) console.log(l.join('\t'));
         process.exit(0);
     }
     for (const d of selected) {
         const word = readWord(d.key);
         if (!word) { console.error(`${d.key}: no Word reference (--refresh-word)`); continue; }
         let ours;
-        try { ours = await tab.evaluate((u) => window.layoutOf(u), '/repo/' + d.file.split(path.sep).join('/')); }
+        try { ours = await tab.evaluate((u) => window.layoutOf(u), '/doc?i=' + corpus.indexOf(d)); }
         catch (e) { rows.push({ key: d.key, word: word.count, ours: null, error: String(e.message).split('\n')[0] }); continue; }
         const pages = [];
         let matched = 0, firstDiff = null;
