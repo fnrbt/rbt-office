@@ -92,14 +92,16 @@ let textsOn pageIndex (top: float) (bottom: float) =
         | _ -> None)
     |> String.concat " "
 let headerOn pageIndex = textsOn pageIndex 0.0 ((List.item pageIndex pages).MarginTop - 2.0)
-let footerOn pageIndex = textsOn pageIndex (1056.0 - 94.0) 1056.0
+// (Below the body's last line: its spacing beyond single may run past the bottom margin, as in Word.)
+let footerOn pageIndex = textsOn pageIndex (1056.0 - 75.0) 1056.0
 check "painted: the headers page by page" (headerOn 0, headerOn twoFirst, headerOn (twoFirst + 1), headerOn threePage) ("header A", "title page header C", "header A", "header B")
 check "painted: the footers page by page" (footerOn 0, footerOn twoFirst, footerOn (twoFirst + 1), footerOn threePage, footerOn fourPage) ("", "", "footer of section two", "footer of section two", "footer of section two")
 
 // The body of the last section starts below its five header paragraphs; the others at the top margin.
 let firstLineOffset id = let layout = layouts |> List.find (fun layout -> layout.BlockId = id) in layout.Y - (List.item (pageOf id) pages).Top
 check "the body starts at the top margin under a one-line header" (firstLineOffset "one-1" < 130.0, firstLineOffset "three-1" < 130.0) (true, true)
-check "and below a header that reaches further down" (firstLineOffset "four-1" >= 48.0 + 150.0, (List.item fourPage pages).MarginTop >= 198.0, (List.item 0 pages).MarginTop) (true, true, 96.0)
+// (Below the header as it is laid out: its distance and five lines of 16px text, each at least 16px.)
+check "and below a header that reaches further down" (firstLineOffset "four-1" >= 48.0 + 5.0 * 16.0, (List.item fourPage pages).MarginTop >= 48.0 + 5.0 * 16.0, (List.item fourPage pages).MarginTop > 96.0, (List.item 0 pages).MarginTop) (true, true, true, 96.0)
 // ... in an incremental layout too, and when the header gets shorter again.
 let state = Layout.createIncrementalLayoutState ()
 check "the same incrementally" (Layout.layoutDocumentPagesIncremental state settings measureText measureRange doc = (layouts, pages)) true

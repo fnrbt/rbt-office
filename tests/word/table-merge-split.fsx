@@ -150,7 +150,8 @@ do
     let tallLines = [ for i in 1 .. 8 do for layout in layoutsOf layouts (sprintf "t%d" i) do yield! layout.Lines ]
     check "the row that may not break is on one page" (tallLines |> List.map (fun line -> pageOf line.Y) |> List.distinct |> List.length, pageOf (List.head tallLines).Y) (1, 1)
     check "the merged content goes on beside it, not above it on that page" (lines |> List.filter (fun line -> pageOf line.Y = 1) |> List.forall (fun line -> line.Y >= (List.head tallLines).Y - 0.5)) true
-    let split, _ = build 27 12 9 (tallRow true)
+    // (25 paragraphs before it: the row starts on the first page and goes on to the second.)
+    let split, _ = build 25 12 9 (tallRow true)
     let splitLayouts, _, splitLines = checkSplit "a row that is split" split 12 9
     let splitTall = [ for i in 1 .. 8 do for layout in layoutsOf splitLayouts (sprintf "t%d" i) do yield! layout.Lines ]
     check "the row that may break is on both pages" (splitTall |> List.map (fun line -> pageOf line.Y) |> List.distinct) [ 0; 1 ]

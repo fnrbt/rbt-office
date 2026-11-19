@@ -292,14 +292,15 @@ let overlapping (first: TextBoxBlock -> TextBoxBlock) (second: TextBoxBlock -> T
     let doc = docOf [ Paragraph (para "before" (words 20)); Paragraph (para "a" (words 300)); Paragraph (para "after" (words 20)); shape "o1" 0.0 10.0 "#ABCDEF" first; shape "o2" 100.0 40.0 "#FEDCBA" second ]
     let layouts, pages = layoutDocumentPages settings measureText measureRange doc
     let anchor = layouts |> List.find (fun layout -> layout.BlockId = "a")
-    let rects = Paint.bodyShapeRects settings measureText measureRange doc layouts pages |> List.map (fun (textBox, x, y, _, _) -> textBox.Id, (x, y - anchor.Y))
+    let rects = Paint.bodyShapeRects settings measureText measureRange doc layouts pages |> List.map (fun (textBox, x, y, _, _) -> textBox.Id, (x, System.Math.Round(y - anchor.Y, 6)))
     let _, commands, _ = Paint.collectDocumentCommandsWithLayoutsAndPages settings "Calibri" measureText measureRange doc layouts pages
-    let painted colour = Paint.flattenedCommands commands |> List.tryPick (function Paint.FillRect (c, x, y, _, _) when c = colour -> Some (x, y - anchor.Y) | _ -> None)
+    let painted colour = Paint.flattenedCommands commands |> List.tryPick (function Paint.FillRect (c, x, y, _, _) when c = colour -> Some (x, System.Math.Round(y - anchor.Y, 6)) | _ -> None)
     // The text of the lines between `top` and `bottom` (from the top of the anchor's paragraph): their segments, across.
     let textBetween top bottom =
         linesOf layouts "a"
         |> List.filter (fun line -> line.Y + line.Height > anchor.Y + top && line.Y < anchor.Y + bottom)
         |> List.collect (fun line -> line.Segments |> List.choose (function TextSegment (text, _, x, width, _) when text.Trim() <> "" -> Some (x, x + width) | _ -> None))
+    // (Rounded: the anchor's paragraph stands at fractions of a pixel.)
     rects, painted "#ABCDEF", painted "#FEDCBA", textBetween
 let keptClear = fun (b: TextBoxBlock) -> { b with AllowOverlap = Some false }
 let rects, firstFill, secondFill, textBetween = overlapping keptClear keptClear

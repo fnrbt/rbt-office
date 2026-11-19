@@ -899,8 +899,10 @@ let _, lookAheadInitial, lookAheadEdited =
         [ "the paragraph it looks at changes style", setMetadata "la-web" (fun metadata -> { metadata with Style = None })
           "and back", setMetadata "la-web" (fun metadata -> { metadata with Style = Some "NormalWeb" })
           "a paragraph inserted between", insertAfter "la-empty" (Doc.Paragraph (para "la-between" "between")) ]
-checkTrue "the empty paragraph's height depends on the paragraph after the table"
-    (heightOf "la-empty" lookAheadInitial <> heightOf "la-empty" (coldLayoutsOf (setMetadata "la-web" (fun metadata -> { metadata with Style = None }) lookAheadDoc)))
+// (The empty paragraph's height no longer depends on the paragraph after the table: the layout
+// took its spacing after away between a TOC1 and a NormalWeb paragraph, which Word does not - see
+// tests/word/line-boxes.fsx. The edits above are still laid out as the document laid out at once.)
+ignore lookAheadInitial
 
 // ---- the highlight of a long selection, for a band of the document ----------
 // A selection over many blocks is highlighted from the blocks' places and
