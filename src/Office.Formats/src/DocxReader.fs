@@ -5870,6 +5870,14 @@ let internal resolveTableStyle (styleMap: Map<string, StyleDefinition>) styleId 
                     | None, None -> None
                 Some {
                     style with
+                        // (The paragraph and run properties of the style it is based on too: a
+                        // table style based on Table Grid has its single spacing and no space after.)
+                        ParagraphProperties = mergeConditionalParagraph (baseStyle |> Option.bind (fun style -> style.ParagraphProperties)) style.ParagraphProperties
+                        RunProperties =
+                            match baseStyle |> Option.bind (fun style -> style.RunProperties), style.RunProperties with
+                            | Some baseValue, Some value -> Some (mergeRunProperties baseValue value)
+                            | baseValue, None -> baseValue
+                            | None, value -> value
                         TableProperties =
                             mergeConditional (baseStyle |> Option.bind (fun style -> style.TableProperties)) style.TableProperties
                         FirstRowParagraphProperties = mergeConditionalParagraph (baseStyle |> Option.bind (fun style -> style.FirstRowParagraphProperties)) style.FirstRowParagraphProperties
@@ -5968,17 +5976,28 @@ let internal resolvedParagraphProperties (styleMap: Map<string, StyleDefinition>
         | None, None -> None
     basePara |> Option.map (fun baseValue -> mergeParagraphProperties baseValue props) |> Option.defaultValue props
 
-let internal resolvedRunProperties (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (runProps: RunProperties) =
+let private resolvedRunPropertiesWith includeMark (styleMap: Map<string, StyleDefinition>) (paraProps: ParagraphProperties) (runProps: RunProperties) =
     let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
     let styleId = paraProps.Style |> Option.orElseWith (fun () -> defaultParagraphStyleId styleMap)
     let baseRun, _ = resolveStyle styleMap styleId
     let characterRun, _ = resolveStyle styleMap runProps.Style
-    let paragraphRun = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
+    let paragraphRun =
+        if includeMark then paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
+        else emptyRunProperties
     let merged = mergeRunProperties (mergeRunProperties (mergeRunProperties (mergeRunProperties docDefaultRun baseRun) paragraphRun) characterRun) runProps
     if merged.FontFamily.IsNone && merged.ThemeFont.IsNone then
         { merged with FontFamily = docDefaultRun.FontFamily; ThemeFont = docDefaultRun.ThemeFont }
     else
         merged
+
+/// A run's properties: the document defaults, the paragraph style's, the character
+/// style's, its own. Not the paragraph mark's (w:pPr/w:rPr): those are the mark's
+/// alone - a run without properties of its own under a mark in Calibri 11 pt is in
+/// the style's font and size (Word 2019: Times New Roman 12 pt).
+let internal resolvedRunProperties styleMap paraProps runProps = resolvedRunPropertiesWith false styleMap paraProps runProps
+
+/// The paragraph mark's properties: a run's, with the mark's own (w:pPr/w:rPr) over them.
+let internal resolvedMarkRunProperties styleMap paraProps runProps = resolvedRunPropertiesWith true styleMap paraProps runProps
 
 let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
     let fallbackRunProps =
@@ -5986,7 +6005,7 @@ let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (eff
             let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
             docDefaultRun
         else
-            resolvedRunProperties styleMap effectiveParaProps emptyRunProperties
+            resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties
     wordFontSizeToPoints fallbackRunProps.FontSize
 
 let internal styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =

@@ -205,7 +205,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
     let markSize =
         if inCell then
             match fontSizes with
-            | [] -> D.wordFontSizeToPoints (D.resolvedRunProperties styleMap effective D.emptyRunProperties).FontSize
+            | [] -> D.wordFontSizeToPoints (D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties).FontSize
             | sizes -> List.max sizes
         else List.fold max (D.paragraphMarkFontSize styleMap effective value) fontSizes
     let breakAtStart, breakAfter = D.paragraphPageBreaks value
