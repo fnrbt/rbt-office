@@ -2139,7 +2139,8 @@ let clearSelectionCells (selection: Selection) (model: SpreadsheetModel): Spread
         if changed then { model with Cells = cells } |> invalidateFilterProjection else model
 
 /// Round to the nearest integer, halves away from zero (Excel's rule). Written
-/// out because Fable ignores MidpointRounding and reads it as a digit count.
+/// out because Fable 4 ignored MidpointRounding and read it as a digit count
+/// (Fable 5 honours it).
 let roundHalfAway (x: float) : float =
     let whole = Math.Truncate x
     if abs (x - whole) >= 0.5 then whole + float (sign x) else whole

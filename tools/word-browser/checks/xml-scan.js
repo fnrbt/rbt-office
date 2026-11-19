@@ -7,7 +7,10 @@
 import { check, note, finish, fail, bytesOf } from './common.js';
 try {
     const Xml = await import('/office-formats/src/XmlDsl.js');
-    const { equals } = await import('/office-formats/fable_modules/fable-library-js.4.28.0/Util.js');
+    // fable-library's folder is named by the Fable version: the one XmlDsl.js imports.
+    const xmlDslUrl = new URL('/office-formats/src/XmlDsl.js', location.href);
+    const utilPath = /from\s*"([^"]*\/fable-library-js\.[^"/]+\/Util\.js)"/.exec(await (await fetch(xmlDslUrl)).text())[1];
+    const { equals } = await import(new URL(utilPath, xmlDslUrl).href);
     const scan = (xml) => Xml.tryScan(xml, new Set());
     const cases = [
         ['elements and attributes', '<a x="1" y=\'2\'><b/><c z="q">text</c></a>'],

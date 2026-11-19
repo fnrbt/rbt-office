@@ -699,6 +699,28 @@ checks['vba-loads-on-use'] = async () => {
     return lines;
 };
 
+// Currency arithmetic in the browser (Rbt.Vb's Currency is a decimal: under Fable 4.28 it failed with
+// "x.div is not a function"): an Immediate line and a module's procedure, the output through the hook.
+checks['macro-currency'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        await grid.SetMacroModule('Module1', [
+            'Sub Money()', '    Dim c As Currency', '    c = 1.2345', '    Debug.Print c * CByte(3)', '    Range("A1").Value = c * 3', 'End Sub'].join('\n'));
+        await grid.EnableMacros();
+        const out = [];
+        grid.SetMacroHooks({ output: (text) => out.push(String(text).trim()) });
+        const line = await grid.RunMacroLine('Debug.Print CCur(0.1) * 3');
+        check('Immediate: CCur(0.1) * 3', [line.ok ? true : line.description, out.slice()], [true, ['0.3']]);
+        out.length = 0;
+        const money = await grid.RunMacro('Money');
+        check('a Currency times a Byte, kept to four decimals', [money.ok ? true : money.description, out.slice(), grid.GetRange('A1:A1')[0][0].value], [true, ['3.7035'], 3.7035]);
+        grid.SetMacroHooks(null);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // RunMacro runs a macro a slice at a time (the showcase macros: Game of Life, Doom fire): the grid shows
 // what it has written so far - not while it has ScreenUpdating off -, is read-only meanwhile, refuses a
 // second run, StopMacro stops it (error 18) and nothing of it is kept; one that ends is one undo step.
