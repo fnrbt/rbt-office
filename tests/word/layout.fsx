@@ -927,6 +927,13 @@ check "shape star32 endpoints"
     ((match star32ShapePath with | Doc.PMove _ :: _ -> true | _ -> false),
      (match List.last star32ShapePath with | Doc.PClose -> true | _ -> false))
     (true, true)
+// A callout's tail (wedgeRectCallout, Word's default adjustments): out of the bottom edge between
+// 2/12 and 5/12 of it to a point 0.29167 of the width across, 1.125 of the height down (as Word 2019
+// draws the showcase's diagrams.docx callout).
+let calloutPath = Rbt.Word.Shapes.presetPath "wedgeRectCallout" 240.0 80.0
+check "shape wedgeRectCallout: the tail on the bottom edge"
+    (calloutPath |> List.choose (function Doc.PLine (x, y) when y > 79.0 -> Some (System.Math.Round(x, 2), System.Math.Round(y, 2)) | _ -> None))
+    [ (240.0, 80.0); (100.0, 80.0); (70.0, 90.0); (40.0, 80.0); (0.0, 80.0) ]
 // removed: tested deleted cache machinery
 
 let pageFieldBuffer =
