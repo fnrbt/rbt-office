@@ -456,9 +456,12 @@ let effectiveRunStyleResolver (doc: Document) : ParagraphBlock -> TextStyle -> T
             | Some level -> Heading (level, para)
             | None -> Paragraph para
         effectiveTextStyleWithResolved context.ResolvedCharacterStyles (forBlockInContext context block) runStyle
-/// Imported runs may cache the effective fonts supplied by their old named
-/// styles. Drop only matching, non-direct values before changing the style;
-/// unrelated values (including table formatting) and explicit overrides stay.
+/// Imported runs may cache the effective formatting supplied by their old named
+/// styles. Drop only matching, non-direct values before changing the style - the
+/// fonts, the colour and the on/off properties (bold, italic ...): under the old
+/// style the text looks the same, and the new style's values can apply. Unrelated
+/// values (including table formatting) and explicit overrides stay. (A colour has
+/// no explicit flag: one equal to the old style's is taken as the style's.)
 let private releaseInheritedFonts (inherited: TextStyle) (style: TextStyle) =
     let family =
         if not (ExplicitFormat.has ExplicitFormat.FontFamily style) && style.FontFamily = inherited.FontFamily then None
@@ -466,8 +469,22 @@ let private releaseInheritedFonts (inherited: TextStyle) (style: TextStyle) =
     let size =
         if not (ExplicitFormat.has ExplicitFormat.FontSize style) && abs (style.FontSize - inherited.FontSize) < 0.01 then TextBuffer.defaultStyle.FontSize
         else style.FontSize
-    if family = style.FontFamily && size = style.FontSize then style
-    else { style with FontFamily = family; FontSize = size }
+    let color =
+        if not (ExplicitFormat.has ExplicitFormat.ColorAuto style) && style.Color.IsSome && style.Color = inherited.Color then None
+        else style.Color
+    // (An on/off property on because the old style had it on, and not set directly.)
+    let release flag (value: bool) (inheritedValue: bool) = value && inheritedValue && not (ExplicitFormat.has flag style)
+    let bold = release ExplicitFormat.Bold style.Bold inherited.Bold
+    let italic = release ExplicitFormat.Italic style.Italic inherited.Italic
+    let underline = release ExplicitFormat.Underline style.Underline inherited.Underline
+    let allCaps = release ExplicitFormat.AllCaps style.AllCaps inherited.AllCaps
+    let smallCaps = release ExplicitFormat.SmallCaps style.SmallCaps inherited.SmallCaps
+    if family = style.FontFamily && size = style.FontSize && color = style.Color && not (bold || italic || underline || allCaps || smallCaps) then style
+    else
+        { style with
+            FontFamily = family; FontSize = size; Color = color
+            Bold = style.Bold && not bold; Italic = style.Italic && not italic; Underline = style.Underline && not underline
+            AllCaps = style.AllCaps && not allCaps; SmallCaps = style.SmallCaps && not smallCaps }
 
 let private inheritedFontsFor (context: DocumentStyleContext) (doc: Document) (para: ParagraphBlock) =
     let block = findBlock doc para.Id |> Option.defaultValue (Paragraph para)

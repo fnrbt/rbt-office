@@ -224,5 +224,27 @@ check "saved and read again: the levels" (levels reread) (levels changed)
 check "saved and read again: the heading styles" ([ for i in 0 .. 3 -> styleOf reread i ]) ([ for i in 0 .. 3 -> styleOf changed i ])
 check "saved and read again: a paragraph's own level" (ownLevelOf reread 5) (ownLevelOf changed 5)
 
+// Runs that carry their style's formatting (an imported Heading 3's colour and font, and a run made
+// bold by a style that bolds): promoted, those values go with the old style - the new style's show;
+// a colour set on a run of its own stays.
+let h3Style = Outline.builtInHeadingStyle 3
+let h3Text = h3Style.Text |> Option.defaultValue TB.defaultStyle
+let baked =
+    let p = para (Some "Heading3") ""
+    let own = { h3Text with Color = Some "#FF0000"; Explicit = 0 }
+    let buffer =
+        TB.ofString "Baked red"
+        |> TB.applyStyle 0 6 (fun _ -> { h3Text with Explicit = 0 })
+        |> TB.applyStyle 6 3 (fun _ -> own)
+    Heading (3, { p with Buffer = buffer })
+let bakedDoc = { (docOf [ h 1 "Top"; baked ]) with Styles = styles @ [ h3Style ] }
+let promotedBaked = promote 1 bakedDoc
+let runColors (doc: Document) index =
+    match doc.Blocks.[index] with
+    | Heading (_, p) | Paragraph p -> p.Buffer.Runs |> List.choose (function TB.Text r -> Some r.Style.Color | _ -> None) |> List.distinct
+    | _ -> []
+check "promoted: the old style's colour let go, a run's own colour kept" (runColors promotedBaked 1) [ None; Some "#FF0000" ]
+check "promoted: Heading 2" (styleOf promotedBaked 1) "Heading2"
+
 printfn "outline: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
