@@ -490,6 +490,16 @@ let setParagraphStyle styleId (doc: Document) =
                 else Document.replaceParagraph current para.Id { para with Buffer = buffer })
     updated |> Document.clearHeading |> Document.setParagraphStyle styleId
 
+/// `para` with another paragraph style (None: the default one), as setParagraphStyle gives a
+/// paragraph: the fonts its runs had from its old style (`context`, the styles before the change)
+/// are let go, its direct formatting stays. Its block (a Heading or not) is the caller's.
+let restyleParagraph (context: DocumentStyleContext) (doc: Document) (styleId: string option) (para: ParagraphBlock) : ParagraphBlock =
+    if para.Metadata.Style = styleId then para
+    else
+        let inherited = inheritedFontsFor context doc para
+        let buffer = TextBuffer.applyStyle 0 (TextBuffer.length para.Buffer) (fun style -> releaseInheritedFonts (inherited style) style) para.Buffer
+        { para with Buffer = buffer; Metadata = { para.Metadata with Style = styleId } }
+
 /// Apply a named character style to a selected range (also used by the
 /// pending-typing probe for a caret).
 let setCharacterStyle styleId (doc: Document) =

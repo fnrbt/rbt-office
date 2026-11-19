@@ -380,19 +380,8 @@ let private textOf (size: float option) (family: string option) (color: string o
 /// Word 2016's built-in styles, as a document made in Word has them, for a macro that applies one the
 /// document does not define yet: they are added to the document's styles (and saved with it).
 let private builtInStyles : NamedStyle list =
-    let heading level size color italic before =
-        { plainStyle with
-            Id = sprintf "Heading%d" level; Name = Some (sprintf "heading %d" level); Linked = Some (sprintf "Heading%dChar" level)
-            Text = Some (textOf (Some size) (Some "Calibri Light") (Some color)); TextItalic = (if italic then Some true else None)
-            SpacingBefore = Some before; SpacingAfter = Some 0.0; KeepNext = Some true; KeepLines = Some true
-            OutlineLevel = Some (level - 1); UiPriority = Some 9 }
-    [ heading 1 16.0 "#2F5496" false 12.0
-      heading 2 13.0 "#2F5496" false 2.0
-      heading 3 12.0 "#1F3763" false 2.0
-      heading 4 11.0 "#2F5496" true 2.0
-      heading 5 11.0 "#2F5496" false 2.0
-      heading 6 11.0 "#1F3763" false 2.0
-      { plainStyle with
+    [ for level in 1 .. 9 -> Outline.builtInHeadingStyle level ] @
+    [ { plainStyle with
           Id = "Title"; Name = Some "Title"; Text = Some ({ textOf (Some 28.0) (Some "Calibri Light") None with CharacterSpacing = pxOfPt -0.5 })
           SpacingAfter = Some 0.0; LineSpacing = Some 1.0; LineSpacingRule = Some "auto"; ContextualSpacing = Some true; UiPriority = Some 10 }
       { plainStyle with
@@ -1514,9 +1503,29 @@ let private setParagraphStyles (book: MacroDocument) (within: LiveRange option) 
         let pos = book.PositionOf(id, 0)
         setRangeStyle book (LiveRange(pos, pos)) value
 
+/// The outline levels of paragraphs (Word's: a built-in heading's, the paragraph's own, its style's;
+/// 10 for body text - also in a table cell, where Word gives a heading style's level too).
+let private outlineLevels (book: MacroDocument) (ids: string list) =
+    let doc = book.Document
+    let resolver = Outline.LevelResolver doc
+    ids |> List.choose (fun id ->
+        match locateBlock doc id with
+        | ValueSome (struct (_, Heading (h, p))) when p.Id = id -> let struct (level, _) = resolver.Paragraph(p, h) in Some level
+        | _ -> book.Paragraph id |> Option.map (fun p -> let struct (level, _) = resolver.Paragraph(p, 0) in level))
+
+/// Paragraph(s).OutlinePromote / OutlineDemote / OutlineDemoteToBody / OutlineLevel = n, as Word does them (Outline.fs).
+let private changeOutline (book: MacroDocument) (change: Outline.LevelChange) (ids: string list) =
+    let next = Outline.changeLevels change ids book.Document
+    if not (obj.ReferenceEquals(next, book.Document)) then book.SetFormatting next
+
 let private readParagraphFormat (format: ParagraphFormatState) (p: ParagraphProperty) : Value =
     let book = format.Book
     match format.Target with
+    | ParagraphsOf within when p.Name = "OutlineLevel" ->
+        match outlineLevels book (paragraphIds book within) |> List.distinct with
+        | [ level ] -> VLong level
+        | [] -> VLong Outline.BodyLevel
+        | _ -> VLong wdUndefined
     | ParagraphsOf within ->
         let values = paragraphIds book within |> List.choose (fun id -> book.Paragraph id |> Option.map (fun para -> p.Read (paragraphFallback book id) para.Metadata))
         match values |> List.distinct with
@@ -1537,6 +1546,8 @@ let private readParagraphFormat (format: ParagraphFormatState) (p: ParagraphProp
 let private writeParagraphFormat (format: ParagraphFormatState) (p: ParagraphProperty) (value: Value) =
     let book = format.Book
     match format.Target, p.Change, p.StyleChange with
+    | ParagraphsOf within, _, _ when p.Name = "OutlineLevel" ->
+        changeOutline book (Outline.OwnLevel (toInt value)) (paragraphIds book within)
     | ParagraphsOf within, Some change, _ ->
         let change = change value
         for id in paragraphIds book within do
@@ -2126,21 +2137,40 @@ let private zoomType =
     HostMembers.Table<unit>("Zoom", [ accepted "Percentage" (VLong 100) ],
                             dynamic = ({ Read = (fun _ _ _ -> None); Write = (fun _ _ _ -> true) } : Dynamic<unit>))
 
+/// The window's view (View.Type: wdPrintView 3, wdOutlineView 2; another is kept and shown as print
+/// layout by the host): the host's, and what a macro sets it to (the host is told at once, as Word
+/// changes the view at once).
+let private viewTypeOf (book: MacroDocument) =
+    match book.Settings.TryGetValue "view:type" with
+    | true, value -> toInt value
+    | _ -> book.Hooks.View ()
+
 let private viewType =
-    let noEffect name = set name (fun (_: unit) _ -> ())
-    HostMembers.Table<unit>("View", [
-        accepted "Type" (VLong 3)
+    let noEffect name = set name (fun (_: MacroDocument) _ -> ())
+    HostMembers.Table<MacroDocument>("View", [
+        prop "Type" (fun book -> VLong (viewTypeOf book)) (fun book value ->
+            let kind = toInt value
+            book.Settings.["view:type"] <- VLong kind
+            book.Hooks.SetView kind)
         accepted "ShowAll" (VBoolean false)
         accepted "ShowHiddenText" (VBoolean false)
         accepted "ShowFieldCodes" (VBoolean false)
         noEffect "ShowBookmarks"
         noEffect "ShowParagraphs"
         noEffect "Draft"
-        get "Zoom" (fun () -> zoomType.Wrap ()) ])
+        // (Outline view's levels shown: Word does nothing in another view for ShowHeading, and refuses ShowAllHeadings.)
+        method "ShowHeading" [ "Level" ] (fun book args ->
+            if viewTypeOf book = 2 then book.Hooks.ShowHeadings (max 1 (min 9 (intArg args 0 1)))
+            VEmpty)
+        method "ShowAllHeadings" [] (fun book _ ->
+            if viewTypeOf book <> 2 then fail 4605 "The ShowAllHeadings method or property is not available because outline view is not active."
+            book.Hooks.ShowHeadings 0
+            VEmpty)
+        get "Zoom" (fun _ -> zoomType.Wrap ()) ])
 
 let private paneType =
-    HostMembers.Table<unit>("Pane", [
-        get "View" (fun () -> viewType.Wrap ())
+    HostMembers.Table<MacroDocument>("Pane", [
+        get "View" (fun book -> viewType.Wrap book)
         method "SmallScroll" [] (fun _ _ -> VEmpty)
         method "LargeScroll" [] (fun _ _ -> VEmpty) ])
 
@@ -2520,7 +2550,23 @@ let private rangeMembers : Member<RangeState> list =
       method "ComputeStatistics" [ "Statistic"; "IncludeFootnotesAndEndnotes" ] (fun x args -> VLong (statistics x.Book x.R.Start x.R.End (intArg args 0 0)))
       method "InRange" [ "Range" ] (compared (fun (s, e) x -> s <= x.R.Start && x.R.End <= e))
       method "IsEqual" [ "Range" ] (compared (fun (s, e) x -> s = x.R.Start && x.R.End = e))
-      method "ConvertToTable" [ "Separator"; "NumRows"; "NumColumns"; "InitialColumnWidth"; "Format"; "ApplyBorders" ] (fun x args -> convertToTable x.Book x.R args) ]
+      method "ConvertToTable" [ "Separator"; "NumRows"; "NumColumns"; "InitialColumnWidth"; "Format"; "ApplyBorders" ] (fun x args -> convertToTable x.Book x.R args)
+      // (The range's paragraphs past the paragraph before them, wdRelocateUp 0, or after them, wdRelocateDown 1, as
+      // Word does in print layout; the range is of them where they are then.)
+      method "Relocate" [ "Direction" ] (fun x args ->
+          let book = x.Book
+          match book.ParagraphIdsIn(x.R.Start, x.R.End) with
+          | [] -> VEmpty
+          | first :: _ as ids ->
+              let last = List.last ids
+              let doc = book.Document
+              let span = { Anchor = { BlockId = first; Offset = 0 }; Focus = { BlockId = last; Offset = 0 } }
+              let moved = Outline.moveSelectedBlocks (intArg args 0 0 = 0) { doc with Selection = Some span }
+              if not (obj.ReferenceEquals(moved.Blocks, doc.Blocks)) then
+                  book.SetStructure { moved with Selection = doc.Selection }
+                  x.R.Start <- book.PositionOf(first, 0)
+                  x.R.End <- book.PositionOf(last, Int32.MaxValue) + 1
+              VEmpty) ]
 
 rangeType <- HostMembers.Table<RangeState>("Range", rangeMembers, defaultMember = "Text")
 
@@ -2550,7 +2596,10 @@ paragraphType <-
           method "Next" [ "Count" ] (step id)
           method "Previous" [ "Count" ] (step (fun n -> -n))
           method "Indent" [] (indent 36.0)
-          method "Outdent" [] (indent -36.0) ]
+          method "Outdent" [] (indent -36.0)
+          method "OutlinePromote" [] (fun x _ -> changeOutline x.Book Outline.Promote (ids x ()); VEmpty)
+          method "OutlineDemote" [] (fun x _ -> changeOutline x.Book Outline.Demote (ids x ()); VEmpty)
+          method "OutlineDemoteToBody" [] (fun x _ -> changeOutline x.Book Outline.DemoteToBody (ids x ()); VEmpty) ]
         @ paragraphFormatProperties format
     // (A paragraph's range's methods are the paragraph's: InsertAfter, Move...)
     HostMembers.Table<RangeState>("Paragraph", extending own (rangeMembers |> List.filter (fun m -> m.Call.IsSome)))
@@ -2580,6 +2629,9 @@ paragraphsType <-
                paragraphObject book (book.Track(seg.Start, segmentEnd seg)))
            method "Indent" [] (mapAll (indentBy 36.0))
            method "Outdent" [] (mapAll (indentBy -36.0))
+           method "OutlinePromote" [] (fun p _ -> changeOutline p.Book Outline.Promote (paragraphIds p.Book p.Within); VEmpty)
+           method "OutlineDemote" [] (fun p _ -> changeOutline p.Book Outline.Demote (paragraphIds p.Book p.Within); VEmpty)
+           method "OutlineDemoteToBody" [] (fun p _ -> changeOutline p.Book Outline.DemoteToBody (paragraphIds p.Book p.Within); VEmpty)
            method "Space1" [] (mapAll (lineSpacingRuleChange (VLong 0)))
            method "Space15" [] (mapAll (lineSpacingRuleChange (VLong 1)))
            method "Space2" [] (mapAll (lineSpacingRuleChange (VLong 2))) ]
@@ -3224,8 +3276,8 @@ windowType <-
     let display name = accepted name (VBoolean true)
     let nothing name = method name [] (fun (_: NamedState) _ -> VEmpty)
     HostMembers.Table<NamedState>("Window",
-        [ get "View" (fun _ -> viewType.Wrap ())
-          get "ActivePane" (fun _ -> paneType.Wrap ())
+        [ get "View" (fun w -> viewType.Wrap w.Book)
+          get "ActivePane" (fun w -> paneType.Wrap w.Book)
           get "Selection" (fun w -> selectionObject w.Book)
           prop "Caption" (fun w -> VString w.Book.Hooks.FileName) (fun _ _ -> ())
           accepted "WindowState" (VLong 0)

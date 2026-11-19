@@ -296,6 +296,12 @@ module Shell =
         let isInsertMenuOpen = signal false
         let isTableMenuOpen = signal false
         let stylesOpen = signal false
+        // (View: the navigation pane beside the pages; print layout or outline view - the editor's view,
+        // which a macro's ActiveWindow.View sets too - and outline view's levels shown.)
+        let navigationOpen = signal false
+        let viewType = signal 3
+        let outlineShowLevel = signal 0
+        let outlineControl = OutlineUi.OutlineControl()
         let styleSearch = signal ""
         let showHiddenStyles = signal false
         let mutable styleSearchElement: Element = null
@@ -633,6 +639,29 @@ module Shell =
         registry.Add(Rbt.Office.Commands.command "format.stylesPane" "Styles pane" None enabled (fun _ ->
             stylesOpen.Value <- not stylesOpen.Value
             if stylesOpen.Value then afterChromeUpdate (fun () -> if stylesOpen.Value then focusElement styleSearchElement)))
+        let setView kind =
+            match host.Editor with
+            | Some editor ->
+                WordApi.setView editor kind
+                viewType.Value <- WordApi.getView editor
+                host.Status.Value <- if kind = 2 then "Outline view" else "Print layout"
+            | None -> ()
+        add "view.printLayout" "Print layout" None (fun () -> setView 3)
+        add "view.outline" "Outline" None (fun () -> setView 2)
+        registry.Add(Rbt.Office.Commands.toggle "view.navigationPane" "Navigation pane" None enabled (fun () -> Some navigationOpen.Value)
+            (fun _ -> navigationOpen.Value <- not navigationOpen.Value))
+        // Word's outline keys, in print layout (the paragraphs of the selection) and in outline view (its lines).
+        let addOutline id label shortcut viewCommand (printCommand: WordApi.Editor -> bool) status =
+            registry.Add(Rbt.Office.Commands.command id label (Some shortcut) canEdit (fun _ ->
+                if viewType.Value = 2 then outlineControl.Run viewCommand
+                else
+                    let mutable changed = false
+                    runCommand host (fun editor -> changed <- printCommand editor)
+                    if changed then host.Status.Value <- status))
+        addOutline "outline.promote" "Promote" "Alt+Shift+ArrowLeft" "promote" WordApi.outlinePromote "Promoted"
+        addOutline "outline.demote" "Demote" "Alt+Shift+ArrowRight" "demote" WordApi.outlineDemote "Demoted"
+        addOutline "outline.moveUp" "Move up" "Alt+Shift+ArrowUp" "moveUp" WordApi.outlineMoveUp "Moved up"
+        addOutline "outline.moveDown" "Move down" "Alt+Shift+ArrowDown" "moveDown" WordApi.outlineMoveDown "Moved down"
         let run id () = registry.Run id |> ignore
         let runValue id value = registry.Run(id, argument = box value) |> ignore
         let isChecked id =
@@ -813,7 +842,15 @@ module Shell =
                 DeleteTableRow = run "table.deleteRow"
                 DeleteTableColumn = run "table.deleteColumn" }
 
-        let menuSpecs = WordUi.menus shellState shellActions
+        let viewMenu : MenuSpec =
+            { TestId = "word-view-menu"
+              PanelTestId = "word-view-menu-panel"
+              Label = "View"
+              Items = [
+                  menuItem "word-menu-view-print" "Print layout" (Some (fun () -> viewType.Value <> 2)) (run "view.printLayout")
+                  menuItem "word-menu-view-outline" "Outline" (Some (fun () -> viewType.Value = 2)) (run "view.outline")
+                  menuItem "word-menu-view-navigation" "Navigation pane" (Some (fun () -> navigationOpen.Value)) (run "view.navigationPane") ] }
+        let menuSpecs = WordUi.menus shellState shellActions @ [ viewMenu ]
         shellSequence <- shellSequence + 1
         let instanceId = shellSequence
         let menuOpenStates = menuSpecs |> List.map (fun _ -> signal false)
@@ -924,9 +961,30 @@ module Shell =
             [ cls "office-shell"; cls "word-shell"; attr "data-testid" "word-shell"
               refEffect (fun root ->
                   Rbt.FableUI.Chrome.installStyles "word" shellCss
+                  Rbt.FableUI.Chrome.installStyles "word-outline" OutlineUi.css
                   let stateSubscription = effect (fun () ->
                       let _ = host.SelectionVersion.Value
                       registry.NotifyChanged())
+                  // (The editor's view as it changes - a macro's ActiveWindow.View too.)
+                  let viewEditor: WordApi.Editor option ref = ref None
+                  let stopView: (unit -> unit) ref = ref ignore
+                  let viewSubscription = effect (fun () ->
+                      let _ = host.SelectionVersion.Value
+                      untrack (fun () ->
+                          match host.Editor with
+                          | Some editor when not (viewEditor.Value |> Option.exists (fun known -> obj.ReferenceEquals(known, editor))) ->
+                              stopView.Value ()
+                              viewEditor.Value <- Some editor
+                              let follow () =
+                                  viewType.Value <- WordApi.getView editor
+                                  outlineShowLevel.Value <- WordApi.getOutlineShowLevel editor
+                              follow ()
+                              stopView.Value <- WordApi.onChange editor (fun change -> if change?ViewChanged = true then follow ())
+                          | None when viewEditor.Value.IsSome ->
+                              stopView.Value ()
+                              stopView.Value <- ignore
+                              viewEditor.Value <- None
+                          | _ -> ()))
                   let disposeContextMenu = ContextMenu.attach root host registry
                   let handleKeyDown (event: Event) =
                       let key = event :?> KeyboardEvent
@@ -960,6 +1018,8 @@ module Shell =
                   addFocusCapture handlePointerDown
                   fun () ->
                       stateSubscription.Dispose()
+                      viewSubscription.Dispose()
+                      stopView.Value ()
                       disposeContextMenu()
                       removeKeyCapture handleKeyDown
                       removePointerCapture handlePointerDown
@@ -997,7 +1057,13 @@ module Shell =
                 div [ cls "word-ruler-track" ] []
             ]
 
-            WordHost.view host
+            div [ cls "word-main" ] [
+                OutlineUi.navigationPane host navigationOpen
+                div [ cls "word-pages" ] [
+                    WordHost.view host
+                    OutlineUi.outlineView host viewType outlineShowLevel outlineControl
+                ]
+            ]
 
 
             renderMarkupNavigator ()

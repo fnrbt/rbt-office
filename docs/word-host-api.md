@@ -947,6 +947,50 @@ document and modified indicator as they occur.
 | `decreaseIndent(editor)` | The selected list items one level up (Shift+Tab); from the first level out of the list. |
 | `setListLevel(editor, level: number)` | The selected list items at a level of their list (1-9; see increaseIndent). |
 
+### The outline: navigation pane and outline view
+
+Word's outline (`src/Word/Outline.fs`, the same on .NET): a paragraph of the body is a heading of
+level 1-9 by its own outline level (`w:outlineLvl`), else its style's (inherited); a built-in heading
+style ("heading 1" .. "heading 9") is its number whatever the paragraph says; every other block is body
+text (10). Paragraphs in tables, text boxes, headers, footers and notes are no headings; a table is body
+text under the heading before it. A heading's subtext is every block after it up to the next heading of
+its level or a higher one. The commands are one undo step each and do what Word 2019 does (checked with
+VBA on the Windows VM): a Heading N style becomes Heading N∓1 (Word's built-in style is added when the
+document has none); a level of the paragraph's own, or of a style of the document's own, changes as the
+paragraph's own; body text alone becomes a heading of the level of the heading before it (promote) or
+one below (demote); body text among selected headings stays; Demote to body text is the Normal style
+without the paragraph's own spacing and indents.
+
+| Function | What it does |
+| --- | --- |
+| `getOutline(editor): object[]` | The headings: [{ BlockId, BlockIndex (place among the body's blocks), Level (1-9), Text, HasSubtext }]. Computed once for a state of the document. |
+| `getOutlinePages(editor): (number \| null)[]` | The page (1-based) each heading starts on, once the document is laid out to its end; null each before. |
+| `getOutlineLines(editor, formatting: boolean): object[]` | Every block of the body as a line of outline view: [{ BlockId, BlockIndex, Level, Kind ("paragraph" \| "table" \| "textbox"), Text, HasSubtext, Depth, Runs }]; with `formatting`, Runs as shown [{ Text, Bold, Italic, Underline, Strike, FontSize (pt), FontFamily, Color }]. |
+| `getCurrentHeading(editor): string \| null` | The heading the caret is under. |
+| `getSubtextEnd(editor, blockId): number` | The end (exclusive, a block place) of a block's subtext. |
+| `outlinePromote(editor)` / `outlineDemote(editor)` | Promote / demote the selection's paragraphs of the body (true when something changed). |
+| `outlinePromoteToHeading1(editor)` / `outlineDemoteToBody(editor)` | Heading 1 / body text (Normal). |
+| `setOutlineLevel(editor, level)` | A level (1-9, 10 body text) as outline view's level box gives it. |
+| `outlineMoveUp(editor)` / `outlineMoveDown(editor)` | The selection's blocks past the block before / after them (Alt+Shift+Up / Down, `Range.Relocate`). |
+| `promoteHeading(editor, blockId)` / `demoteHeading(editor, blockId)` | A heading and its subheadings by one level (the navigation pane's). |
+| `moveHeadingUp(editor, blockId)` / `moveHeadingDown(editor, blockId)` | A heading with its subtext past its previous / next sibling. |
+| `moveBlocks(editor, firstBlockId, lastBlockId, beforeBlockId \| null)` | Blocks of the body moved before another (null: to the end): a heading dragged with its subtext. |
+| `deleteHeading(editor, blockId)` | A heading and its subtext deleted. |
+| `goToHeading(editor, blockId)` | The caret at the start of a heading (or block). |
+| `selectBlocks(editor, firstBlockId, lastBlockId)` | Select whole blocks of the body (outline view's selected lines). |
+| `getView(editor)` / `setView(editor, type)` | The view: Word's WdViewType, 3 print layout, 2 outline view (another is kept and shown as print layout). `onChange` hears `{ ViewChanged: true, View, OutlineShowLevel }`. A macro's `ActiveWindow.View.Type` reads and sets it. |
+| `getOutlineShowLevel(editor)` / `setOutlineShowLevel(editor, level)` | Outline view's headings shown down to a level (1-9), 0 everything (`View.ShowHeading`, `ShowAllHeadings`). |
+
+The shell has a View menu (`word-view-menu`: Print layout, Outline, Navigation pane), the navigation
+pane (`word-nav-pane`: a tree of the headings, the current one highlighted, a click goes to one, a
+context menu `word-nav-menu` with Promote, Demote, Move up, Move down, Delete heading and content,
+Expand / Collapse all, drag and drop) and outline view (`word-outline-view`, its toolbar
+`word-outline-toolbar` and lines `word-outline-line`). Outline view is a structure editor: its lines are
+selected (click, Shift+click, arrows) and promoted, demoted, moved, expanded and collapsed (in the view
+only); Alt+Shift+Left / Right / Up / Down, Alt+Shift+Plus / Minus, Alt+Shift+1-9 / A as in Word; a double
+click or Enter goes back to print layout with the caret on the line. Alt+Shift+Left / Right / Up / Down
+work in print layout too.
+
 ### Pages, sections, headers and footers
 
 | Function | What it does |
@@ -1143,12 +1187,14 @@ Borders -, `Style`, `HighlightColorIndex`, `Case`, `ListFormat`, `Information`, 
 with `Replacement` - text, ^ codes, wildcards, MatchCase / MatchWholeWord, formatting found and replaced,
 wdReplaceOne / wdReplaceAll -; on the Selection `TypeText`, `TypeParagraph`, `TypeBackspace`, `HomeKey` /
 `EndKey`, `MoveLeft` / `MoveRight` / `MoveUp` / `MoveDown` and Font set at a caret for what is typed
-next), `Tables.Add` (Word's default: no borders; wdWord9TableBehavior: Table Grid), `Table` (`Cell(r, c)`,
+next; `Relocate` wdRelocateUp / Down), `Paragraph(s)` (`OutlinePromote`, `OutlineDemote`, `OutlineDemoteToBody`,
+`OutlineLevel` read and set - Word's outline rules, above), `ActiveWindow.View` (`Type`: wdPrintView 3 / wdOutlineView 2
+shown by the host, another kept; `ShowHeading n` and `ShowAllHeadings` in outline view), `Tables.Add` (Word's default: no borders; wdWord9TableBehavior: Table Grid), `Table` (`Cell(r, c)`,
 `Rows` / `Columns` with `Add`, `Delete`, `Height`, `Width`, `Shading`, `Borders`, `Style` - Word's
 built-in table styles applied as cell formatting -, `AutoFormat`, `Sort`), the `wd*` constants, `RGB`,
 `MsgBox`, `InputBox`, `Debug.Print`. Positions are Word's: a paragraph mark, an end-of-cell and an
 end-of-row mark are one character each (read as vbCr and vbCr & Chr(7)), a page break is Chr(12) in a
-paragraph of its own; a style the document does not have yet (Heading 1-6, Title, Subtitle, Quote,
+paragraph of its own; a style the document does not have yet (Heading 1-9, Title, Subtitle, Quote,
 Intense Quote, List Paragraph, No Spacing, Caption, Strong, Emphasis ...) is added as Word 2016 defines
 it. A member Word has and the object model does not raises error 438.
 

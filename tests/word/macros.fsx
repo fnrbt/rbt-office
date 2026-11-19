@@ -398,6 +398,73 @@ check "calendar: three months" calendarTables.Length 3
 check "calendar: weekend shading" (calendarTables.Head.Rows.[1].Cells |> List.map (fun c -> c.BackgroundColor)) [ None; None; None; None; None; Some "#DEEBF7"; Some "#DEEBF7" ]
 check "calendar: page breaks as Word makes them" (Doc.allParagraphs calendar |> List.filter (fun p -> p.Metadata.PageBreakBefore) |> List.length) 2
 
+// ---- the outline: OutlinePromote / OutlineDemote / OutlineDemoteToBody, OutlineLevel, Relocate, View ----------
+// (What Word 2019 does, checked with VBA on the Windows VM.)
+let outlined =
+    run (docOf [ "A"; "a body"; "B"; "b body"; "C" ]) """
+Sub Main()
+    ActiveDocument.Paragraphs(1).Style = wdStyleHeading1
+    ActiveDocument.Paragraphs(3).Style = wdStyleHeading2
+    Debug.Print CStr(ActiveDocument.Paragraphs(1).OutlineLevel) & " " & CStr(ActiveDocument.Paragraphs(2).OutlineLevel) & " " & CStr(ActiveDocument.Paragraphs(3).OutlineLevel)
+    ActiveDocument.Paragraphs(2).OutlinePromote
+    ActiveDocument.Paragraphs(3).OutlinePromote
+    ActiveDocument.Paragraphs(4).OutlineDemote
+    Debug.Print ActiveDocument.Paragraphs(2).Style & "|" & ActiveDocument.Paragraphs(3).Style & "|" & ActiveDocument.Paragraphs(4).Style
+    ActiveDocument.Paragraphs(4).OutlineDemoteToBody
+    ActiveDocument.Paragraphs(2).OutlineLevel = wdOutlineLevel3
+    ActiveDocument.Paragraphs(5).OutlineLevel = wdOutlineLevel4
+    Debug.Print CStr(ActiveDocument.Paragraphs(4).OutlineLevel) & " " & CStr(ActiveDocument.Paragraphs(2).OutlineLevel) & " " & CStr(ActiveDocument.Paragraphs(5).OutlineLevel) & " " & ActiveDocument.Paragraphs(5).Style
+    ActiveDocument.Range(ActiveDocument.Paragraphs(2).Range.Start, ActiveDocument.Paragraphs(3).Range.End).Paragraphs.OutlineDemote
+    Debug.Print ActiveDocument.Paragraphs(2).Style & "|" & ActiveDocument.Paragraphs(3).Style
+    Debug.Print CStr(ActiveDocument.Paragraphs(1).Format.OutlineLevel)
+End Sub""" |> ok "outline"
+check "outline: levels read (heading, body text, Heading 2)" (output |> Seq.tryItem 0) (Some "1 10 2")
+check "outline: body text promoted is the heading before's; Heading 2 promoted is Heading 1; body text demoted one below" (output |> Seq.tryItem 1) (Some "Heading 1|Heading 1|Heading 2")
+check "outline: demoted to body text; a heading's OutlineLevel set stays its style's; a Normal paragraph's is its own" (output |> Seq.tryItem 2) (Some "10 1 4 Normal")
+check "outline: Paragraphs of a range demoted" (output |> Seq.tryItem 3) (Some "Heading 2|Heading 2")
+check "outline: ParagraphFormat.OutlineLevel" (output |> Seq.tryItem 4) (Some "1")
+check "outline: the headings are Heading blocks of the body" (outlined.Blocks |> List.map (function Doc.Heading _ -> "H" | _ -> "P")) [ "H"; "H"; "H"; "P"; "P" ]
+check "outline: the level of its own is kept in the model" (outlined.Blocks |> List.item 4 |> function Doc.Paragraph p -> p.Metadata.OutlineLevel | _ -> None) (Some 3)
+let relocated =
+    run (docOf [ "one"; "two"; "three" ]) """
+Sub Main()
+    Dim r As Range
+    Set r = ActiveDocument.Paragraphs(1).Range
+    r.Relocate wdRelocateDown
+    Debug.Print Replace(r.Text, vbCr, "")
+    ActiveDocument.Paragraphs(3).Range.Relocate wdRelocateUp
+End Sub""" |> ok "relocate"
+check "relocate: down past the next paragraph, the range with it; up" (bodyTexts relocated, output |> Seq.tryHead) ([ "two"; "three"; "one" ], Some "one")
+let views = ResizeArray<string>()
+let mutable shownView = 3
+let viewHooks =
+    { hooks with
+        View = (fun () -> shownView)
+        SetView = (fun kind -> shownView <- kind; views.Add (sprintf "view %d" kind))
+        ShowHeadings = (fun level -> views.Add (sprintf "show %d" level)) }
+let runWithView (doc: Doc.Document) (code: string) =
+    output.Clear()
+    views.Clear()
+    match (Project.ofModules [ "Module1", code ]).Run(doc, viewHooks, "Main") with
+    | MacroDone d -> Ok d
+    | MacroFailed f -> Error f.Text
+runWithView (docOf [ "x" ]) """
+Sub Main()
+    Debug.Print CStr(ActiveWindow.View.Type)
+    ActiveWindow.View.ShowHeading 3
+    ActiveWindow.View.Type = wdOutlineView
+    Debug.Print CStr(ActiveWindow.ActivePane.View.Type)
+    ActiveWindow.View.ShowHeading 2
+    ActiveWindow.View.ShowAllHeadings
+    ActiveWindow.View.Type = wdWebView
+    Debug.Print CStr(ActiveWindow.View.Type)
+    ActiveWindow.View.Type = wdPrintView
+    On Error Resume Next
+    ActiveWindow.View.ShowAllHeadings
+    Debug.Print CStr(Err.Number)
+End Sub""" |> ok "view" |> ignore
+check "view: Type read from the host, set: the host told at once; ShowHeading only in outline view" (List.ofSeq output, List.ofSeq views) ([ "3"; "2"; "6"; "4605" ], [ "view 2"; "show 2"; "show 0"; "view 6"; "view 3" ])
+
 // ---- a project saved with a document: a .docx made macro-enabled, a .docm's project replaced ----------
 let unzip (bytes: byte[]) =
     use archive = new IO.Compression.ZipArchive(new IO.MemoryStream(bytes))

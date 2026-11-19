@@ -13,6 +13,12 @@ type MacroHooks = {
     InputBox: string -> string -> string -> string option
     Output: string -> unit
     FileName: string
+    /// The window's view as the host shows it (ActiveWindow.View.Type: wdPrintView 3, wdOutlineView 2, ...).
+    View: unit -> int
+    /// A macro set the view (View.Type = ...).
+    SetView: int -> unit
+    /// In outline view, the headings down to a level shown (View.ShowHeading 1-9), or everything (0: ShowAllHeadings).
+    ShowHeadings: int -> unit
 }
 
 let defaultHooks = {
@@ -20,6 +26,9 @@ let defaultHooks = {
     InputBox = fun _ _ _ -> None
     Output = ignore
     FileName = "Document1.docm"
+    View = fun () -> 3
+    SetView = ignore
+    ShowHeadings = ignore
 }
 
 /// Why a macro stopped or a project does not compile: Word's number and description, and where.

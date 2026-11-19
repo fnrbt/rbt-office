@@ -52,6 +52,14 @@ module API =
             this.Edited <- false
             this.Log.Clear()
 
+    /// The view the document is shown in, as the host says (setView): Word's WdViewType - wdPrintView
+    /// 3 (print layout, the pages), wdOutlineView 2 (outline view, the host's); another is kept and
+    /// shown as print layout. ShowLevel: in outline view the headings down to that level are shown
+    /// (1-9), or everything (0). What ActiveWindow.View of a macro reads and sets.
+    type ViewState() =
+        member val Type = 3 with get, set
+        member val ShowLevel = 0 with get, set
+
     /// Editor instance
     type Editor = {
         Handler: Inp.InputHandler
@@ -83,6 +91,7 @@ module API =
         /// Which faces of the document the host cannot set text in yet (see setFontAvailability).
         Fonts: Viewer.FontTracker
         Macros: MacroState
+        View: ViewState
     } with
         member this.Doc = this.Handler.Document
 
@@ -808,6 +817,7 @@ module API =
             LoadFailure = None
             Fonts = Viewer.FontTracker()
             Macros = MacroState()
+            View = ViewState()
         }
         handler.EnsureWhole <- fun () -> ensureLoaded editor
         handler.RenderContext.Progress.OnScrollAdjusted <- fun () -> notifyScrollAdjusted editor
@@ -4050,6 +4060,54 @@ module API =
     [<Emit("($0 === null || $0 === undefined)")>]
     let private isNullish (_: obj) : bool = jsNative
 
+    /// Tell the onChange listeners that the view changed (setView, setOutlineShowLevel, a macro's
+    /// ActiveWindow.View): ViewChanged is true; the document and the selection are as they were.
+    let private notifyView (editor: Editor) =
+        if editor.Listeners.Count > 0 then
+            let change =
+                createObj [
+                    "DocumentChanged" ==> false
+                    "SelectionChanged" ==> false
+                    "ViewChanged" ==> true
+                    "View" ==> editor.View.Type
+                    "OutlineShowLevel" ==> editor.View.ShowLevel
+                    "CanUndo" ==> Inp.canUndo editor.Handler
+                    "CanRedo" ==> Inp.canRedo editor.Handler
+                    "Revision" ==> editor.Handler.Session.Revision
+                    "Modified" ==> editor.Handler.Session.IsModified
+                    "LayoutChanged" ==> false
+                    "LayoutComplete" ==> Ren.layoutIsComplete editor.Handler.RenderContext
+                    "LoadChanged" ==> false
+                    "LoadComplete" ==> (editor.Loading.IsNone && editor.LoadFailure.IsNone)
+                    "LoadFailed" ==> editor.LoadFailure.IsSome
+                    "LoadError" ==> Option.toObj editor.LoadFailure
+                    "FontsPending" ==> fontsPending editor
+                ]
+            for listener in editor.Listeners.ToArray() do
+                if editor.Listeners.Contains listener then listener change
+
+    /// The view the document is shown in (see ViewState): 3 print layout, 2 outline view, or another
+    /// WdViewType a host or a macro set (shown as print layout).
+    let getView (editor: Editor) : int = editor.View.Type
+
+    /// Show the document in another view (3 print layout, 2 outline view; another WdViewType is kept,
+    /// and is print layout to the shell). The listeners hear of it (ViewChanged).
+    let setView (editor: Editor) (viewType: int) : unit =
+        if editor.View.Type <> viewType then
+            editor.View.Type <- viewType
+            notifyView editor
+
+    /// In outline view, the lowest level of heading shown (1-9), or 0: everything, body text too.
+    let getOutlineShowLevel (editor: Editor) : int = editor.View.ShowLevel
+
+    /// Show the headings down to `level` (1-9) in outline view, or everything (0) - View.ShowHeading
+    /// and ShowAllHeadings. The listeners hear of it (ViewChanged).
+    let setOutlineShowLevel (editor: Editor) (level: int) : unit =
+        let level = if level < 1 || level > 9 then 0 else level
+        if editor.View.ShowLevel <> level then
+            editor.View.ShowLevel <- level
+            notifyView editor
+
     /// MsgBox / InputBox / Debug.Print with the browser's own dialogs, until a host gives its own
     /// (setMacroHooks). MsgBox's answer is VBA's: vbOK 1, vbCancel 2, vbYes 6, vbNo 7, vbRetry 4.
     let private browserMacroHooks : WordMacroApi.MacroHooks =
@@ -4065,7 +4123,10 @@ module API =
             let answer = promptBox prompt defaultText
             if isNull answer then None else Some answer
           Output = consoleLog
-          FileName = "Document1.docm" }
+          FileName = "Document1.docm"
+          View = fun () -> 3
+          SetView = ignore
+          ShowHeadings = ignore }
 
     /// The VBA engine and Word's object model (WordMacroProject.fs): fetched when macros are first enabled,
     /// run or edited - the editor never imports it otherwise, so a document that runs no macro does not
@@ -4149,7 +4210,12 @@ module API =
             else
                 let start = editor.Doc
                 let hooks = macroHooksOf editor
-                let hooks = { hooks with Output = (fun text -> state.Log.Add text; hooks.Output text) }
+                let hooks =
+                    { hooks with
+                        Output = (fun text -> state.Log.Add text; hooks.Output text)
+                        View = (fun () -> editor.View.Type)
+                        SetView = (fun kind -> setView editor kind)
+                        ShowHeadings = (fun level -> setOutlineShowLevel editor level) }
                 match run project start hooks with
                 | WordMacroApi.MacroDone result ->
                     if not (obj.ReferenceEquals(result, start)) then Inp.applyEdit editor.Handler description result
@@ -4216,6 +4282,228 @@ module API =
 
     /// What macros printed and how the VBA editor's runs ended, newest last.
     let getMacroOutput (editor: Editor) : string array = editor.Macros.Log.ToArray()
+
+    // ---- the outline: the navigation pane and outline view (Outline.fs) ------------------------------
+
+    /// The outline is the body's: a header, footer, note or comment being edited is left first.
+    let private toBody (editor: Editor) =
+        ensureLoaded editor
+        if editor.Handler.Story.IsSome then exitHeaderFooter editor |> ignore
+        if editor.Handler.Story.IsSome then exitNote editor |> ignore
+
+    /// An outline command as one undo step; true when it changed the document.
+    let private outlineCommand (editor: Editor) (change: Doc.Document -> Doc.Document) : bool =
+        toBody editor
+        executeWord editor (ParagraphFormat change) = Ok ContentChanged
+
+    /// The headings of the body, in order (Word's outline: a paragraph whose level - its own outline
+    /// level, else its style's; Heading 1-9 - is 1-9; paragraphs in tables, text boxes, headers,
+    /// footers and notes are not among them): [{ BlockId, BlockIndex (its place among the body's
+    /// blocks), Level (1-9), Text, HasSubtext }]. Computed once for a state of the document.
+    let getOutline (editor: Editor) : obj array =
+        let outline = Outline.ofDocument editor.Whole
+        let headings = outline.Headings
+        Array.init headings.Length (fun i ->
+            let index = headings.[i]
+            let o = obj ()
+            o?BlockId <- outline.BlockIds.[index]
+            o?BlockIndex <- index
+            o?Level <- outline.Levels.[index]
+            o?Text <- outline.HeadingTexts.[i]
+            o?HasSubtext <- Outline.subtextEnd outline index > index + 1
+            o)
+
+    /// The page (1-based, of the pages as laid out) each heading of getOutline starts on, when the
+    /// document is laid out to its end; null for each while it is not (nothing is laid out for it).
+    let getOutlinePages (editor: Editor) : obj array =
+        let outline = Outline.ofDocument editor.Whole
+        let ctx = editor.Handler.RenderContext
+        let unknown () = Array.create outline.Headings.Length null
+        if editor.Handler.Story.IsSome || not (Ren.layoutIsComplete ctx) then unknown ()
+        else
+            match Ren.cachedLayouts ctx editor.Doc with
+            | None -> unknown ()
+            | Some layouts ->
+                pagesInUse <- Ren.pageFrames ctx editor.Doc |> List.toArray
+                let tops = Dictionary<string, float>()
+                for layout in layouts do tops.[layout.BlockId] <- layout.Y
+                outline.Headings |> Array.map (fun index ->
+                    match Portable.Dict.tryFind outline.BlockIds.[index] tops with
+                    | ValueSome y -> box (pageIndexAt y + 1)
+                    | ValueNone -> null)
+
+    /// The end (exclusive, a place among the body's blocks) of the subtext of the block with this id:
+    /// the next heading of its level or a higher one; its own place + 1 for body text; -1 for an id
+    /// that is not of the body.
+    let getSubtextEnd (editor: Editor) (blockId: string) : int =
+        let doc = editor.Whole
+        let index = Outline.indexOf doc blockId
+        if index < 0 then -1 else Outline.subtextEnd (Outline.ofDocument doc) index
+
+    let private styledRuns (resolve: Doc.ParagraphBlock -> TextBuf.TextStyle -> TextBuf.TextStyle) (para: Doc.ParagraphBlock) : obj array =
+        let text = TextBuf.toString para.Buffer
+        let runs = ResizeArray<obj>()
+        for run in para.Buffer.Runs do
+            match run with
+            | TextBuf.Text textRun when textRun.Length > 0 && textRun.Start + textRun.Length <= text.Length && not textRun.Style.Hidden ->
+                let style = resolve para textRun.Style
+                let piece = text.Substring(textRun.Start, textRun.Length)
+                let o = obj ()
+                o?Text <- (if piece.IndexOfAny([| '\t'; '\n'; '\r'; '\u000b' |]) >= 0 then piece.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ').Replace('\u000b', ' ') else piece)
+                o?Bold <- style.Bold
+                o?Italic <- style.Italic
+                o?Underline <- TextBuf.underlineShown style
+                o?Strike <- style.Strike || style.DoubleStrike
+                o?FontSize <- style.FontSize * 0.75
+                o?FontFamily <- optionalStringToJs style.FontFamily
+                o?Color <- optionalStringToJs style.Color
+                runs.Add o
+            | _ -> ()
+        runs.ToArray()
+
+    /// Every block of the body as a line of outline view: [{ BlockId, BlockIndex, Level (1-9, 10 body
+    /// text), Kind ("paragraph" | "table" | "textbox"), Text, HasSubtext, Depth (how far it is
+    /// indented: a heading's level - 1, body text one further than the heading it is under), Runs }].
+    /// With `formatting`, Runs are the paragraph's runs as shown: [{ Text, Bold, Italic, Underline,
+    /// Strike, FontSize (points), FontFamily, Color }]; else empty.
+    let getOutlineLines (editor: Editor) (formatting: bool) : obj array =
+        let doc = editor.Whole
+        let outline = Outline.ofDocument doc
+        let resolve = if formatting then WordStyles.effectiveRunStyleResolver doc else (fun _ style -> style)
+        let lines = ResizeArray<obj>(outline.Levels.Length)
+        let mutable headingLevel = 0
+        let mutable index = 0
+        let mutable rest = doc.Blocks
+        while not rest.IsEmpty do
+            let block = rest.Head
+            let level = outline.Levels.[index]
+            let o = obj ()
+            o?BlockId <- outline.BlockIds.[index]
+            o?BlockIndex <- index
+            o?Level <- level
+            if level < Outline.BodyLevel then headingLevel <- level
+            o?Depth <- (if level < Outline.BodyLevel then level - 1 else headingLevel)
+            o?HasSubtext <- level < Outline.BodyLevel && Outline.subtextEnd outline index > index + 1
+            match block with
+            | Doc.Paragraph para | Doc.Heading (_, para) ->
+                o?Kind <- "paragraph"
+                o?Text <- Outline.lineText para
+                o?Runs <- (if formatting then styledRuns resolve para else [||])
+            | Doc.Table table ->
+                let cells =
+                    table.Rows |> List.truncate 1 |> List.collect (fun row -> row.Cells)
+                    |> List.map (fun cell -> cell.Content |> List.map Outline.lineText |> String.concat " ")
+                o?Kind <- "table"
+                o?Text <- String.concat " | " cells
+                o?Runs <- [||]
+            | Doc.TextBox box ->
+                o?Kind <- "textbox"
+                o?Text <- (box.Content |> List.map Outline.lineText |> String.concat " ")
+                o?Runs <- [||]
+            lines.Add o
+            index <- index + 1
+            rest <- rest.Tail
+        lines.ToArray()
+
+    /// The id of the heading the caret is under (the heading itself, or the last heading before the
+    /// block the caret is in), or null - before the first heading, or no caret.
+    let getCurrentHeading (editor: Editor) : string =
+        let doc = editor.Whole
+        match doc.Selection with
+        | None -> null
+        | Some selection ->
+            let index = Outline.indexOf doc selection.Focus.BlockId
+            if index < 0 then null
+            else
+                let outline = Outline.ofDocument doc
+                let at = Outline.headingAt outline index
+                if at < 0 then null else outline.BlockIds.[at]
+
+    /// Promote the selection's paragraphs of the body, as Word does: a Heading N style becomes Heading
+    /// N-1, a paragraph's own outline level (or one its style has) one higher; body text alone becomes
+    /// a heading of the level of the heading before it. One undo step; true when anything changed.
+    let outlinePromote (editor: Editor) : bool = outlineCommand editor (Outline.changeSelectedLevels Outline.Promote)
+
+    /// Demote the selection's paragraphs (as outlinePromote, one level lower; body text alone becomes a
+    /// heading one level below the heading before it).
+    let outlineDemote (editor: Editor) : bool = outlineCommand editor (Outline.changeSelectedLevels Outline.Demote)
+
+    /// The selection's paragraphs in Heading 1.
+    let outlinePromoteToHeading1 (editor: Editor) : bool = outlineCommand editor (Outline.changeSelectedLevels Outline.PromoteToHeading1)
+
+    /// The selection's paragraphs body text: the Normal style (the document's default paragraph
+    /// style), without an outline level of their own.
+    let outlineDemoteToBody (editor: Editor) : bool = outlineCommand editor (Outline.changeSelectedLevels Outline.DemoteToBody)
+
+    /// The selection's paragraphs at a level (1-9; 10 body text), as outline view's level box: Heading
+    /// N for a heading style or body text, the paragraph's own level for one that has a level of its own
+    /// or from a style of the document's.
+    let setOutlineLevel (editor: Editor) (level: int) : bool = outlineCommand editor (Outline.changeSelectedLevels (Outline.ToLevel level))
+
+    /// The selection's blocks of the body moved past the block before them (Word's Alt+Shift+Up).
+    let outlineMoveUp (editor: Editor) : bool = outlineCommand editor (Outline.moveSelectedBlocks true)
+
+    /// The selection's blocks of the body moved past the block after them (Alt+Shift+Down).
+    let outlineMoveDown (editor: Editor) : bool = outlineCommand editor (Outline.moveSelectedBlocks false)
+
+    /// A heading and its subheadings promoted by one level (the navigation pane's Promote); nothing
+    /// when one of them is a Heading 1.
+    let promoteHeading (editor: Editor) (blockId: string) : bool = outlineCommand editor (Outline.changeBranch true blockId)
+
+    /// A heading and its subheadings demoted by one level; nothing when one of them is at level 9.
+    let demoteHeading (editor: Editor) (blockId: string) : bool = outlineCommand editor (Outline.changeBranch false blockId)
+
+    /// A heading with its subtext moved before its previous sibling (the heading of its level before
+    /// it, under the same heading); a block of body text past the block before it.
+    let moveHeadingUp (editor: Editor) (blockId: string) : bool = outlineCommand editor (Outline.moveHeading true blockId)
+
+    /// A heading with its subtext moved past its next sibling and that one's subtext.
+    let moveHeadingDown (editor: Editor) (blockId: string) : bool = outlineCommand editor (Outline.moveHeading false blockId)
+
+    /// The blocks of the body from `firstBlockId` to `lastBlockId` (inclusive) moved to stand before
+    /// `beforeBlockId` (null or "": at the end of the body) - a heading dragged with its subtext. One
+    /// undo step; false when they are there already or an id is not of the body.
+    let moveBlocks (editor: Editor) (firstBlockId: string) (lastBlockId: string) (beforeBlockId: string) : bool =
+        toBody editor
+        let doc = editor.Doc
+        let first = Outline.indexOf doc firstBlockId
+        let last = Outline.indexOf doc lastBlockId
+        let before = if isNull beforeBlockId || beforeBlockId = "" then List.length doc.Blocks else Outline.indexOf doc beforeBlockId
+        if first < 0 || last < first || before < 0 then false
+        else outlineCommand editor (Outline.moveBlocks first (last + 1) before)
+
+    /// A heading and its subtext deleted (one undo step); the caret where they were.
+    let deleteHeading (editor: Editor) (blockId: string) : bool = outlineCommand editor (Outline.deleteHeading blockId)
+
+    /// The caret at the start of a heading (or another block of the body); true when there is one of
+    /// that id. The view goes to it as it goes to the caret.
+    let goToHeading (editor: Editor) (blockId: string) : bool =
+        toBody editor
+        let next = Outline.goTo blockId editor.Doc
+        if obj.ReferenceEquals(next, editor.Doc) then false
+        else
+            commitDocumentUpdate editor next
+            true
+
+    /// Select the blocks of the body from the start of one to the end of another (inclusive; a table
+    /// from its first paragraph to its last): what outline view's selected lines are to the commands.
+    let selectBlocks (editor: Editor) (firstBlockId: string) (lastBlockId: string) : bool =
+        toBody editor
+        let doc = editor.Doc
+        let first = Outline.indexOf doc firstBlockId
+        let last = Outline.indexOf doc lastBlockId
+        if first < 0 || last < 0 then false
+        else
+            let lo, hi = min first last, max first last
+            let blocks = doc.Blocks |> List.skip lo |> List.truncate (hi - lo + 1)
+            let paragraphs = Doc.paragraphsOfBlocks (blocks |> List.filter (function Doc.TextBox _ -> false | _ -> true))
+            match paragraphs with
+            | [] -> false
+            | start :: _ ->
+                let finish = List.last paragraphs
+                let next = Doc.setSelection { BlockId = start.Id; Offset = 0 } { BlockId = finish.Id; Offset = TextBuf.length finish.Buffer } doc
+                commitDocumentUpdate editor next
+                true
 
     /// Test rope operations
     let testRope () =
@@ -4452,6 +4740,30 @@ module API =
             "getMacrosEnabled" ==> getMacrosEnabled
             "enableMacros" ==> enableMacros
             "setMacroHooks" ==> setMacroHooks
+            "getView" ==> getView
+            "setView" ==> setView
+            "getOutlineShowLevel" ==> getOutlineShowLevel
+            "setOutlineShowLevel" ==> setOutlineShowLevel
+            "getOutline" ==> getOutline
+            "getOutlinePages" ==> getOutlinePages
+            "getOutlineLines" ==> getOutlineLines
+            "getCurrentHeading" ==> getCurrentHeading
+            "getSubtextEnd" ==> getSubtextEnd
+            "outlinePromote" ==> outlinePromote
+            "outlineDemote" ==> outlineDemote
+            "outlinePromoteToHeading1" ==> outlinePromoteToHeading1
+            "outlineDemoteToBody" ==> outlineDemoteToBody
+            "setOutlineLevel" ==> setOutlineLevel
+            "outlineMoveUp" ==> outlineMoveUp
+            "outlineMoveDown" ==> outlineMoveDown
+            "promoteHeading" ==> promoteHeading
+            "demoteHeading" ==> demoteHeading
+            "moveHeadingUp" ==> moveHeadingUp
+            "moveHeadingDown" ==> moveHeadingDown
+            "moveBlocks" ==> moveBlocks
+            "deleteHeading" ==> deleteHeading
+            "goToHeading" ==> goToHeading
+            "selectBlocks" ==> selectBlocks
             "runMacro" ==> runMacro
             "runMacroLine" ==> runMacroLine
             "setMacroModule" ==> setMacroModule

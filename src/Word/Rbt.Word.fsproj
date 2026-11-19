@@ -10,6 +10,7 @@
     <Compile Include="Document.fs" />
     <Compile Include="Shapes.fs" />
     <Compile Include="WordStyles.fs" />
+    <Compile Include="Outline.fs" />
     <Compile Include="BorderGrid.fs" />
     <Compile Include="WordLayout.fs" />
     <Compile Include="Math.fs" />
@@ -35,6 +36,7 @@
     <Compile Include="WordDialogs.fs" />
     <Compile Include="WordHost.fs" />
     <Compile Include="WordContextMenu.fs" />
+    <Compile Include="WordOutlineUi.fs" />
     <Compile Include="WordShell.fs" />
   </ItemGroup>
 
