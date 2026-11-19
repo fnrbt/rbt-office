@@ -1692,6 +1692,15 @@ module Table =
         |> Option.map (fun twips -> max 0.0 (twips / scale.DxaPerUnit))
         |> Option.defaultValue (defaultRowHeight lineHeight)
 
+    /// The least a row takes with the borders above and below it (rowBorderBands): an exact
+    /// height holds the border above, an at-least height is the content's and the borders come
+    /// on top of it (Word: fixtures table-border, exact-sz24, atleast-sz24).
+    let rowMinHeightWithBands scale lineHeight (row: TableRow) (top: float, bottom: float) =
+        let height = rowMinHeight scale lineHeight row
+        if height <= 0.0 then 0.0
+        elif row.HeightRule = Some "exact" then max height top + bottom
+        else height + top + bottom
+
     let emptyTableAdvance (lineHeight: float) =
         lineHeight + afterSpacing
 
@@ -1720,19 +1729,58 @@ module Table =
             | _ -> value.Width |> Option.defaultValue 1.0
         | None -> 0.0
 
-    let cellVerticalBorderExtent (cell: TableCell) =
-        match cell.Borders with
-        | Some borders ->
-            let top = visibleBorderWidth borders.Top
-            let bottom = visibleBorderWidth borders.Bottom
-            let continuationBottomAllowance =
-                match cell.VerticalMerge with
-                // Word gives continuation rows a small extra reserve when the
-                // spanning cell restates only the bottom border.
-                | Some ContinueMerge when top = 0.0 && bottom > 0.0 -> bottom * 0.75
-                | _ -> 0.0
-            max top bottom + continuationBottomAllowance
-        | None -> 0.0
+    /// What a horizontal border takes in the flow of rows: its width - three widths for a
+    /// double line, five for a triple (Word: fixtures table-border).
+    let horizontalBorderAdvance (border: TableBorder option) =
+        let width = visibleBorderWidth border
+        match border |> Option.map (fun value -> Rbt.BorderGrid.styleKey value.Style) with
+        | Some "double" -> 3.0 * width
+        | Some "triple" -> 5.0 * width
+        | _ -> width
+
+    // (The rows of the table last asked about, by reference: a row's place in its table.)
+    let mutable private indexedTable : TableBlock option = None
+    let private indexedRows = Dictionary<TableRow, int>(HashIdentity.Reference)
+
+    let private rowIndexIn (table: TableBlock) (row: TableRow) =
+        match indexedTable with
+        | Some known when obj.ReferenceEquals(known, table) -> ()
+        | _ ->
+            indexedRows.Clear()
+            table.Rows |> List.iteri (fun index tableRow -> indexedRows.[tableRow] <- index)
+            indexedTable <- Some table
+        match indexedRows.TryGetValue row with
+        | true, index -> Some index
+        | _ -> None
+
+    /// The borders a row's content is below and the table's last row above (Word: fixtures
+    /// table-border): above a row, the widest horizontal border on its top edge - the table's
+    /// top border (first row) or inside one, or a cell's own top border, or the bottom border
+    /// of a cell of the row before; below the last row, the widest bottom border. A row that
+    /// is not one of the table's (a header row's copy) is taken as its first. Tables with
+    /// cell spacing draw each cell's own frame: none.
+    let rowBorderBands (table: TableBlock) (row: TableRow) =
+        let tableBorders = row.BordersOverride |> Option.orElse table.Borders
+        let tableSide pick = tableBorders |> Option.bind pick
+        let cellSide (pick: TableBorders -> TableBorder option) (cell: TableCell) =
+            cell.Borders |> Option.bind pick
+        let widest (borders: TableBorder option seq) = borders |> Seq.fold (fun widest border -> max widest (horizontalBorderAdvance border)) 0.0
+        let edge (cells: TableCell list) (own: TableBorders -> TableBorder option) (fallback: TableBorder option) =
+            widest [ for cell in cells do
+                       match cellSide own cell with
+                       | Some border -> Some border
+                       | None -> fallback ]
+        let rowCount = table.Rows.Length
+        let index = rowIndexIn table row |> Option.defaultValue 0
+        let isLast = index = rowCount - 1 || rowCount = 0
+        let topCells = row.Cells |> List.filter (fun cell -> cell.VerticalMerge <> Some ContinueMerge)
+        let top =
+            if index = 0 then edge topCells _.Top (tableSide _.Top)
+            else
+                let above = table.Rows.[index - 1]
+                max (edge topCells _.Top (tableSide _.InsideH)) (edge above.Cells _.Bottom (tableSide _.InsideH))
+        let bottom = if isLast then edge row.Cells _.Bottom (tableSide _.Bottom) else 0.0
+        top, bottom
 
     let verticalContentOffset verticalAlignment rowHeight paddingTop paddingBottom contentHeight =
         let available = max 0.0 (rowHeight - paddingTop - paddingBottom - contentHeight)
@@ -1807,20 +1855,6 @@ module Table =
               Left = printBorderStrokeFromBorder borders.Left None None
               InsideH = printBorderStrokeFromBorder borders.InsideH None None
               InsideV = printBorderStrokeFromBorder borders.InsideV None None }
-
-    let collapsedHorizontalBorderExtent (table: TableBlock) (row: TableRow) =
-        let borders = row.BordersOverride |> Option.orElse table.Borders |> tablePrintBorders
-        let mutable width = 0.0
-        match borders.Top with
-        | Some border -> width <- max width border.Width
-        | None -> ()
-        match borders.Bottom with
-        | Some border -> width <- max width border.Width
-        | None -> ()
-        match borders.InsideH with
-        | Some border -> width <- max width border.Width
-        | None -> ()
-        width
 
     let private cellPrintBordersWithTableFallback tableBorders rowIndex rowCount columnCount (positioned: PositionedCell) cell =
         let cellBorders = cellPrintBorders cell

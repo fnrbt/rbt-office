@@ -266,8 +266,8 @@ type ParagraphFormatting = {
     ShadingPattern: string option
     ShadingForeground: string option
     Borders: Borders option
-    ParagraphBorderBefore: float option
-    ParagraphBorderAfter: float option
+    /// The borders in effect, the style's included (InsideH is w:between): what the layout spaces by.
+    EffectiveBorders: Borders option
     OutlineLevel: int option
     ExplicitParagraphFormat: bool
     ExplicitIndentLeft: float option
@@ -1167,8 +1167,7 @@ let private paragraphFormatFields (format: ParagraphFormatting) =
     "ParagraphShadingPattern" ==> format.ShadingPattern
     "ParagraphShadingForeground" ==> format.ShadingForeground
     "ParagraphBorders" ==> bordersToObject format.Borders
-    "ParagraphBorderBefore" ==> format.ParagraphBorderBefore
-    "ParagraphBorderAfter" ==> format.ParagraphBorderAfter
+    "EffectiveParagraphBorders" ==> bordersToObject format.EffectiveBorders
     "OutlineLevel" ==> format.OutlineLevel
     "ExplicitParagraphFormat" ==> format.ExplicitParagraphFormat
     "ExplicitIndentLeft" ==> format.ExplicitIndentLeft
@@ -1911,8 +1910,7 @@ let private readParagraphFormat value =
       ShadingPattern = textOf value "ParagraphShadingPattern"
       ShadingForeground = textOf value "ParagraphShadingForeground"
       Borders = readBorders value?ParagraphBorders
-      ParagraphBorderBefore = number value "ParagraphBorderBefore"
-      ParagraphBorderAfter = number value "ParagraphBorderAfter"
+      EffectiveBorders = readBorders value?EffectiveParagraphBorders
       OutlineLevel = integer value "OutlineLevel"
       ExplicitParagraphFormat = boolean value "ExplicitParagraphFormat"
       ExplicitIndentLeft = number value "ExplicitIndentLeft"

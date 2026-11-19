@@ -227,7 +227,7 @@ let private editorParagraph (para: EditorParagraph) : WordEditorPackage.EditorPa
         PageBreakAtStart = false; PageBreakAfter = false; ColumnBreakAfter = false
         RenderedPageBreakBefore = None; BackgroundColor = None
         ShadingPattern = None; ShadingForeground = None; Borders = None
-        ParagraphBorderBefore = None; ParagraphBorderAfter = None
+        EffectiveBorders = None
         OutlineLevel = None; ExplicitParagraphFormat = false
         ExplicitIndentLeft = None; ExplicitIndentRight = None; ExplicitFirstLineIndent = None
         ExplicitSpacingBefore = None; ExplicitSpacingAfter = None; ExplicitLineSpacing = None

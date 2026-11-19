@@ -6,9 +6,9 @@
     { "text": "Large line", "x": 96, "y": 146.85, "height": 45.57 },
     { "text": "Third line", "x": 96, "y": 224.42, "height": 18.85 },
     { "text": "Line of the shape", "x": 96, "y": 307.27, "height": 16.28 },
-    { "text": "Cell one", "x": 96, "y": 334.21, "height": 16.28 },
-    { "text": "Cell two", "x": 256, "y": 334.21, "height": 16.28 },
-    { "text": "Last line", "x": 96, "y": 362.49, "height": 18.85 }
+    { "text": "Cell one", "x": 96, "y": 335.54, "height": 16.28 },
+    { "text": "Cell two", "x": 256, "y": 335.54, "height": 16.28 },
+    { "text": "Last line", "x": 96, "y": 363.82, "height": 18.85 }
   ],
   "shape": { "x": 192, "y": 480, "width": 144, "height": 96 }
 }

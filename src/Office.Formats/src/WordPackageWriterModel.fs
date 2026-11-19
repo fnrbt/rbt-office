@@ -709,7 +709,8 @@ let paragraphBordersElement (value: Borders option) =
     value |> Option.bind (fun borders ->
         let sides =
             [ paragraphBorderElement "w:top" borders.Top; paragraphBorderElement "w:left" borders.Left
-              paragraphBorderElement "w:bottom" borders.Bottom; paragraphBorderElement "w:right" borders.Right ]
+              paragraphBorderElement "w:bottom" borders.Bottom; paragraphBorderElement "w:right" borders.Right
+              paragraphBorderElement "w:between" borders.InsideH ]
             |> List.choose id
         if sides.IsEmpty then None else Some (element "w:pBdr" [] sides))
 

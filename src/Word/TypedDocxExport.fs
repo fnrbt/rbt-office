@@ -440,7 +440,7 @@ let private paragraphBorders (value: ParagraphBorders option) : WordEditorPackag
         { Style = value.Style; Color = value.Color; Width = value.Width; Space = value.Space }
     value |> Option.map (fun value ->
         { Top = Option.map border value.Top; Right = Option.map border value.Right; Bottom = Option.map border value.Bottom
-          Left = Option.map border value.Left; InsideH = None; InsideV = None })
+          Left = Option.map border value.Left; InsideH = Option.map border value.Between; InsideV = None })
 let private tableBorders (value: TableBorders option) : WordEditorPackage.Borders option =
     let border (value: TableBorder) : WordEditorPackage.Border =
         { Style = value.Style; Color = value.Color; Width = value.Width; Space = None }
@@ -603,7 +603,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           PageBreakAfter = metadata.PageBreakAfter; ColumnBreakAfter = metadata.PageBreakAfter && metadata.ColumnBreakAfter
           RenderedPageBreakBefore = metadata.RenderedPageBreakBefore; BackgroundColor = metadata.BackgroundColor
           ShadingPattern = metadata.ParagraphShadingPattern; ShadingForeground = metadata.ParagraphShadingForeground
-          Borders = paragraphBorders metadata.ParagraphBorders; ParagraphBorderBefore = metadata.ParagraphBorderBefore; ParagraphBorderAfter = metadata.ParagraphBorderAfter
+          Borders = paragraphBorders metadata.ParagraphBorders; EffectiveBorders = paragraphBorders metadata.EffectiveParagraphBorders
           OutlineLevel = metadata.OutlineLevel; ExplicitParagraphFormat = true
           ExplicitIndentLeft = explicitIndent ParagraphExplicit.IndentLeft metadata.IndentLeft (fromStyles (fun s -> s.IndentLeft)) (levelIndents |> Option.map fst)
           ExplicitIndentRight = explicitMeasure ParagraphExplicit.IndentRight metadata.IndentRight (fromStyles (fun s -> s.IndentRight))

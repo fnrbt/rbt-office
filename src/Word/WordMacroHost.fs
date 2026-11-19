@@ -1359,7 +1359,7 @@ let private writeLine (book: MacroDocument) (target: BordersTarget) (side: Borde
     | ParagraphBorders ids ->
         for id in ids () do
             book.UpdateParagraph(id, fun p ->
-                let borders = p.Metadata.ParagraphBorders |> Option.defaultValue ({ Top = None; Right = None; Bottom = None; Left = None } : ParagraphBorders)
+                let borders = p.Metadata.ParagraphBorders |> Option.defaultValue ({ Top = None; Right = None; Bottom = None; Left = None; Between = None } : ParagraphBorders)
                 let current =
                     match side with SideTop -> borders.Top | SideLeft -> borders.Left | SideBottom -> borders.Bottom | SideRight -> borders.Right | _ -> None
                 let line = current |> Option.bind (fun pb -> match pb.Style with Some s when s <> "none" && s <> "nil" -> Some { LineStyle = s; LineColor = pb.Color; LineWidth = defaultArg pb.Width defaultLine.LineWidth } | _ -> None)
@@ -1368,7 +1368,7 @@ let private writeLine (book: MacroDocument) (target: BordersTarget) (side: Borde
                     match side with
                     | SideTop -> { borders with Top = next } | SideLeft -> { borders with Left = next }
                     | SideBottom -> { borders with Bottom = next } | SideRight -> { borders with Right = next } | _ -> borders
-                { p with Metadata = { p.Metadata with ParagraphBorders = Some borders } })
+                { p with Metadata = { p.Metadata with ParagraphBorders = Some borders; EffectiveParagraphBorders = None } })
 
 /// A colour set on a border: black for automatic.
 let private lineColor (color: string option) = match color with Some _ -> color | None -> Some "#000000"

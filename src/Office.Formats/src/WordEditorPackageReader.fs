@@ -44,7 +44,7 @@ let private paraBorder (value: D.ParagraphBorder) : Border =
 let private paraBorders (value: D.ParagraphBorders) : Borders =
     { Top = Option.map paraBorder value.Top; Right = Option.map paraBorder value.Right
       Bottom = Option.map paraBorder value.Bottom; Left = Option.map paraBorder value.Left
-      InsideH = None; InsideV = None }
+      InsideH = Option.map paraBorder value.Between; InsideV = None }
 let private shading (value: D.Shading) : Shading =
     { Pattern = value.Pattern; ForegroundColor = D.wordShadingColorToEditor value.Color
       BackgroundColor = D.wordShadingColorToEditor value.Fill }
@@ -245,8 +245,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
           RenderedPageBreakBefore = effective.RenderedPageBreakBefore; BackgroundColor = D.wordColorToCss effective.BackgroundColor
           ShadingPattern = effective.ShadingPattern; ShadingForeground = D.wordColorToCss effective.ShadingForeground
           Borders = direct.ParagraphBorders |> Option.map paraBorders
-          ParagraphBorderBefore = effective.ParagraphBorders |> Option.bind (fun borders -> D.paragraphBorderAdvanceToLayoutPx borders.Top)
-          ParagraphBorderAfter = effective.ParagraphBorders |> Option.bind (fun borders -> D.paragraphBorderAdvanceToLayoutPx borders.Bottom)
+          EffectiveBorders = effective.ParagraphBorders |> Option.map paraBorders
           OutlineLevel = integer direct.OutlineLevel; ExplicitParagraphFormat = true
           ExplicitIndentLeft = onlyWhen direct.IndentLeft.IsSome (pixels effective.IndentLeft)
           ExplicitIndentRight = onlyWhen direct.IndentRight.IsSome (pixels effective.IndentRight)

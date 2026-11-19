@@ -1574,25 +1574,64 @@ let private suppressLayoutPageTopBeforeSpacing settings paragraphStyle (layout: 
                         else line) }
     | _ -> layout
 
+/// The borders a paragraph is laid out with: those in effect as read (its style's included), or its own.
+let private paragraphBordersOf (metadata: BlockMetadata) =
+    metadata.EffectiveParagraphBorders |> Option.orElse metadata.ParagraphBorders
+
+let private visibleParagraphBorder (border: ParagraphBorder option) =
+    border |> Option.filter (fun value -> not (optionEqualsIgnoreCase "none" value.Style || optionEqualsIgnoreCase "nil" value.Style))
+
+/// A border's space from the text (w:space, points), in pixels.
+let private paragraphBorderSpace (border: ParagraphBorder option) =
+    match visibleParagraphBorder border with
+    | Some value -> (value.Space |> Option.defaultValue 0.0) * 96.0 / 72.0
+    | None -> 0.0
+
+/// What a border takes beside the text: its space and its line - the width (w:sz) for a single line,
+/// dotted or dashed, three widths for double, five for triple, the thick-thin pairs their width and
+/// Word's fixed thin line and gap (fixtures para-border, top-*, bottom-*, line-*; the wave and 3D lines
+/// are not measured yet and take their width).
 let private paragraphBorderAdvance (border: ParagraphBorder option) =
-    match border with
+    match visibleParagraphBorder border with
     | Some value ->
-        if optionEqualsIgnoreCase "none" value.Style || optionEqualsIgnoreCase "nil" value.Style then 0.0
-        else (value.Width |> Option.defaultValue 0.5 |> max 0.25) + (value.Space |> Option.defaultValue 0.0)
+        let width = value.Width |> Option.defaultValue (0.5 * 96.0 / 72.0) |> max 0.25
+        let pt = 96.0 / 72.0
+        let line =
+            match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
+            | Some "double" -> 3.0 * width
+            | Some "triple" -> 5.0 * width
+            | Some ("thickthinsmallgap" | "thinthicksmallgap") -> width + 1.5 * pt
+            | Some ("thickthinmediumgap" | "thinthickmediumgap") -> 2.0 * width
+            | Some ("thickthinlargegap" | "thinthicklargegap") -> width + 2.25 * pt
+            | Some "thinthickthinsmallgap" -> width + 3.0 * pt
+            | _ -> width
+        line + paragraphBorderSpace border
     | None -> 0.0
 
 let private paragraphBorderVerticalAdvance metadata =
-    let visibleBefore, visibleAfter =
-        match metadata.ParagraphBorders with
-        | Some borders -> paragraphBorderAdvance borders.Top, paragraphBorderAdvance borders.Bottom
-        | None -> 0.0, 0.0
-    metadata.ParagraphBorderBefore |> Option.defaultValue visibleBefore,
-    metadata.ParagraphBorderAfter |> Option.defaultValue visibleAfter
+    match paragraphBordersOf metadata with
+    | Some borders -> paragraphBorderAdvance borders.Top, paragraphBorderAdvance borders.Bottom
+    | None -> 0.0, 0.0
 
 let private paragraphBorderRightAdvance metadata =
-    match metadata.ParagraphBorders with
+    match paragraphBordersOf metadata with
     | Some borders -> paragraphBorderAdvance borders.Right
     | None -> 0.0
+
+/// Two adjoining paragraphs are one bordered group - one box, the top border above the first and the
+/// bottom below the last - when their borders (every side but between) are the same and so are the
+/// left edge of their text (the left indent, or the first line's where that is further left) and the
+/// right indent; their styles, shading and between borders do not matter (fixtures para-border, grp-*).
+let private sameParagraphBorderGroup (previous: BlockMetadata) (current: BlockMetadata) =
+    match paragraphBordersOf previous, paragraphBordersOf current with
+    | Some before, Some after ->
+        let sides (b: ParagraphBorders) = [ b.Top; b.Left; b.Bottom; b.Right ] |> List.map visibleParagraphBorder
+        let leftEdge metadata = WordLayout.Paragraph.leftIndent metadata + min 0.0 (WordLayout.Paragraph.firstLineIndent metadata)
+        sides before |> List.exists Option.isSome
+        && sides before = sides after
+        && abs (leftEdge previous - leftEdge current) < 0.01
+        && abs (WordLayout.Paragraph.rightIndent previous - WordLayout.Paragraph.rightIndent current) < 0.01
+    | _ -> false
 
 let segmentHeight lineHeightFactor = function
     | TextSegment (_, style, _, _, _) -> WordLayout.Text.displayFontSize style * lineHeightFactor
@@ -3926,7 +3965,9 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
     let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
     let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
     let outerStartInset = outerLeft + cellSpacing
-    let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
+    // (The borders above the row and, for the last, below it: what its content is put below.)
+    let borderTop, borderBottom = if cellSpacing > 0.0 then 0.0, 0.0 else WordLayout.Table.rowBorderBands tableBlock row
+    let mutable rowHeight = WordLayout.Table.rowMinHeightWithBands WordLayout.canvasScale settings.LineHeight row (borderTop, borderBottom)
     let mutable cellGroups = []
     let mutable traces = []
 
@@ -3937,9 +3978,6 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
     for cell in row.Cells do
         let startColumn = currentColumn
         let span = WordLayout.Table.cellSpan cell
-        let usesInheritedCellAfterSpacing =
-            cell.Content
-            |> List.exists (fun para -> para.Metadata.SpacingAfter.IsNone)
         let colWidth = spacedSpannedWidthFromPrefix columnWidthPrefix cellSpacing startColumn span fallbackWidth
         let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
         let textPadding =
@@ -3952,16 +3990,10 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                 cellPadding
         let verticalMarginExcess =
             if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
-        let collapsedBorderExtent =
-            if row.Height.IsNone && usesInheritedCellAfterSpacing then
-                WordLayout.Table.collapsedHorizontalBorderExtent tableBlock row
-            else
-                0.0
-        let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
         let cellX = tableLeftOffset + spacedStartOffsetFromPrefix columnWidthPrefix cellSpacing startColumn + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing startColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
-        let contentStartY = WordLayout.Table.cellContentStartY cellY textPadding
+        let contentStartY = WordLayout.Table.cellContentStartY (cellY + borderTop) textPadding
         let mutable paraY = contentStartY
         let cellLayouts = ResizeArray<BlockLayout>()
 
@@ -4075,14 +4107,14 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                     layoutCellParagraph rawPara
 
         let contentHeight = max 0.0 (paraY - contentStartY)
-        let requiredHeight = contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance
+        let requiredHeight = contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + borderTop + borderBottom + rowSpacingAdvance
         // A merged cell's content belongs to all the rows it spans; what does
         // not fit in them arrives as mergeExtraHeight on the span's last row.
         let spansRows = cellIndex < spanningCells.Length && spanningCells.[cellIndex]
         if not spansRows then
             rowHeight <- max rowHeight requiredHeight
         let cellLayoutsList = resizeArrayToList cellLayouts
-        cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top; PaddingBottom = textPadding.Bottom; ContentHeight = contentHeight; RequiredHeight = requiredHeight; Layouts = cellLayoutsList } :: cellGroups
+        cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top + borderTop; PaddingBottom = textPadding.Bottom + borderBottom; ContentHeight = contentHeight; RequiredHeight = requiredHeight; Layouts = cellLayoutsList } :: cellGroups
         cellIndex <- cellIndex + 1
         let mutable totalLines = 0
         for layout in cellLayoutsList do
@@ -4163,7 +4195,8 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
     else
         let cellSpacing = WordLayout.Table.rowCellSpacing WordLayout.canvasScale tableBlock row
         let rowSpacingAdvance = WordLayout.Table.rowSpacingAdvance cellSpacing
-        let mutable rowHeight = WordLayout.Table.rowMinHeight WordLayout.canvasScale settings.LineHeight row
+        let borderTop, borderBottom = if cellSpacing > 0.0 then 0.0, 0.0 else WordLayout.Table.rowBorderBands tableBlock row
+        let mutable rowHeight = WordLayout.Table.rowMinHeightWithBands WordLayout.canvasScale settings.LineHeight row (borderTop, borderBottom)
         let mutable failed = false
         let columnWidthPrefix = columnMetrics.Prefix
         let fallbackWidth = columnMetrics.FallbackWidth
@@ -4174,9 +4207,6 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
                 if not cell.NestedTables.IsEmpty then
                     failed <- true
                 else
-                    let usesInheritedCellAfterSpacing =
-                        cell.Content
-                        |> List.exists (fun para -> para.Metadata.SpacingAfter.IsNone)
                     let colWidth = spacedSpannedWidthFromPrefix columnWidthPrefix cellSpacing currentColumn span fallbackWidth
                     let cellPadding = WordLayout.Table.cellPaddingForRow WordLayout.canvasScale tableBlock row cell
                     let textPadding =
@@ -4187,12 +4217,6 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
                             cellPadding
                     let verticalMarginExcess =
                         if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
-                    let collapsedBorderExtent =
-                        if row.Height.IsNone && usesInheritedCellAfterSpacing then
-                            WordLayout.Table.collapsedHorizontalBorderExtent tableBlock row
-                        else
-                            0.0
-                    let verticalBorderExtent = max (WordLayout.Table.cellVerticalBorderExtent cell) collapsedBorderExtent
                     let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
                     let mutable contentHeight = 0.0
                     for rawPara in cell.Content do
@@ -4203,7 +4227,7 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
                             | Some height -> contentHeight <- contentHeight + height
                             | None -> failed <- true
                     if not failed then
-                        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + verticalBorderExtent + rowSpacingAdvance)
+                        rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + borderTop + borderBottom + rowSpacingAdvance)
                 currentColumn <- currentColumn + span
         if failed then None else Some rowHeight
 
@@ -5142,8 +5166,11 @@ let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: Blo
 /// Vertical position of a paragraph that follows another one directly, given
 /// where it would start (`y`, right after the previous paragraph and its
 /// spacing after): adjoining spacing collapses to the larger of the two,
-/// contextual spacing drops it between paragraphs of one style, and a border
-/// shared by both is not repeated.
+/// contextual spacing drops it between paragraphs of one style, and in a group
+/// of bordered paragraphs (sameParagraphBorderGroup) the bottom and top borders
+/// between them give way to the between border: the upper one's takes its
+/// space and width below it, the lower one's its space above it (fixtures
+/// para-border, between*: Word's spacing, not the spec's).
 let private collapseParagraphSpacing (y: float) (previousPara: ParagraphBlock) (previousStyle: ParagraphStyle) (previousMetadata: BlockMetadata) (previousSpacingAfter: float) (para: ParagraphBlock) (paragraphStyle: ParagraphStyle) (effectiveMetadata: BlockMetadata) =
     let contextualSpacingEnabled (style: ParagraphStyle) (metadata: BlockMetadata) =
         metadata.ContextualSpacing |> Option.orElse style.ContextualSpacing |> Option.defaultValue false
@@ -5154,15 +5181,13 @@ let private collapseParagraphSpacing (y: float) (previousPara: ParagraphBlock) (
     let effectiveSpacingBefore =
         if stylesMatch && contextualSpacingEnabled paragraphStyle effectiveMetadata then 0.0 else spacingBefore
     let collapsed = (y - previousSpacingAfter) + max effectivePreviousSpacingAfter effectiveSpacingBefore - spacingBefore
-    let sameBorders =
-        previousMetadata.ParagraphBorders.IsSome
-        && previousMetadata.ParagraphBorders = effectiveMetadata.ParagraphBorders
-        && previousMetadata.ParagraphBorderBefore = effectiveMetadata.ParagraphBorderBefore
-        && previousMetadata.ParagraphBorderAfter = effectiveMetadata.ParagraphBorderAfter
-    if stylesMatch && sameBorders then
-        let _, previousBorderAfter = paragraphBorderVerticalAdvance previousMetadata
+    let previousEffective = WordStyles.effectiveMetadata previousStyle previousMetadata
+    if sameParagraphBorderGroup previousEffective effectiveMetadata then
+        let _, previousBorderAfter = paragraphBorderVerticalAdvance previousEffective
         let currentBorderBefore, _ = paragraphBorderVerticalAdvance effectiveMetadata
+        let between metadata = paragraphBordersOf metadata |> Option.bind (fun borders -> borders.Between)
         collapsed - previousBorderAfter - currentBorderBefore
+        + paragraphBorderAdvance (between previousEffective) + paragraphBorderSpace (between effectiveMetadata)
     else collapsed
 
 /// The same notes on the same pages (their texts aside: a note is laid out
@@ -5593,12 +5618,6 @@ let private layoutDocumentPassKept
         || paragraphStyle.LineSpacing.IsSome
         || metadata.LineSpacingRule.IsSome
         || paragraphStyle.LineSpacingRule.IsSome
-
-    let sameParagraphBorders (previous: BlockMetadata) (current: BlockMetadata) =
-        previous.ParagraphBorders.IsSome
-        && previous.ParagraphBorders = current.ParagraphBorders
-        && previous.ParagraphBorderBefore = current.ParagraphBorderBefore
-        && previous.ParagraphBorderAfter = current.ParagraphBorderAfter
 
     let resetPreviousParagraph () =
         previousParagraphContext <- None
