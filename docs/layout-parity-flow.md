@@ -45,6 +45,7 @@ One line per hypothesis, refuted ones too. Status: testing, confirmed (implement
 | A line of exact height fits only whole, not by its text | confirmed | `exact-body` (40pt lines: 100pt keeps 2, 60pt 1, 20pt 0), `cell-two`, `first-tall` |
 | The calibre family's moved row is the embedded Ubuntu font, not a row rule | open | Word moves it in all three variants (original, no merge, no "Three"); with `--embedded-fonts` our page 4 is Word's |
 | Word drops the first paragraph's automatic space before | open | seen in Word, not yet probed |
+| `w:rFonts`: each level of the chain replaces the inherited face per slot - an explicit face lower down beats a theme face above; on one element the theme face beats the named one | confirmed | fixtures `rfonts-precedence` (10, `tests/word/fixtures/rfonts-precedence`): Word's face for each; ours matched but for the one-element case, now fixed |
 | A list marker's font does not make its line taller (only the text does) | refuted | fixtures `list-marker-height`: Word's pitch is 15.44pt plain, with a Calibri bullet and numbered, but 16.03pt with Word's Symbol bullet and 21.05pt with a 16pt Symbol bullet - the marker counts. Ours: 16.07pt, already right |
 | The footnote block ends at the bottom margin: its last line's bottom is the page height less the bottom margin, and the body may run down to it less the separator | testing | docx4j-getting-started (45 -> 46 pages): every paragraph of page 4 within 0.5pt of Word's, but our footnotes start 4.16-4.37pt above Word's on pages 4, 10 and 12 and end ~4.5pt above 720pt - so Word fits one more body line (`para-positions.vbs`, the footnotes' `Information(6)`) |
 | A line with a footnote reference (superscript) is taller than the footnote text's single line | open | Word's two one-line footnotes on page 12 of docx4j-getting-started are 12.75pt apart; ours 12.21pt |
@@ -77,7 +78,9 @@ page for page and on sight (compare `tools/pdf-runner`'s PDF with Word's, page b
 
 | Discrepancy (Word / ours) | Documents | Round |
 |---|---|---|
-| A run's own font (`w:rFonts w:ascii`) loses to a theme font set higher up: Georgia drawn sans | annual-results (key figures), magazine-feature (all body text) | next |
+| ~~A run's own font loses to a theme font set higher up~~ - not the engine: tools/pdf-runner gave the PDF writer five families only; it now gives the document's | annual-results, magazine-feature | done |
+| Automatic hyphenation (`w:autoHyphenation`): Word hyphenates justified text ("flick-er", "conversa-tions"), we never do | magazine-feature | |
+| A paragraph after a drop cap is not justified | magazine-feature | |
 | Table column widths: Word follows the cells' widths (`w:tcW`), ours spreads the columns | annual-results, product-spec | |
 | A table in a multi-column section spans the page instead of its column | field-guide (species cards) | |
 | A paragraph's bottom border (a rule under text) drawn as a short stray dash | annual-results, field-guide, magazine | |

@@ -16,9 +16,19 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private pdfOptions () : Rbt.Word.Pdf.RenderOptions =
+/// The families a document is set in (Paint.requiredFontFaces), and Word's usual ones: the PDF writer
+/// embeds each face it is given, and sets text of a family it was not given in the default family.
+let private documentFamilies (doc: Rbt.Word.Document.Document) =
+    let measure (text: string) (style: Rbt.Word.TextBuffer.TextStyle) = float text.Length * style.FontSize * 0.5
+    let used =
+        Rbt.Word.Paint.requiredFontFaces (Rbt.Word.Layout.documentSettings 16.0 24.0 3.5 doc) "Calibri" measure
+            (Rbt.Word.Layout.rangeMeasurerFromTextMeasurer measure) doc None
+        |> List.map (fun (family, _, _) -> family)
+    [ "Calibri"; "Calibri Light"; "Cambria"; "Arial"; "Times New Roman" ] @ used |> List.distinct
+
+let private pdfOptions (families: string list) : Rbt.Word.Pdf.RenderOptions =
     let faces : Rbt.Word.Pdf.FontFace list =
-        [ for family in [ "Calibri"; "Calibri Light"; "Cambria"; "Arial"; "Times New Roman" ] do
+        [ for family in families do
             for bold, italic in [ false, false; true, false; false, true; true, true ] do
                 let font = Rbt.OfficeNative.Fonts.resolve (Some family) bold italic
                 let suffix =
@@ -156,8 +166,9 @@ let private writeProjectPdf (inputPath: string) (outputPath: string) =
         match DocxReader.loadBytesNative raw with
         | Some parsed -> parsed
         | None -> failwithf "Could not parse DOCX: %s" inputPath
-    let options = { pdfOptions() with Images = decodeImageResources wordDoc }
-    let doc = Rbt.Word.Import.importDoc wordDoc |> refreshFieldsForPdf options
+    let imported = Rbt.Word.Import.importDoc wordDoc
+    let options = { pdfOptions (documentFamilies imported) with Images = decodeImageResources wordDoc }
+    let doc = imported |> refreshFieldsForPdf options
     let bytes = Rbt.Word.Pdf.toBytes options doc
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, bytes)

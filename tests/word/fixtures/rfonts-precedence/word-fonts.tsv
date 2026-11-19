@@ -1,0 +1,10 @@
+defaults-explicit_normal-theme	Calibri
+defaults-major_run-explicit	Georgia
+defaults-theme_charstyle-explicit	Georgia
+defaults-theme_normal-ascii-only	Georgia
+defaults-theme_normal-explicit	Georgia
+defaults-theme_normal-hansi-only	Calibri
+defaults-theme_only	Calibri
+normal-both	Calibri
+normal-theme_run-explicit	Georgia
+run-both	Calibri

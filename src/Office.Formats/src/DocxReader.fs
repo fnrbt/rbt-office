@@ -884,7 +884,8 @@ module Docx =
                 SmallCaps = onOff "smallCaps" props
                 FontSize = getPropVal "sz" "val" props
                 CharacterSpacing = getPropVal "spacing" "val" props
-                FontFamily = getPropVal "rFonts" "ascii" props
+                // (On one element a theme face beats the named one, as in Word: fixtures rfonts-precedence.)
+                FontFamily = (match getPropVal "rFonts" "asciiTheme" props with Some _ -> None | None -> getPropVal "rFonts" "ascii" props)
                 ThemeFont = getPropVal "rFonts" "asciiTheme" props
                 Color = getPropVal "color" "val" props
                 ThemeColor = getPropVal "color" "themeColor" props
@@ -2688,7 +2689,11 @@ module Styles =
             SmallCaps = Docx.onOff "smallCaps" rPr
             FontSize = Ns.childNs "sz" rPr |> Option.bind (Docx.attr "val")
             CharacterSpacing = Ns.childNs "spacing" rPr |> Option.bind (Docx.attr "val")
-            FontFamily = Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "ascii")
+            // (On one element a theme face beats the named one, as in Word: fixtures rfonts-precedence.)
+            FontFamily =
+                match Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "asciiTheme") with
+                | Some _ -> None
+                | None -> Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "ascii")
             ThemeFont = Ns.childNs "rFonts" rPr |> Option.bind (Docx.attr "asciiTheme")
             Color = Ns.childNs "color" rPr |> Option.bind (Docx.attr "val")
             ThemeColor = Ns.childNs "color" rPr |> Option.bind (Docx.attr "themeColor")
