@@ -46,3 +46,11 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
 
 Run it before and after any layout change: a change must not make a document
 that matched stop matching.
+
+## Fixtures (`fixtures/`)
+
+Generators of small documents that each vary one thing, for checking a layout
+rule in Word (`docs/layout-parity-flow.md`). `fixtures/row-break.py` writes
+`tests/word/fixtures/row-break/` (where a table row breaks across pages); its
+docstring has the regenerate / ask Word / extract-labels steps, and
+`tests/word/row-break.fsx` checks our layout against Word's pages of them.

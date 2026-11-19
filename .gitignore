@@ -8,3 +8,6 @@ artifacts/
 dist/
 node_modules/
 .pnpm-store/
+
+# Word's PDFs of the layout fixtures (page-parity.mjs --refresh-word); their labels are kept in labels.tsv.
+tests/word/fixtures/*/word/*.pdf
