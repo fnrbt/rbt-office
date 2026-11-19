@@ -3430,6 +3430,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let markerLineBoxFactor = prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor
     let adjustedLines =
         let adjusted = ResizeArray<MeasuredLine>()
+        // (What the marker adds to the first line moves the paragraph's other lines down: Word's
+        // 3-line list paragraphs with a Symbol bullet are 16.03 + 2 x 15.44pt, fixtures list-marker-height.)
+        let mutable markerGrowth = 0.0
         for line in lines do
             let dx = xOffset + indent
             let adjustedSegments =
@@ -3462,9 +3465,10 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 | _ -> line.Height
             adjusted.Add
                 { line with
-                    Y = contentY + (line.Y - settings.PaddingTop)
+                    Y = contentY + (line.Y - settings.PaddingTop) + markerGrowth
                     Segments = adjustedSegments
                     Height = lineHeight }
+            markerGrowth <- markerGrowth + (lineHeight - line.Height)
         resizeArrayToList adjusted
 
     // Justified text: stretch inter-word space on every line except the

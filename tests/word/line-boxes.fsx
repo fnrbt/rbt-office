@@ -183,5 +183,35 @@ let linesOnFirstPage footerParas =
     layouts |> List.filter (fun l -> pageOf pages l.Y = 1 && (textOf l).StartsWith "B") |> List.length
 check "a footer of four lines 36pt up: the body ends above it" (linesOnFirstPage 4) (int (floor ((792.0 - 36.0 - 4.0 * 13.427 - (36.0 + 2.0 * 13.427)) / 13.427)))
 
+// A list marker taller than the text (Word's Symbol bullet: 16.03pt at 1.15 under Calibri 11pt) makes
+// the paragraph's first line taller and moves its other lines down: Word's 3-line list paragraphs are
+// 16.03 + 2 x 15.44pt apart (fixtures list-marker-height bullet-symbol-3lines).
+let listLines =
+    let numbering =
+        "<w:numbering " + w + "><w:abstractNum w:abstractNumId=\"0\"><w:lvl w:ilvl=\"0\"><w:start w:val=\"1\"/><w:numFmt w:val=\"bullet\"/>"
+        + "<w:lvlText w:val=\"\uF0B7\"/><w:lvlJc w:val=\"left\"/><w:pPr><w:ind w:left=\"720\" w:hanging=\"360\"/></w:pPr>"
+        + "<w:rPr><w:rFonts w:ascii=\"Symbol\" w:hAnsi=\"Symbol\" w:hint=\"default\"/></w:rPr></w:lvl></w:abstractNum><w:num w:numId=\"1\"><w:abstractNumId w:val=\"0\"/></w:num></w:numbering>"
+    let pPr = "<w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"1\"/></w:numPr>" + at115
+    let item (i: int) = sprintf "<w:p><w:pPr>%s</w:pPr><w:r><w:t>Item%d</w:t><w:br/><w:t>Second%d</w:t><w:br/><w:t>Third%d</w:t></w:r></w:p>" pPr i i i
+    use stream = new IO.MemoryStream()
+    do
+        use archive = new IO.Compression.ZipArchive(stream, IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new IO.StreamWriter(archive.CreateEntry(name).Open(), Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf "<w:document %s><w:body>%s%s%s</w:body></w:document>" w (item 1) (item 2) sectPr)
+        add "word/styles.xml" (styles "Calibri" 22 single)
+        add "word/numbering.xml" numbering
+    let doc = stream.ToArray() |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+    let layouts, _ = layoutOf doc
+    let first = layouts |> List.find (fun l -> (textOf l).StartsWith "Item1")
+    let second = layouts |> List.find (fun l -> (textOf l).StartsWith "Item2")
+    first.Lines, toPt (second.Lines.Head.Y - first.Lines.Head.Y)
+let listFirst = (fst listLines).Head
+near "a Symbol-bulleted line at 1.15: 16.07pt (Word 16.03)" (toPt listFirst.Height) 16.07
+near "the paragraph's second line below it by that" (toPt ((fst listLines).[1].Y - listFirst.Y)) (toPt listFirst.Height)
+near "and the next list paragraph 16.07 + 2 x 15.44pt down" (snd listLines) (toPt listFirst.Height + 2.0 * 15.441)
+
 printfn "line-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
