@@ -35,6 +35,9 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
   `measureText`, which in headless Chromium gives whole pixels. `--embedded-fonts`
   also registers the fonts a document embeds (canvas measuring only). The lines
   are `Word.getLayoutLines`' body lines.
+- A table's header row repeated at the top of a later page is not where that
+  page starts in the text (Word's side is the character position a page starts
+  at): its lines are left out of the comparison.
 - A page matches when its first text line is Word's (case, spaces and
   punctuation ignored, at most 40 characters compared). The table gives Word's
   pages, ours, how many of Word's pages start where ours do, and the first page
@@ -54,3 +57,8 @@ rule in Word (`docs/layout-parity-flow.md`). `fixtures/row-break.py` writes
 `tests/word/fixtures/row-break/` (where a table row breaks across pages); its
 docstring has the regenerate / ask Word / extract-labels steps, and
 `tests/word/row-break.fsx` checks our layout against Word's pages of them.
+`fixtures/para-border.py` and `fixtures/table-border.py` write
+`tests/word/fixtures/para-border/` and `table-border/` (what paragraph and table
+borders take vertically); `para-border.py --positions <dir>` reads where Word put
+every line from its PDFs into `<dir>/word/positions.tsv`, and
+`tests/word/border-space.fsx` checks our gaps between lines against it.
