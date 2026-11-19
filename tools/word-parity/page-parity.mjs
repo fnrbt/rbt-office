@@ -4,6 +4,7 @@
 //
 //   node tools/word-parity/page-parity.mjs --dist dist [--refresh-word] [--json out.json] [--detail] [name-filter ...]
 //   node tools/word-parity/page-parity.mjs --dist dist --dir <folder> [--refresh-word]   (the .docx of a folder, Word's TSVs in <folder>/word)
+//   node tools/word-parity/page-parity.mjs --dist dist --measurer canvas ...   (the canvas's measureText instead of ShaperText's)
 //   node tools/word-parity/page-parity.mjs --dist dist --embedded-fonts ...   (also the fonts a document embeds, as a host that loads them would)
 //   node tools/word-parity/page-parity.mjs --dist dist --lines <name>   (our lines of one document: page, y on the page in px, height, block, text)
 //
@@ -47,6 +48,7 @@ const detail = flag('--detail');
 const linesFor = opt('--lines');
 const docDir = opt('--dir');
 const embedFonts = flag('--embedded-fonts');
+const measurer = opt('--measurer') ?? 'shaper';
 const filters = args;
 const port = Number(process.env.PORT ?? 16031);
 const refDir = docDir ? path.join(path.resolve(docDir), 'word') : path.join(repo, 'tests/word/word-pages');
@@ -137,6 +139,8 @@ for (const dir of fontDirs)
 
 if (!faces.length) { console.error(`no fonts in ${fontDir} (RB_WORD_FONT_DIR; tools/word-parity/fetch-windows-fonts.sh)`); process.exit(2); }
 console.error(`${faces.length} faces from ${fontDirs.join(', ')}`);
+const unicodeDir = fs.existsSync(path.join(dist, 'fable_modules')) ? fs.readdirSync(path.join(dist, 'fable_modules')).filter((d) => d.startsWith('Rbt.Unicode.Core.')).sort().pop() : undefined;
+const ucdModule = unicodeDir ? `/fable_modules/${unicodeDir}/Ucd.fs.js` : '';
 const pageHtml = `<!doctype html><meta charset="utf-8"><body style="margin:0">
 <script src="/jszip.min.js"></script><script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script>
 <script type="module">
@@ -144,6 +148,24 @@ for (const f of ${JSON.stringify(faces)}) {
     try { const face = new FontFace(f.family, 'url(' + f.url + ')', { weight: f.weight, style: f.style }); await face.load(); document.fonts.add(face); } catch { }
 }
 const Word = (await import('/word/Word.js')).default;
+// The measurers a host installs (setTextMeasurers): ShaperText's, from the fonts' own advances - as
+// Word measures - or (--measurer canvas) none, the canvas's measureText (whole pixels in Chromium here).
+let measureText = null, measureRange = null;
+if (${JSON.stringify(measurer)} === 'shaper') {
+    const Shaper = await import('/shaper-text/ShaperText.js');
+    // (Its Unicode data, as the Word PDF export loads it: word-pdf/ucd.dat beside Browser.js.)
+    const Ucd = await import(${JSON.stringify(ucdModule)});
+    Ucd.loadData(new Uint8Array(await (await fetch('/word-pdf/ucd.dat')).arrayBuffer()));
+    const shaperFaces = [];
+    for (const f of ${JSON.stringify(faces)}) {
+        if (/\.ttc$/i.test(f.url)) continue;
+        const data = new Uint8Array(await (await fetch(f.url)).arrayBuffer());
+        shaperFaces.push(new Shaper.FontFace(f.family, f.weight === 'bold', f.style === 'italic', data));
+    }
+    const fontSet = Shaper.createFontSet('Calibri', shaperFaces);
+    measureText = (text, style) => Shaper.measureText(fontSet, text, style);
+    measureRange = (text, style, start, length) => Shaper.createRangeMeasurer(fontSet, text, style, start, length);
+}
 const main = await import('/office-formats/src/Main.js');
 const OF = typeof main.default === 'function' ? main.default() : main.default;
 // The fonts a document embeds (word/fonts/*.odttf, obfuscated with the key fontTable.xml gives), as web fonts.
@@ -175,6 +197,7 @@ const editorOf = async (url) => {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
     const added = await embedded(bytes);
     const editor = Word.initializeCanvas(document.createElement('canvas'));
+    if (measureText) Word.setTextMeasurers(editor, measureText, measureRange);
     Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
     Word.completeLayout(editor);
     return { editor, done: () => { for (const f of added) document.fonts.delete(f); } };
@@ -200,6 +223,7 @@ window.linesOf = async (url) => {
 };
 window.embedFonts = ${embedFonts};
 window.ready = true;
+
 </script>`;
 
 const jszipDir = [process.env.JSZIP_DIR, path.join(repo, 'node_modules/jszip')].find((p) => p && fs.existsSync(p));

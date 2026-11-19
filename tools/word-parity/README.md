@@ -29,11 +29,18 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
   registered as web fonts under the family their name tables give: the faces
   of `RB_WORD_FONT_DIR` and of `RB_WORD_EXTRA_FONT_DIR` (default `windows-extra`
   beside it: Consolas, Courier New, Tahoma, Georgia ...). Both come from the VM
-  with `fetch-windows-fonts.sh`. The lines are `Word.getLayoutLines`' body lines.
+  with `fetch-windows-fonts.sh`. Text is measured as a host that installs
+  ShaperText's measurers measures it (`setTextMeasurers`: the fonts' own
+  advances, from the same files); `--measurer canvas` leaves the canvas's
+  `measureText`, which in headless Chromium gives whole pixels. `--embedded-fonts`
+  also registers the fonts a document embeds (canvas measuring only). The lines
+  are `Word.getLayoutLines`' body lines.
 - A page matches when its first text line is Word's (case, spaces and
   punctuation ignored, at most 40 characters compared). The table gives Word's
   pages, ours, how many of Word's pages start where ours do, and the first page
-  that does not with both lines; `--detail` lists every page whose first or last
+  that does not with both lines; `--dir <folder>` compares the documents of a
+  folder instead (Word's side in `<folder>/word`, made with `--refresh-word`) -
+  the small documents a rule is checked on; `--detail` lists every page whose first or last
   line differs; `--lines <name>` prints our lines of one document (page, y,
   height, block, text) for finding where a break moved.
 
