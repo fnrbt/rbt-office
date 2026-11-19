@@ -7094,6 +7094,68 @@ let private settingsForGeometry (settings: LayoutSettings) (geometry: SectionPag
     | Some g -> { settings with Width = g.PageWidth; PageHeight = g.PageHeight; PaddingLeft = g.MarginLeft; PaddingTop = g.MarginTop; MarginRight = g.MarginRight; MarginBottom = g.MarginBottom }
     | None -> settings
 
+/// How far down a header's (or up a footer's) text reaches from where it starts: its
+/// paragraphs and tables laid out at the page's text width (a shape anchored in it
+/// takes no room).
+// (The last few asked for, by the blocks, the styles, the width and the measurer: every layout
+// pass asks again for the same header and footer.)
+let private storyHeights = System.Collections.Generic.List<struct (Block list * obj * float * obj * float)>()
+let private storyHeight (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (blocks: Block list) =
+    let width = settings.Width - settings.PaddingLeft - settings.MarginRight
+    let found =
+        lock storyHeights (fun () ->
+            let mutable found = -1.0
+            for struct (known, styles, knownWidth, measurer, height) in storyHeights do
+                if found < 0.0 && obj.ReferenceEquals(known, blocks) && obj.ReferenceEquals(styles, box doc.Styles) && knownWidth = width && obj.ReferenceEquals(measurer, box measureText) then
+                    found <- height
+            found)
+    if found >= 0.0 then found
+    else
+        let flowing = blocks |> List.filter (function TextBox _ -> false | _ -> true)
+        let height =
+            if flowing.IsEmpty then 0.0
+            else
+                let storySettings = { settings with PageHeight = unpagedMeasurementPageHeight; PaddingTop = 0.0; MarginBottom = 0.0; TableContinuationHeaderHeight = 0.0 }
+                let layouts = noteBlocksLayouter.Value storySettings measureText measureRange { doc with Blocks = flowing }
+                let mutable bottom = 0.0
+                for layout in layouts do
+                    bottom <- max bottom (layout.Y + layout.Height)
+                bottom
+        lock storyHeights (fun () ->
+            if storyHeights.Count >= 8 then storyHeights.RemoveAt 0
+            storyHeights.Add(struct (blocks, box doc.Styles, width, box measureText, height)))
+        height
+
+/// The body between the header and the footer: it starts at the top margin, or below
+/// the header where that reaches further down (header distance + its text), and ends
+/// at the bottom margin, or above the footer where that reaches further up (Word 2019:
+/// a header of two single-spaced Calibri 11pt paragraphs 36pt from the top, a top
+/// margin of 36pt - the body's first line at 62.9pt).
+let private withHeaderFooterExtents (settings: LayoutSettings) measureText measureRange (doc: Document) marginTop marginBottom headerDistance footerDistance (header: Block list option) (footer: Block list option) =
+    let top =
+        match header with
+        | Some blocks -> max marginTop (headerDistance + storyHeight settings measureText measureRange doc blocks)
+        | None -> marginTop
+    let bottom =
+        match footer with
+        | Some blocks -> max marginBottom (footerDistance + storyHeight settings measureText measureRange doc blocks)
+        | None -> marginBottom
+    if top = settings.PaddingTop && bottom = settings.MarginBottom then settings
+    else { settings with PaddingTop = top; MarginBottom = bottom }
+
+/// The header and footer of a document's pages (of its only section): its default ones,
+/// as parts or as the plain paragraphs of an older reading.
+let private documentHeaderFooter (doc: Document) =
+    let header =
+        match WordLayout.Page.referencedHeaderBlocks "default" doc.PageSetup.HeaderReferences doc with
+        | Some blocks -> Some blocks
+        | None -> if doc.Headers.IsEmpty then None else Some (doc.Headers |> List.map Paragraph)
+    let footer =
+        match WordLayout.Page.referencedFooterBlocks "default" doc.PageSetup.FooterReferences doc with
+        | Some blocks -> Some blocks
+        | None -> if doc.Footers.IsEmpty then None else Some (doc.Footers |> List.map Paragraph)
+    header, footer
+
 let private pageInfoOf (s: LayoutSettings) top =
     { Top = top; Width = s.Width; Height = pageHeight s; MarginTop = s.PaddingTop; MarginBottom = s.MarginBottom; MarginLeft = s.PaddingLeft; MarginRight = s.MarginRight }
 
@@ -7173,7 +7235,7 @@ let private sectionLayoutsAt (memo: ParagraphLayoutMemo option) (slot: string) (
 /// Each section is flowed from y = 0 at the top of its first page and its
 /// layouts are then moved to where that page stands (see sectionLayoutsAt).
 /// Returns the layouts plus the per-page geometry.
-let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (headerReferences: (string * string) list array) (numberStarts: int option array) (verticalAligns: string option array) sections =
+let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (headerReferences: (string * string) list array) (footerReferences: (string * string) list array) (numberStarts: int option array) (verticalAligns: string option array) sections =
     let results = ResizeArray<BlockLayout>()
     // Where each block's layouts start in the results (see LayoutSlices).
     let blockStarts = ResizeArray<int>()
@@ -7201,6 +7263,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         pageSettings.[page] <- s
     // The header each section shows (its own, or the one of the section before it).
     let mutable shownHeader : (string * string) list = []
+    let mutable shownFooter : (string * string) list = []
     // The paragraph the last section ended with, for the spacing between it and the first
     // paragraph of a section that goes on on the same page (adjoining spacing collapses to the
     // larger of the two, as between paragraphs of a section).
@@ -7208,18 +7271,18 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     sections
     |> List.iteri (fun i (blocks, columns, geometry, breakType, isFinal) ->
         shownHeader <- inheritSectionReferences shownHeader (if i < headerReferences.Length then headerReferences.[i] else [])
+        shownFooter <- inheritSectionReferences shownFooter (if i < footerReferences.Length then footerReferences.[i] else [])
         let secSettings = settingsForGeometry settings geometry
-        // The body starts below the section's header when that reaches below the top margin.
+        // The body starts below the section's header when that reaches below the top margin,
+        // and ends above its footer when that reaches above the bottom margin.
         let secSettings =
-            match WordLayout.Page.referencedHeaderBlocks "default" shownHeader doc with
-            | Some headerBlocks ->
-                let marginTop, headerDistance =
-                    match geometry with
-                    | Some g -> g.MarginTop, g.HeaderDistance
-                    | None -> doc.PageSetup.MarginTop, doc.PageSetup.HeaderDistance
-                let top = WordLayout.Page.bodyTopBelowHeader marginTop headerDistance headerBlocks
-                if top = secSettings.PaddingTop then secSettings else { secSettings with PaddingTop = top }
-            | None -> secSettings
+            let marginTop, marginBottom, headerDistance, footerDistance =
+                match geometry with
+                | Some g -> g.MarginTop, g.MarginBottom, g.HeaderDistance, g.FooterDistance
+                | None -> doc.PageSetup.MarginTop, doc.PageSetup.MarginBottom, doc.PageSetup.HeaderDistance, doc.PageSetup.FooterDistance
+            withHeaderFooterExtents secSettings measureText measureRange doc marginTop marginBottom headerDistance footerDistance
+                (WordLayout.Page.referencedHeaderBlocks "default" shownHeader doc)
+                (WordLayout.Page.referencedFooterBlocks "default" shownFooter doc)
         let secStride = pageHeight secSettings + pageGap
         // Stitch before this section.
         if not started then
@@ -7463,6 +7526,15 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
     match allSections with
     | [ (_, columns, _, _, _) ] when not (WordLayout.Page.sectionIsVerticallyAligned whole.PageSetup.VerticalAlign) ->
         // Single section: keep the existing path; uniform page list.
+        // (The body between the document's header and footer as they are laid out, when the
+        // settings are the document's own - documentSettings estimates them without measuring.)
+        let settings =
+            let estimated = documentSettings settings.FontSize settings.LineHeight settings.LongTrailingSpaceFitSafety whole
+            if settings.PaddingTop = estimated.PaddingTop && settings.MarginBottom = estimated.MarginBottom then
+                let header, footer = documentHeaderFooter whole
+                withHeaderFooterExtents settings measureText measureRange whole whole.PageSetup.MarginTop whole.PageSetup.MarginBottom
+                    whole.PageSetup.HeaderDistance whole.PageSetup.FooterDistance header footer
+            else settings
         let layouts =
             match columns with
             | Some c when c.Count >= 2 ->
@@ -7520,10 +7592,15 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
                 match metadata with
                 | Some m -> m.HeaderReferences
                 | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.HeaderReferences else []))
+        let footerReferences =
+            endMetadata |> Array.mapi (fun index metadata ->
+                match metadata with
+                | Some m -> m.FooterReferences
+                | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.FooterReferences else []))
         // (And of the number its pages start with, and of where its text stands on a page.)
         let numberStarts = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionPageNumberStart | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.PageNumberStart else None))
         let verticalAligns = endMetadata |> Array.mapi (fun index metadata -> match metadata with Some m -> m.SectionVerticalAlign | None -> (if index = endMetadata.Length - 1 then whole.PageSetup.VerticalAlign else None))
-        layoutSections memo settings measureText measureRange doc headerReferences numberStarts verticalAligns sections
+        layoutSections memo settings measureText measureRange doc headerReferences footerReferences numberStarts verticalAligns sections
 
 let private layoutDocumentPagesWithMemo (memo: ParagraphLayoutMemo option) (limit: int) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (whole: Document) : BlockLayout list * PageInfo list =
     // (The notes are laid out from the document's bodies of them, with the layout's measurers.)

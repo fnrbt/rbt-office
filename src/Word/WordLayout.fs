@@ -318,6 +318,9 @@ module Page =
         else
             defaultHeaderParagraphCount doc
 
+    /// Where the body starts below the header, estimated without measuring (30px a
+    /// paragraph): what documentSettings gives before a layout; the layout puts it
+    /// below the header as it is laid out (Layout.withHeaderFooterExtents).
     let bodyTopWithRunningHeader (doc: Document) =
         let paragraphCount = firstPageHeaderParagraphCount doc
         if paragraphCount = 0 then
@@ -326,14 +329,6 @@ module Page =
             let headerLinePitch = 30.0
             let headerDepth = float paragraphCount * headerLinePitch
             max doc.PageSetup.MarginTop (doc.PageSetup.HeaderDistance + headerDepth)
-
-    /// Where the body text of a section starts below its header: at the top
-    /// margin, or below the header's paragraphs when they reach further down
-    /// (as `bodyTopWithRunningHeader` for a document without sections).
-    let bodyTopBelowHeader (marginTop: float) (headerDistance: float) (headerBlocks: Block list) =
-        let paragraphCount = blockListParagraphCount headerBlocks
-        if paragraphCount = 0 then marginTop
-        else max marginTop (headerDistance + float paragraphCount * 30.0)
 
     let advanceToNextPage pageHeight paddingTop y =
         let pageTop = pageTopForY pageHeight y

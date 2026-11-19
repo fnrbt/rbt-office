@@ -149,5 +149,39 @@ let afterBody = para "<w:spacing w:before=\"400\" w:after=\"240\"/>" "L1" + Stri
 check "spacing after need not fit: the 25th paragraph stays" (pageOfText (styles "Calibri" 22 single) afterBody "M24") 1
 check "the 26th goes on" (pageOfText (styles "Calibri" 22 single) afterBody "M25") 2
 
+// The body starts below the header where that reaches below the top margin, and ends above the
+// footer where that reaches above the bottom margin - as far as their text reaches (docx4j-sample-
+// docx: a header of two single-spaced Calibri 11pt paragraphs 36pt from the top, a top margin of
+// 36pt; Word's first line of the body at 62.9pt).
+let withHeaderFooter (headerParas: int) (footerParas: int) (body: string) =
+    let story tag count = sprintf "<w:%s %s>%s</w:%s>" tag w (String.concat "" [ for i in 1 .. count -> para "" (sprintf "%s line %d" tag i) ]) tag
+    let section = "<w:sectPr><w:headerReference w:type=\"default\" r:id=\"rIdH\"/><w:footerReference w:type=\"default\" r:id=\"rIdF\"/><w:pgSz w:w=\"12240\" w:h=\"15840\"/><w:pgMar w:top=\"720\" w:right=\"1440\" w:bottom=\"720\" w:left=\"1440\" w:header=\"720\" w:footer=\"720\" w:gutter=\"0\"/></w:sectPr>"
+    use stream = new IO.MemoryStream()
+    do
+        use archive = new IO.Compression.ZipArchive(stream, IO.Compression.ZipArchiveMode.Create, true)
+        let add (name: string) (text: string) =
+            use writer = new IO.StreamWriter(archive.CreateEntry(name).Open(), Text.UTF8Encoding(false))
+            writer.Write text
+        add "[Content_Types].xml" """<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"/>"""
+        add "word/document.xml" (sprintf "<w:document %s xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><w:body>%s%s</w:body></w:document>" w body section)
+        add "word/_rels/document.xml.rels" """<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdH" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/><Relationship Id="rIdF" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>"""
+        add "word/styles.xml" (styles "Calibri" 22 single)
+        add "word/header1.xml" (story "hdr" headerParas)
+        add "word/footer1.xml" (story "ftr" footerParas)
+    stream.ToArray() |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
+let bodyTop headerParas =
+    let doc = withHeaderFooter headerParas 1 (para "" "Body")
+    let layouts, pages = layoutOf doc
+    toPt ((blockNamed layouts "Body").Lines.Head.Y - pages.Head.Top)
+near "a header of two lines 36pt down: the body at 36 + 2 x 13.43pt" (bodyTop 2) (36.0 + 2.0 * 13.427)
+near "a header of five lines: the body at 36 + 5 x 13.43pt" (bodyTop 5) (36.0 + 5.0 * 13.427)
+near "a header of one line: 36 + 13.43pt" (bodyTop 1) (36.0 + 13.427)
+// A page holds what fits between them: 720pt - 36pt - (36 + 4 x 13.43pt) of single lines below 36 + 2 lines.
+let linesOnFirstPage footerParas =
+    let doc = withHeaderFooter 2 footerParas (String.concat "" [ for i in 1 .. 60 -> para "" (sprintf "B%d" i) ])
+    let layouts, pages = layoutOf doc
+    layouts |> List.filter (fun l -> pageOf pages l.Y = 1 && (textOf l).StartsWith "B") |> List.length
+check "a footer of four lines 36pt up: the body ends above it" (linesOnFirstPage 4) (int (floor ((792.0 - 36.0 - 4.0 * 13.427 - (36.0 + 2.0 * 13.427)) / 13.427)))
+
 printfn "line-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
