@@ -1776,8 +1776,10 @@ let private justifyLineToEdge (measureRange: TextRangeMeasurer) (origin: float) 
                         let pieceX = x + measureRange displayText displayStyle 0 pieceStart
                         pieces.Add(TextSegment (text.Substring pieceStart, style, pieceX, max 0.0 (x + width - pieceX), startOffset + pieceStart))
             | _ -> pieces.Add segment
+        // (An anchored picture is not in the line's text: it neither stops the stretch nor moves with it.)
         let isFixed = function
-            | ImageSegment _ | MathSegment _ -> true
+            | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _, _) -> not floating
+            | MathSegment _ -> true
             | TextSegment (text, _, _, _, _) -> text.IndexOf('\t') >= 0
         let endsInSpace = function
             | TextSegment (text, _, _, _, _) when text.Length > 0 -> text.[text.Length - 1] = ' '
@@ -1803,7 +1805,7 @@ let private justifyLineToEdge (measureRange: TextRangeMeasurer) (origin: float) 
                     match pieces.[index] with
                     | TextSegment (t, st, x, w, off) -> TextSegment (t, st, x + shift, w, off)
                     | ImageSegment (src, x, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb, flip) ->
-                        ImageSegment (src, x + shift, yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb, flip)
+                        ImageSegment (src, (if fl then x else x + shift), yOff, w, h, off, fl, wr, rh, cl, ct, cr, cb, flip)
                     | MathSegment (p, st, x, w, asc, desc, off, len) -> MathSegment (p, st, x + shift, w, asc, desc, off, len))
                 if isGap index then shift <- shift + perGap
             { line with Segments = resizeArrayToList newSegs }
@@ -2285,7 +2287,9 @@ let defaultTabStopWidth = 48.0
 /// "auto". A line without text (a picture alone) is at least settings.LineHeight.
 /// `contentLineRatio`: fontLineRatio of the text settings.LineHeight is of; text
 /// in another font is as tall as its own font's line (0: every font as that one).
-let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+/// `column`: the left edge of the column the paragraph is in, from the left margin, and its
+/// width ((0, 0): no columns) - what an anchored picture is placed relative to.
+let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (column: float * float) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
     let currentSegments = ResizeArray<Segment>()
     let mutable currentHasTextMetric = false
@@ -2369,8 +2373,8 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             if gapEnd > cursor then gaps <- (cursor, gapEnd) :: gaps
             cursor <- max cursor oxEnd
         if cursor < availableWidth then gaps <- (cursor, availableWidth) :: gaps
-        // (No text in a band beside a floating object that is narrower than an inch - see
-        // minimumWrapBand; a line with no band wide enough goes below the object.)
+        // (No text in a band beside a floating object that is narrower than a quarter inch -
+        // see minimumWrapBand; a line with no band wide enough goes below the object.)
         if active.Count = 0 then List.rev gaps
         else
             let least = min WordLayout.Floating.minimumWrapBand availableWidth - 0.01
@@ -2479,8 +2483,9 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                     hasInlineImage <- true
                 | _ -> ()
                 match segment with
-                | ImageSegment (_, x, _, width, _, _, _, _, _, _, _, _, _, _) ->
-                    widthEnd <- x + width
+                | ImageSegment (_, x, _, width, _, _, floating, _, _, _, _, _, _, _) ->
+                    // (An anchored picture stands apart from the line's text.)
+                    if not floating then widthEnd <- x + width
                 | MathSegment (_, _, x, width, _, _, _, _) ->
                     widthEnd <- x + width
                 | TextSegment (text, style, x, width, _) ->
@@ -2687,6 +2692,47 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 currentX <- currentX + width
         | _ -> flushLine ()
 
+    let anchorPage : WordLayout.Floating.AnchorPage =
+        { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
+          MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom; ColumnLeft = fst column; ColumnWidth = snd column }
+    // The box of an anchored picture this paragraph placed before its lines (see below), if any.
+    let placedBoxOf (imgRun: TextBuffer.ImageRun) =
+        placedBoxes |> List.tryFind (fun box ->
+            match box.Kind with
+            | WordLayout.Floating.ImageBox image -> obj.ReferenceEquals(image, imgRun)
+            | _ -> false)
+    let addObstacleFor (floatingBox: WordLayout.Floating.Box) =
+        let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
+        if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
+            floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
+        else
+            // (A picture with an outline to wrap along: the outline, slab by slab; else its box.)
+            match WordLayout.Floating.outlineObstacles availableWidth floatingBox with
+            | Some outline -> floatObstacles <- outline @ floatObstacles
+            | None -> floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
+    // An anchored picture placed from its paragraph (or the page, or the margins), not from its
+    // line, stands where it does whatever run of the paragraph holds its anchor: every line of the
+    // paragraph goes round it, those before the anchor too (Word 2019: fixtures float-wrap
+    // sq-start / sq-mid / sq-end). It is placed before the lines.
+    for run in runs do
+        match run with
+        | TextBuffer.Image imgRun when imgRun.Floating && not (isPrePlacedImage imgRun) ->
+            let fromParagraph =
+                match imgRun.PositionVRelativeFrom with
+                | Some "paragraph" | Some "page" | Some "margin" | Some "topMargin" | Some "bottomMargin" | Some "insideMargin" | Some "outsideMargin" -> true
+                | _ -> false
+            let fromAcross =
+                match imgRun.PositionHRelativeFrom with
+                | Some "character" | None -> false
+                | Some _ -> true
+            if fromParagraph && fromAcross then
+                let imgWidth, imgHeight = WordLayout.Image.canvasSize imgRun.Width imgRun.Height
+                let rawFloatingBox = WordLayout.Floating.imageCanvasBox anchorPage contentY 0.0 y settings.PaddingTop imgWidth imgHeight imgRun
+                let floatingBox = if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
+                if WordLayout.Floating.participatesInWrap floatingBox then addObstacleFor floatingBox
+                placedBoxes <- floatingBox :: placedBoxes
+        | _ -> ()
+
     moveToWrappableLine ()
 
     for runIndex in 0 .. runs.Length - 1 do
@@ -2700,11 +2746,14 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             if not imgRun.Floating && currentX + imgWidth > currentLineEnd && currentSegments.Count > 0 then
                 flushLine ()
 
-            let anchorPage : WordLayout.Floating.AnchorPage =
-                { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
-                  MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom }
-            let rawFloatingBox = WordLayout.Floating.imageCanvasBox anchorPage contentY currentX y settings.PaddingTop imgWidth imgHeight imgRun
-            let floatingBox = if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
+            // (Placed already - before the lines, or by the pass before this one: where it was placed.)
+            let prePlaced = if imgRun.Floating then placedBoxOf imgRun else None
+            let floatingBox =
+                match prePlaced with
+                | Some box -> box
+                | None ->
+                    let rawFloatingBox = WordLayout.Floating.imageCanvasBox anchorPage contentY currentX y settings.PaddingTop imgWidth imgHeight imgRun
+                    if imgRun.AllowOverlap = Some false then WordLayout.Floating.avoidOverlap placedBoxes rawFloatingBox else rawFloatingBox
             let imageX = if imgRun.Floating then floatingBox.X else currentX
             let yOffset = if imgRun.Floating then floatingBox.Y - (contentY + (y - settings.PaddingTop)) else 0.0
             let segment = ImageSegment (TextBuffer.displayedImageSource imgRun, imageX, yOffset, imgWidth, imgHeight, imgRun.Start, imgRun.Floating, imgRun.Wrap, imageSegmentHeight imgRun, imgRun.CropLeft, imgRun.CropTop, imgRun.CropRight, imgRun.CropBottom, (imgRun.FlipH, imgRun.FlipV))
@@ -2716,17 +2765,12 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             // source against the existing placed boxes; in that case the
             // obstacle is already in `floatObstacles` with an extended (upward)
             // top, so just emit the ImageSegment and keep wrapping as before.
-            let alreadyPlaced = imgRun.Floating && isPrePlacedImage imgRun
+            let alreadyPlaced = prePlaced.IsSome
             if imgRun.Floating && WordLayout.Floating.participatesInWrap floatingBox && not alreadyPlaced then
-                let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
+                addObstacleFor floatingBox
                 if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
-                    floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
                     moveToWrappableLine ()
                 else
-                    // (A picture with an outline to wrap along: the outline, slab by slab; else its box.)
-                    match WordLayout.Floating.outlineObstacles availableWidth floatingBox with
-                    | Some outline -> floatObstacles <- outline @ floatObstacles
-                    | None -> floatObstacles <- (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) :: floatObstacles
                     pendingIntervals <- wrapIntervalsForY y
                     private_setIntervalToFirst ()
             elif imgRun.Floating && alreadyPlaced then
@@ -2870,6 +2914,16 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                 // and try the next, matching Word's wrap-around-float behavior
                                 // instead of force-breaking the word inside the narrow strip.
                                 private_setIntervalToFirst ()
+                            elif visibleOverflows && not currentHasFlowContent && not hasTab && currentLineEnd - currentX < availableWidth - 0.5
+                                 && (nextObstacleClearY y).IsSome then
+                                // The last strip beside an object at this y cannot hold the word either:
+                                // it is left empty and the word goes on below, where the text is wider
+                                // (Word 2019: float-wrap gapr-36 - the word in the 36pt strip, gapr-18
+                                // - none in the 18pt one). (A word wider than the whole line is broken.)
+                                let height = match lines with line :: _ when abs (line.Y - y) < 0.01 -> line.Height | _ -> settings.LineHeight
+                                pendingIntervals <- []
+                                y <- y + height
+                                moveToWrappableLine ()
                             else
                                 let segmentLength, segmentWidth =
                                     if overflows && not hasTab then
@@ -2920,7 +2974,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     List.rev lines, floatObstacles, placedBoxes
 
 let layoutLinesFromIndent (settings: LayoutSettings) measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes =
-    layoutLinesFromIndentWith settings.LineHeight 0.0 settings measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes
+    layoutLinesFromIndentWith settings.LineHeight 0.0 settings measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging (0.0, 0.0) initialObstacles initialPlacedBoxes
 
 let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutLinesFromIndent settings measureRange buffer maxWidth contentY tabStops 0.0 0.0 false initialObstacles initialPlacedBoxes
@@ -3379,6 +3433,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let paragraphLineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
     let struct (lineSpacingMultiple, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight }
+    // (The column the paragraph is in: where it starts across, and as wide as it is laid out - in a
+    // section with columns xOffset is the column's left edge. Not in a table's cell.)
+    let column = if settings.InTableCell then (0.0, 0.0) else (xOffset, maxWidth)
     // Each line is as tall as its own text (see layoutLinesFromIndentWith).
     let textLineFloor =
         match lineSpacingRule with
@@ -3392,9 +3449,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         if singleLineFastPath then
             match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops firstLineStart initialObstacles initialPlacedBoxes with
             | Some lines -> lines, initialObstacles, initialPlacedBoxes
-            | None -> layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
+            | None -> layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
         else
-            layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging initialObstacles initialPlacedBoxes
+            layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
     let lines, updatedObstacles, updatedPlacedBoxes =
         match memoEntry with
         | Some entry ->
@@ -3477,14 +3534,31 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     // wouldn't apply). The common right margin is the first line's reach, so
     // body lines must also stretch past their wrap width by the first-line
     // indent to end flush with it.
+    // Beside something floating each piece of a line is justified to its own end: where the
+    // room it is in ends at the object, or the text's right edge (Word 2019: float-wrap, the
+    // lines beside a picture end at its left less its distance from text).
     let adjustedLines =
-        if metadata.Alignment <> Justify || not (List.isEmpty updatedObstacles) then adjustedLines
+        if metadata.Alignment <> Justify then adjustedLines
         else
             let rightContentEdge = xOffset + indent + availableWidth
+            let rightEdgeOf (line: MeasuredLine) =
+                if List.isEmpty updatedObstacles then rightContentEdge
+                else
+                    let start =
+                        match line.Segments |> List.tryFind (function ImageSegment (_, _, _, _, _, _, true, _, _, _, _, _, _, _) -> false | _ -> true) with
+                        | Some segment -> segmentX segment - (xOffset + indent)
+                        | None -> 0.0
+                    let top = line.Y
+                    let bottom = line.Y + lineSettings.LineHeight
+                    let mutable edge = availableWidth
+                    for (x, obstacleTop, width, height) in updatedObstacles do
+                        if bottom > obstacleTop && top < obstacleTop + height && x + width > start + 0.5 && x > start + 0.5 then
+                            edge <- min edge x
+                    xOffset + indent + edge
             let rec justifyNonLast acc = function
                 | [] -> List.rev acc
                 | [last] -> List.rev (last :: acc)
-                | line :: rest -> justifyNonLast (justifyLineToEdge measureRange (xOffset + indent) rightContentEdge line :: acc) rest
+                | line :: rest -> justifyNonLast (justifyLineToEdge measureRange (xOffset + indent) (rightEdgeOf line) line :: acc) rest
             justifyNonLast [] adjustedLines
 
     // RTL paragraphs: reposition each line's tokens right-to-left (guarded by
@@ -5715,11 +5789,17 @@ let private layoutDocumentPassKept
             | ValueSome boxes ->
                 let page : WordLayout.Floating.AnchorPage =
                     { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
-                      MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom }
+                      MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom; ColumnLeft = 0.0; ColumnWidth = 0.0 }
                 let pageTop = if settings.PageHeight < 50000.0 then WordLayout.Page.pageTopForY settings.PageHeight atY else 0.0
                 let mutable obstacles = obstacles
                 let mutable placed = placed
-                for textBox in boxes do
+                // (Placed by the pass before this one: it stays where it was placed, its obstacle with it.)
+                let placedBefore (textBox: TextBoxBlock) =
+                    placed |> List.exists (fun box ->
+                        match box.Kind with
+                        | WordLayout.Floating.TextBox other -> other.Id = textBox.Id
+                        | _ -> false)
+                for textBox in boxes |> Seq.filter (placedBefore >> not) |> Seq.toList do
                     let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
                     let box = WordLayout.Floating.anchoredTextBoxBox page pageTop atY height textBox |> WordLayout.Floating.keptClearOfShapes placed
                     let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox maxWidth box
@@ -6415,6 +6495,15 @@ let private computeAnchorExtendedObstacles
             for line in layout.Lines do
                 yield line.Y, blockBottom ]
     let mutable anyExtended = false
+    // Whether text was laid out under an obstacle: a line across it with a piece of text in it.
+    let collides (obstacleX: float, obstacleTop: float, obstacleWidth: float, obstacleHeight: float) =
+        layouts |> List.exists (fun layout ->
+            layout.Lines |> List.exists (fun line ->
+                line.Y < obstacleTop + obstacleHeight - 0.01 && line.Y + line.Height > obstacleTop + 0.01
+                && line.Segments |> List.exists (function
+                    | TextSegment (text, _, x, width, _) ->
+                        text.Trim().Length > 0 && x < obstacleX + obstacleWidth - 0.01 && x + width > obstacleX + 0.01
+                    | _ -> false)))
     let extended =
         placed
         |> List.collect (fun box ->
@@ -6435,8 +6524,14 @@ let private computeAnchorExtendedObstacles
                     // up would shove preceding/anchor lines below the
                     // picture even when they'd naturally fit above. Just
                     // widen the in-place obstacle horizontally so the second
-                    // pass treats it as full-width without re-adding.
-                    [ (0.0, obstacleTop, availableWidth, obstacleHeight) ]
+                    // pass treats it as full-width without re-adding. A line above
+                    // the paragraph that it reaches (by its distance from text)
+                    // goes below it in the second pass, the paragraph after it
+                    // (Word 2019: float-wrap kl-tb - a line 4.4pt into the 9pt above
+                    // the picture goes below it; the picture stays).
+                    let obstacle = (0.0, obstacleTop, availableWidth, obstacleHeight)
+                    if collides obstacle then anyExtended <- true
+                    [ obstacle ]
                 elif
                     match box.Kind with
                     | WordLayout.Floating.ImageBox img ->
@@ -6449,9 +6544,13 @@ let private computeAnchorExtendedObstacles
                     // Paragraph/line-relative posV: the image's Y is already
                     // computed off the containing paragraph's top, so the
                     // first overlapping line is the right wrap anchor without
-                    // further upward extension. Keeping the obstacle at its
-                    // literal posV offset lets lines above the image flow
-                    // full width, matching Word.
+                    // further upward extension. The lines of the paragraph and
+                    // after it went round it; a line above the paragraph that it
+                    // reaches (by its distance from text) runs under it: that
+                    // line goes round it too - and the paragraph moves down,
+                    // the picture stays (Word 2019: float-wrap sq-start, A's last
+                    // line beside the picture, the picture where B first stood).
+                    if collides (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) then anyExtended <- true
                     [ (obstacleX, obstacleTop, obstacleWidth, obstacleHeight) ]
                 else
                     let firstOverlap =
@@ -6855,8 +6954,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && (not (atColumnTop ()) || continuesPage ()) ->
                         collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
                     | _ -> y
+                // (Laid out where its column is across: what is anchored in it is placed from the column.)
                 let laidOut obstacles =
-                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY 0.0 style (effectiveBufferInContext styleContext) remaining counters obstacles []
+                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters obstacles []
                 // (The paragraph's first lines go around the drop cap: they stand beside it.)
                 let cap = if isContinuation then None else capLayoutAt layoutY
                 let rawLayout, newCounters, _, _ =
@@ -6914,7 +7014,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                             stillFitting <- false
                 let placeWhole () =
                     addCap ()
-                    results.Add(shiftBlockX (columnDx col) layout)
+                    results.Add layout
                     addPageFootnotes (layoutFootnotes layout.Lines)
                     counters <- newCounters
                     y <- layout.Y + layout.Height
@@ -6932,7 +7032,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     match lastFit with
                     | Some lastFit ->
                         addCap ()
-                        results.Add(shiftBlockX (columnDx col) { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y })
+                        results.Add { layout with Lines = fitLines; Height = lastFit.Y + lastFit.Height - layout.Y }
                         addPageFootnotes (layoutFootnotes fitLines)
                         // lastFit.EndOffset is in paragraph offsets; the buffer
                         // being cut starts at consumedOffset.

@@ -2320,7 +2320,8 @@ let private anchoredShapeBox (settings: LayoutSettings) measureText measureRange
     let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
     let info = pages.[pageIndexForY pages top]
     let page : WordLayout.Floating.AnchorPage =
-        { PageWidth = info.Width; PageHeight = info.Height; MarginLeft = info.MarginLeft; MarginRight = info.MarginRight; MarginTop = info.MarginTop; MarginBottom = info.MarginBottom }
+        { PageWidth = info.Width; PageHeight = info.Height; MarginLeft = info.MarginLeft; MarginRight = info.MarginRight; MarginTop = info.MarginTop; MarginBottom = info.MarginBottom
+          ColumnLeft = 0.0; ColumnWidth = 0.0 }
     struct (WordLayout.Floating.anchoredTextBoxBox page info.Top top height textBox, info.MarginLeft, height)
 
 /// Where a shape is: its left edge and top (across and down the canvas) and

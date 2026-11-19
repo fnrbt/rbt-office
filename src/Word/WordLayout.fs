@@ -385,9 +385,10 @@ module Floating =
         obstacleX, max 0.0 (obstacleRight - obstacleX)
 
     /// Text is not put into a band beside a floating object that is narrower
-    /// than this (layout px: an inch, as Word has it): a word or two in a
-    /// sliver between a picture and the margin is not how a page is set.
-    let minimumWrapBand = 96.0
+    /// than this (layout px: a quarter of an inch). Word 2019 puts a word in a
+    /// band of 18pt or more, none in one of 16pt (fixtures float-wrap gapil-*:
+    /// 5pt words; gap-36: one 22.6pt word in a 36pt band).
+    let minimumWrapBand = 24.0
 
     /// The side of a picture its text may stand on (wp:wrapSquare / wrapTight /
     /// wrapThrough w:wrapText): "left", "right", "largest" (the wider of the
@@ -535,6 +536,10 @@ module Floating =
         MarginRight: float
         MarginTop: float
         MarginBottom: float
+        /// The column the anchor's paragraph is laid out in: its left edge from
+        /// the left margin, and its width (0: the text's whole width - no columns).
+        ColumnLeft: float
+        ColumnWidth: float
     }
 
     /// Where an object of `size` is along a stretch that starts at `start`
@@ -549,15 +554,22 @@ module Floating =
         | _ -> start + offset
 
     /// The stretch a horizontal position is relative to (wp:positionH
-    /// relativeFrom), from the left edge of the text (the column's): its
-    /// start and its length. `currentX`: where the anchor's character is.
+    /// relativeFrom), from the left edge of the anchor's column: its start
+    /// and its length. `currentX`: where the anchor's character is. In a
+    /// section with columns `column` is the anchor's column and `margin` the
+    /// page's margins (Word 2019: float-wrap col-colright, col-coloff - from the
+    /// second column's edges; col-marginoff, col-marginright, col-pageoff - from
+    /// the page's).
     let horizontalReference (page: AnchorPage) (currentX: float) (relativeFrom: string option) : float * float =
         let textWidth = page.PageWidth - page.MarginLeft - page.MarginRight
+        let columnWidth = if page.ColumnWidth > 0.0 then page.ColumnWidth else textWidth
+        let margin = -page.ColumnLeft
         match relativeFrom with
-        | Some "page" -> -page.MarginLeft, page.PageWidth
-        | Some "margin" | Some "column" -> 0.0, textWidth
-        | Some "leftMargin" | Some "insideMargin" -> -page.MarginLeft, page.MarginLeft
-        | Some "rightMargin" | Some "outsideMargin" -> textWidth, page.MarginRight
+        | Some "page" -> margin - page.MarginLeft, page.PageWidth
+        | Some "margin" -> margin, textWidth
+        | Some "column" -> 0.0, columnWidth
+        | Some "leftMargin" | Some "insideMargin" -> margin - page.MarginLeft, page.MarginLeft
+        | Some "rightMargin" | Some "outsideMargin" -> margin + textWidth, page.MarginRight
         // (character, and an object that says nothing: from where its anchor is in the line.)
         | _ -> currentX, 0.0
 

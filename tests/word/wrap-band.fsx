@@ -1,13 +1,17 @@
-// Text beside a floating object: not in a band narrower than an inch, on the
-// side(s) the object says (wrapText), clear of it by its distances from text.
+// Text beside a floating object: in a band a quarter inch wide or more, when a
+// word fits in it; on the side(s) the object says (wrapText), clear of it by its
+// distances from text.
 // float-image-wrap-square.docx: the picture is anchored at 1463040 EMU (1.6 in
 // = 153.6 px) from the page's left edge and 1371600 EMU (1.5 in = 144 px)
 // from its top, 1463040 x 1097280 EMU (153.6 x 115.2 px), wrapSquare
 // wrapText="bothSides", distL = distR = 114300 EMU (12 px), distT = distB = 0.
 // The margins are 1 in (96 px), the text 624 px wide: left of the picture there
-// are 153.6 - 96 - 12 = 45.6 px - less than an inch, so no text goes there -
-// and right of it 624 - (57.6 + 153.6 + 12) = 400.8 px, where the lines that
-// pass the picture (144 .. 259.2 px down the page) stand, from 223.2 px on.
+// are 153.6 - 96 - 12 = 45.6 px (34.2pt) - Word 2019 puts the words that fit
+// there in it ("This", "side.", "line", "far the"; not "rectangle." or
+// "wrapped") - and right of it 624 - (57.6 + 153.6 + 12) = 400.8 px, where the
+// lines that pass the picture (144 .. 259.2 px down the page) go on, from
+// 223.2 px on. (The band's least width: tools/word-parity/fixtures/float-wrap.py,
+// gapil-*: none in 16pt, words in 18pt, in every compatibility mode.)
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
@@ -54,8 +58,9 @@ let lines = textLines doc
 let passing = lines |> beside 144.0 259.2
 let clear = lines |> List.filter (fun (_, _, y, _) -> y >= 259.2)
 check "lines pass the picture" (passing.Length >= 3) true
-check "none of them has text left of the picture (the band there is 45.6 px)" (passing |> List.filter (fun (left, _, _, _) -> left < 223.2 - 0.5) |> List.map (fun (left, _, y, _) -> Math.Round left, Math.Round y)) []
-check "they start right of the picture, 12 px clear of it" (passing |> List.map (fun (left, _, _, _) -> Math.Round(left, 1)) |> List.distinct) [ 223.2 ]
+check "none of them has text over the picture" (passing |> List.filter (fun (left, right, _, _) -> right > 45.6 + 0.5 && left < 223.2 - 0.5) |> List.map (fun (left, _, y, _) -> Math.Round left, Math.Round y)) []
+check "the 45.6 px band left of it holds the words that fit in it" (passing |> List.exists (fun (left, right, _, _) -> left < 0.5 && right <= 45.6 + 0.5)) true
+check "right of the picture they start 12 px clear of it" (passing |> List.filter (fun (left, _, _, _) -> left > 45.6) |> List.map (fun (left, _, _, _) -> Math.Round(left, 1)) |> List.distinct) [ 223.2 ]
 check "and end within the text" (passing |> List.forall (fun (_, right, _, _) -> right <= 624.5)) true
 check "below the picture the lines start at the margin again" (clear.Length >= 2, clear |> List.map (fun (left, _, _, _) -> left) |> List.distinct) (true, [ 0.0 ])
 

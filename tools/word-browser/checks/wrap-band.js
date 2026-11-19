@@ -1,13 +1,14 @@
-// Text beside a floating picture is not put into a band narrower than an
-// inch, and stands on the side(s) the picture says (wrapText).
+// Text beside a floating picture goes into a band a quarter inch wide or more,
+// when a word fits in it, and stands on the side(s) the picture says (wrapText).
 // float-image-wrap-square.docx: the picture is anchored 1463040 EMU (153.6 px)
 // from the page's left edge and 1371600 EMU (144 px) from its top, is
 // 1463040 x 1097280 EMU (153.6 x 115.2 px), wrapSquare wrapText="bothSides",
 // distL = distR = 114300 EMU (12 px), distT = distB = 0; the margins are 96 px.
-// Left of the picture there are 153.6 - 96 - 12 = 45.6 px: no text goes there
-// (single words stood in that sliver, and the heading above was split by it).
-// The lines that pass the picture (144 .. 259.2 px down the page) start
-// 153.6 + 153.6 + 12 = 319.2 px from the page's left edge.
+// Left of the picture there are 153.6 - 96 - 12 = 45.6 px: Word 2019 puts the
+// words that fit there in it ("This", "side.", "line"; tools/word-parity/fixtures/
+// float-wrap.py gapil-*: none in a 16pt band, words in an 18pt one). The lines
+// that pass the picture (144 .. 259.2 px down the page) go on 153.6 + 153.6 + 12
+// = 319.2 px from the page's left edge.
 import { check, note, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const OF = await loadFormats();
@@ -36,15 +37,14 @@ try {
     const passing = beside(lines), below = lines.filter((line) => line.y >= 259.2);
     note('lines: ' + JSON.stringify(lines.map((line) => [Math.round(line.left), Math.round(line.right), Math.round(line.y), line.text.slice(0, 18)])));
     check('lines pass the picture', passing.length >= 3, true);
-    check('none of them has text left of the picture', passing.filter((line) => line.left < 319.2 - 0.6).map((line) => [Math.round(line.left), line.text.slice(0, 20)]), []);
-    check('they start 12 px right of it', [...new Set(passing.map((line) => Math.round(line.left * 10) / 10))], [319.2]);
+    check('none of them has text over the picture', passing.filter((line) => line.parts.some(([from, to]) => to > 141.6 + 0.6 && from < 319.2 - 0.6)).map((line) => [Math.round(line.left), line.text.slice(0, 20)]), []);
+    check('the 45.6 px band left of it holds the words that fit in it', passing.some((line) => line.left < 96.6 && line.right <= 141.6 + 0.6), true);
+    check('right of it they start 12 px clear of it', [...new Set(passing.filter((line) => line.left > 141.6).map((line) => Math.round(line.left * 10) / 10))], [319.2]);
     check('below the picture the lines start at the margin', [below.length >= 2, [...new Set(below.map((line) => Math.round(line.left)))]], [true, [96]]);
-    const heading = lines.find((line) => line.text.startsWith('Float wrap-square repro'));
-    check('the heading is one line in one piece', [lines.filter((line) => line.text.includes('wrap-square repro') || line.text.startsWith('Float')).length, heading !== undefined && heading.text.trim()], [1, 'Float wrap-square repro']);
-    // Painted: nothing in the sliver left of the picture while lines pass it.
+    // Painted: text right of the picture while lines pass it.
     const context = canvas.getContext('2d');
     const ink = (x0, x1, y0, y1) => { const data = context.getImageData(Math.round(x0), Math.round(y0), Math.round(x1 - x0), Math.round(y1 - y0)).data; let count = 0; for (let i = 0; i < data.length; i += 4) if (data[i] < 110 && data[i + 1] < 110 && data[i + 2] < 110) count++; return count; };
-    check('painted: no text in the 45.6 px left of the picture, text right of it', [ink(96, 141, 146, 258), ink(320, 720, 146, 258) > 200], [0, true]);
+    check('painted: text right of the picture', ink(320, 720, 146, 258) > 200, true);
 
     // The side the text may stand on: the picture moved 2 in to the right (237.6 px of text left of it, 208.8 px right of it).
     const zip = await window.JSZip.loadAsync(bytes);
