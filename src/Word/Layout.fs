@@ -2585,6 +2585,66 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         currentHasFlowContent <- true
         currentSegments.Add(TextSegment (text, style, x, width, startOffset))
 
+    /// The line is full before a word that goes on from the text before it (its first run starts
+    /// where a run of the same word ended: "ch" + "aracter" when every letter has its colour).
+    /// Word breaks only where a break may be - a space, after a hyphen, at a tab or a picture - so
+    /// the word's pieces already on this line go to the next one with it. A word that is the whole
+    /// line breaks where it is full, as before.
+    let breakBeforeWord (continuesWord: bool) =
+        let lastIndex = currentSegments.Count - 1
+        let canBreakAfter (c: char) = isWhitespaceChar c || c = '-'
+        // The first segment (and where in it) of the word that ends the line: None when the line
+        // ends at a break, or holds nothing but that word.
+        let wordStart =
+            if not continuesWord || lastIndex < 0 then None
+            else
+                match currentSegments.[lastIndex] with
+                | TextSegment (text, _, _, _, _) when text.Length > 0 && not (canBreakAfter text.[text.Length - 1]) ->
+                    let mutable index = lastIndex
+                    let mutable found = None
+                    let mutable searching = true
+                    while searching && index >= 0 do
+                        match currentSegments.[index] with
+                        | TextSegment (text, _, _, _, _) ->
+                            let mutable k = text.Length - 1
+                            while k >= 0 && not (canBreakAfter text.[k]) do k <- k - 1
+                            if k >= 0 then
+                                found <- (if k = text.Length - 1 then Some (index + 1, 0) else Some (index, k + 1))
+                                searching <- false
+                            else index <- index - 1
+                        | _ ->
+                            found <- Some (index + 1, 0)
+                            searching <- false
+                    found
+                | _ -> None
+        match wordStart with
+        | Some (first, cut) when first <= lastIndex && (first > 0 || cut > 0) ->
+            let measured (text: string) style =
+                measureRange (WordLayout.Text.displayText style text) (WordLayout.Text.displayStyle style) 0 text.Length
+            let carried = ResizeArray<string * TextBuffer.TextStyle * float * int>()
+            for index in first .. lastIndex do
+                match currentSegments.[index] with
+                | TextSegment (text, style, x, width, start) ->
+                    if index = first && cut > 0 then
+                        let head = text.Substring(0, cut)
+                        let tail = text.Substring cut
+                        carried.Add((tail, style, measured tail style, start + cut))
+                        currentSegments.[index] <- TextSegment (head, style, x, measured head style, start)
+                    else carried.Add((text, style, width, start))
+                | _ -> ()
+            let keep = if cut > 0 then first + 1 else first
+            let resumeX =
+                match currentSegments.[first] with
+                | TextSegment (_, _, x, width, _) when cut > 0 -> x + width
+                | segment -> segmentX segment
+            currentSegments.RemoveRange(keep, currentSegments.Count - keep)
+            currentX <- resumeX
+            flushLine ()
+            for text, style, width, start in carried do
+                addTextSegment text style currentX width start
+                currentX <- currentX + width
+        | _ -> flushLine ()
+
     moveToWrappableLine ()
 
     for runIndex in 0 .. runs.Length - 1 do
@@ -2761,7 +2821,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                     currentX + vw > currentLineEnd - fullFitSafety
                                 else overflows
                             if overflows && currentHasFlowContent then
-                                flushLine ()
+                                breakBeforeWord (tokenOffset = 0 && runText.Length > 0 && not (isWhitespaceChar runText.[0]))
                             elif visibleOverflows && not currentHasFlowContent && not pendingIntervals.IsEmpty && not hasTab then
                                 // Narrow strip at this y can't hold the next whole word, but
                                 // there's another strip at the same y — leave this one empty

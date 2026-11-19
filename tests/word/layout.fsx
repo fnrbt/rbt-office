@@ -63,6 +63,22 @@ let fragmentedLines = layoutLinesStyled settings measureText fragmented 90.0
 check "fragmented line count" fragmentedLines.Length 2
 check "fragmented line text 1" (fragmentedLines.[0].Segments |> List.map textOfSegment |> String.concat "") "alpha beta "
 check "fragmented line text 2" (fragmentedLines.[1].Segments |> List.map textOfSegment |> String.concat "") "gamma"
+// A word in several runs (the Rainbow macro gives every letter its colour) breaks where the same
+// word in one run would: at a space, not between its runs.
+let perCharacter (text: string) =
+    { Rope = Rbt.Word.Rope.ofString text
+      Runs = [ for i in 0 .. text.Length - 1 -> Text { Start = i; Length = 1; Style = { defaultStyle with Color = Some (if i % 2 = 0 then "#FF0000" else "#0000FF") } } ] }
+let lineTexts ls = ls |> List.map (fun (l: MeasuredLine) -> l.Segments |> List.map textOfSegment |> String.concat "")
+let rainbowText = "every character a colour of a rainbow"
+check "one run a letter: the lines of one run" (lineTexts (layoutLinesStyled settings measureText (perCharacter rainbowText) 90.0)) (lineTexts (layoutLinesStyled settings measureText (ofString rainbowText) 90.0))
+let twoRuns =
+    { Rope = Rbt.Word.Rope.ofString "alpha betagamma"
+      Runs = [ Text { Start = 0; Length = 10; Style = defaultStyle }; Text { Start = 10; Length = 5; Style = { defaultStyle with Bold = true } } ] }
+check "a word in two runs goes to the next line whole" (lineTexts (layoutLinesStyled settings measureText twoRuns 90.0)) [ "alpha "; "betagamma" ]
+check "after a hyphen a word may break" (lineTexts (layoutLinesStyled settings measureText (perCharacter "alpha well-known") 90.0)) [ "alpha well-"; "known" ]
+let longWord = lineTexts (layoutLinesStyled settings measureText (perCharacter "abcdefghijklmnop") 70.0)
+check "a word longer than the line still breaks inside" (longWord.Length, String.concat "" longWord) (2, "abcdefghijklmnop")
+
 let reusePara : Doc.ParagraphBlock =
     { Id = "reuse"; Buffer = ofString "plain text"; Metadata = Doc.defaultMetadata }
 let reuseLayout, _ = layoutParagraphAtWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) 500.0 0.0 0.0 reusePara Map.empty
