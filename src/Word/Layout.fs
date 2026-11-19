@@ -487,6 +487,10 @@ let private advanceToNextPage settings y =
     WordLayout.Page.advanceToNextPage (pageHeight settings) settings.PaddingTop y
 
 let private pageFitTolerance = 0.5
+/// How far a body line's text may end below the bottom of the page's text and
+/// stay: no further than rounding (Word moves a single-spaced Calibri line whose
+/// text ends 0.2pt below the bottom margin - fixtures footnote-block limit-nofn-*).
+let private lineFitTolerance = 0.01
 
 let private applyRenderedPageBreakHint settings y (para: ParagraphBlock) =
     y
@@ -785,12 +789,12 @@ let private footnoteFontSize = 10.0 * 96.0 / 72.0
 // A note without a body of its own (its plain text only) is set in Calibri,
 // Word's default face.
 let private footnoteFontFamily = "Calibri"
-// Small gap left below the footnote block, above the bottom page margin.
-let private footnoteBottomPad = 6.0
 // Footnote single-line height (10pt body font), for an estimate outside a
-// layout pass, and the separator gap above the first note.
+// layout pass.
 let private footnoteLineHeight = 16.0
-let private footnoteSeparatorGap = 16.0
+// The separator's height outside a layout pass: Word's own separator, a
+// single-spaced paragraph of Calibri 11pt (13.43pt).
+let private footnoteSeparatorEstimate = 13.427 * 96.0 / 72.0
 // Gap below the last body line before the endnote separator + first endnote.
 let private endnoteTopGap = 24.0
 
@@ -826,6 +830,19 @@ type NoteLayoutRecord = {
     RecordHeight: float
 }
 
+/// A footnote separator (or continuation separator) as Word sets it: a
+/// paragraph of its own (footnotes.xml's w:type="separator" note) stacked
+/// above the notes - its height is what the page gives it above the first
+/// note - with the rule drawn in its first line (Word's PDFs: the rule's top
+/// 0.703 of the font size below the line's top, 0.066 of it thick, 2in long;
+/// the line is the font's single line, 1.22 of the size in Calibri).
+type FootnoteSeparator = {
+    SeparatorHeight: float
+    /// Where the rule's middle is, below the separator's top.
+    RuleCenter: float
+    RuleThickness: float
+}
+
 /// What the notes of a layout pass are laid out with (see withNoteLayoutContext).
 type private NoteLayoutContext = {
     NoteDoc: Document
@@ -836,6 +853,8 @@ type private NoteLayoutContext = {
     mutable NoteBodies: Dictionary<string, NoteBody> option
     /// The notes being laid out (a note's text that refers to a note is not followed).
     NoteBusy: HashSet<string>
+    /// The separators laid out, by kind and width.
+    NoteSeparators: Dictionary<string, FootnoteSeparator>
 }
 
 let mutable private noteLayoutContext : NoteLayoutContext option = None
@@ -861,7 +880,8 @@ let private withNoteLayoutContext (records: Dictionary<string, NoteLayoutRecord>
                    NoteMeasureRange = measureRange
                    NoteRecords = (match records with Some records -> records | None -> Dictionary<string, NoteLayoutRecord>())
                    NoteBodies = None
-                   NoteBusy = HashSet<string>() }
+                   NoteBusy = HashSet<string>()
+                   NoteSeparators = Dictionary<string, FootnoteSeparator>() }
         try f ()
         finally
             noteLayoutContext <- None
@@ -1054,6 +1074,57 @@ let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: str
                     Some record
                 finally context.NoteBusy.Remove key |> ignore
 
+/// The footnote separator of `kind` ("separator", or "continuationSeparator"
+/// above the part of a note that goes on from the page before) laid out by
+/// itself at the width of the page's text: the document's own (footnotes.xml),
+/// or Word's when it has none - an empty single-spaced paragraph with nothing
+/// before or after in the default paragraph style. (Outside a layout pass:
+/// Word's, as Calibri 11pt.)
+let private footnoteSeparatorOf (settings: LayoutSettings) (kind: string) : FootnoteSeparator =
+    let ofLine (height: float) (lineTop: float) (lineHeight: float) =
+        // (A line is 1.2207 of its size in Calibri: the rule's middle 0.736 of the size below the line's top.)
+        { SeparatorHeight = height; RuleCenter = lineTop + lineHeight * 0.603; RuleThickness = max 0.5 (lineHeight * 0.0537) }
+    match noteLayoutContext with
+    | None -> ofLine footnoteSeparatorEstimate 0.0 footnoteSeparatorEstimate
+    | Some context ->
+        let width = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let key = kind + "\u0001" + string width
+        match Portable.Dict.tryFind key context.NoteSeparators with
+        | ValueSome separator -> separator
+        | ValueNone ->
+            let noteSettings = noteRecordSettings settings
+            let body = context.NoteDoc.Package.Notes |> List.tryFind (fun body -> body.NoteType = "footnote" && body.Kind = Some kind && not body.Blocks.IsEmpty)
+            let layouts =
+                match body with
+                | Some body ->
+                    noteBlocksLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { context.NoteDoc with Blocks = body.Blocks }
+                    |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
+                    |> List.map (shiftBlockY (-noteSettings.PaddingTop))
+                | None ->
+                    let metadata =
+                        { defaultMetadata with
+                            SpacingBefore = Some 0.0; SpacingAfter = Some 0.0; LineSpacing = Some 1.0; LineSpacingRule = Some "auto"
+                            Explicit = defaultMetadata.Explicit ||| ParagraphExplicit.SpacingBefore ||| ParagraphExplicit.SpacingAfter ||| ParagraphExplicit.LineSpacing }
+                    [ noteParagraphLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { Id = "separator"; Buffer = ofString ""; Metadata = metadata } ]
+            let mutable height = 0.0
+            for layout in layouts do
+                height <- max height (layout.Y + layout.Height)
+            let separator =
+                // (An empty paragraph's layout has no lines: its height is its line.)
+                match layouts |> List.tryPick (fun layout -> List.tryHead layout.Lines), List.tryHead layouts with
+                | Some line, _ when height > 0.0 -> ofLine height line.Y line.Height
+                | None, Some layout when height > 0.0 -> ofLine height layout.Y layout.Height
+                | _ -> ofLine footnoteSeparatorEstimate 0.0 footnoteSeparatorEstimate
+            context.NoteSeparators.[key] <- separator
+            separator
+
+let private footnoteSeparatorHeight settings kind = (footnoteSeparatorOf settings kind).SeparatorHeight
+
+/// The footnote separator of `kind` of `doc` at the width of the text of
+/// `settings`'s page (for drawing its rule).
+let footnoteSeparatorFor (settings: LayoutSettings) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) (kind: string) : FootnoteSeparator =
+    withNoteLayoutContext None None measureText measureRange doc (fun () -> footnoteSeparatorOf settings kind)
+
 /// The height of a note at the width of the text of `settings`'s page.
 let private noteHeight (settings: LayoutSettings) (noteType: string) (id: string) (text: string) =
     match noteRecordFor settings noteType id text with
@@ -1061,14 +1132,23 @@ let private noteHeight (settings: LayoutSettings) (noteType: string) (id: string
     // (Outside a layout pass: an estimate by the number of lines.)
     | None -> float (noteLineCount settings (sprintf "%s. %s" id text)) * footnoteLineHeight
 
+/// The height of a page's own notes, stacked (no space between them: each
+/// note's paragraphs have their own spacing, the first's before and the
+/// last's after included).
+let private footnotesHeight settings footnotes =
+    let mutable height = 0.0
+    for id, text in footnotes do
+        height <- height + noteHeight settings "footnote" id text
+    height
+
+/// The room footnotes take at the foot of a page (Word, tools/word-parity/fixtures/footnote-block.py):
+/// the notes stacked up from the bottom margin - the last one's last line (and
+/// its space after) ends at it - and the separator, a paragraph of its own,
+/// above them; the text may run down to the separator's top.
 let private footnoteReserveHeight settings footnotes =
     match footnotes with
     | [] -> 0.0
-    | notes ->
-        let mutable height = 0.0
-        for id, text in notes do
-            height <- height + noteHeight settings "footnote" id text
-        footnoteSeparatorGap + height + footnoteBottomPad
+    | notes -> footnoteSeparatorHeight settings "separator" + footnotesHeight settings notes
 
 /// What of the footnotes of the pages before a page goes on at its foot:
 /// what a page cannot hold of its own notes and of what it was handed, when
@@ -1077,24 +1157,23 @@ let private footnoteCarryInto (settings: LayoutSettings) (footnotesByPage: Map<i
     if footnotesByPage.IsEmpty || pageIndex <= 0 then 0.0
     else
         let contentHeight = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom 0.0 - WordLayout.Page.contentTop settings.PaddingTop 0.0
-        let room = contentHeight - settings.LineHeight - footnoteSeparatorGap - footnoteBottomPad
+        let room = contentHeight - settings.LineHeight - footnoteSeparatorHeight settings "separator"
         let mutable carry = 0.0
         for page in max 0 (pageIndex - 8) .. pageIndex - 1 do
             let own =
                 match footnotesByPage |> Map.tryFind page with
-                | Some notes when not notes.IsEmpty -> footnoteReserveHeight settings notes - footnoteSeparatorGap - footnoteBottomPad
+                | Some notes when not notes.IsEmpty -> footnotesHeight settings notes
                 | _ -> 0.0
             carry <- max 0.0 (own + carry - room)
         carry
 
 /// The room a page's footnotes take at its foot: its own and what the pages
-/// before it carry over.
+/// before it carry over (under the continuation separator).
 let private footnoteReserveOnPage settings (footnotesByPage: Map<int, (string * string) list>) (pageIndex: int) =
     let own = footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue []
     let carried = footnoteCarryInto settings footnotesByPage pageIndex
     if carried <= 0.0 then footnoteReserveHeight settings own
-    elif own.IsEmpty then footnoteSeparatorGap + carried + footnoteBottomPad
-    else footnoteReserveHeight settings own + carried
+    else footnoteSeparatorHeight settings "continuationSeparator" + carried + footnotesHeight settings own
 
 let private addLayoutFootnotes settings (footnotesByPage: Map<int, (string * string) list>) (layout: BlockLayout) =
     layout.Lines
@@ -1345,7 +1424,7 @@ let private paginateLines settings widowControl keepLines exactLines (renderedBr
         // million pixels down and report that as the row height.
         let renderedBreakBefore =
             not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
-        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + pageFitTolerance) then
+        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -3351,6 +3430,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let markerLineBoxFactor = prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor
     let adjustedLines =
         let adjusted = ResizeArray<MeasuredLine>()
+        // (What the marker adds to the first line moves the paragraph's other lines down: Word's
+        // 3-line list paragraphs with a Symbol bullet are 16.03 + 2 x 15.44pt, fixtures list-marker-height.)
+        let mutable markerGrowth = 0.0
         for line in lines do
             let dx = xOffset + indent
             let adjustedSegments =
@@ -3383,9 +3465,10 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 | _ -> line.Height
             adjusted.Add
                 { line with
-                    Y = contentY + (line.Y - settings.PaddingTop)
+                    Y = contentY + (line.Y - settings.PaddingTop) + markerGrowth
                     Segments = adjustedSegments
                     Height = lineHeight }
+            markerGrowth <- markerGrowth + (lineHeight - line.Height)
         resizeArrayToList adjusted
 
     // Justified text: stretch inter-word space on every line except the
@@ -5036,7 +5119,7 @@ let private footnoteLayoutsForPage (settings: LayoutSettings) (pageIndex: int) p
     let mutable total = 0.0
     for _, _, record in records do
         total <- total + record.RecordHeight
-    let mutable top = pageContentBottom - footnoteBottomPad - total
+    let mutable top = pageContentBottom - total
     let placed = ResizeArray<BlockLayout>()
     for slot, id, record in records do
         for layout in record.RecordLayouts do
@@ -5079,7 +5162,7 @@ let private footnoteLayoutsWithCarry (settings: LayoutSettings) (pageIndex: int)
                     fit.Add piece
                     used <- used + piece.PieceHeight
             | None -> rest.Add piece
-    let mutable top = pageContentBottom - footnoteBottomPad - used
+    let mutable top = pageContentBottom - used
     let placed = ResizeArray<BlockLayout>()
     for piece in fit do
         for layout in piece.PieceLayouts do
@@ -5435,9 +5518,10 @@ let private footnoteAreas (slot: string) (memo: ParagraphLayoutMemo option) (not
             for piece in carriedIn do
                 total <- total + piece.PieceHeight
             // (Notes that take less than a third of the page are not looked at further: the text made room for them.)
-            let mayOverflow = footnoteSeparatorGap + total + footnoteBottomPad > (contentBottom - contentTop) / 3.0 && (geometryOf (pageIndex + 1)).IsSome
+            let separator = footnoteSeparatorHeight settings (if carriedIn.IsEmpty then "separator" else "continuationSeparator")
+            let mayOverflow = separator + total > (contentBottom - contentTop) / 3.0 && (geometryOf (pageIndex + 1)).IsSome
             let room =
-                if mayOverflow then contentBottom - footnoteBottomPad - (max contentTop (bodyBottomOf pageIndex) + footnoteSeparatorGap)
+                if mayOverflow then contentBottom - (max contentTop (bodyBottomOf pageIndex) + separator)
                 else System.Double.MaxValue
             if carriedIn.IsEmpty && total <= room + pageFitTolerance then
                 result.Add (pageIndex, footnoteLayoutsForPageKept slot memo settings maxWidth pageIndex contentBottom notes)
@@ -6822,7 +6906,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         let extraReserve =
                             if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
                             else footnoteReserveHeight settings candidateNotes - existingReserve
-                        if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + 0.5 then
+                        if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
                             fitCount <- fitCount + 1
                             lastFit <- Some line
                             fitNotes <- candidateNotes

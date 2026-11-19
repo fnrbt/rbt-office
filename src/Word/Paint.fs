@@ -3366,15 +3366,22 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
     for layout in footnotes do
         addParagraphCommands settings fontFamily measureText measureRange commands layout
     if footnotes.Count > 0 then
-        let footnoteTopByPage = Dictionary<int, float>()
+        let footnoteTopByPage = Dictionary<int, BlockLayout>()
         for layout in footnotes do
             let page = pageOfY settings layout.Y
             match Portable.Dict.tryFind page footnoteTopByPage with
-            | ValueSome topY when topY <= layout.Y -> ()
-            | _ -> footnoteTopByPage.[page] <- layout.Y
-        for KeyValue(_, topY) in footnoteTopByPage do
+            | ValueSome top when top.Y <= layout.Y -> ()
+            | _ -> footnoteTopByPage.[page] <- layout
+        // (The separator is a paragraph above the first note, its rule in its line; above the part
+        // of a note that goes on from the page before, the continuation separator.)
+        let separator = Layout.footnoteSeparatorFor settings measureText measureRange doc "separator"
+        let continuation = lazy (Layout.footnoteSeparatorFor settings measureText measureRange doc "continuationSeparator")
+        for KeyValue(page, top) in footnoteTopByPage do
+            let carried = not ((noteAreaSlotOfLayoutId top.BlockId).StartsWith (footnoteBlockIdPrefix + string page + "_"))
+            let separator = if carried then continuation.Force() else separator
             let separatorX = settings.PaddingLeft
-            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 6.0, separatorX + 192.0, topY - 6.0))
+            let ruleY = top.Y - separator.SeparatorHeight + separator.RuleCenter
+            commands.Add(StrokeLine ("#000000", separator.RuleThickness, 0, 0.0, separatorX, ruleY, separatorX + 192.0, ruleY))
 
     // Endnote area: paint the synthetic endnote paragraphs appended after the
     // body content, with a single separator rule above the first endnote.
