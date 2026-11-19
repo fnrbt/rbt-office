@@ -200,6 +200,8 @@ type ParagraphBorders = {
     Right: ParagraphBorder option
     Bottom: ParagraphBorder option
     Left: ParagraphBorder option
+    /// w:between: the border between the paragraphs of a group with the same borders.
+    Between: ParagraphBorder option
 }
 
 type HeaderFooterReference = {
@@ -952,6 +954,7 @@ module Docx =
             Right = paragraphBorder "right" borders
             Bottom = paragraphBorder "bottom" borders
             Left = paragraphBorder "left" borders
+            Between = paragraphBorder "between" borders
         })
 
     let rightTabStop props =
@@ -5594,29 +5597,6 @@ let internal wordLineSpacingToMultiple fontSize (line: string option) (lineRule:
             | Some rule when rule = "exact" || rule = "atLeast" -> Some ((parsed / 15.0) / max 1.0 fontSize)
             | _ -> Some (parsed / 240.0)
         | false, _ -> None)
-
-let internal paragraphBorderAdvanceToLayoutPx (border: ParagraphBorder option) =
-    border
-    |> Option.bind (fun value ->
-        match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
-        | Some "none"
-        | Some "nil" -> None
-        | _ ->
-            let widthPt =
-                value.Width
-                |> Option.bind (fun raw ->
-                    match System.Double.TryParse(raw) with
-                    | true, parsed -> Some (parsed / 8.0)
-                    | false, _ -> None)
-                |> Option.defaultValue 0.5
-            let spacePt =
-                value.Space
-                |> Option.bind (fun raw ->
-                    match System.Double.TryParse(raw) with
-                    | true, parsed -> Some parsed
-                    | false, _ -> None)
-                |> Option.defaultValue 0.0
-            Some ((spacePt + widthPt * 2.0) * 96.0 / 72.0))
 
 let internal directParagraphFormattingResetsMissingSpacing (props: ParagraphProperties) =
     props.IndentLeft.IsSome

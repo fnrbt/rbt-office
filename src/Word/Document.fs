@@ -82,6 +82,8 @@ type ParagraphBorders = {
     Right: ParagraphBorder option
     Bottom: ParagraphBorder option
     Left: ParagraphBorder option
+    /// w:between: the border between the paragraphs of a group with the same borders.
+    Between: ParagraphBorder option
 }
 
 /// Block metadata
@@ -209,9 +211,11 @@ type BlockMetadata = {
     ParagraphShadingForeground: string option
     ExplicitParagraphShadingPattern: string option
     ExplicitParagraphShadingForeground: string option
+    /// The paragraph's own borders (w:pBdr in its w:pPr).
     ParagraphBorders: ParagraphBorders option
-    ParagraphBorderBefore: float option
-    ParagraphBorderAfter: float option
+    /// The borders in effect, its style's included, as read (None: ParagraphBorders) - what the
+    /// layout spaces paragraphs by.
+    EffectiveParagraphBorders: ParagraphBorders option
     PageBreakBefore: bool
     PageBreakAfter: bool
     /// The break after the paragraph (PageBreakAfter) is a column break: the
@@ -346,8 +350,7 @@ let defaultMetadata = {
     ExplicitParagraphShadingPattern = None
     ExplicitParagraphShadingForeground = None
     ParagraphBorders = None
-    ParagraphBorderBefore = None
-    ParagraphBorderAfter = None
+    EffectiveParagraphBorders = None
     PageBreakBefore = false
     PageBreakAfter = false
     ColumnBreakAfter = false

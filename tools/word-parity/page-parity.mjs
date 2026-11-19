@@ -206,8 +206,14 @@ window.layoutOf = async (url) => {
     const { editor, done } = await editorOf(url);
     const count = Word.getPageCount(editor);
     const pages = [];
+    // (A table's header row repeated on a later page is the same lines again: not where that page starts in
+    // the text, as Word's side - the character position a page starts at - has it.)
+    const seen = new Map();
     for (const line of Word.getLayoutLines(editor)) {
         if (String(line.BlockId).startsWith('__')) continue;
+        const key = line.BlockId + '@' + line.StartOffset + '@' + line.EndOffset;
+        if (seen.has(key) && seen.get(key) < line.Page) continue;
+        if (!seen.has(key)) seen.set(key, line.Page);
         const p = (pages[line.Page - 1] ??= { lines: 0, first: '', last: '' });
         p.lines++;
         if (!/[\\p{L}\\p{N}]/u.test(line.Text)) continue;

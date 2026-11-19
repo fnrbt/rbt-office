@@ -57,9 +57,10 @@ try {
     const midY = (b, part = 0.25) => Math.round(b.top + (b.bottom - b.top) * part), midX = (b, part = 0.25) => Math.round(b.left + (b.right - b.left) * part);
 
     // ---- double ----
-    const leftRuns = runs(midY(double), double.left - 3, double.left + 12, true, dark);
+    // (Across a row below its text: the text stands below the row's top border, as in Word.)
+    const leftRuns = runs(midY(double, 0.4), double.left - 3, double.left + 12, true, dark);
     const topRuns = runs(midX(double), double.top - 3, double.top + 12, false, dark);
-    const rightRuns = runs(midY(double), double.right - 12, double.right + 3, true, dark);
+    const rightRuns = runs(midY(double, 0.4), double.right - 12, double.right + 3, true, dark);
     const bottomRuns = runs(midX(double), double.bottom - 12, double.bottom + 3, false, dark);
     check('a double border is two lines, on every side', [leftRuns.length, topRuns.length, rightRuns.length, bottomRuns.length], [2, 2, 2, 2]);
     check('the lines of a side are as wide as each other', [leftRuns, topRuns, rightRuns, bottomRuns].map((side) => side.length === 2 && Math.abs(side[0][1] - side[1][1]) <= 1), [true, true, true, true]);
@@ -74,7 +75,7 @@ try {
         check('the outer line is closed at the corner, and so is the inner one', [dark(at(leftRuns[0][0], topRuns[0][0])), dark(at(leftRuns[1][0], topRuns[1][0]))], [true, true]);
         check('nothing sticks out past the outer corner', [dark(at(leftRuns[0][0] - 2, topRuns[0][0])), dark(at(leftRuns[0][0], topRuns[0][0] - 2))], [false, false]);
     }
-    const insideV = runs(midY(double), midX(double, 0.5) - 12, midX(double, 0.5) + 12, true, dark);
+    const insideV = runs(midY(double, 0.4), midX(double, 0.5) - 12, midX(double, 0.5) + 12, true, dark);
     check('the line between two cells is double too', insideV.length, 2);
     const insideH = runs(midX(double), midY(double, 0.5) - 12, midY(double, 0.5) + 12, false, dark);
     if (insideV.length === 2 && insideH.length === 2) {
@@ -117,7 +118,7 @@ try {
     // (One pixel in: the outermost row and column can be an antialiased edge.)
     const corner = [at(thick.left + 1, thick.top + 1), at(thick.right - 1, thick.top + 1), at(thick.left + 1, thick.bottom - 1), at(thick.right - 1, thick.bottom - 1)];
     check('the corners of a thick border are filled', corner.map(dark), [true, true, true, true]);
-    const thickLeft = runs(midY(thick, 0.5), thick.left - 3, thick.left + 12, true, dark), thickTop = runs(midX(thick), thick.top - 3, thick.top + 12, false, dark);
+    const thickLeft = runs(midY(thick, 0.75), thick.left - 3, thick.left + 12, true, dark), thickTop = runs(midX(thick), thick.top - 3, thick.top + 12, false, dark);
     check('a 4.5 pt border is 6 pixels wide on both axes', [thickLeft.length === 1 && thickLeft[0][1], thickTop.length === 1 && thickTop[0][1]], [6, 6]);
 } catch (e) { fail(e); }
 finish();

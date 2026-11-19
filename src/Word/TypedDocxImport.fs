@@ -43,7 +43,8 @@ let private paragraphBorder (value: WordEditorPackage.Border) : ParagraphBorder 
     { Style = value.Style; Color = value.Color; Width = value.Width; Space = value.Space }
 let private paragraphBorders (value: WordEditorPackage.Borders) : ParagraphBorders =
     { Top = Option.map paragraphBorder value.Top; Right = Option.map paragraphBorder value.Right
-      Bottom = Option.map paragraphBorder value.Bottom; Left = Option.map paragraphBorder value.Left }
+      Bottom = Option.map paragraphBorder value.Bottom; Left = Option.map paragraphBorder value.Left
+      Between = Option.map paragraphBorder value.InsideH }
 let private tableBorder (value: WordEditorPackage.Border) : TableBorder =
     { Style = value.Style; Color = value.Color; Width = value.Width }
 let private tableBorders (value: WordEditorPackage.Borders) : TableBorders =
@@ -144,7 +145,7 @@ let private metadata cache (item: WordEditorPackage.EditorParagraph) =
         SectionPageNumberFormat = item.SectionPageNumberFormat; SectionVerticalAlign = item.SectionVerticalAlign
         OutlineLevel = f.OutlineLevel; RenderedPageBreakBefore = f.RenderedPageBreakBefore
         SectionPageSetup = Option.map sectionSetup item.SectionPageSetup
-        ParagraphBorderBefore = f.ParagraphBorderBefore; ParagraphBorderAfter = f.ParagraphBorderAfter
+        EffectiveParagraphBorders = Option.map paragraphBorders f.EffectiveBorders
         ListLevelIndents = item.List |> Option.bind (fun x -> x.ListLevelIndents)
         DropCap = f.DropCapKind |> Option.map (fun kind -> { InMargin = kind = "margin"; Lines = max 1 (Option.defaultValue 1 f.DropCapLines); Distance = Option.defaultValue 0.0 f.DropCapDistance })
         SectionColumns = item.SectionColumns |> Option.filter (fun x -> x.Count >= 2) |> Option.map columns

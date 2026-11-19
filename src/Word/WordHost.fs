@@ -786,7 +786,7 @@ module Host =
                            Width = number (offset + 2) border.Width
                            Space = number (offset + 3) border.Space }
             let update (metadata: Rbt.Word.Document.BlockMetadata) =
-                let old: Rbt.Word.Document.ParagraphBorders = metadata.ParagraphBorders |> Option.defaultValue { Top = None; Right = None; Bottom = None; Left = None }
+                let old: Rbt.Word.Document.ParagraphBorders = metadata.ParagraphBorders |> Option.defaultValue { Top = None; Right = None; Bottom = None; Left = None; Between = None }
                 let borders = { old with Top = updateSide 0 old.Top; Right = updateSide 4 old.Right; Bottom = updateSide 8 old.Bottom; Left = updateSide 12 old.Left }
                 let shadingChanged = changed 16 || changed 17 || changed 18
                 let pattern =
@@ -795,9 +795,9 @@ module Host =
                     else metadata.ParagraphShadingPattern
                 let foreground = text 18 "auto" metadata.ParagraphShadingForeground
                 { metadata with
-                    ParagraphBorders = if borders.Top.IsNone && borders.Right.IsNone && borders.Bottom.IsNone && borders.Left.IsNone then None else Some borders
-                    ParagraphBorderBefore = if [ 0 .. 3 ] |> List.exists changed then None else metadata.ParagraphBorderBefore
-                    ParagraphBorderAfter = if [ 8 .. 11 ] |> List.exists changed then None else metadata.ParagraphBorderAfter
+                    ParagraphBorders = if borders.Top.IsNone && borders.Right.IsNone && borders.Bottom.IsNone && borders.Left.IsNone && borders.Between.IsNone then None else Some borders
+                    // (Edited borders are the paragraph's own: those the layout spaces it by from now on.)
+                    EffectiveParagraphBorders = if [ 0 .. 15 ] |> List.exists changed then None else metadata.EffectiveParagraphBorders
                     BackgroundColor = text 16 "none" metadata.BackgroundColor
                     ParagraphShadingPattern = pattern
                     ParagraphShadingForeground = foreground
