@@ -69,7 +69,7 @@ page count, 51 with every page starting at Word's line), worked a round at a tim
 |---|---|---|---|
 | calibre family (calibre-demo x2, calibre-demo-docx, complex-tables, wikipedia-sample, microsoft-word-sample, sample-formatted) | 8 / 9 | p4: a row with a nested, vertically merged table | row rule done (canvas: all 8 pages start right, one extra at the end); next: embedded fonts (Ubuntu) |
 | docx4j-getting-started | 45 / 46 | p4: the footnote block | footnote block (running) |
-| docx4j-headers-footers | 31 / 34 (was 36), 17 starts (was 13) | p15: a row broken at the page's foot (see the ledger) | borders round done: grouped paragraph borders, table border widths; next: the broken row's cell |
+| docx4j-headers-footers | 31 / 34 (was 36), 17 starts (15 before this round, the repeated header row left out) | p15: a row broken at the page's foot (see the ledger) | borders round done: grouped paragraph borders, table border widths; next: the broken row's cell |
 | test-long-document | 8 / 8, 7 starts (was 7 / 3) | widow control, not kerning | mostly done by the row round |
 | docx4j-legal-contributor | 3 / 4 canvas, 3 / 3 ShaperText | p3 | |
 | file-sample | 2 / 3 | | |

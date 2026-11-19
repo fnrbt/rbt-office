@@ -1738,20 +1738,27 @@ module Table =
         | Some "triple" -> 5.0 * width
         | _ -> width
 
-    // (The rows of the table last asked about, by reference: a row's place in its table.)
+    // (The rows of the table last asked about, by reference: a row's place in its table, and the row before it.)
     let mutable private indexedTable : TableBlock option = None
+    let mutable private indexedRowArray : TableRow array = [||]
     let private indexedRows = Dictionary<TableRow, int>(HashIdentity.Reference)
 
-    let private rowIndexIn (table: TableBlock) (row: TableRow) =
-        match indexedTable with
-        | Some known when obj.ReferenceEquals(known, table) -> ()
+    /// Whether the row is the table's last, and the row before it (None: the first, or not one of the table's rows).
+    let private rowPlaceIn (table: TableBlock) (row: TableRow) =
+        match table.Rows with
+        | [] | [ _ ] -> true, None
+        | first :: _ when obj.ReferenceEquals(first, row) -> false, None
         | _ ->
-            indexedRows.Clear()
-            table.Rows |> List.iteri (fun index tableRow -> indexedRows.[tableRow] <- index)
-            indexedTable <- Some table
-        match indexedRows.TryGetValue row with
-        | true, index -> Some index
-        | _ -> None
+            match indexedTable with
+            | Some known when obj.ReferenceEquals(known, table) -> ()
+            | _ ->
+                indexedRows.Clear()
+                indexedRowArray <- List.toArray table.Rows
+                indexedRowArray |> Array.iteri (fun index tableRow -> indexedRows.[tableRow] <- index)
+                indexedTable <- Some table
+            match indexedRows.TryGetValue row with
+            | true, index -> index = indexedRowArray.Length - 1, (if index > 0 then Some indexedRowArray.[index - 1] else None)
+            | _ -> false, None
 
     /// The borders a row's content is below and the table's last row above (Word: fixtures
     /// table-border): above a row, the widest horizontal border on its top edge - the table's
@@ -1761,25 +1768,27 @@ module Table =
     /// cell spacing draw each cell's own frame: none.
     let rowBorderBands (table: TableBlock) (row: TableRow) =
         let tableBorders = row.BordersOverride |> Option.orElse table.Borders
-        let tableSide pick = tableBorders |> Option.bind pick
-        let cellSide (pick: TableBorders -> TableBorder option) (cell: TableCell) =
-            cell.Borders |> Option.bind pick
-        let widest (borders: TableBorder option seq) = borders |> Seq.fold (fun widest border -> max widest (horizontalBorderAdvance border)) 0.0
-        let edge (cells: TableCell list) (own: TableBorders -> TableBorder option) (fallback: TableBorder option) =
-            widest [ for cell in cells do
-                       match cellSide own cell with
-                       | Some border -> Some border
-                       | None -> fallback ]
-        let rowCount = table.Rows.Length
-        let index = rowIndexIn table row |> Option.defaultValue 0
-        let isLast = index = rowCount - 1 || rowCount = 0
-        let topCells = row.Cells |> List.filter (fun cell -> cell.VerticalMerge <> Some ContinueMerge)
+        // The widest of the cells' borders on one side, a cell without its own taking the table's.
+        let edge (cells: TableCell list) (skipContinued: bool) (own: TableBorders -> TableBorder option) (fallback: TableBorders -> TableBorder option) =
+            let fallbackWidth = match tableBorders with Some borders -> horizontalBorderAdvance (fallback borders) | None -> 0.0
+            let mutable widest = 0.0
+            for cell in cells do
+                if not (skipContinued && cell.VerticalMerge = Some ContinueMerge) then
+                    let width =
+                        match cell.Borders with
+                        | Some borders ->
+                            match own borders with
+                            | Some _ as border -> horizontalBorderAdvance border
+                            | None -> fallbackWidth
+                        | None -> fallbackWidth
+                    if width > widest then widest <- width
+            widest
+        let isLast, above = rowPlaceIn table row
         let top =
-            if index = 0 then edge topCells _.Top (tableSide _.Top)
-            else
-                let above = table.Rows.[index - 1]
-                max (edge topCells _.Top (tableSide _.InsideH)) (edge above.Cells _.Bottom (tableSide _.InsideH))
-        let bottom = if isLast then edge row.Cells _.Bottom (tableSide _.Bottom) else 0.0
+            match above with
+            | None -> edge row.Cells true _.Top _.Top
+            | Some above -> max (edge row.Cells true _.Top _.InsideH) (edge above.Cells false _.Bottom _.InsideH)
+        let bottom = if isLast then edge row.Cells false _.Bottom _.Bottom else 0.0
         top, bottom
 
     let verticalContentOffset verticalAlignment rowHeight paddingTop paddingBottom contentHeight =
