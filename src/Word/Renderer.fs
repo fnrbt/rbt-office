@@ -343,8 +343,21 @@ let createContext (canvas: HTMLCanvasElement) = {
     SelectedShape = None
 }
 
+/// The generic family a face falls back to when the machine lacks it. Without one each browser
+/// uses its own default: Firefox and Safari (and Chrome on a Mac) a serif, Chromium on Linux
+/// fontconfig's sans - a Calibri document set in Times on a visitor's Mac.
+let private genericFamily (family: string) =
+    match family.Trim().ToLowerInvariant() with
+    | "cambria" | "cambria math" | "times new roman" | "times" | "georgia" | "garamond" | "book antiqua" | "palatino linotype" | "palatino"
+    | "constantia" | "bookman old style" | "century" | "century schoolbook" | "baskerville old face" | "baskerville" | "didot" | "bodoni mt"
+    | "perpetua" | "rockwell" | "sylfaen" | "liberation serif" | "caladea" | "gelasio" | "dejavu serif" | "noto serif" | "cardo"
+    | "mincho" | "ms mincho" | "ms pmincho" | "yu mincho" | "simsun" | "nsimsun" | "mingliu" | "pmingliu" | "batang" | "serif" -> "serif"
+    | "courier new" | "courier" | "consolas" | "lucida console" | "menlo" | "monaco" | "liberation mono" | "dejavu sans mono" | "monospace" -> "monospace"
+    | _ -> "sans-serif"
+
 let private cssFontFamily (family: string) =
-    if family.Contains(" ") then sprintf "\"%s\"" (family.Replace("\"", "")) else family
+    // (Quoted: an unquoted name with a digit up front, or a slash, makes the whole font string invalid.)
+    "\"" + family.Replace("\"", "").Replace("\\", "") + "\", " + genericFamily family
 
 let private browserMetricScale (family: string) (style: TextBuffer.TextStyle) =
     // Chromium canvas metrics for loaded Windows faces diverge from Word/PDF
