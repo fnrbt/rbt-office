@@ -121,7 +121,7 @@ do
     let cell row col value : XlsxWriter.XlsxCellOut = { Row = row; Col = col; Value = value; Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
     let book : XlsxWriter.XlsxWorkbookOut =
         { Sheets = [ sheet "One" [ cell 0 0 (XlsxWriter.XlsxFormula ("Two!A1+1", None)) ]; sheet "Two" [ cell 0 0 (XlsxWriter.XlsxNumber 41.0) ] ]
-          ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; Dxfs = []; Preserved = XlsxReader.emptyWorkbookPreservation }
+          ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; VbaProjectBytes = None; Dxfs = []; Preserved = XlsxReader.emptyWorkbookPreservation }
     let imported = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes (XlsxWriter.writeWorkbookPackageBytes book))
     ok "uncached formulas: every sheet converted" (imported.Sheets |> Array.forall (fun s -> not (isDeferredSheet s.Model))) ""
     eq "and calculated" (getCellValue (addr 0 0) imported.Sheets.[0].Model |> unwrapFormulaValue) (CellValue.Number 42.0)

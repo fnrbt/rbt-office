@@ -246,6 +246,7 @@ let synthetic : XlsxWriter.XlsxWorkbookOut =
       ActiveSheetIndex = 0
       DefinedNames = [ { Name = "MY_RANGE"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = None; Comment = None; Hidden = false } ]
       VbaProjectSource = Some "Sub Main()\n  Range(\"A1\").Value = 1\nEnd Sub\n"
+      VbaProjectBytes = None
       Dxfs = []
       Preserved = XlsxReader.emptyWorkbookPreservation }
 
@@ -370,6 +371,7 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       ActiveSheetIndex = 0
       DefinedNames = []
       VbaProjectSource = None
+      VbaProjectBytes = None
       Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None } ]
       Preserved = XlsxReader.emptyWorkbookPreservation }
 let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
