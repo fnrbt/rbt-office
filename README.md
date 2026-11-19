@@ -9,7 +9,9 @@ nothing is sent to a server.
 
 ## Use
 
-The package `@rbt/office` ships the compiled modules under `dist/`. A page can mount the
+The package `@rbt/office` ships the compiled modules under `dist/`, one compile of every
+project: whichever paths a page imports, it loads one copy of each module, so values pass
+freely between them. A page can mount the
 built-in shells (menus, toolbar, open, save, print to PDF):
 
 ```js
