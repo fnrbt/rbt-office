@@ -1,6 +1,6 @@
 {
   "name": "@rbt/office",
-  "version": "0.1.36",
+  "version": "0.1.37",
   "license": "MIT",
   "description": "Fable-compiled office libraries for browser applications",
   "type": "module",
