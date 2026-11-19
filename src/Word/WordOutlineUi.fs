@@ -935,8 +935,9 @@ module OutlineUi =
                 let handled =
                     if key.altKey && key.shiftKey && not key.ctrlKey then
                         match key.key, key.code with
-                        | ("+" | "=" | "Add"), _ | _, "NumpadAdd" -> runCommand "expand"; true
-                        | ("-" | "_" | "Subtract"), _ | _, "NumpadSubtract" -> runCommand "collapse"; true
+                        // (By the key's place too: on a Mac, Option+Shift with = and - types "±" and "—".)
+                        | ("+" | "=" | "Add"), _ | _, ("NumpadAdd" | "Equal") -> runCommand "expand"; true
+                        | ("-" | "_" | "Subtract"), _ | _, ("NumpadSubtract" | "Minus") -> runCommand "collapse"; true
                         | "ArrowLeft", _ -> runCommand "promote"; true
                         | "ArrowRight", _ -> runCommand "demote"; true
                         | "ArrowUp", _ -> runCommand "moveUp"; true
