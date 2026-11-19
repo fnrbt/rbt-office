@@ -1352,6 +1352,15 @@ cells. A sheet nobody looks at costs the inflating of its part at open and nothi
 `FormulaCells`, `Headers`); `XlsxWriter.XlsxSheetOut.Cells` likewise (`CellSource`; build one with `XlsxWriter.sheetCells cells`). A sheet
 with a what-if data table is read at once.
 
+### The XLSX writer loads with the first save
+`ExportXlsx()` (already a promise) fetches the package writer (`dist/office-formats/src/XlsxPackageWriter.js`, a dynamic `import()`
+that a bundler makes a chunk of its own; about 145 kB minified, 50 kB gzipped) the first time it writes a workbook; opening, showing and
+editing a workbook never load it, and an unchanged workbook (below) is given back without it. The workbook it writes is taken when
+`ExportXlsx()` is called, as before. A writer that cannot be fetched (the network is gone) rejects the promise. The grid's start-up
+graph does not hold the DOCX reader either (the XLSX reader uses `XmlText` and `OpcXml` for the XML it keeps);
+`scripts/check-start-up-modules.mjs` fails the build when either becomes reachable from `Spreadsheet.js`, `Toolbar.js` or
+`XlsxImporter.js` (`scripts/start-up-report.mjs` lists what is: sizes, minified and gzipped, and the import chain to each module).
+
 ### An unchanged workbook is exported as the file that was opened
 `ExportXlsx()` of a workbook that `ImportXlsx` opened and in which **nothing was changed** resolves to a copy of the bytes that were opened:
 every part byte-identical, nothing regenerated. "Nothing changed" is: `GetRevision()` is the revision the workbook opened with (also after

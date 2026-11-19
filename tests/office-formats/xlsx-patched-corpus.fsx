@@ -157,7 +157,7 @@ for file in files do
                                 { Sheets = sheets; Names = opened.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = opened.Sheets |> Array.map (fun sheet -> sheet.Visible)
                                   ActiveSheetIndex = book.Preserved.ActiveTab; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names
                                   Source = Some opened.Source; Macros = None; MacroProject = None }
-                            let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+                            let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
                             let now = text (partsOf saved).[path]
                             let how = written was now own rows
                             if label = "a cell typed" && how <> "patched" then laidOut <- false

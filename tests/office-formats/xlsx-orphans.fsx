@@ -47,7 +47,7 @@ let without (names: string list) =
     let input : Bridge.ExportInput =
         { Sheets = keep |> Array.map (fun at -> book.Sheets.[at].Model); Names = keep |> Array.map (fun at -> book.Sheets.[at].Name); Visible = keep |> Array.map (fun at -> book.Sheets.[at].Visible)
           ActiveSheetIndex = 0; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None; MacroProject = None }
-    XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
 let slicerCaches (parts: Map<string, byte[]>) =
     parts |> Map.toList |> List.choose (fun (path, data) -> if path.StartsWith "xl/slicerCaches/" && path.EndsWith ".xml" then Some (values "<slicerCacheDefinition\\s[^>]*?\\sname=\"([^\"]*)\"" (text data) |> List.head) else None) |> List.sort
 let pivotCaches (parts: Map<string, byte[]>) = parts |> Map.toList |> List.map fst |> List.filter (fun path -> path.StartsWith "xl/pivotCache/" && not (path.Contains "_rels")) |> List.sort

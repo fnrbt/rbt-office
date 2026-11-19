@@ -2232,7 +2232,7 @@ module Export =
                         // boxes of notes that are gone and adds boxes for new ones, the others are the file's shapes.)
                         if commentsSame || model.Cells |> Map.exists (fun _ data -> data.Comment.IsSome) then extras
                         else
-                            let dropped = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName = "legacyDrawingNotes") |> List.collect (fun (_, xml) -> DocxReader.relationshipIdsInXml xml) |> Set.ofList
+                            let dropped = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName = "legacyDrawingNotes") |> List.collect (fun (_, xml) -> OpcXml.relationshipIdsIn xml) |> Set.ofList
                             { extras with
                                 KeptElements = extras.KeptElements |> List.filter (fun (elementName, _) -> elementName <> "legacyDrawingNotes")
                                 KeptRelationships = extras.KeptRelationships |> List.filter (fun (id, _, _, _) -> not (Set.contains id dropped)) }

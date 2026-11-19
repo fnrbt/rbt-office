@@ -242,7 +242,7 @@ let exported (book: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) =
           NameInfo = Map.empty; DefinedNames = book.Context.Names
           Source = Some book.Source
           Macros = None; MacroProject = None }
-    XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
 let isSlicerPart (path: string) = path.StartsWith "xl/slicers/" || path.StartsWith "xl/slicerCaches/" || path.StartsWith "xl/timelines/" || path.StartsWith "xl/timelineCaches/"
 for file, typedOn in [ synthetic, [ "Data"; "Report" ]
                        "real-world/dashboard-ecommerce-sales.xlsx", [ "Dashboard" ]

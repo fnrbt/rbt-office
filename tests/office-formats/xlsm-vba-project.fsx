@@ -60,7 +60,7 @@ let save macros =
         { Sheets = imported.Sheets |> Array.map (fun s -> s.Model); Names = imported.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imported.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
           DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = macros; MacroProject = None }
-    parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
+    parts (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 
 let kept label (saved: Map<string, byte[]>) =
     let contentTypes = text saved.["[Content_Types].xml"]
@@ -103,7 +103,7 @@ let editedSheet =
           Names = imported.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imported.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
           DefinedNames = imported.Context.Names; Source = Some imported.Source; Macros = None; MacroProject = None }
-    parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
+    parts (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 check "edited sheet: the cell written" ((text editedSheet.["xl/worksheets/sheet1.xml"]).Contains "r=\"A41\"") true
 check "edited sheet: its code name kept" ((text editedSheet.["xl/worksheets/sheet1.xml"]).Contains "codeName=\"Sheet1\"") true
 check "edited sheet: the project kept" (editedSheet.TryFind "xl/vbaProject.bin") (original.TryFind "xl/vbaProject.bin")
@@ -116,7 +116,7 @@ let plain =
         { Sheets = imp.Sheets |> Array.map (fun s -> s.Model); Names = imp.Sheets |> Array.map (fun s -> s.Name)
           Visible = Array.create imp.Sheets.Length true; ActiveSheetIndex = 0; NameInfo = Map.empty
           DefinedNames = imp.Context.Names; Source = Some imp.Source; Macros = None; MacroProject = None }
-    parts (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
+    parts (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
 check "plain workbook: no project" (plain.ContainsKey "xl/vbaProject.bin") false
 check "plain workbook: not macro-enabled" ((text plain.["[Content_Types].xml"]).Contains "macroEnabled") false
 

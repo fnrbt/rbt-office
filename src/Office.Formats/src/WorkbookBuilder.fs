@@ -2,6 +2,7 @@ module WorkbookBuilder
 
 open Fable.Core.JsInterop
 open XlsxWriter
+open XlsxPackageWriter
 
 /// Sheet builder for building a single sheet
 type SheetBuilder(name: string) =

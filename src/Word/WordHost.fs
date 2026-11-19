@@ -221,11 +221,14 @@ module Host =
 
     [<Emit("((popup, blob) => { const url = URL.createObjectURL(blob); try { popup.location.replace(url); } finally { setTimeout(() => URL.revokeObjectURL(url), 60000); } })($0, $1)")>]
     let private showPdf (_: obj) (_: obj) : unit = jsNative
-    // Load the packaged formats engine only when a document is opened or saved.
-    [<Emit("import('../office-formats/src/Main.js').then(m => typeof m.default === 'function' ? m.default() : m.default).then(api => api.word.writeFromEditorPackage($0))")>]
+    // Load the DOCX writer only when a document is saved, and the DOCX reader when one is opened: the
+    // modules of the packaged formats engine (office-formats' Main) that do it, not Main, which loads the
+    // XLSX reader and writer too. (Main's word.writeFromEditorPackage and processors.forEditorPackage
+    // are these functions.)
+    [<Emit("import('../office-formats/src/WordPackageWriterAssembly.js').then(m => m.writeFromEditorPackage($0))")>]
     let private writeDocumentPackage (_: obj) : JS.Promise<obj> = jsNative
 
-    [<Emit("$0.arrayBuffer().then(bytes => import('../office-formats/src/Main.js').then(m => typeof m.default === 'function' ? m.default() : m.default).then(api => api.processors.forEditorPackage(bytes)))")>]
+    [<Emit("$0.arrayBuffer().then(bytes => import('../office-formats/src/WordPackageOpen.js').then(m => m.forEditorPackage(bytes)))")>]
     let private readDocumentPackage (_: File) : JS.Promise<obj> = jsNative
 
     [<Emit("$0 != null && $0.Preserved != null")>]

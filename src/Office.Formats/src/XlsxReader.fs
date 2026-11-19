@@ -4775,7 +4775,7 @@ module ConditionalFormats =
         let basic = parseRule themeColors ruleNode
         let basic =
             if List.contains basic.Type x14RuleTypes && (Xml.attr "pivot" ruleNode |> Option.forall (fun value -> not (isTrueText value))) then basic
-            else { basic with SourceXml = Some (DocxReader.Docx.xmlToString ruleNode) }
+            else { basic with SourceXml = Some (XmlText.xmlToString ruleNode) }
         let formulas = directChildren "f" ruleNode |> List.choose Xml.text
         let ext = { emptyCfRuleExt with InExtList = true; Dxf = Ns.childNs "dxf" ruleNode |> Option.map (parseDxf themeColors) }
         match Ns.childNs "dataBar" ruleNode, Ns.childNs "iconSet" ruleNode, Ns.childNs "colorScale" ruleNode with
@@ -5614,7 +5614,7 @@ let private keptSheetElements (sheet: XmlPatch.SourceElement) : (string * string
             // (The first of the name, where it is: a control may stand in an mc:AlternateContent.)
             Xml.descendants name sheet.Node
             |> List.tryHead
-            |> Option.map (fun element -> name, DocxReader.selfContainedXml rootAttributes (XmlPatch.bytesOf sheet.Text element)))
+            |> Option.map (fun element -> name, XmlText.selfContainedXml rootAttributes (XmlPatch.bytesOf sheet.Text element)))
     | _ -> []
 
 /// A sheet part read in outline (`Xlsx.sheetOutline`: its rows without their cells), with its text.
@@ -5639,10 +5639,10 @@ let private readWorkbookHeader (source: PartSource) (workbookPath: string) : Wor
             |> List.map (fun r -> r.Id, r.Type, (if isInternal r then "/" + relTargetPath workbookPath r else r.Target), not (isInternal r))
         let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
         let rootAttributes = match wb with | XmlDsl.Element (_, attrs, _, _) -> attrs | _ -> Map.empty
-        let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
+        let fragment (node: XmlNode) = XmlText.selfContainedXml rootAttributes (XmlText.xmlToString node)
         // An element is kept when every relationship it names is a kept one.
         let refersOnlyToKept (xml: string) =
-            DocxReader.relationshipIdsInXml xml |> List.forall (fun id -> Set.contains id keptIds)
+            OpcXml.relationshipIdsIn xml |> List.forall (fun id -> Set.contains id keptIds)
         let keptChild (name: string) =
             match Ns.childNs name wb with
             | Some node ->
@@ -5799,11 +5799,11 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
                         { Anchor = anchor
                           Kind = kind
                           Name = Ns.descendantsNs "cNvPr" node |> List.tryHead |> Option.bind (Xml.attr "name")
-                          Xml = DocxReader.selfContainedXml rootAttrs (DocxReader.Docx.xmlToString node) }
+                          Xml = XmlText.selfContainedXml rootAttrs (XmlText.xmlToString node) }
             | None -> ()
         ignore root
         // Relationships the kept objects refer to, with absolute targets.
-        let referenced = objects |> Seq.collect (fun item -> DocxReader.relationshipIdsInXml item.Xml) |> Set.ofSeq
+        let referenced = objects |> Seq.collect (fun item -> OpcXml.relationshipIdsIn item.Xml) |> Set.ofSeq
         let keptRels =
             rels
             |> List.filter (fun r -> Set.contains r.Id referenced)
@@ -5865,7 +5865,7 @@ let private readNamedStyles (stylesXml: string) : NamedCellStyle list * int arra
     let styleXfs = entries "cellStyleXfs"
     // A fragment may use a prefix the styles part declares on its root (x14ac, xr, ...).
     let rootAttributes = match doc with | XmlDsl.Element (_, attrs, _, _) -> attrs | _ -> Map.empty
-    let fragment (node: XmlNode) = DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString node)
+    let fragment (node: XmlNode) = XmlText.selfContainedXml rootAttributes (XmlText.xmlToString node)
     let itemXml (items: XmlNode array) (index: int option) =
         index |> Option.bind (fun i -> if i >= 0 && i < items.Length then Some (fragment items.[i]) else None)
     entries "cellStyles"
@@ -5931,7 +5931,7 @@ let private keptSheetExtensions (sheet: XmlPatch.SourceElement) : (bool * string
                         let holds (localName: string) = not (Ns.descendantsNs localName ext).IsEmpty
                         let part = holds "slicerList" || holds "timelineRefs"
                         if part || holds "sparklineGroups" || (holds "conditionalFormattings" && not rulesRead) then
-                            Some (part, DocxReader.selfContainedXml rootAttributes (DocxReader.Docx.xmlToString ext))
+                            Some (part, XmlText.selfContainedXml rootAttributes (XmlText.xmlToString ext))
                         else None
                     | _ -> None)
             with _ -> []
@@ -6217,7 +6217,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                 let keptElements =
                     let all = try outline |> Option.map keptSheetElements |> Option.defaultValue [] with _ -> []
                     let known = sheetRels |> List.map (fun r -> r.Id) |> Set.ofList
-                    all |> List.filter (fun (_, element) -> DocxReader.relationshipIdsInXml element |> List.forall (fun id -> Set.contains id known))
+                    all |> List.filter (fun (_, element) -> OpcXml.relationshipIdsIn element |> List.forall (fun id -> Set.contains id known))
                 // A VML drawing that holds nothing but the boxes of the sheet's
                 // comments is only good while the comments stay as they are.
                 let keptElements =
@@ -6226,7 +6226,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         if name <> "legacyDrawing" then name, element
                         else
                             let vml =
-                                DocxReader.relationshipIdsInXml element
+                                OpcXml.relationshipIdsIn element
                                 |> List.tryPick (fun id -> sheetRels |> List.tryFind (fun r -> r.Id = id && isInternal r))
                                 |> Option.bind (fun r -> source.Text (relTargetPath sheetPath r))
                                 |> Option.defaultValue ""
@@ -6234,7 +6234,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                             let clientData = XmlDsl.startTagsNamed [ "ClientData" ] vml
                             let notes = clientData |> List.filter (fun data -> Xml.attr "ObjectType" data = Some "Note")
                             if not comments.IsEmpty && clientData.Length <= notes.Length then "legacyDrawingNotes", element else name, element)
-                let namedIds = keptElements |> List.collect (fun (_, element) -> DocxReader.relationshipIdsInXml element) |> Set.ofList
+                let namedIds = keptElements |> List.collect (fun (_, element) -> OpcXml.relationshipIdsIn element) |> Set.ofList
                 let keptRels =
                     sheetRels
                     |> List.filter (fun r -> isKeptSheetRelType r.Type || (ValueText.isRelationshipType "/vmlDrawing" r.Type && Set.contains r.Id namedIds))
@@ -6242,7 +6242,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                 let keptIds = keptRels |> List.map (fun (id, _, _, _) -> id) |> Set.ofList
                 let allExtensions =
                     outline |> Option.map keptSheetExtensions |> Option.defaultValue []
-                    |> List.filter (fun (_, ext) -> DocxReader.relationshipIdsInXml ext |> List.forall (fun id -> Set.contains id keptIds))
+                    |> List.filter (fun (_, ext) -> OpcXml.relationshipIdsIn ext |> List.forall (fun id -> Set.contains id keptIds))
                 let keptExtensions = allExtensions |> List.filter fst |> List.map snd
                 let cellExtensions = allExtensions |> List.filter (fun (part, _) -> not part) |> List.map snd
                 let pivotLocations =

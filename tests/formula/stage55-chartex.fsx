@@ -186,7 +186,7 @@ let exported (sheets: SpreadsheetModel array) =
           NameInfo = Map.empty; DefinedNames = book.Context.Names
           Source = Some book.Source
           Macros = None; MacroProject = None }
-    XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
 let original = partsOf (File.ReadAllBytes(Path.Combine(root, ecommerceFile)))
 let chartExParts = original |> Map.toList |> List.map fst |> List.filter (fun path -> path.StartsWith "xl/charts/" && (path.Contains "chartEx" || path.Contains "/colors" || path.Contains "/style"))
 ok "the dashboard has chartEx parts, their relationships, styles and colours" (chartExParts.Length >= 12) (sprintf "%A" chartExParts)

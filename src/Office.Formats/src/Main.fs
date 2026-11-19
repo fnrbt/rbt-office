@@ -108,33 +108,8 @@ module Processors =
     let forTypedEditorPackageBytes = WordEditorPackageReader.loadBytesNative
 #endif
 #if FABLE_COMPILER
-    /// A copy of the file a package was opened from, when it was given as bytes: kept with what
-    /// the writer needs (Preserved.OpenedBytes), it is what an unchanged document is saved as
-    /// (see DocumentWriter.writeFromEditorPackage).
-    [<Emit("($0 instanceof Uint8Array ? $0.slice() : ($0 instanceof ArrayBuffer ? new Uint8Array($0.slice(0)) : null))")>]
-    let private openedBytesOf (_fileData: obj) : obj = jsNative
-
-    let forEditorPackage (fileData: obj) : Fable.Core.JS.Promise<obj> =
-        promise {
-            let! archive = loadArchive fileData
-            let! docOpt = DocxReader.parseDocument archive
-
-            match docOpt with
-            | Some doc ->
-                let typed = WordEditorPackageReader.ofDocument doc
-                let opened = openedBytesOf fileData
-                let typed =
-                    if isNull opened then typed
-                    else { typed with
-                             Preserved = typed.Preserved |> Option.map (fun preserved ->
-                                 { preserved with OpenedBytes = Some (unbox<byte[]> opened) }) }
-                return WordEditorPackage.packageToEditorObject typed
-            | None ->
-                return createObj [
-                    "Paragraphs" ==> [||]
-                    "Styles" ==> [||]
-                ]
-        }
+    /// A DOCX file (an ArrayBuffer, a Uint8Array or a Blob) as the editor package (WordPackageOpen).
+    let forEditorPackage (fileData: obj) : Fable.Core.JS.Promise<obj> = WordPackageOpen.forEditorPackage fileData
 
     // ---- a package opened front first ---------------------------------------------
     // forEditorPackage reads the whole main part, makes blocks of all of it and
@@ -263,7 +238,7 @@ module Processors =
                 let listeners = ResizeArray<obj>()
                 let waiters = ResizeArray<(obj -> unit) * (exn -> unit)>()
                 let preserved = createObj []
-                let openedBytes = openedBytesOf fileData
+                let openedBytes = WordPackageOpen.openedBytesOf fileData
                 let state = createObj [ "IsComplete" ==> false; "AtOnce" ==> opened.AtOnce; "Failed" ==> false; "Cancelled" ==> false; "Error" ==> null; "PageSetupVersion" ==> 0; "Slices" ==> 0; "LongestSliceMs" ==> 0.0; "LongestSlice" ==> 0 ]
                 let blocksOf (parts: DocxReader.HeaderFooter list) = parts |> List.collect (fun part -> part.Blocks)
                 let noteBlocks (notes: DocxReader.Note list) = notes |> List.collect (fun note -> note.Blocks)
@@ -528,10 +503,10 @@ module WordWriter =
 // Public API for Excel Writing
 module ExcelWriter =
     /// Write 2D array to XLSX (Phase 1)
-    let write (sheets: XlsxWriter.SheetData list) = XlsxWriter.writeMinimalXlsx sheets
+    let write (sheets: XlsxWriter.SheetData list) = XlsxPackageWriter.writeMinimalXlsx sheets
 
     /// Write formatted XLSX (Phase 2)
-    let writeFormatted (sheets: XlsxWriter.FormattedSheet list) = XlsxWriter.writeFormattedXlsx sheets
+    let writeFormatted (sheets: XlsxWriter.FormattedSheet list) = XlsxPackageWriter.writeFormattedXlsx sheets
 
     /// Create workbook builder (Phase 3)
     let createWorkbook () = WorkbookBuilder.create ()
@@ -567,7 +542,7 @@ module ExcelWriter =
     let addMergedRange = WorkbookBuilder.addMergedRange
 
     /// Create merged cell range (Phase 4)
-    let createMergedRange = XlsxWriter.createMergedRange
+    let createMergedRange = XlsxPackageWriter.createMergedRange
 
 // Public API for XLSX reading
 module Excel =
@@ -1232,7 +1207,7 @@ module Excel =
     /// Write a workbook as read (pictures, kept chart parts, threaded comments,
     /// named styles and theme included) back to an XLSX package.
     let writeWorkbook (workbook: XlsxReader.Workbook) =
-        XlsxWriter.packageFromReaderWorkbook workbook |> XlsxWriter.writeWorkbookPackage
+        XlsxWriter.packageFromReaderWorkbook workbook |> XlsxPackageWriter.writeWorkbookPackage
 
     /// Get pivot tables from a worksheet
     let pivotTables (sheet: XlsxReader.Worksheet) = sheet.PivotTables

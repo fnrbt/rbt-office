@@ -77,7 +77,7 @@ module XlsxRead =
 
 module XlsxWrite =
     let save st path =
-        File.WriteAllBytes(path, XlsxWriter.writeWorkbookPackageBytes (EH.exportWorkbook st XlsxRead.source))
+        File.WriteAllBytes(path, XlsxPackageWriter.writeWorkbookPackageBytes (EH.exportWorkbook st XlsxRead.source))
 
 let private sampleWorkbook () =
     let put r c v m = M.setCell ({ Row = r; Col = c } : M.CellAddress) ({ Value = v; Format = M.defaultFormat; Comment = None } : M.CellData) m

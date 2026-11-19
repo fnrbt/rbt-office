@@ -50,7 +50,7 @@ let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array)
 let modelsOf (imported: Bridge.ImportedWorkbook) = imported.Sheets |> Array.map (fun sheet -> sheet.Model)
 let namesOf (imported: Bridge.ImportedWorkbook) = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
 let export (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) (names: string array) =
-    XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported sheets names))
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported sheets names))
 let count (needle: string) (text: string) =
     let mutable n = 0
     let mutable at = text.IndexOf needle
@@ -213,7 +213,7 @@ for file, sheetName, expected in [ "real-world/milk-street-office.xlsx", "Annual
         (formulasOf movedParts |> List.map (fun (cell, attrs, value) -> cell, attrs, value))
         (formulasOf before |> List.map (fun (cell, attrs, value) -> shift cell, attrs |> List.map (fun (name, text) -> name, (if name = "ref" || name = "r1" || name = "r2" then shift text else text)), value) |> List.sort)
     // ... and read again.
-    let again = loadBytes (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported models (namesOf imported))))
+    let again = loadBytes (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported models (namesOf imported))))
     eq (label + ": read back after the edit") (again.Sheets.[index].Extras.DataTables |> List.map (fun t -> t.Ref) |> List.sort) (movedModel.DataTables |> List.map (fun t -> formatCellRef t.Range.From.Row t.Range.From.Col + ":" + formatCellRef t.Range.To.Row t.Range.To.Col) |> List.sort)
 
 // ---- hyperlinks follow their cells -----------------------------------------
@@ -226,7 +226,7 @@ do
           { Range = "C6:D7"; Target = "https://example.com/b?x=1&y=2"; IsInternal = false; Tooltip = None; Display = None }
           { Range = "A10"; Target = "Sheet1!A1"; IsInternal = true; Tooltip = None; Display = None } ]
     let withLinks = { package with Sheets = package.Sheets |> List.mapi (fun i sheet -> if i = 0 then { sheet with Hyperlinks = links } else sheet) }
-    let bytes = XlsxWriter.writeWorkbookPackageBytes withLinks
+    let bytes = XlsxPackageWriter.writeWorkbookPackageBytes withLinks
     let imported = Bridge.Import.importWorkbook (loadBytes bytes)
     let model = imported.Sheets.[0].Model
     eq "hyperlinks: in the model" (model.Hyperlinks |> List.map (fun l -> l.Range, l.Target, l.IsInternal)) [ range 3 1 3 1, "https://example.com/a", false; range 5 2 6 3, "https://example.com/b?x=1&y=2", false; range 9 0 9 0, "Sheet1!A1", true ]
@@ -331,7 +331,7 @@ do
     let table : XlsxWriter.XlsxTableOut =
         { Name = "Sales"; StartRow = 2; StartCol = 2; EndRow = 12; EndCol = 6; Columns = [ "Item"; "Qty"; "Tax"; "Price"; "Amount" ]; HeaderRowCount = 1; TotalsRowCount = 1
           Totals = [ "label", "All"; "function", "average"; "", ""; "", ""; "custom", "MAX(F3:F11)" ]; AutoFilter = Some (2, 6); Style = Some style; SourcePart = None }
-    let xml = XlsxWriter.tableXmlFromSource part table |> Option.defaultValue ""
+    let xml = XlsxPackageWriter.tableXmlFromSource part table |> Option.defaultValue ""
     ok "table part: well formed" (try Xml.Linq.XDocument.Parse xml |> ignore; true with _ -> false) xml
     ok "table part: root" (xml.Contains "id=\"7\" xr:uid=\"{T}\"" && xml.Contains "ref=\"B2:F12\"" && xml.Contains "headerRowDxfId=\"9\" dataDxfId=\"8\"" && xml.Contains "totalsRowCount=\"1\"") xml
     ok "table part: the filter keeps its criteria on the new range" (xml.Contains "<autoFilter ref=\"B2:F11\" xr:uid=\"{F}\"><filterColumn colId=\"1\">") xml
@@ -342,14 +342,14 @@ do
         (xml.Contains "<calculatedColumnFormula>Sales[[#This Row],[Qty]]*Sales[[#This Row],[Price]]</calculatedColumnFormula><totalsRowFormula>MAX(F3:F11)</totalsRowFormula></tableColumn>") xml
     ok "table part: style and what follows" (xml.Contains "<tableStyleInfo name=\"TableStyleMedium2\" showFirstColumn=\"1\" showLastColumn=\"0\" showRowStripes=\"1\" showColumnStripes=\"0\"/><extLst><ext uri=\"u\"/></extLst></table>") xml
     // No totals row any more, no filter, no header.
-    let bare = XlsxWriter.tableXmlFromSource part { table with StartRow = 2; EndRow = 9; EndCol = 5; Columns = [ "Item"; "Qty"; "Price"; "Amount" ]; TotalsRowCount = 0; Totals = []; AutoFilter = None; HeaderRowCount = 0 } |> Option.defaultValue ""
+    let bare = XlsxPackageWriter.tableXmlFromSource part { table with StartRow = 2; EndRow = 9; EndCol = 5; Columns = [ "Item"; "Qty"; "Price"; "Amount" ]; TotalsRowCount = 0; Totals = []; AutoFilter = None; HeaderRowCount = 0 } |> Option.defaultValue ""
     ok "table part: without totals, filter and header"
         (bare.Contains "totalsRowShown=\"0\"" && not (bare.Contains "totalsRowCount") && bare.Contains "headerRowCount=\"0\"" && not (bare.Contains "<autoFilter")
          && bare.Contains "totalsRowFunction=\"sum\"" && (try Xml.Linq.XDocument.Parse bare |> ignore; true with _ -> false)) bare
 
     // A new column of a query table names itself (uniqueName), as the file's columns do.
     let queryPart = part.Replace("<table xmlns", "<table tableType=\"queryTable\" xmlns").Replace("<tableColumn id=\"1\" name", "<tableColumn id=\"1\" uniqueName=\"1\" name")
-    let queried = XlsxWriter.tableXmlFromSource queryPart table |> Option.defaultValue ""
+    let queried = XlsxPackageWriter.tableXmlFromSource queryPart table |> Option.defaultValue ""
     ok "table part: the test's part is a query table" (queryPart.Contains "tableType=\"queryTable\"" && queryPart <> part) queryPart
     ok "table part: a new column of a query table gets a uniqueName" (queried.Contains "<tableColumn id=\"10\" uniqueName=\"10\" name=\"Tax\" queryTableFieldId=\"10\"/>") queried
     ok "table part: and no other table's does" (not (xml.Contains "uniqueName")) xml
@@ -357,7 +357,7 @@ do
     let query =
         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<queryTable xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" name=\"q\" connectionId=\"1\">"
         + "<queryTableRefresh nextId=\"6\"><queryTableFields count=\"2\"><queryTableField id=\"1\" name=\"Item\" tableColumnId=\"1\"/><queryTableField id=\"2\" name=\"Qty\" tableColumnId=\"2\"/></queryTableFields></queryTableRefresh></queryTable>"
-    let fields = XlsxWriter.queryTableXmlFromSource query queried |> Option.defaultValue ""
+    let fields = XlsxPackageWriter.queryTableXmlFromSource query queried |> Option.defaultValue ""
     ok "query table: a field per column, in their order; the next id past them"
         (fields.Contains "<queryTableRefresh nextId=\"11\"><queryTableFields count=\"5\"><queryTableField id=\"1\" name=\"Item\" tableColumnId=\"1\"/><queryTableField id=\"2\" name=\"Qty\" tableColumnId=\"2\"/><queryTableField id=\"10\" dataBound=\"0\" tableColumnId=\"10\"/>"
          && fields.StartsWith "<?xml") fields

@@ -124,7 +124,7 @@ for file in files do
                       NameInfo = Map.empty; DefinedNames = imported.Context.Names
                       Source = Some imported.Source
                       Macros = None; MacroProject = None }
-                let written = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input) |> partsOf
+                let written = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input) |> partsOf
                 // Only what the original package itself reaches counts (a stray entry nothing refers to is not a part).
                 let wanted = reachable original |> Set.filter (fun part -> Map.containsKey part original && not (regenerated part))
                 let missing = wanted |> Set.filter (fun part -> not (Map.containsKey part written)) |> Set.toList
@@ -173,7 +173,7 @@ for file in files do
                         { Value = Rbt.Spreadsheet.Model.CellValue.String "edited here"; Comment = None
                           Format = { Rbt.Spreadsheet.Model.defaultFormat with Bold = true; BgColor = Some "#ABCDEF"; NumberFormat = Some "0.0000\"u\"" } }
                     models.[target] <- { models.[target] with Cells = Map.add at cell models.[target].Cells }
-                    let editedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { input with Sheets = models })
+                    let editedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut { input with Sheets = models })
                     let edited = partsOf editedBytes
                     let others = sheetsRead |> Array.mapi (fun i sheet -> i, sheet) |> Array.filter (fun (i, sheet) -> i <> target && isWorksheet sheet)
                     if not workbook.Date1904 then
@@ -278,7 +278,7 @@ if named.Length = 0 then
             { Sheets = sheets; Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = workbook.Preserved.ActiveTab; NameInfo = imported.Context.NameInfo; DefinedNames = imported.Context.Names
               Source = Some imported.Source; Macros = None; MacroProject = None }
-        XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     let typed (model: Rbt.Spreadsheet.Model.SpreadsheetModel) =
         let cell at = Rbt.Spreadsheet.Model.getCell at model
         let b3 = cell (addr 2 1) |> Option.defaultValue { Value = Rbt.Spreadsheet.Model.CellValue.Empty; Format = Rbt.Spreadsheet.Model.defaultFormat; Comment = None }

@@ -44,7 +44,7 @@ let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array)
       Source = Some imported.Source
       Macros = None; MacroProject = None }
 let export (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) =
-    XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported sheets))
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf imported sheets))
 let addr row col : CellAddress = { Row = row; Col = col }
 /// What a model shows and holds, without what identifies the import.
 let contentOf (model: SpreadsheetModel) =
@@ -122,7 +122,7 @@ do
     let book : XlsxWriter.XlsxWorkbookOut =
         { Sheets = [ sheet "One" [ cell 0 0 (XlsxWriter.XlsxFormula ("Two!A1+1", None)) ]; sheet "Two" [ cell 0 0 (XlsxWriter.XlsxNumber 41.0) ] ]
           ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; VbaProjectBytes = None; Dxfs = []; Preserved = XlsxReader.emptyWorkbookPreservation }
-    let imported = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes (XlsxWriter.writeWorkbookPackageBytes book))
+    let imported = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes (XlsxPackageWriter.writeWorkbookPackageBytes book))
     ok "uncached formulas: every sheet converted" (imported.Sheets |> Array.forall (fun s -> not (isDeferredSheet s.Model))) ""
     eq "and calculated" (getCellValue (addr 0 0) imported.Sheets.[0].Model |> unwrapFormulaValue) (CellValue.Number 42.0)
 
@@ -145,7 +145,7 @@ do
     let input : Bridge.ExportInput =
         { Sheets = models; Names = names; Visible = [| true; true; false; true; true |]; ActiveSheetIndex = 0
           NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = None }
-    let bytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let bytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     let book = Bridge.Import.importWorkbookLazy (fun index -> index = 0) (loadBytes bytes)
     let standIns = book.Sheets |> Array.map (fun sheet -> sheet.Model)
     let converted () = standIns |> Array.map (fun model -> not (isDeferredSheet model))

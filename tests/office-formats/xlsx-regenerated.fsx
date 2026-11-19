@@ -68,7 +68,7 @@ let exportWith (edit: M.SpreadsheetModel -> M.SpreadsheetModel) =
         { Sheets = sheets; Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = imported.Sheets |> Array.map (fun sheet -> sheet.Visible)
           ActiveSheetIndex = workbook.Preserved.ActiveTab; NameInfo = imported.Context.NameInfo; DefinedNames = imported.Context.Names
           Source = Some imported.Source; Macros = None; MacroProject = None }
-    let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     saved, sheets.[index]
 let sheetOf (saved: byte[]) = text (partsOf saved).[sheetPath]
 let reread (saved: byte[]) = (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative saved |> Option.get)).Sheets.[index].Model
@@ -293,7 +293,7 @@ do
             { Sheets = models; Names = source.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = source.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = sourceBook.Preserved.ActiveTab; NameInfo = source.Context.NameInfo; DefinedNames = source.Context.Names
               Source = Some source.Source; Macros = None; MacroProject = None }
-        let output = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let output = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
         let box = noteShape (text (partsOf output).[vmlPath]) 112 4
         let original, actual = anchorValues modifiedBox, anchorValues box
         let top (model: M.SpreadsheetModel) (anchor: int array) i =
@@ -487,7 +487,7 @@ for file, sheetName, cell, hasLegacy in [ "real-world/milk-street-office.xlsx", 
         let input : Bridge.ExportInput =
             { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None; MacroProject = None }
-        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
         let now = partsOf saved
         let xmlWas, xmlNow = text file0.[path], text now.[path]
         let legacy = Regex.Match(xmlNow, "<legacyDrawing [^>]*/>").Value
@@ -564,7 +564,7 @@ for file in [ "real-world/dashboard-sales-analysis.xlsx"; "real-world/dashboard-
         let input : Bridge.ExportInput =
             { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None; MacroProject = None }
-        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
         let now = partsOf saved
         let added = now |> Map.toList |> List.map fst |> List.filter (fun known -> not (file0.ContainsKey known))
         let gone = file0 |> Map.toList |> List.map fst |> List.filter (fun known -> not (now.ContainsKey known))
@@ -597,7 +597,7 @@ do
     let input : Bridge.ExportInput =
         { Sheets = [| edited |]; Names = [| opened.Sheets.[0].Name |]; Visible = [| true |]
           ActiveSheetIndex = 0; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names; Source = Some opened.Source; Macros = None; MacroProject = None }
-    let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+    let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
     let comments = partsOf saved |> Map.toList |> List.pick (fun (path, data) -> if path.StartsWith "xl/comments" then Some (text data) else None)
     let authors = [ for found in Regex.Matches(comments, "<author(?:/>|>([^<]*)</author>)") -> found.Groups.[1].Value ]
     let authorIdOf (reference: string) = int (Regex.Match(comments, sprintf "<comment ref=\"%s\" authorId=\"([0-9]+)\"" reference).Groups.[1].Value)
@@ -616,7 +616,7 @@ do
         let input : Bridge.ExportInput =
             { Sheets = [| edit (M.resolveSheet opened.Sheets.[0].Model) |]; Names = [| opened.Sheets.[0].Name |]; Visible = [| true |]
               ActiveSheetIndex = 0; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names; Source = Some opened.Source; Macros = None; MacroProject = None }
-        text (partsOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))).["xl/worksheets/sheet1.xml"]
+        text (partsOf (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))).["xl/worksheets/sheet1.xml"]
     let sparklines (xml: string) = [ for found in Regex.Matches(xml, "<x14:sparkline><xm:f>([^<]*)</xm:f><xm:sqref>([^<]*)</xm:sqref></x14:sparkline>") -> found.Groups.[1].Value, found.Groups.[2].Value ]
     ok "sparklines: the file has three" (sparklines (text (partsOf bytes).["xl/worksheets/sheet1.xml"]) = [ "Sheet1!B2:H2", "A2"; "Sheet1!B3:H3", "A3"; "Sheet1!B4:H4", "A4" ]) ""
     let inserted = save (M.insertRow 0)
@@ -649,7 +649,7 @@ do
         let input : Bridge.ExportInput =
             { Sheets = sheets; Names = book.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = book.Sheets |> Array.map (fun sheet -> sheet.Visible)
               ActiveSheetIndex = wb.Preserved.ActiveTab; NameInfo = book.Context.NameInfo; DefinedNames = book.Context.Names; Source = Some book.Source; Macros = None; MacroProject = None }
-        let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+        let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
         let xml = text (partsOf saved).[path]
         inOrder "sort state: the part's elements are in the schema's order" xml
         element "sortState" xml
@@ -709,7 +709,7 @@ for dir in [ "real-world"; "test-documents-excel" ] do
                                     { Sheets = sheets; Names = opened.Sheets |> Array.map (fun sheet -> sheet.Name); Visible = opened.Sheets |> Array.map (fun sheet -> sheet.Visible)
                                       ActiveSheetIndex = book.Preserved.ActiveTab; NameInfo = opened.Context.NameInfo; DefinedNames = opened.Context.Names
                                       Source = Some opened.Source; Macros = None; MacroProject = None }
-                                let saved = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
+                                let saved = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input)
                                 let xml = text (partsOf saved).[path]
                                 let names, places = placesOf xml
                                 // The sheet's protection is the file's whatever was changed.

@@ -21,7 +21,7 @@ let eq label (got: 'a) (expected: 'a) =
 
 let root = Path.Combine(__SOURCE_DIRECTORY__, "..")
 let load (relative: string) = XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(root, relative))) |> Option.get
-let reread (workbook: XlsxWriter.XlsxWorkbookOut) = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes workbook) |> Option.get
+let reread (workbook: XlsxWriter.XlsxWorkbookOut) = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes workbook) |> Option.get
 let inputOf (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) (names: Map<Wb.SheetId option * string, string>) : Bridge.ExportInput =
     { Sheets = sheets
       Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
@@ -393,7 +393,7 @@ eq "export: thread at its new cell, author and reply kept" (movedExtras.Threaded
     [ "B", 4, Some "Ann Author", "Is this right?", [ Some "Bob Reply", "Yes & checked", 4 ] ]
 eq "export: moved source thread does not gain a legacy note" movedBack.Sheets.[0].Comments []
 let insertedExtras = extrasModel |> applyStructureEdit (InsertRows (1, 1)) |> applyStructureEdit (InsertCols (1, 1))
-let insertedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput insertedExtras))
+let insertedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput insertedExtras))
 let insertedBack = XlsxReader.loadBytesNative insertedBytes |> Option.get
 eq "export: inserted thread and reply keep IDs and persons"
     (insertedBack.Sheets.[0].Extras.ThreadedComments |> List.map (fun t -> t.CellRef.Column, t.CellRef.Row, t.Id, t.PersonId, t.Replies |> List.map (fun r -> r.Id, r.PersonId, r.CellRef.Column, r.CellRef.Row)), insertedBack.Preserved.Persons)
@@ -480,7 +480,7 @@ let tabbed =
        { createEmpty 10 5 with TabColor = Some "indexed:10"; VeryHidden = true } |]
 let tabbedInput (sheets: SpreadsheetModel array) (names: string array) (visible: bool array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
     { Sheets = sheets; Names = names; Visible = visible; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
-let tabbedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput tabbed [| "One"; "Two"; "Three"; "Four" |] [| true; false; true; true |] None))
+let tabbedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput tabbed [| "One"; "Two"; "Three"; "Four" |] [| true; false; true; true |] None))
 let tabbedBack = XlsxReader.loadBytesNative tabbedBytes |> Option.get
 eq "sheets: tab colours and states are written"
     (tabbedBack.Sheets |> List.map (fun s -> s.Name, s.State, s.View.TabColor))
@@ -503,7 +503,7 @@ let recoloured =
         | 3 -> { s.Model with TabColor = None }
         | _ -> s.Model)
 let recolouredBack =
-    XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput recoloured [| "One"; "Renamed"; "Three"; "Four" |] [| true; false; true; false |] (Some tabbedLazy.Source)))) |> Option.get
+    XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tabbedInput recoloured [| "One"; "Renamed"; "Three"; "Four" |] [| true; false; true; false |] (Some tabbedLazy.Source)))) |> Option.get
 eq "sheets: changed without converting"
     (recolouredBack.Sheets |> List.map (fun s -> s.Name, s.State, s.View.TabColor), recoloured |> Array.map isDeferredSheet)
     ([ "One", XlsxReader.SheetVisible, Some "#FF8800"; "Renamed", XlsxReader.SheetHidden, None; "Three", XlsxReader.SheetVisible, Some "#112233"; "Four", XlsxReader.SheetHidden, None ],
@@ -525,7 +525,7 @@ let relisted =
     |> Wb.setSheetVisibility "sheet3" false true
 let relistedOrder = List.toArray relisted.SheetOrder
 let relistedBack =
-    XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut
+    XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut
         { Sheets = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Model); Names = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Name)
           Visible = relistedOrder |> Array.map (fun id -> relisted.Sheets.[id].Visible); ActiveSheetIndex = 1; NameInfo = relisted.NameInfo; DefinedNames = relisted.Names; Source = None; Macros = None; MacroProject = None })) |> Option.get
 eq "sheets: the list after the operations" (relistedBack.Sheets |> List.map (fun s -> s.Name, s.State)) [ "Third", XlsxReader.SheetVeryHidden; "First (2)", XlsxReader.SheetVisible; "Number 2", XlsxReader.SheetVisible ]
@@ -543,7 +543,7 @@ let axesModel =
     |> Ops.changeOutlineLevel false 4 5 1 |> Ops.setGroupCollapsed "test" false 4 true
 let axesInput (model: SpreadsheetModel) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
     { Sheets = [| model |]; Names = [| "Axes" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
-let axesFile = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None))) |> Option.get
+let axesFile = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None))) |> Option.get
 let rowAttributes (wb: XlsxReader.Workbook) =
     wb.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden || r.OutlineLevel > 0 || r.Collapsed) |> List.map (fun r -> r.Index, r.Hidden, r.Height |> Option.map (fun h -> Math.Round (h, 2)), r.OutlineLevel, r.Collapsed)
 let columnAttributes (wb: XlsxReader.Workbook) =
@@ -560,10 +560,10 @@ eq "axes: a hidden row / column with a size of its own comes back at it" (Ops.sh
 let axesShown = axesAgain |> Ops.unhideAxis true 0 99 |> Ops.unhideAxis false 0 99
 eq "axes: shown again after the import" (Math.Round axesShown.RowHeights.[2], Math.Round axesShown.ColumnWidths.[1], Ops.hiddenRuns true axesShown, Ops.hiddenRuns false axesShown) (40.0, 140.0, [], [])
 // With the file as the source: untouched, then edited.
-let axesSame = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesAgain (Some axesImported.Source)))) |> Option.get
+let axesSame = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesAgain (Some axesImported.Source)))) |> Option.get
 eq "axes: an untouched sheet of a file is written as the file had it" (rowAttributes axesSame, columnAttributes axesSame) (rowAttributes axesFile, columnAttributes axesFile)
 let axesEdited = axesAgain |> Ops.unhideAxis true 2 2 |> Ops.setGroupCollapsed "test" true 6 false |> Ops.changeOutlineLevel false 4 5 -1 |> Ops.hideAxis false 7 7
-let axesEditedFile = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesEdited (Some axesImported.Source)))) |> Option.get
+let axesEditedFile = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesEdited (Some axesImported.Source)))) |> Option.get
 eq "axes: edited rows of a file's sheet" (rowAttributes axesEditedFile)
     // (A row of the file that was hidden without a height of its own still states none: the rows are the file's with what changed.)
     [ 4, true, None, 0, false; 6, false, None, 1, false; 7, false, None, 2, false; 8, false, None, 2, false; 9, false, None, 1, false ]
@@ -575,14 +575,14 @@ let summaryModel =
     fresh |> Ops.setOutlineSummary false false
     |> Ops.changeOutlineLevel true 5 8 1 |> Ops.setGroupCollapsed "test" true 6 true
     |> Ops.changeOutlineLevel false 4 5 1 |> Ops.setGroupCollapsed "test" false 4 true
-let summaryBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryModel None))
+let summaryBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryModel None))
 let summaryFile = XlsxReader.loadBytesNative summaryBytes |> Option.get
 let sheetXmlOf (bytes: byte array) =
     use zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
     use reader = new StreamReader(zip.GetEntry("xl/worksheets/sheet1.xml").Open())
     reader.ReadToEnd()
 ok "outline: outlinePr is written before the dimension" ((sheetXmlOf summaryBytes).Contains "<sheetPr><outlinePr summaryBelow=\"0\" summaryRight=\"0\"/></sheetPr><dimension") (sheetXmlOf summaryBytes |> fun x -> x.Substring(0, min 400 x.Length))
-ok "outline: no outlinePr for Excel's default" (not ((sheetXmlOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None)))).Contains "outlinePr")) ""
+ok "outline: no outlinePr for Excel's default" (not ((sheetXmlOf (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput axesModel None)))).Contains "outlinePr")) ""
 // (The outline's symbols can be switched off in <outlinePr> too, not only in the sheet view.)
 do
     let patched =
@@ -609,7 +609,7 @@ let summaryAgain = summaryImported.Sheets.[0].Model
 eq "outline: read back" (summaryAgain.Axes.SummaryBelow, summaryAgain.Axes.SummaryRight, Ops.outlineGroups true summaryAgain, Ops.outlineGroups false summaryAgain, summaryAgain.Axes.CollapsedRows |> Set.toList)
     (false, false, [ 5, 8, 1, true ], [ 4, 5, 1, true ], [ 4 ])
 let summaryExpanded = summaryAgain |> Ops.setGroupCollapsed "test" true 6 false |> Ops.setOutlineSummary true false
-let summaryEditedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryExpanded (Some summaryImported.Source)))
+let summaryEditedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput summaryExpanded (Some summaryImported.Source)))
 let summaryEdited = XlsxReader.loadBytesNative summaryEditedBytes |> Option.get
 eq "outline: edited in a file's sheet: expanded, summary below again" (summaryEdited.Sheets.[0].View.SummaryBelow, summaryEdited.Sheets.[0].View.SummaryRight, rowAttributes summaryEdited |> List.map (fun (i, hidden, _, level, collapsed) -> i, hidden, level, collapsed))
     (true, false, [ 6, false, 1, false; 7, false, 1, false; 8, false, 1, false; 9, false, 1, false ])
@@ -654,7 +654,7 @@ for label, columns in filterKinds do
     eq ("filter " + label + ": shown again, the rows have their heights") ([ for row in model.FilterHiddenRows -> row, Math.Round (getRowHeight row shown) ], getRowHeight 12 shown) ([ for row in model.FilterHiddenRows -> row, (if row = 2 then 44.0 else 25.0) ], 0.0)
 let valuesModel = setAutoFilter (Some filterRange) filterData |> setColumnFilter 1 (FilterValues (Set.ofList [ "East"; "West" ], false))
 let valuesOut = Bridge.Export.toWorkbookOut (axesInput valuesModel None)
-let valuesBytes = XlsxWriter.writeWorkbookPackageBytes valuesOut
+let valuesBytes = XlsxPackageWriter.writeWorkbookPackageBytes valuesOut
 let partText (bytes: byte[]) (path: string) =
     use archive = new System.IO.Compression.ZipArchive(new MemoryStream(bytes), System.IO.Compression.ZipArchiveMode.Read)
     use reader = new StreamReader(archive.GetEntry(path).Open())
@@ -679,7 +679,7 @@ let refilteredFile = reread (Bridge.Export.toWorkbookOut (axesInput refiltered (
 eq "filter: another column filtered on a file's sheet" (refilteredFile.Sheets.[0].Extras.AutoFilter |> Option.map (fun f -> f.Columns |> List.map (fun c -> c.ColId, c.Kind)), refilteredFile.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1))
     (Some [ 0, "filters"; 1, "top10" ], [ 1; 2; 3; 4; 5; 6; 12 ])
 let unfiltered = reread (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter None valuesAgain) (Some valuesImported.Source)))
-eq "filter: removed from a file's sheet, its rows are shown" (unfiltered.Sheets.[0].Extras.AutoFilter, unfiltered.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1), (partText (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter None valuesAgain) (Some valuesImported.Source)))) "xl/workbook.xml").Contains "_FilterDatabase") (None, [ 12 ], false)
+eq "filter: removed from a file's sheet, its rows are shown" (unfiltered.Sheets.[0].Extras.AutoFilter, unfiltered.Sheets.[0].Rows |> List.filter (fun r -> r.Hidden) |> List.map (fun r -> r.Index - 1), (partText (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (axesInput (setAutoFilter None valuesAgain) (Some valuesImported.Source)))) "xl/workbook.xml").Contains "_FilterDatabase") (None, [ 12 ], false)
 // A filter the editor does not evaluate (date groups) is kept: its XML, and the rows the file hid.
 let keptColumn = { XlsxReader.emptyAutoFilterColumn with ColId = 1; Kind = "other"; Xml = "<filters><dateGroupItem year=\"2024\" month=\"3\" dateTimeGrouping=\"month\"/></filters>" }
 let keptOut =
@@ -773,7 +773,7 @@ let twoLogos =
     |> Ops.insertPicture 2 logoInfo (Array.copy logoBytes) (addr 8 0) 48.0 32.0 (Some "Big logo")
     |> fun m -> Ops.placePicture 1 (addr 3 2) 4.0 6.0 24.0 16.0 m |> okOf
     |> fun m -> Ops.describePicture 2 None (Some "our logo, twice the size") m |> okOf
-let twoLogosBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput twoLogos None))
+let twoLogosBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput twoLogos None))
 let twoLogosBack = XlsxReader.loadBytesNative twoLogosBytes |> Option.get
 eq "pictures: written at their cells with offsets, sizes, names and descriptions" (imagesOf twoLogosBack)
     [ "oneCell", 3, 2, 4.0 * 9525.0, Some (24.0 * 9525.0), Some (16.0 * 9525.0), Some "Picture 1", None, logoBytes.Length
@@ -795,11 +795,11 @@ eq "pictures: beside a file's chart: the old one sized, the new one in front, th
      withNewBack.Sheets.[0].Extras.Objects |> List.map (fun item -> item.Kind, item.Name, item.Anchor.Order, item.Xml = extrasWb.Sheets.[0].Extras.Objects.[0].Xml))
     ([ Some "Logo", "oneCell", 2, Some 60.0, 0; Some "Added", "oneCell", 12, Some 24.0, 2 ], [ "chart", Some "Chart 1", 1, true ])
 let chartOnly = withNew |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 3 |> okOf
-let chartOnlyBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput chartOnly))
+let chartOnlyBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (extrasInput chartOnly))
 let chartOnlyBack = XlsxReader.loadBytesNative chartOnlyBytes |> Option.get
 eq "pictures: deleted ones are gone from the file, with their media; the chart stays" (chartOnlyBack.Sheets.[0].Extras.Images.Length, chartOnlyBack.Sheets.[0].Extras.Objects |> List.map (fun item -> item.Kind), entriesOf chartOnlyBytes |> List.filter (fun name -> name.StartsWith "xl/media/")) (0, [ "chart" ], [])
 // The last drawing of a sheet deleted: no drawing part is left.
-let noLogosBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput (twoLogosAgain |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 2 |> okOf) (Some (Bridge.Import.importWorkbook twoLogosBack).Source)))
+let noLogosBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (singleInput (twoLogosAgain |> Ops.deletePicture 1 |> okOf |> Ops.deletePicture 2 |> okOf) (Some (Bridge.Import.importWorkbook twoLogosBack).Source)))
 eq "pictures: none left, no drawing part and no media" (entriesOf noLogosBytes |> List.filter (fun name -> name.StartsWith "xl/media/" || name.StartsWith "xl/drawings/")) []
 
 // ---- tables made and changed in the editor -----------------------------------------
@@ -817,7 +817,7 @@ let tableBook =
     |> fun wb -> (Ops.defineTable "DefineTable" tableId { From = addr 10 0; To = addr 12 1 } None false None wb |> fst).Book
 let tableInput (wb: Wb.Workbook) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
     { Sheets = [| wb.Sheets.[tableId].Model |]; Names = [| "First" |]; Visible = [| true |]; ActiveSheetIndex = 0; NameInfo = wb.NameInfo; DefinedNames = wb.Names; Source = source; Macros = None; MacroProject = None }
-let tableBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableBook None))
+let tableBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableBook None))
 let tableBack = XlsxReader.loadBytesNative tableBytes |> Option.get
 eq "tables: written with their columns, total row, filter and style"
     (tableBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, (t.StartRow, t.StartCol, t.EndRow, t.EndCol), t.Columns, t.HeaderRowCount, t.TotalsRowCount, t.Totals, t.AutoFilter, t.Style |> Option.map (fun s -> s.Name, s.ShowRowStripes)))
@@ -841,7 +841,7 @@ let tableEdited =
     (Ops.renameTable "RenameTable" "Sales" "Revenue" { tableAgain.Context with Sheets = tableAgain.Context.Sheets |> Map.map (fun _ sheet -> { sheet with Model = resolveSheet sheet.Model }) }).Book
     |> fun wb -> (Ops.deleteTable "DeleteTable" "Table1" true wb).Book
     |> fun wb -> (Ops.setTableTotalRow "SetTableTotalRow" "Revenue" false wb).Book
-let tableEditedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableEdited (Some tableAgain.Source)))
+let tableEditedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (tableInput tableEdited (Some tableAgain.Source)))
 let tableEditedBack = XlsxReader.loadBytesNative tableEditedBytes |> Option.get
 eq "tables: renamed, without its total row; the deleted one's part is gone"
     (tableEditedBack.Sheets.[0].Tables |> List.map (fun t -> t.Name, (t.StartRow, t.StartCol, t.EndRow, t.EndCol), t.TotalsRowCount), entriesOf tableEditedBytes |> List.filter (fun name -> name.StartsWith "xl/tables/"))
@@ -875,7 +875,7 @@ let printed =
 let plainSheet = createEmpty 50 8 |> setCell (addr 0 0) { Value = CellValue.Number 1.0; Format = defaultFormat; Comment = None }
 let printInput (sheets: SpreadsheetModel array) (source: Bridge.XlsxSource option) : Bridge.ExportInput =
     { Sheets = sheets; Names = [| "Print me"; "Plain" |]; Visible = [| true; true |]; ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty; Source = source; Macros = None; MacroProject = None }
-let printedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printed; plainSheet |] None))
+let printedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printed; plainSheet |] None))
 let printedFile = XlsxReader.loadBytesNative printedBytes |> Option.get
 let printedBack = Bridge.Import.importWorkbook printedFile
 eq "page setup: every field is read back" printedBack.Sheets.[0].Model.PageSetup printed.PageSetup
@@ -908,7 +908,7 @@ let reprinted =
         Ops.applyPageSetupChanges "SetPageSetup" [ Ops.SetPaper 41; Ops.SetScale 80; Ops.SetRepeatRows None; Ops.SetRepeatCols None; Ops.SetHeaderFooterText ("header", None); Ops.SetOrientation PortraitOrientation ] model.PageSetup
         |> Ops.setPageBreaks "SetPageBreaks" [ 25 ] []
     { model with PageSetup = setup }
-let reprintedBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| reprinted; printedBack.Sheets.[1].Model |] (Some printedBack.Source)))
+let reprintedBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| reprinted; printedBack.Sheets.[1].Model |] (Some printedBack.Source)))
 let reprintedFile = XlsxReader.loadBytesNative reprintedBytes |> Option.get
 let reprintedBack = (Bridge.Import.importWorkbook reprintedFile).Sheets.[0].Model.PageSetup
 eq "page setup: changed after opening, the file follows" reprintedBack reprinted.PageSetup
@@ -933,7 +933,7 @@ let printerBack = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative withP
 let printerEdited =
     let model = printerBack.Sheets.[0].Model
     { model with PageSetup = Ops.applyPageSetupChanges "SetPageSetup" [ Ops.SetOrientation PortraitOrientation ] model.PageSetup }
-let printerXml = textOf (XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printerEdited; printerBack.Sheets.[1].Model |] (Some printerBack.Source)))) "xl/worksheets/sheet1.xml"
+let printerXml = textOf (XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| printerEdited; printerBack.Sheets.[1].Model |] (Some printerBack.Source)))) "xl/worksheets/sheet1.xml"
 ok "page setup: the printer's attributes stay when the setup is edited"
     (printerXml.Contains "orientation=\"portrait\"" && printerXml.Contains "horizontalDpi=\"600\"" && printerXml.Contains "verticalDpi=\"300\"" && printerXml.Contains "copies=\"2\"" && printerXml.Contains "draft=\"1\"" && printerXml.Contains "errors=\"dash\"")
     printerXml
@@ -948,7 +948,7 @@ let spilledModel =
     |> setCell (addr 0 2) (cellOf (CellValue.Formula ("=SEQUENCE(A1,2)", CellValue.Empty)))
     |> setCell (addr 6 0) (cellOf (CellValue.Formula ("=A1*2", CellValue.Empty)))
     |> Rbt.Spreadsheet.Formula.recalcAndSpill None None
-let spilledBytes = XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| spilledModel; plainSheet |] None))
+let spilledBytes = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (printInput [| spilledModel; plainSheet |] None))
 let spilledXml = textOf spilledBytes "xl/worksheets/sheet1.xml"
 ok "spill: the formula is written as an array formula over the cells it fills, a plain formula as before"
     (spilledXml.Contains "<f t=\"array\" ref=\"C1:D3\">_xlfn.SEQUENCE(A1,2)</f>" && spilledXml.Contains "<f>A1*2</f>") spilledXml
@@ -957,7 +957,7 @@ eq "spill: opened again, the cells belong to the formula" (spilledBack.Spill, sp
 let respilled = spilledBack |> setCell (addr 0 0) { Value = CellValue.Number 2.0; Format = defaultFormat; Comment = None } |> Rbt.Spreadsheet.Formula.recalcAndSpill None None
 eq "spill: ... and a recalculation lays the array out again" ([ for row in 0 .. 2 -> getCellValue (addr row 2) respilled |> unwrapFormulaValue ], respilled.Spill.Count) ([ CellValue.Number 1.0; CellValue.Number 3.0; CellValue.Empty ], 3)
 let spilledAgain = Bridge.Export.toWorkbookOut { printInput [| spilledBack; plainSheet |] None with Source = None }
-ok "spill: a sheet opened from a file writes its array formulas back" ((textOf (XlsxWriter.writeWorkbookPackageBytes spilledAgain) "xl/worksheets/sheet1.xml").Contains "<f t=\"array\" ref=\"C1:D3\">") ""
+ok "spill: a sheet opened from a file writes its array formulas back" ((textOf (XlsxPackageWriter.writeWorkbookPackageBytes spilledAgain) "xl/worksheets/sheet1.xml").Contains "<f t=\"array\" ref=\"C1:D3\">") ""
 
 // ---- iterative calculation of circular references (<calcPr iterate>) --------
 do
@@ -965,11 +965,11 @@ do
     let imported = Bridge.Import.importWorkbook wb
     eq "iteration: read from the file (Excel's defaults)" imported.Context.Iteration (Some { Wb.IterativeCalculation.MaxIterations = 100; MaxChange = 0.001 })
     let out = Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported) imported.Context.Names)
-    let bytes = XlsxWriter.writeWorkbookPackageBytes out
+    let bytes = XlsxPackageWriter.writeWorkbookPackageBytes out
     ok "iteration: an opened workbook keeps it when written" (Text.RegularExpressions.Regex.IsMatch(textOf bytes "xl/workbook.xml", "<calcPr\\b[^>]*\\biterate=\"1\"")) (textOf bytes "xl/workbook.xml")
     eq "iteration: ... and when read again" (Bridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)).Context.Iteration imported.Context.Iteration
     // Switched off in the editor, and set with other numbers.
-    let off = XlsxWriter.writeWorkbookPackageBytes (out |> Bridge.Export.withIteration None)
+    let off = XlsxPackageWriter.writeWorkbookPackageBytes (out |> Bridge.Export.withIteration None)
     ok "iteration: switched off, no calcPr says iterate" (not ((textOf off "xl/workbook.xml").Contains "iterate")) ""
     let custom = out |> Bridge.Export.withIteration (Some { MaxIterations = 50; MaxChange = 0.01 }) |> reread
     eq "iteration: other numbers written and read" custom.Preserved.CalcIteration (Some (50, 0.01))

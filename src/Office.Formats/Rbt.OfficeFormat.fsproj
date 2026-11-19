@@ -16,10 +16,13 @@
     <Compile Include="src/ValueText.fs" />
     <Compile Include="src/DefaultFonts.fs" />
     <Compile Include="src/VbaProject.fs" />
+    <Compile Include="src/XmlText.fs" />
+    <Compile Include="src/DocxTypes.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/WordEditorPackage.fs" />
     <Compile Include="src/DocumentProcessors.fs" />
     <Compile Include="src/WordEditorPackageReader.fs" />
+    <Compile Include="src/WordPackageOpen.fs" />
     <Compile Include="src/XlsxReader.fs" />
     <!-- Writers -->
     <Compile Include="src/XmlGenerator.fs" />
@@ -30,6 +33,7 @@
     <Compile Include="src/VmlIds.fs" />
     <Compile Include="src/ColorText.fs" />
     <Compile Include="src/XlsxWriter.fs" />
+    <Compile Include="src/XlsxPackageWriter.fs" />
     <Compile Include="src/WordPackageWriterModel.fs" />
     <Compile Include="src/WordPackageWriterSplice.fs" />
     <Compile Include="src/WordPackageWriterAssembly.fs" />

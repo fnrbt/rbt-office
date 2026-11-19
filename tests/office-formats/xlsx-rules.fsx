@@ -147,7 +147,7 @@ let sheets =
       blankSheet "Deep" XlsxReader.SheetVeryHidden [] [] ]
 let out : XlsxWriter.XlsxWorkbookOut =
     { Sheets = sheets; ActiveSheetIndex = 0; DefinedNames = []; VbaProjectSource = None; VbaProjectBytes = None; Dxfs = List.ofSeq dxfs; Preserved = XlsxReader.emptyWorkbookPreservation }
-let bytes = XlsxWriter.writeWorkbookPackageBytes out
+let bytes = XlsxPackageWriter.writeWorkbookPackageBytes out
 // Set RBT_DUMP_XLSX to keep the package (used to feed the browser importer).
 match System.Environment.GetEnvironmentVariable "RBT_DUMP_XLSX" with
 | null | "" -> ()

@@ -10,17 +10,17 @@ let ok label cond detail =
     if cond then pass <- pass + 1
     else (fail <- fail + 1; printfn "FAIL %-30s  %s" label detail)
 
-let cell value = XlsxWriter.simpleCell value
-let formulaCell formula value = XlsxWriter.cellWithFormula formula value
+let cell value = XlsxPackageWriter.simpleCell value
+let formulaCell formula value = XlsxPackageWriter.cellWithFormula formula value
 
 let smallSheet: XlsxWriter.FormattedSheet =
     { Name = "Data"
       Rows =
         [ { Cells = [ cell "A & <x> \"q\" 's'"; cell "42" ] }
           { Cells = [ formulaCell "SUM(A1:B1)" "42" ] } ]
-      MergedCells = [ XlsxWriter.createMergedRange 0 0 1 1 ] }
+      MergedCells = [ XlsxPackageWriter.createMergedRange 0 0 1 1 ] }
 
-let xml = XlsxWriter.generateFormattedSheetXml smallSheet
+let xml = XlsxPackageWriter.generateFormattedSheetXml smallSheet
 ok "xlsx-escapes-inline-text"
    (xml.Contains("A &amp; &lt;x&gt; &quot;q&quot; &apos;s&apos;"))
    xml
@@ -64,12 +64,12 @@ let perfSheet: XlsxWriter.FormattedSheet =
                     else cell (sprintf "R%d C%d & <text>" r c) ] } ]
       MergedCells = [] }
 
-XlsxWriter.generateFormattedSheetXml perfSheet |> ignore
+XlsxPackageWriter.generateFormattedSheetXml perfSheet |> ignore
 GC.Collect()
 GC.WaitForPendingFinalizers()
 GC.Collect()
 let before = GC.GetAllocatedBytesForCurrentThread()
-let generated = XlsxWriter.generateFormattedSheetXml perfSheet
+let generated = XlsxPackageWriter.generateFormattedSheetXml perfSheet
 let allocatedMb = float (GC.GetAllocatedBytesForCurrentThread() - before) / 1024.0 / 1024.0
 ok "xlsx-sheet-linear-alloc"
    (generated.Length > 1000000 && allocatedMb < 96.0)
@@ -113,7 +113,7 @@ let loadWorkbook path =
     File.ReadAllBytes path |> XlsxReader.loadBytesNative
 
 let roundTripWorkbook (wb: XlsxReader.Workbook) =
-    let bytes = XlsxWriter.packageFromReaderWorkbook wb |> XlsxWriter.writeWorkbookPackageBytes
+    let bytes = XlsxWriter.packageFromReaderWorkbook wb |> XlsxPackageWriter.writeWorkbookPackageBytes
     XlsxReader.loadBytesNative bytes
 
 let cellMap (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) =
@@ -250,7 +250,7 @@ let synthetic : XlsxWriter.XlsxWorkbookOut =
       Dxfs = []
       Preserved = XlsxReader.emptyWorkbookPreservation }
 
-match synthetic |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
+match synthetic |> XlsxPackageWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
 | None -> ok "synthetic-roundtrip-load" false "reader returned None"
 | Some wb ->
     let s = wb.Sheets.[0]
@@ -289,7 +289,7 @@ let whitespaceSheet =
         MergedCells = []
         Extras = XlsxReader.emptySheetExtras }
 let whitespaceBytes =
-    XlsxWriter.writeWorkbookPackageBytes { synthetic with Sheets = [ whitespaceSheet ]; VbaProjectSource = None }
+    XlsxPackageWriter.writeWorkbookPackageBytes { synthetic with Sheets = [ whitespaceSheet ]; VbaProjectSource = None }
 let whitespaceXml = partText whitespaceBytes "xl/worksheets/sheet1.xml"
 let whitespaceNamespace = System.Xml.Linq.XNamespace.Get "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 let parsedWhitespace =
@@ -318,7 +318,7 @@ let builtins =
         DefinedNames =
             [ { Name = "_xlnm.Criteria"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = Some 0; Comment = Some "Imported criterion"; Hidden = true }
               { Name = "_xlnm._FilterDatabase"; RefersTo = "'RoundTrip'!$A$1:$B$2"; LocalSheetIndex = Some 0; Comment = Some "Imported filter"; Hidden = true } ] }
-let builtinBytes = XlsxWriter.writeWorkbookPackageBytes builtins
+let builtinBytes = XlsxPackageWriter.writeWorkbookPackageBytes builtins
 match XlsxReader.loadBytesNative builtinBytes with
 | None -> ok "built-in-names-import" false "reader returned None"
 | Some wb ->
@@ -374,7 +374,7 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       VbaProjectBytes = None
       Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None } ]
       Preserved = XlsxReader.emptyWorkbookPreservation }
-let nastyBytes = XlsxWriter.writeWorkbookPackageBytes nastyWorkbook
+let nastyBytes = XlsxPackageWriter.writeWorkbookPackageBytes nastyWorkbook
 
 let nastySheetXml = partText nastyBytes "xl/worksheets/sheet1.xml"
 let nastyStylesXml = partText nastyBytes "xl/styles.xml"
@@ -408,7 +408,7 @@ let withOpaque =
                                         DataBarCfvo = [ "min", None; "max", None ]
                                         Ext = Some { XlsxReader.emptyCfRuleExt with DataBar = Some advancedBar } } ] }
                           { Range = "E3"; GroupAttributes = []; Rules = [ opaqueX14 ] } ] } ] }
-let opaqueBytes = XlsxWriter.writeWorkbookPackageBytes withOpaque
+let opaqueBytes = XlsxPackageWriter.writeWorkbookPackageBytes withOpaque
 let opaqueXml = partText opaqueBytes "xl/worksheets/sheet1.xml"
 ok "writer-pivot-rule-group"
     (opaqueXml.Contains("<conditionalFormatting sqref=\"E2\" pivot=\"1\">"))
@@ -558,7 +558,7 @@ do
             Dxfs = original.Dxfs @ [ { original.Dxfs.Head with FillColor = Some "AADD99"; SourceDxfIndex = Some 0 } ]
             Sheets = original.Sheets |> List.mapi (fun index sheet ->
                 if index = 0 then { sheet with ConditionalFormats = sheet.ConditionalFormats @ [ changedGroup ] } else sheet) }
-    let saved = XlsxWriter.writeWorkbookPackageBytes changed
+    let saved = XlsxPackageWriter.writeWorkbookPackageBytes changed
     let dxfs = (System.Xml.Linq.XDocument.Parse(partText saved "xl/styles.xml")).Root.Element(ns + "dxfs").Elements(ns + "dxf") |> Seq.toArray
     let attribute name (element: System.Xml.Linq.XElement) = element.Attribute(System.Xml.Linq.XName.Get name).Value
     let fill index = dxfs.[index].Descendants(ns + "bgColor") |> Seq.head |> attribute "rgb"
@@ -580,7 +580,7 @@ for cfFile in [ "real-world/saopaulo-condos.xlsx"; "test-documents-excel/synthet
   match XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes cfPath) with
   | None -> ok ("cf-load " + cfFile) false "reader returned None"
   | Some wb1 ->
-    match XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
+    match XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxPackageWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative with
     | None -> ok ("cf-reload " + cfFile) false "reader returned None"
     | Some wb2 ->
         let cfSig (wb: XlsxReader.Workbook) =
@@ -675,7 +675,7 @@ match XlsxReader.loadBytesNative extrasPackage with
         && (wb1.Preserved.Parts |> List.map fst |> List.filter (fun path -> path.StartsWith "xl/drawings/" && not (path.Contains "_rels"))).Length = 1
         && wb1.Preserved.ThemePath = Some "xl/theme/theme1.xml")
        (sprintf "%A" (wb1.Preserved.Parts |> List.map fst))
-    let savedBytes = XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxWriter.writeWorkbookPackageBytes
+    let savedBytes = XlsxWriter.packageFromReaderWorkbook wb1 |> XlsxPackageWriter.writeWorkbookPackageBytes
     match XlsxReader.loadBytesNative savedBytes with
     | None -> ok "extras-reload" false "reader returned None"
     | Some wb2 ->
@@ -702,7 +702,7 @@ match XlsxReader.loadBytesNative extrasPackage with
 
 // A workbook made from scratch has none of this, and still no dangling parts.
 ok "new-workbook-has-no-drawing-parts"
-   (use archive = new System.IO.Compression.ZipArchive(new MemoryStream(XlsxWriter.writeWorkbookPackageBytes synthetic), System.IO.Compression.ZipArchiveMode.Read)
+   (use archive = new System.IO.Compression.ZipArchive(new MemoryStream(XlsxPackageWriter.writeWorkbookPackageBytes synthetic), System.IO.Compression.ZipArchiveMode.Read)
     archive.Entries |> Seq.forall (fun entry -> not (entry.FullName.Contains "drawings/sheetDrawing") && not (entry.FullName.Contains "theme") && not (entry.FullName.Contains "threadedComment")))
    "unexpected parts"
 
@@ -710,7 +710,7 @@ ok "new-workbook-has-no-drawing-parts"
 let realWorkbook (relative: string) = XlsxReader.loadBytesNative (File.ReadAllBytes(Path.Combine(__SOURCE_DIRECTORY__, "..", relative))) |> Option.get
 for file in [ "real-world/lyric-multifamily.xlsx"; "real-world/saopaulo-condos.xlsx"; "real-world/milk-street-office.xlsx"; "test-documents-excel/poi-49156.xlsx" ] do
     let before = realWorkbook file
-    let bytes = XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)
+    let bytes = XlsxPackageWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)
     let after = XlsxReader.loadBytesNative bytes |> Option.get
     // Column definitions come back as the file had them: the same ranges, widths, hidden flags and default cell styles.
     let columnsOf (workbook: XlsxReader.Workbook) =
@@ -757,7 +757,7 @@ let namedStylesInUse =
 ok "the named-style check is not vacuous" (namedStylesInUse >= 1) (sprintf "%d named styles other than the first are used" namedStylesInUse)
 // Before this was kept, every cell format was written with xfId="0".
 ok "a cell format is written with the xfId of its named style"
-   (let styles = partText (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (realWorkbook "real-world/milk-street-office.xlsx"))) "xl/styles.xml"
+   (let styles = partText (XlsxPackageWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (realWorkbook "real-world/milk-street-office.xlsx"))) "xl/styles.xml"
     let cellXfs = styles.Substring(styles.IndexOf "<cellXfs")
     System.Text.RegularExpressions.Regex.IsMatch(cellXfs.Substring(0, cellXfs.IndexOf "</cellXfs>"), "xfId=\"[1-9]"))
    "every xf has xfId 0"
@@ -767,10 +767,10 @@ let calcWorkbook (cached: XlsxWriter.XlsxCellValue option) =
     let sheet = (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")).Sheets.Head
     let formula : XlsxWriter.XlsxCellOut = { Row = 60; Col = 0; Value = XlsxWriter.XlsxFormula ("1+1", cached); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None }
     { (XlsxWriter.packageFromReaderWorkbook (realWorkbook "test-documents-excel/poi-49156.xlsx")) with Sheets = [ { sheet with CellSource = XlsxWriter.sheetCells (sheet.Cells @ [ formula ]) } ] }
-let uncachedXml = partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook None)) "xl/workbook.xml"
+let uncachedXml = partText (XlsxPackageWriter.writeWorkbookPackageBytes (calcWorkbook None)) "xl/workbook.xml"
 ok "fullCalcOnLoad for a formula without a cached value" (uncachedXml.Contains "<calcPr fullCalcOnLoad=\"1\"/></workbook>") uncachedXml
-ok "no fullCalcOnLoad when the formula has its value" (not ((partText (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook (Some (XlsxWriter.XlsxNumber 2.0)))) "xl/workbook.xml").Contains "calcPr")) "calcPr written"
-ok "the uncached workbook still opens" ((XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (calcWorkbook None))).IsSome) "unreadable"
+ok "no fullCalcOnLoad when the formula has its value" (not ((partText (XlsxPackageWriter.writeWorkbookPackageBytes (calcWorkbook (Some (XlsxWriter.XlsxNumber 2.0)))) "xl/workbook.xml").Contains "calcPr")) "calcPr written"
+ok "the uncached workbook still opens" ((XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (calcWorkbook None))).IsSome) "unreadable"
 
 // z-order: pictures and kept objects stay interleaved as the drawing part had them.
 let zOrderOf (workbook: XlsxReader.Workbook) =
@@ -782,7 +782,7 @@ let zOrderOf (workbook: XlsxReader.Workbook) =
         |> List.map (fun (_, kind, name) -> kind, name))
 for file in [ "test-documents-excel/phpsp-32chartreadwrite.xlsx"; "real-world/dashboard-ecommerce-sales.xlsx"; "test-documents-excel/phpsp-27template.xlsx" ] do
     let before = realWorkbook file
-    let after = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)) |> Option.get
+    let after = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook before)) |> Option.get
     ok (file + " z-order of pictures and objects") (zOrderOf after = zOrderOf before) (sprintf "%A became %A" (zOrderOf before) (zOrderOf after))
 // A chart behind a picture stays behind it: swap the orders and write.
 let swapped =
@@ -795,7 +795,7 @@ let swapped =
                     Extras =
                         { sheet.Extras with
                             Images = sheet.Extras.Images |> List.map (fun image -> { image with Anchor = { image.Anchor with Order = image.Anchor.Order + 100 } }) } }) }
-let swappedBack = XlsxReader.loadBytesNative (XlsxWriter.writeWorkbookPackageBytes swapped) |> Option.get
+let swappedBack = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes swapped) |> Option.get
 ok "objects are written in front of or behind pictures by their order"
    (zOrderOf swappedBack |> List.forall (fun sheet -> match List.tryFindIndex (fun (kind, _) -> kind = "picture") sheet with | Some first -> sheet |> List.skip first |> List.forall (fun (kind, _) -> kind = "picture") | None -> true)
     && zOrderOf swappedBack |> List.exists (fun sheet -> sheet |> List.exists (fun (kind, _) -> kind <> "picture") && sheet |> List.exists (fun (kind, _) -> kind = "picture")))
@@ -829,7 +829,7 @@ for file, model in
 
 let modernSheet = { syntheticSheet with Name = "Modern"; Tables = []; DataValidations = []; Hyperlinks = []; PrintArea = None; PrintTitleRows = None; PrintTitleCols = None
                                         CellSource = XlsxWriter.sheetCells [ { Row = 0; Col = 0; Value = XlsxWriter.XlsxFormula ("XLOOKUP(1,B1:B2,C1:C2)", None); Format = XlsxWriter.defaultXlsxCellFormat; Comment = None } ] }
-let modernBytes = { synthetic with Sheets = [ modernSheet ]; DefinedNames = [ { Name = "Pick"; RefersTo = "TEXTJOIN(\",\",TRUE,Modern!$B$1:$B$2)"; LocalSheetIndex = None; Comment = None; Hidden = false } ]; VbaProjectSource = None } |> XlsxWriter.writeWorkbookPackageBytes
+let modernBytes = { synthetic with Sheets = [ modernSheet ]; DefinedNames = [ { Name = "Pick"; RefersTo = "TEXTJOIN(\",\",TRUE,Modern!$B$1:$B$2)"; LocalSheetIndex = None; Comment = None; Hidden = false } ]; VbaProjectSource = None } |> XlsxPackageWriter.writeWorkbookPackageBytes
 let modernPart (name: string) =
     use archive = new System.IO.Compression.ZipArchive(new MemoryStream(modernBytes))
     use reader = new StreamReader(archive.GetEntry(name).Open())

@@ -285,6 +285,30 @@ let private loadMacroProject (preserved: XlsxReader.WorkbookPreservation option)
     Fable.Core.JS.Constructors.Promise.resolve (Rbt.Spreadsheet.MacroProject.openProject preserved)
 #endif
 
+/// The XLSX package writer (XlsxPackageWriter.fs, dist/office-formats/src/XlsxPackageWriter.js): fetched
+/// when a workbook is first written (ExportXlsx) - the grid never imports it otherwise, so opening, showing
+/// and editing a workbook do not load it. (What ExportXlsx hands it, XlsxWriter's workbook, is made here.)
+#if FABLE_COMPILER
+type private XlsxPackageWriterModule =
+    abstract writeWorkbookPackage: XlsxWriter.XlsxWorkbookOut -> JS.Promise<obj>
+    abstract writeWorkbookPackageReusing: obj * (string * byte[]) list * XlsxWriter.XlsxWorkbookOut -> JS.Promise<obj>
+
+[<Emit("import(\"../office-formats/src/XlsxPackageWriter.js\")")>]
+let private importXlsxPackageWriter () : JS.Promise<XlsxPackageWriterModule> = jsNative
+
+/// The package of `workbook` (a JSZip archive), written by the package writer once it has loaded;
+/// with `source` (the opened file's archive), `reuse` are entries of it written as they were.
+let private writeXlsxPackage (source: obj) (reuse: (string * byte[]) list) (workbook: XlsxWriter.XlsxWorkbookOut) : JS.Promise<obj> =
+    (importXlsxPackageWriter ()).``then``(fun writer ->
+        if isNull source then writer.writeWorkbookPackage workbook
+        else writer.writeWorkbookPackageReusing (source, reuse, workbook))
+    |> unbox<JS.Promise<obj>>
+#else
+let private writeXlsxPackage (source: obj) (reuse: (string * byte[]) list) (workbook: XlsxWriter.XlsxWorkbookOut) : JS.Promise<obj> =
+    if isNull source then XlsxPackageWriter.writeWorkbookPackage workbook
+    else XlsxPackageWriter.writeWorkbookPackageReusing source reuse workbook
+#endif
+
 // ---- function providers (Formula.fs, "The function table") ----------------------------------
 [<Emit("($0 != null && typeof $0.then === 'function')")>]
 let private isThenable (value: obj) : bool = jsNative
@@ -7179,7 +7203,7 @@ type Spreadsheet(container: Element) as this =
                 // (A part that goes back as it was read - a sheet, and what the reader kept of the
                 // file: charts, pivot caches, media - is the file's compressed entry, not deflated again.)
                 let kept = keptAtExport
-                (if isNull source then XlsxWriter.writeWorkbookPackage out else XlsxWriter.writeWorkbookPackageReusing source (parts @ kept) out)
+                writeXlsxPackage source (parts @ kept) out
                 |> packageBytes
             let wanted = try Rbt.Spreadsheet.XlsxBridge.Export.verbatimPartsWanted input with _ -> []
             let fetched : JS.Promise<obj * (string * byte[]) list> =
@@ -7188,7 +7212,10 @@ type Spreadsheet(container: Element) as this =
                 |> unbox
             // (A file that cannot be read again is written from the model, as before.)
             (fetched.``catch``(fun _ -> null, [])).``then``(fun (source, parts) -> write source parts) |> unbox<JS.Promise<byte[]>>
-        | None -> packageBytes (XlsxWriter.writeWorkbookPackage (this.ToXlsxWorkbook()))
+        | None ->
+            // (The workbook is taken now, as it is when asked for; the writer may still be loading.)
+            let out = this.ToXlsxWorkbook()
+            packageBytes (writeXlsxPackage null [] out)
 
     /// Render the current model through the shared portable paint command path.
     member _.RenderPortableCanvas(canvas: Element) = renderPortablePaintToCanvas canvas

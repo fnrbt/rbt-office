@@ -19,6 +19,18 @@ Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
 const blob = await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor));
 ```
 
+`Main.js` loads all of office-formats (the XLSX reader and writer too). A host that only opens and saves
+documents can import the two modules that do it instead - the same functions, loaded when used:
+
+```js
+const { forEditorPackage } = await import('@rbt/office/office-formats/src/WordPackageOpen.js');        // = OF.processors.forEditorPackage
+const { writeFromEditorPackage } = await import('@rbt/office/office-formats/src/WordPackageWriterAssembly.js'); // = OF.word.writeFromEditorPackage
+```
+
+`WordHost` (the shell's host) does this: it fetches the DOCX reader when a document is first opened and the
+writer when one is first saved; `Word.js`, `WordShell.js` and `WordHost.js` load neither at start
+(`scripts/check-start-up-modules.mjs`).
+
 ### Document save contract
 
 Save imported documents with the complete package shown above, including its

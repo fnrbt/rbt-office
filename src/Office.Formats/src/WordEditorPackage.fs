@@ -1834,7 +1834,7 @@ let private readRun value =
             | Some _, true, _ -> Picture (readImage value)
             | Some xml, false, _ ->
                 Opaque {
-                    DocxReader.OpaqueObject.Xml = xml
+                    DocxTypes.OpaqueObject.Xml = xml
                     Kind = textOf value "OpaqueKind" |> Option.defaultValue "drawing"
                     ParagraphLevel = boolean value "OpaqueParagraphLevel"
                     ShapeCandidate = false }

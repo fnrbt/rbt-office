@@ -56,7 +56,7 @@ let count (needle: string) (text: string) =
 let addr row col : CellAddress = { Row = row; Col = col }
 let range sr sc er ec : CellRange = { From = addr sr sc; To = addr er ec }
 let export (imported: Bridge.ImportedWorkbook) (sheets: SpreadsheetModel array) =
-    XlsxWriter.writeWorkbookPackageBytes
+    XlsxPackageWriter.writeWorkbookPackageBytes
         (Bridge.Export.toWorkbookOut
             { Sheets = sheets
               Names = imported.Sheets |> Array.map (fun sheet -> sheet.Name)
@@ -199,7 +199,7 @@ checkWritten "second save" (export second (zoomed (modelsOf second))) |> ignore
 // ... and with nothing touched at all: the sheet is the file's part.
 ok "save: an untouched sheet is the part that was read" ((partsOf (export imported (modelsOf imported))).["xl/worksheets/sheet1.xml"] = (partsOf file).["xl/worksheets/sheet1.xml"]) ""
 // The reader's workbook straight to the writer.
-checkWritten "reader to writer" (XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (loadBytes file))) |> ignore
+checkWritten "reader to writer" (XlsxPackageWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook (loadBytes file))) |> ignore
 
 // The rules of the sheet edited (one added): the x14 rules are still there.
 do

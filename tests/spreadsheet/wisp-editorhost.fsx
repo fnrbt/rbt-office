@@ -352,7 +352,7 @@ assertEq "sheet reorder changes order" (Ok true) (executeStructural reordered (R
 assertEq "sheet reorder retains stable identities" [ secondId; firstId ] reordered.Workbook.Value.SheetOrder
 undo reordered |> ignore
 assertEq "undo sheet reorder restores identities" [ firstId; secondId ] reordered.Workbook.Value.SheetOrder
-let bytes = XlsxWriter.writeWorkbookPackageBytes (exportWorkbook book None)
+let bytes = XlsxPackageWriter.writeWorkbookPackageBytes (exportWorkbook book None)
 let imported = bytes |> XlsxReader.loadBytesNative |> Option.get |> B.Import.importWorkbook
 assertEq "saved iteration" book.Workbook.Value.Iteration imported.Context.Iteration
 assertEq "saved global name" "Data!$A$3" imported.Context.Names.[None, "GLOBAL"]
@@ -365,7 +365,7 @@ switchSheet reopened 0
 deleteSheet reopened |> ok
 let removed = reopened.Workbook.Value
 assertEq "surviving stable id" "sheet2" removed.ActiveSheet
-let savedAgain = XlsxWriter.writeWorkbookPackageBytes (exportWorkbook reopened (Some imported.Source))
+let savedAgain = XlsxPackageWriter.writeWorkbookPackageBytes (exportWorkbook reopened (Some imported.Source))
 let reopenedAgain = savedAgain |> XlsxReader.loadBytesNative |> Option.get |> B.Import.importWorkbook
 assertEq "local scope follows sheet deletion" true (Map.containsKey (Some "sheet1", "LOCALNAME") reopenedAgain.Context.Names)
 assertEq "local metadata follows scope" info reopenedAgain.Context.NameInfo.[Some "sheet1", "LOCALNAME"]
@@ -383,7 +383,7 @@ renameSheet references "New Data" |> ok
 switchSheet references 1
 assertEq "rename rewrites dependent formula" "='New Data'!A1*3" (cellEditText (activeModel references) 0 0)
 assertEq "rename retains dependent value" (Number 15.0) (cached references 0 0)
-let savedReferences = exportWorkbook references None |> XlsxWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative |> Option.get
+let savedReferences = exportWorkbook references None |> XlsxPackageWriter.writeWorkbookPackageBytes |> XlsxReader.loadBytesNative |> Option.get
 let savedResults = savedReferences |> B.Import.importWorkbook |> _.Context |> createWithWorkbook
 switchSheet savedResults 1
 assertEq "saved formula cache after rename" (Number 15.0) (cached savedResults 0 0)

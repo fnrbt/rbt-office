@@ -51,7 +51,7 @@ let build (cases: string) (docs: string) =
         let input : Bridge.ExportInput =
             { Sheets = [| sheet.Model |]; Names = [| sheet.Name |]; Visible = [| true |]; ActiveSheetIndex = 0
               NameInfo = Map.empty; DefinedNames = Map.empty; Source = None; Macros = None; MacroProject = Some project }
-        File.WriteAllBytes(Path.Combine(docs, Path.GetFileNameWithoutExtension file + ".xlsm"), XlsxWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
+        File.WriteAllBytes(Path.Combine(docs, Path.GetFileNameWithoutExtension file + ".xlsm"), XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut input))
         // (Excel gets the module itself: run-cases.vbs puts it into a blank workbook's project.)
         File.WriteAllText(Path.Combine(docs, Path.GetFileNameWithoutExtension file + ".bas"), (wrapped (File.ReadAllText file)).Replace("\r\n", "\n").Replace("\n", "\r\n"))
     printfn "built %d cases into %s" (Directory.GetFiles(docs, "*.xlsm").Length) docs

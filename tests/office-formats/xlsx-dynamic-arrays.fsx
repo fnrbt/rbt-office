@@ -52,7 +52,7 @@ let count (needle: string) (text: string) =
     n
 let addr row col : CellAddress = { Row = row; Col = col }
 let export (source: Bridge.ImportedWorkbook option) (sheets: SpreadsheetModel array) (names: string array) =
-    XlsxWriter.writeWorkbookPackageBytes
+    XlsxPackageWriter.writeWorkbookPackageBytes
         (Bridge.Export.toWorkbookOut
             { Sheets = sheets
               Names = names
@@ -161,7 +161,7 @@ let importedAgain = Bridge.Import.importWorkbook (loadBytes written)
 checkExcelWritten "second save" (export (Some importedAgain) [| importedAgain.Sheets.[0].Model |] [| "Sheet1" |]) |> ignore
 
 // The reader -> writer path that does not go through the model.
-let direct = XlsxWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook excelWorkbook)
+let direct = XlsxPackageWriter.writeWorkbookPackageBytes (XlsxWriter.packageFromReaderWorkbook excelWorkbook)
 checkExcelWritten "reader to writer" direct |> ignore
 
 // ---- edits --------------------------------------------------------------------
@@ -212,7 +212,7 @@ do
 
 // ---- a metadata part with rich values gets the dynamic array record ------------
 do
-    let extended, cm = XlsxWriter.metadataWithDynamicArrays richMetadata
+    let extended, cm = XlsxPackageWriter.metadataWithDynamicArrays richMetadata
     eq "extend: the record's number" cm 1
     eq "extend: the reader finds it" (XlsxReader.dynamicArrayCellMetadata extended) (Set.ofList [ 1 ])
     ok "extend: the rich value type is kept, XLDAPR is second" (extended.Contains "<metadataTypes count=\"2\"><metadataType name=\"XLRICHVALUE\"" && extended.Contains "<rc t=\"2\" v=\"0\"/>") extended
@@ -222,10 +222,10 @@ do
     ok "extend: schema order" (at "<metadataTypes" < at "<futureMetadata name=\"XLRICHVALUE\"" && at "<futureMetadata name=\"XLRICHVALUE\"" < at "<futureMetadata name=\"XLDAPR\"" && at "<futureMetadata name=\"XLDAPR\"" < at "<cellMetadata" && at "<cellMetadata" < at "<valueMetadata") extended
     ok "extend: well-formed" (try XmlDsl.parse extended |> ignore; true with _ -> false) extended
     // Extending what is already extended changes nothing.
-    eq "extend: once" (XlsxWriter.metadataWithDynamicArrays extended) (extended, 1)
+    eq "extend: once" (XlsxPackageWriter.metadataWithDynamicArrays extended) (extended, 1)
     // Cell metadata that is something else: the record is added after it.
     let other = richMetadata.Replace("<valueMetadata", "<cellMetadata count=\"1\"><bk><rc t=\"1\" v=\"0\"/></bk></cellMetadata><valueMetadata")
-    let otherExtended, otherCm = XlsxWriter.metadataWithDynamicArrays other
+    let otherExtended, otherCm = XlsxPackageWriter.metadataWithDynamicArrays other
     eq "extend: after another cell-metadata record" (otherCm, otherExtended.Contains "<cellMetadata count=\"2\"><bk><rc t=\"1\" v=\"0\"/></bk><bk><rc t=\"2\" v=\"0\"/></bk></cellMetadata>") (2, true)
     eq "extend: the reader finds the second record" (XlsxReader.dynamicArrayCellMetadata otherExtended) (Set.ofList [ 2 ])
 
