@@ -101,6 +101,11 @@ try {
     check('the plus of a heading collapses it', rows().map(textOf), ['Intro', 'Alpha', 'alpha body', 'Alpha one', 'Beta', 'beta body']);
     rows()[3].querySelector('[data-testid="word-outline-symbol"]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 })); await settle();
     check('and expands it', rows().length, 7);
+    // On a Mac, Option+Shift with - and = types "—" and "±": the keys are known by their place.
+    key('—', { altKey: true, shiftKey: true, code: 'Minus' }); await settle();
+    const collapsedByOption = rows().length;
+    key('±', { altKey: true, shiftKey: true, code: 'Equal' }); await settle();
+    check('Option+Shift+Minus collapses and Option+Shift+Plus expands (a Mac\'s keys)', [collapsedByOption < 7, rows().length], [true, 7]);
 
     // Show level, first line only, text formatting.
     const show = control('word-outline-show-level'); show.value = '1'; show.dispatchEvent(new Event('change', { bubbles: true })); await settle();

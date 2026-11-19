@@ -749,6 +749,10 @@ checks['dispose-releases'] = async () => {
             const registered = count(() => true);
             const onGrid = count((target) => target instanceof Node && host.contains(target));
             grid.Dispose();
+            // (Out of the page at once: in Firefox a host node left in the page until after the checks
+            // below kept the disposed grid alive through every collection, though a grid used in the same
+            // ways is collected when its host is removed later on its own.)
+            host.remove();
             return { registered, onGrid, weak: new WeakRef(grid), model: new WeakRef(grid.GetModel()), hostNode: host };
         };
         const result = await run();

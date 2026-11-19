@@ -1361,14 +1361,30 @@ let markupMarkerCommands (members: Dictionary<BlockId, HashSet<string>>) (settin
         if selected.Count = 0 then []
         else
             let commands = ResizeArray<PaintCommand>()
-            for layout in layouts do
+            let shown (layout: BlockLayout) =
                 match Portable.Dict.tryFind layout.BlockId members with
-                | ValueSome groups when groups |> Seq.exists selected.Contains ->
+                | ValueSome groups -> groups |> Seq.exists selected.Contains
+                | _ -> false
+            let layouts = List.toArray layouts
+            for i = 0 to layouts.Length - 1 do
+                let layout = layouts.[i]
+                if shown layout then
                     let blockX = settings.PaddingLeft + layout.Indent
                     let blockWidth = max 1.0 layout.AvailableWidth
-                    commands.Add(StrokeRect ("#2563EB", 1.0, blockX, layout.Y, blockWidth, layout.Height))
+                    // (The frame closes under the text of the control's last paragraph, not under its
+                    // spacing after; between two of its paragraphs it runs on.)
+                    let blockBottom =
+                        if i + 1 < layouts.Length && shown layouts.[i + 1] then layout.Y + layout.Height
+                        else
+                            match List.tryLast layout.Lines with
+                            | Some line when line.Y + line.Height > layout.Y -> line.Y + line.Height
+                            | _ -> layout.Y + layout.Height
+                    // (A one-pixel line on the pixel grid: on whole coordinates it is smeared over two pixel
+                    // rows of a paler blue, and browsers smear a fractional right edge differently.)
+                    let left, top = floor blockX, floor layout.Y
+                    let right, bottom = floor (blockX + blockWidth), ceil blockBottom
+                    commands.Add(StrokeRect ("#2563EB", 1.0, left + 0.5, top + 0.5, max 0.0 (right - left - 1.0), max 0.0 (bottom - top - 1.0)))
                     commands.Add(FillRect ("#2563EB", blockX, layout.Y, min 32.0 blockWidth, min 3.0 layout.Height))
-                | _ -> ()
             resizeArrayToList commands
 
 let private maxNestedTablePaintDepth = 512

@@ -60,6 +60,10 @@ module Shell =
 @media (max-width: 600px) {
   .rb-word-shell .rb-word-titlebar { padding-inline: 10px; }
   .rb-word-shell .rb-word-menu-slot:nth-last-child(-n+2) .rb-word-menu { left: auto; right: 0; }
+  /* (On a phone the toolbar's rows and the bookmark / content control lists took most of the
+     height, leaving the page a strip: they scroll in a band of their own instead.) */
+  .rb-word-shell .rb-word-toolbar { max-height: 96px; overflow-y: auto; }
+  .rb-word-shell .rb-word-markup-navigator { max-height: 72px; overflow-y: auto; }
 }
 """
 

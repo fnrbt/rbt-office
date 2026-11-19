@@ -17,11 +17,19 @@ try {
     const bytes = await bytesOf('/repo/tests/repros/word/float-image-wrap-square.docx');
     const open = async (data) => { const editor = Word.initializeCanvas(canvas); Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(data)); return editor; };
     // The lines with text, each with where its text starts and ends across the page.
-    const textLines = (editor) => Word.getLayoutLines(editor).map((line) => {
+    // (The width of a space in the body's face, which a line's trailing spaces take: it depends on the
+    // face the browser found for the document's font.)
+    const spaceWidth = (editor) => {
+        const segment = Word.getLayoutSegments(editor).find((s) => s.Kind === 'text');
+        const context = document.createElement('canvas').getContext('2d');
+        context.font = `${segment.Bold ? 'bold ' : ''}${segment.Italic ? 'italic ' : ''}${segment.FontSize}px "${segment.FontFamily ?? 'Calibri'}", sans-serif`;
+        return context.measureText(' ').width;
+    };
+    const textLines = (editor) => { const space = spaceWidth(editor); return Word.getLayoutLines(editor).map((line) => {
         // (Text: not the picture itself, which a line holds as a character of its own.)
         const parts = (line.Segments ?? []).filter((segment) => typeof segment.Text === 'string' && segment.Text.replace(/\uFFFC/g, '').trim() !== '');
-        return parts.length === 0 ? null : { text: line.Text, y: line.Y, height: line.Height, left: Math.min(...parts.map((segment) => segment.X)), right: Math.max(...parts.map((segment) => segment.X + segment.Width)), parts: parts.map((segment) => [segment.X, segment.X + segment.Width - (segment.Text.length - segment.Text.trimEnd().length) * 3]) };
-    }).filter((line) => line !== null);
+        return parts.length === 0 ? null : { text: line.Text, y: line.Y, height: line.Height, left: Math.min(...parts.map((segment) => segment.X)), right: Math.max(...parts.map((segment) => segment.X + segment.Width)), parts: parts.map((segment) => [segment.X, segment.X + segment.Width - (segment.Text.length - segment.Text.trimEnd().length) * space]) };
+    }).filter((line) => line !== null); };
     const beside = (lines) => lines.filter((line) => line.y + line.height > 144.5 && line.y < 258.7);
     const editor = await open(bytes);
     const lines = textLines(editor);

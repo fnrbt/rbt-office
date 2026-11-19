@@ -2705,9 +2705,9 @@ checks['api-find'] = async () => {
         again.close();
 
         // ---- what is refused ----
-        check('bad input throws', [thrown(() => grid.Find('')), thrown(() => grid.Find(5)), thrown(() => grid.Find('(', { regex: true })).slice(0, 44), thrown(() => grid.Find('a', { lookIn: 'comments' })), thrown(() => grid.Find('a', { scope: 'workbook', range: 'A1:B2' })),
+        check('bad input throws', [thrown(() => grid.Find('')), thrown(() => grid.Find(5)), thrown(() => grid.Find('(', { regex: true })).slice(0, 39) /* (then the engine's own message) */, thrown(() => grid.Find('a', { lookIn: 'comments' })), thrown(() => grid.Find('a', { scope: 'workbook', range: 'A1:B2' })),
             thrown(() => grid.Find('a', { caseSensitive: true })).slice(0, 44), thrown(() => grid.ReplaceAll('a')), thrown(() => grid.ReplaceAll('', 'x', {})), thrown(() => grid.Find('a', { range: 'nowhere' })) !== null],
-            ['Find: there is no text to search for', 'Find: text must be a string, got 5', 'Find: "(" is not a regular expression (Inval', 'Find: lookIn must be one of "values", "formulas", got "comments"', 'Find: a range is searched on one sheet: leave out the range or the workbook scope',
+            ['Find: there is no text to search for', 'Find: text must be a string, got 5', 'Find: "(" is not a regular expression (', 'Find: lookIn must be one of "values", "formulas", got "comments"', 'Find: a range is searched on one sheet: leave out the range or the workbook scope',
              'Find: the options have no "caseSensitive" (t', 'ReplaceAll: replacement must be a string, got null', 'ReplaceAll: there is no text to search for', true]);
         check('ReplaceMatch needs a search', (() => { const other = mountGrid(); const message = thrown(() => other.grid.ReplaceMatch('x')); other.close(); return message; })(), 'ReplaceMatch: there is no search (call Find first)');
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
