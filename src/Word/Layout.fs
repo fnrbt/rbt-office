@@ -130,16 +130,6 @@ let private optionEqualsIgnoreCase expected value =
     | Some actual -> equalsIgnoreCase actual expected
     | None -> false
 
-let private hasDigitsFrom (start: int) (value: string) =
-    let mutable index = start
-    let mutable hasDigit = start < value.Length
-    let mutable valid = hasDigit
-    while valid && index < value.Length do
-        if not (System.Char.IsDigit value.[index]) then
-            valid <- false
-        index <- index + 1
-    hasDigit && valid
-
 let private asciiSingleCharStrings =
     Array.init 256 (fun code -> string (char code))
 
@@ -1130,13 +1120,56 @@ let private paginateBlockWithFootnotes settings footnotesByPage y blockHeight =
     let contentBottom = contentBottomWithFootnotes settings footnotesByPage y
     if y > contentTop && y + blockHeight > contentBottom + pageFitTolerance then advanceToNextPage settings y else y
 
+/// A font's single line per unit of size as Word sets it: GDI's height (OS/2
+/// usWinAscent + usWinDescent) and the hhea line gap beyond it, over the em -
+/// of the Windows fonts (and the fonts made to their metrics). The line box
+/// factors here were measured on Calibri; text in another font has its line
+/// box in the ratio of the two (Arial's lines are 6% lower than Calibri's).
+/// A font not in the table is taken as Calibri.
+let private calibriLineFactor = 1.2207
+let private wordFontLineFactors =
+    [| "Calibri", calibriLineFactor; "Calibri Light", calibriLineFactor
+       "Arial", 1.1499; "ArialMT", 1.1499; "Helvetica", 1.1499; "Liberation Sans", 1.1499; "Arimo", 1.1499
+       "Times New Roman", 1.1499; "Times", 1.1499; "Liberation Serif", 1.1499; "Tinos", 1.1499
+       "Courier New", 1.1328; "Courier", 1.1328; "Liberation Mono", 1.1328; "Cousine", 1.1328
+       "Cambria", 1.1724; "Cambria Math", 1.1724; "Georgia", 1.1362; "Verdana", 1.2153
+       "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709 |]
+let private wordFontLineFactor (family: string) =
+    let mutable factor = calibriLineFactor
+    let mutable index = 0
+    while index < wordFontLineFactors.Length do
+        let entry = wordFontLineFactors.[index]
+        if trimmedEqualsIgnoreCase family (fst entry) then
+            factor <- snd entry
+            index <- wordFontLineFactors.Length
+        else
+            index <- index + 1
+    factor
+
+let private singleLineFactorOfFamily (family: string option) =
+    match family with
+    | Some family -> wordFontLineFactor family
+    | None -> calibriLineFactor
+
+/// A text's single line (Word: the font's ascent and descent and line gap over its
+/// em, of its size) - the same as fontLineRatio * calibriLineFactor below.
+let private singleLineHeightOfText (style: TextBuffer.TextStyle) =
+    WordLayout.Text.displayFontSize style * singleLineFactorOfFamily style.FontFamily
+
+/// How much of a line has to fit above the bottom of the page: what of it is more
+/// than single spacing may run below it (Word 2019, a page of lines at 1.15, 1.21,
+/// 1.35, 1.62 and 1.67 lines: the last line stays on the page when its text at
+/// single spacing ends above the bottom margin, by as much as 5pt of its extra
+/// spacing below it; a line whose single-spaced text ends 1.6pt below it goes on).
+/// Text is as tall as its font's single line (singleLineHeightOfText); a line lower than
+/// that (exact spacing) has to fit whole.
 let private lineVisibleFitHeight line =
     let mutable visibleHeight = 0.0
     let mutable hasVisibleSegment = false
     for segment in line.Segments do
         let candidate =
             match segment with
-            | TextSegment (_, style, _, _, _) -> Some (WordLayout.Text.printFontSize style)
+            | TextSegment (_, style, _, _, _) -> Some (min line.Height (singleLineHeightOfText style))
             | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _, _) ->
                 if floating then None else Some (height + max 0.0 yOffset)
             | MathSegment (_, _, _, _, ascent, descent, _, _) -> Some (ascent + descent)
@@ -1156,24 +1189,15 @@ let private tryLastLine lines =
             last <- line
         Some last
 
+/// How much of a paragraph has to fit above the bottom of the page: down to its
+/// last line's text (lineVisibleFitHeight) - its spacing after may fall below it
+/// (Word 2019: one-line paragraphs 12pt apart, the last one's text 4pt above the
+/// bottom margin and its spacing after 8pt below it, stays on the page).
 let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: BlockLayout) =
-    if layout.Metadata.ListStyle = Numbered then
-        layout.Height
-    else
-        let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
-        match layout.Lines with
-        | [] -> max 0.0 (layout.Height - spacingAfter)
-        // Word allows a single-line heading to sit at the page bottom even when
-        // its after-spacing falls beyond the printable body.
-        | [line] when paragraphStyle.OutlineLevel.IsSome || layout.Metadata.Style = Some "Heading1" ->
-            max 0.0 ((line.Y - layout.Y) + lineVisibleFitHeight line)
-        // Non-heading one-line paragraphs still need their full paragraph box,
-        // including after-spacing, to fit on the page.
-        | [_] -> layout.Height
-        | _ ->
-            match tryLastLine layout.Lines with
-            | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
-            | None -> max 0.0 (layout.Height - spacingAfter)
+    let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
+    match tryLastLine layout.Lines with
+    | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineVisibleFitHeight lastLine)
+    | None -> max 0.0 (layout.Height - spacingAfter)
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
     let canSplit = row.CanSplit |> Option.defaultValue true
@@ -1400,36 +1424,6 @@ let private spacedStartOffsetFromPrefix prefix spacing columnIndex =
 let private spacedSpannedWidthFromPrefix prefix spacing start span fallback =
     max 0.0 (spannedWidthFromPrefix prefix start span fallback - spacing * 2.0)
 
-// Word line boxes include font leading beyond the nominal font size. Auto
-// w:line multiples (eg 259/276) still need this Calibri-leading factor.
-let private wordLineBoxFactor = 1.224
-
-/// A font's single line per unit of size as Word sets it: GDI's height (OS/2
-/// usWinAscent + usWinDescent) and the hhea line gap beyond it, over the em -
-/// of the Windows fonts (and the fonts made to their metrics). The line box
-/// factors here were measured on Calibri; text in another font has its line
-/// box in the ratio of the two (Arial's lines are 6% lower than Calibri's).
-/// A font not in the table is taken as Calibri.
-let private calibriLineFactor = 1.2207
-let private wordFontLineFactors =
-    [| "Calibri", calibriLineFactor; "Calibri Light", calibriLineFactor
-       "Arial", 1.1499; "ArialMT", 1.1499; "Helvetica", 1.1499; "Liberation Sans", 1.1499; "Arimo", 1.1499
-       "Times New Roman", 1.1499; "Times", 1.1499; "Liberation Serif", 1.1499; "Tinos", 1.1499
-       "Courier New", 1.1328; "Courier", 1.1328; "Liberation Mono", 1.1328; "Cousine", 1.1328
-       "Cambria", 1.1724; "Cambria Math", 1.1724; "Georgia", 1.1362; "Verdana", 1.2153
-       "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709 |]
-let private wordFontLineFactor (family: string) =
-    let mutable factor = calibriLineFactor
-    let mutable index = 0
-    while index < wordFontLineFactors.Length do
-        let entry = wordFontLineFactors.[index]
-        if trimmedEqualsIgnoreCase family (fst entry) then
-            factor <- snd entry
-            index <- wordFontLineFactors.Length
-        else
-            index <- index + 1
-    factor
-
 /// How much taller (or lower) a line in this text's font is than in Calibri.
 // (The family last asked for and its ratio: asked for every line, nearly always of one family. One
 // reference, swapped whole, so that layouts on other threads read a family with its own ratio.)
@@ -1444,89 +1438,30 @@ let private fontLineRatio (style: TextBuffer.TextStyle) =
             lastFontLineRatio <- System.Tuple<string, float>(family, ratio)
             ratio
     | None -> 1.0
-let private wordSingleLineBoxFactor = 1.15
-let private wordDefaultSpacingSingleLineBoxFactor = 1.316
-let private wordTableFollowSingleLineBoxFactor = wordDefaultSpacingSingleLineBoxFactor
-let private wordTocEntrySingleLineBoxFactor = 1.266
-let private wordAutoSpacingPoints = 14.0
-let private monospaceLineBoxFactor = 1.18
-let private ubuntuLineBoxFactor = 1.148
-let private tableCellDefaultLineBoxFactor = 1.336
-// Matches Word's visual single-line pitch for explicit 11pt TableGrid cell paragraphs.
-let private tableCellExplicitLineBoxFactor = 1.266
-let private arialTableCellExplicitLineBoxFactor = 1.193
-
-let private tableCellLineBoxFontSize fontSize =
-    // All import paths now hand us fontSize in CSS-pixels at 96 DPI
-    // (DocumentProcessors.fontSizeToPoints multiplies the pt value by 96/72).
-    // The earlier 8-12pt special case was patching the native/PDF import
-    // path's stale point values; it's no longer needed.
-    fontSize
-
-let private lineBoxFactorForTextStyle (style: TextBuffer.TextStyle) =
-    match style.FontFamily with
-    | Some family when trimmedEqualsIgnoreCase family "consolas"
-                       || trimmedEqualsIgnoreCase family "courier new"
-                       || trimmedEqualsIgnoreCase family "courier" -> monospaceLineBoxFactor
-    | Some family when trimmedEqualsIgnoreCase family "ubuntu" -> ubuntuLineBoxFactor
-    | _ -> wordLineBoxFactor * fontLineRatio style
-
-let private tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing (style: TextBuffer.TextStyle) =
-    if not hasExplicitLineSpacing then
-        tableCellDefaultLineBoxFactor * fontLineRatio style
-    else
-        match style.FontFamily with
-        // (Measured on Word; the font ratio gives the same, 1.1926.)
-        | Some family when trimmedEqualsIgnoreCase family "arial" -> arialTableCellExplicitLineBoxFactor
-        | _ -> tableCellExplicitLineBoxFactor * fontLineRatio style
-
 let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =
     metadata.SpacingBefore.IsNone && metadata.SpacingAfter.IsNone
 
-let private isTocEntryStyle (metadata: BlockMetadata) =
-    metadata.Style
-    |> Option.exists (fun style ->
-        style.StartsWith("TOC", System.StringComparison.OrdinalIgnoreCase)
-        && hasDigitsFrom 3 style)
+/// The line spacing of a paragraph when neither it, its styles nor the document's
+/// defaults state one and the document has no w:pPrDefault (Word's own defaults
+/// then: also 8 pt after): 1.158 of single (Word 2019: Calibri 11 pt 15.54 pt,
+/// 22 pt 31.10, Arial 11 pt 14.70, Times New Roman 14.64 - each 1.157-1.162 of
+/// its font's single line).
+let private wordUnstatedLineMultiple = 1.158
 
-let private isHeadingStyle (metadata: BlockMetadata) =
-    metadata.Style
-    |> Option.exists (fun style ->
-        style.StartsWith("Heading", System.StringComparison.OrdinalIgnoreCase)
-        && hasDigitsFrom 7 style)
+/// A line of this text at this multiple of single spacing: the font's single line
+/// (singleLineHeightOfText) times the multiple - in the body, a table cell, a heading
+/// or an entry of a table of contents alike (Word 2019: Calibri 11pt 13.43pt at
+/// single, 15.44pt at 1.15, a table cell's 13.43pt; Times New Roman 12pt 13.80pt).
+let private wordLineHeight textStyle fontSize lineSpacing =
+    fontSize * lineSpacing * calibriLineFactor * fontLineRatio textStyle
 
-let private headingUsesDefaultLineBox (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
-    let before = metadata.SpacingBefore |> Option.orElse paragraphStyle.SpacingBefore
-    let after = metadata.SpacingAfter |> Option.orElse paragraphStyle.SpacingAfter
-    let autoSpacing =
-        before |> Option.exists (fun value -> abs (value - wordAutoSpacingPoints) < 0.001)
-        && after |> Option.exists (fun value -> abs (value - wordAutoSpacingPoints) < 0.001)
-    isHeadingStyle metadata
-    && not autoSpacing
-
-let private wordLineHeight textStyle fontSize lineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
-    let factor =
-        if abs (lineSpacing - 1.0) < 0.001 then
-            fontLineRatio textStyle
-            * (if tocEntry then wordTocEntrySingleLineBoxFactor
-               elif headingDefaultLineBox then wordDefaultSpacingSingleLineBoxFactor
-               elif defaultParagraphSpacing then wordDefaultSpacingSingleLineBoxFactor
-               else wordSingleLineBoxFactor)
-        else
-            lineBoxFactorForTextStyle textStyle
-    fontSize * lineSpacing * factor
-
-let private lineHeightForSettings (settings: LayoutSettings) textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
+let private lineHeightForSettings textStyle fontSize lineSpacing lineSpacingRule hasExplicitLineSpacing defaultParagraphSpacing =
     // For "exact"/"atLeast" lineSpacing is the height in px (see
     // resolveLineSpacing) and the automatic box is single spacing.
     let absolute = lineSpacingRule = "exact" || lineSpacingRule = "atLeast"
     let multiple = if absolute then 1.0 else lineSpacing
-    let automatic =
-        if settings.InTableCell then
-            let factor = tableCellLineBoxFactorForTextStyle hasExplicitLineSpacing textStyle
-            tableCellLineBoxFontSize fontSize * multiple * factor
-        else
-            wordLineHeight textStyle fontSize multiple defaultParagraphSpacing tocEntry headingDefaultLineBox
+    let multiple = if not hasExplicitLineSpacing && defaultParagraphSpacing && not absolute then multiple * wordUnstatedLineMultiple else multiple
+    let automatic = wordLineHeight textStyle fontSize multiple
 
     match lineSpacingRule with
     | "exact" -> max 1.0 lineSpacing
@@ -1570,9 +1505,9 @@ let private resolveLineSpacing (paragraphStyle: ParagraphStyle) (rawMetadata: Bl
                 struct (value, "auto", 0.0)
         | None -> struct (1.0, "auto", 0.0)
 
-let private resolvedLineHeightForSettings (settings: LayoutSettings) (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) textStyle fontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox =
+let private resolvedLineHeightForSettings (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) textStyle fontSize hasExplicitLineSpacing defaultParagraphSpacing =
     let struct (multiple, rule, pixels) = resolveLineSpacing paragraphStyle rawMetadata fontSize
-    lineHeightForSettings settings textStyle fontSize (if rule = "auto" then multiple else pixels) rule hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+    lineHeightForSettings textStyle fontSize (if rule = "auto" then multiple else pixels) rule hasExplicitLineSpacing defaultParagraphSpacing
 
 let private lineMaxTextFontSize fallback (line: MeasuredLine) =
     let mutable maxSize = fallback
@@ -2951,8 +2886,6 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                 || metadata.LineSpacingRule.IsSome
                 || paragraphStyle.LineSpacingRule.IsSome
             let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
-            let tocEntry = isTocEntryStyle metadata
-            let headingDefaultLineBox = headingUsesDefaultLineBox paragraphStyle metadata
             let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
             let borderRight = paragraphBorderRightAdvance metadata
             match para.Buffer.Runs with
@@ -2976,7 +2909,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                     else
                         let contentFontSize = WordLayout.Text.displayFontSize textStyle
                         let contentTextStyle = textStyle
-                        let lineHeight = resolvedLineHeightForSettings settings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+                        let lineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
                         let lineScale = lineHeight / contentFontSize
                         let textHeight = contentFontSize * lineScale
                         Some (spacingBefore + borderBefore + max lineHeight textHeight + borderAfter + spacingAfter)
@@ -3305,8 +3238,6 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         || metadata.LineSpacingRule.IsSome
         || paragraphStyle.LineSpacingRule.IsSome
     let defaultParagraphSpacing = usesDefaultParagraphSpacing metadata
-    let tocEntry = isTocEntryStyle metadata
-    let headingDefaultLineBox = headingUsesDefaultLineBox paragraphStyle metadata
     let borderBefore, borderAfter = paragraphBorderVerticalAdvance metadata
     let borderRight = paragraphBorderRightAdvance metadata
     let contentY = y + spacingBefore + borderBefore
@@ -3338,7 +3269,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         match memoEntry with
         | Some entry -> entry.MemoContentFontSize, entry.MemoContentTextStyle
         | None -> paragraphContentMetrics paragraphStyle metadata buffer
-    let paragraphLineHeight = resolvedLineHeightForSettings settings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing tocEntry headingDefaultLineBox
+    let paragraphLineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
     let struct (lineSpacingMultiple, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
     let lineSettings = { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight }
     // Each line is as tall as its own text (see layoutLinesFromIndentWith).
@@ -5558,9 +5489,6 @@ let private layoutDocumentPassKept
     let paragraphTextIsEmpty (para: ParagraphBlock) =
         TextBuffer.isWhiteSpace para.Buffer
 
-    let paragraphTextIsNonbreakingBlank (para: ParagraphBlock) =
-        TextBuffer.isNonbreakingBlank para.Buffer
-
     let previousBlockIsTextTable index =
         index > 0
         && match blocks.[index - 1] with
@@ -5586,20 +5514,6 @@ let private layoutDocumentPassKept
         match paragraphBlockAt (index + 1) with
         | Some (_, nextPara) -> paragraphTextIsEmpty nextPara
         | None -> false
-
-    let nextNonEmptyParagraphBlock index =
-        let mutable probeIndex = index + 1
-        let mutable result = None
-        while result.IsNone && probeIndex < blocks.Length do
-            match paragraphBlockAt probeIndex with
-            | Some (nextBlock, nextPara) ->
-                if paragraphTextIsEmpty nextPara then
-                    probeIndex <- probeIndex + 1
-                else
-                    result <- Some (nextBlock, nextPara)
-            | None ->
-                probeIndex <- probeIndex + 1
-        result
 
     let shouldMoveKeepGroup currentY groupHeight =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) currentY
@@ -5635,16 +5549,6 @@ let private layoutDocumentPassKept
     let resetPreviousParagraph () =
         previousParagraphContext <- None
         previousParagraphLayout <- None
-
-    let tableFollowDefaultLineHeightAdjustment () =
-        match previousParagraphContext, previousParagraphLayout with
-        | Some (_, paragraphStyle, metadata, _), Some layout when not (hasExplicitLineSpacing paragraphStyle metadata) && not (usesDefaultParagraphSpacing metadata) ->
-            let mutable adjustment = 0.0
-            for line in layout.Lines do
-                let fontSize = lineMaxTextFontSize paragraphStyle.Text.FontSize line
-                adjustment <- adjustment + max 0.0 (fontSize * (wordTableFollowSingleLineBoxFactor - wordSingleLineBoxFactor))
-            adjustment
-        | _ -> 0.0
 
     // The shapes that text goes around, by the block they are anchored in. A
     // shape is placed when the block it is anchored in is laid out - from
@@ -5922,7 +5826,7 @@ let private layoutDocumentPassKept
             resetPreviousParagraph ()
             addTextBoxObstacle textBox
         | Table tableBlock ->
-            let tableY = y + tableFollowDefaultLineHeightAdjustment ()
+            let tableY = y
             (let struct (obstacles, placed) = withAnchoredBoxes tableBlock.Id tableY floatingObstacles placedFloatingBoxes
              floatingObstacles <- obstacles
              placedFloatingBoxes <- placed)
@@ -6111,21 +6015,6 @@ let private layoutDocumentPassKept
                     { layout with Height = layout.Height + 5.0 }
                 else
                     layout
-            let layout =
-                if layout.Lines.IsEmpty then
-                    match previousParagraphContext, nextNonEmptyParagraphBlock index with
-                    | Some (_, _, previousMetadata, _), Some (_, nextPara)
-                        when previousMetadata.Style = Some "TOC1" && nextPara.Metadata.Style = Some "NormalWeb" ->
-                        let trailingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle layout.Metadata
-                        { layout with Height = max 0.0 (layout.Height - trailingAfter) }
-                    | _ -> layout
-                else
-                    layout
-            let layout =
-                match layout.Lines with
-                | [line] when paragraphTextIsNonbreakingBlank para ->
-                    { layout with Height = layout.Height + line.Height }
-                | _ -> layout
             numberedCounters <- counters
             floatingObstacles <- obstacles
             placedFloatingBoxes <- placedBoxes
@@ -6860,8 +6749,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         // The list marker belongs to the first fragment only.
                         { shiftLayoutOffsets consumedOffset rawLayout with Prefix = ""; PrefixStyle = None }
                     else rawLayout
-                // A line fits when it ends above the column bottom, which
-                // moves up as the lines placed so far bring footnotes with them.
+                // A line fits when its text ends above the column bottom (lineVisibleFitHeight),
+                // which moves up as the lines placed so far bring footnotes with them.
                 let existingNotes = pageFootnotes ()
                 let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
                 let mutable fitNotes = existingNotes
@@ -6875,7 +6764,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         let extraReserve =
                             if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
                             else footnoteReserveHeight settings candidateNotes - existingReserve
-                        if line.Y + line.Height <= colBottom - extraReserve + 0.5 then
+                        if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + 0.5 then
                             fitCount <- fitCount + 1
                             lastFit <- Some line
                             fitNotes <- candidateNotes
