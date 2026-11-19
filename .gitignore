@@ -11,3 +11,4 @@ node_modules/
 
 # Word's PDFs of the layout fixtures (page-parity.mjs --refresh-word); their labels are kept in labels.tsv.
 tests/word/fixtures/*/word/*.pdf
+tests/test-documents-showcase/word/*.pdf

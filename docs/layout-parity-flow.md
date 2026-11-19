@@ -67,3 +67,21 @@ page count, 51 with every page starting at Word's line), worked a round at a tim
 | docx4j-conventions | 9 / 9, 5 starts | p6 | |
 | docx4j-repeating-section | 8 / 8, 7 starts | p8 | |
 | docx4j-binding-simple | 1 / 1, 0 starts | p1's text: content-control data binding, not layout | |
+
+### The showcase library
+
+`tests/test-documents-showcase/` (made by `tools/showcase-docs/make.py`; Word's pages in its `word/`): designed
+documents meant to look right, so every difference from Word is in plain view. The goal: each one matches Word
+page for page and on sight (compare `tools/pdf-runner`'s PDF with Word's, page by page). First comparison
+(2026-11-19): 7 of 8 at Word's page count, 5 with every page starting at Word's line; seen on the pages:
+
+| Discrepancy (Word / ours) | Documents | Round |
+|---|---|---|
+| A run's own font (`w:rFonts w:ascii`) loses to a theme font set higher up: Georgia drawn sans | annual-results (key figures), magazine-feature (all body text) | next |
+| Table column widths: Word follows the cells' widths (`w:tcW`), ours spreads the columns | annual-results, product-spec | |
+| A table in a multi-column section spans the page instead of its column | field-guide (species cards) | |
+| A paragraph's bottom border (a rule under text) drawn as a short stray dash | annual-results, field-guide, magazine | |
+| Square wrap round a floating picture: text runs under it | diagrams, magazine-feature | |
+| Top-and-bottom wrap round a floating text box: text runs under it | magazine-feature (pull quote) | |
+| A callout shape's tail (`wedgeRectCallout`) not drawn | diagrams | |
+| Row heights in a table with a vertically merged, vertically centred cell | annual-results (pipeline) | |
