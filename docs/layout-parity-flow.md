@@ -40,3 +40,21 @@ One line per hypothesis, refuted ones too. Status: testing, confirmed (implement
 | The footnote block ends at the bottom margin: its last line's bottom is the page height less the bottom margin, and the body may run down to it less the separator | testing | docx4j-getting-started (45 -> 46 pages): every paragraph of page 4 within 0.5pt of Word's, but our footnotes start 4.16-4.37pt above Word's on pages 4, 10 and 12 and end ~4.5pt above 720pt - so Word fits one more body line (`para-positions.vbs`, the footnotes' `Information(6)`) |
 | A line with a footnote reference (superscript) is taller than the footnote text's single line | open | Word's two one-line footnotes on page 12 of docx4j-getting-started are 12.75pt apart; ours 12.21pt |
 | Word fits ~1pt less per 468pt line than we do (test-long-document): kerning only with `w:kern`? | open | |
+
+## Queue
+
+The corpus's discrepancies as of 2026-11-19 (master df3230ad, canvas measurer: 54 of 67 documents at Word's
+page count, 51 with every page starting at Word's line), worked a round at a time, worst first:
+
+| Documents | Word / ours | First divergence | Round |
+|---|---|---|---|
+| calibre family (calibre-demo x2, calibre-demo-docx, complex-tables, wikipedia-sample, microsoft-word-sample, sample-formatted) | 8 / 9 | p4: a row with a nested, vertically merged table | row-split rule (running); then embedded fonts (Ubuntu) |
+| docx4j-getting-started | 45 / 46 | p4: the footnote block | footnote block (running) |
+| docx4j-headers-footers | 31 / 36 | p12, the attribute tables | next |
+| test-long-document | 8 / 7 | p4: ~1pt more per 468pt line | text measurement / kerning |
+| docx4j-legal-contributor | 3 / 4 | p3 | |
+| file-sample | 2 / 3 | | |
+| docx-5mb | 4 / 3 | p4 | |
+| docx4j-conventions | 9 / 9, 5 starts | p6 | |
+| docx4j-repeating-section | 8 / 8, 7 starts | p8 | |
+| docx4j-binding-simple | 1 / 1, 0 starts | p1's text: content-control data binding, not layout | |
