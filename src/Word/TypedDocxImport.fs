@@ -8,7 +8,7 @@ let private alignment (value: string) =
     match value.ToLowerInvariant() with
     | "center" -> Center
     | "right" | "end" -> Right
-    | "justify" | "both" | "distribute" -> Justify
+    | "justify" | "both" | "distribute" | "thaidistribute" -> Justify
     | _ -> Left
 
 let private columns (value: WordEditorPackage.SectionColumns) : SectionColumns =
