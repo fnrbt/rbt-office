@@ -1035,12 +1035,61 @@ let private borderLinkOf (layout: BlockLayout) =
 /// its right indent, each widened by 1.5pt, and by a side border's space and line where there is one -
 /// whatever the text, in a table's cell and a column alike. The side borders run from the top border's
 /// outer edge to the bottom one's. Adjoining paragraphs of a group are one box (borderLinks).
+/// Where a bordered paragraph's border lines go (paragraphBorderCommands): its text's top and bottom,
+/// the outer edges across, and the box's top and bottom - the group's, when it is linked to the
+/// paragraphs above or below it (borderLinkOf).
+type private ParagraphBorderBox =
+    { ContentBottom: float; LeftOuter: float; RightOuter: float; TextRight: float; Reach: float; Top: float; Bottom: float
+      BeforeLinked: bool; LinkedToNext: bool }
+
+let private paragraphBorderBox (settings: LayoutSettings) (layout: BlockLayout) (borders: ParagraphBorders) =
+    let struct (beforeLinked, nextTop) = borderLinkOf layout
+    let linkedToNext = not (System.Double.IsNaN nextTop)
+    let pt = 96.0 / 72.0
+    let visible border = (visibleParagraphBorder border).IsSome
+    let lines = layout.Lines
+    // (An empty paragraph has no lines: its mark's line is between its spacing and borders.)
+    let spacing (value: float option) = value |> Option.map (fun points -> points * pt) |> Option.defaultValue 0.0
+    let contentTop =
+        match lines with
+        | first :: _ -> first.Y
+        | [] -> layout.Y + spacing layout.Metadata.SpacingBefore + paragraphBorderAdvance borders.Top
+    let contentBottom =
+        match List.tryLast lines with
+        | Some last -> last.Y + last.Height
+        | None -> layout.Y + layout.Height - spacing layout.Metadata.SpacingAfter - paragraphBorderAdvance borders.Bottom
+    let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
+    let textLeft = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
+    let textRight = settings.PaddingLeft + layout.Indent + layout.AvailableWidth + paragraphBorderAdvance borders.Right
+    let reach = 1.5 * pt
+    let leftOuter = textLeft - reach - (if visible borders.Left then paragraphBorderAdvance borders.Left else 0.0)
+    let rightOuter = textRight + reach + (if visible borders.Right then paragraphBorderAdvance borders.Right else 0.0)
+    { ContentBottom = contentBottom; LeftOuter = leftOuter; RightOuter = rightOuter; TextRight = textRight; Reach = reach
+      Top = (if beforeLinked then contentTop else contentTop - paragraphBorderAdvance borders.Top)
+      Bottom = (if linkedToNext then nextTop else contentBottom + paragraphBorderAdvance borders.Bottom)
+      BeforeLinked = beforeLinked; LinkedToNext = linkedToNext }
+
+/// What a bordered paragraph's shading fills: inside its border lines - across, from the left line's
+/// inner edge to the right one's; down, from the top line's (or, below a paragraph of its group, the
+/// text's top) to the bottom line's (or the next paragraph's top) - as Word fills the showcase
+/// handbook's grouped command box (each paragraph's fill reaching the next's, the text's space from the
+/// lines filled too; ours filled each paragraph's whole height over the text of the one above).
+let private paragraphShadingRect (settings: LayoutSettings) (layout: BlockLayout) =
+    paragraphBordersOf layout.Metadata
+    |> Option.map (fun borders ->
+        let box = paragraphBorderBox settings layout borders
+        let thickness (border: ParagraphBorder option) =
+            if (visibleParagraphBorder border).IsSome then paragraphBorderAdvance border - paragraphBorderSpace border else 0.0
+        let left = box.LeftOuter + thickness borders.Left
+        let right = box.TextRight + box.Reach + paragraphBorderSpace borders.Right
+        let top = if box.BeforeLinked then box.Top else box.Top + thickness borders.Top
+        let bottom = if box.LinkedToNext then box.Bottom else box.ContentBottom + paragraphBorderSpace borders.Bottom
+        left, top, right - left, bottom - top)
+
 let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLayout) =
     match paragraphBordersOf layout.Metadata with
     | None -> []
     | Some borders ->
-        let struct (beforeLinked, nextTop) = borderLinkOf layout
-        let linkedToNext = not (System.Double.IsNaN nextTop)
         let pt = 96.0 / 72.0
         let thickness border = paragraphBorderAdvance border - paragraphBorderSpace border
         let visible border = (visibleParagraphBorder border).IsSome
@@ -1063,27 +1112,11 @@ let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLay
                     let dash = borderDashStyle value.Style
                     if horizontal then commands.Add(StrokeLine (color, w, dash, 0.0, fromAt, at, toAt, at))
                     else commands.Add(StrokeLine (color, w, dash, 0.0, at, fromAt, at, toAt))
-        let lines = layout.Lines
-        // (An empty paragraph has no lines: its mark's line is between its spacing and borders.)
-        let spacing (value: float option) = value |> Option.map (fun points -> points * pt) |> Option.defaultValue 0.0
-        let contentTop =
-            match lines with
-            | first :: _ -> first.Y
-            | [] -> layout.Y + spacing layout.Metadata.SpacingBefore + paragraphBorderAdvance borders.Top
-        let contentBottom =
-            match List.tryLast lines with
-            | Some last -> last.Y + last.Height
-            | None -> layout.Y + layout.Height - spacing layout.Metadata.SpacingAfter - paragraphBorderAdvance borders.Bottom
-        let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
-        let textLeft = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
-        let textRight = settings.PaddingLeft + layout.Indent + layout.AvailableWidth + paragraphBorderAdvance borders.Right
-        let reach = 1.5 * pt
-        let leftOuter = textLeft - reach - (if visible borders.Left then paragraphBorderAdvance borders.Left else 0.0)
-        let rightOuter = textRight + reach + (if visible borders.Right then paragraphBorderAdvance borders.Right else 0.0)
-        let top = if beforeLinked then contentTop else contentTop - paragraphBorderAdvance borders.Top
-        let bottom = if linkedToNext then nextTop else contentBottom + paragraphBorderAdvance borders.Bottom
-        if not beforeLinked then stroke borders.Top true top leftOuter rightOuter
-        if linkedToNext then
+        let box = paragraphBorderBox settings layout borders
+        let contentBottom, leftOuter, rightOuter, textRight, reach, top, bottom =
+            box.ContentBottom, box.LeftOuter, box.RightOuter, box.TextRight, box.Reach, box.Top, box.Bottom
+        if not box.BeforeLinked then stroke borders.Top true top leftOuter rightOuter
+        if box.LinkedToNext then
             // (The between border: below this paragraph, its space from the text.)
             stroke borders.Between true (contentBottom + paragraphBorderSpace borders.Between) leftOuter rightOuter
         else stroke borders.Bottom true (contentBottom + paragraphBorderSpace borders.Bottom) leftOuter rightOuter
@@ -1115,7 +1148,9 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
     let shading =
         layout.Metadata.ParagraphShadingPattern
         |> Option.map (fun pattern -> { Pattern = Some pattern; ForegroundColor = layout.Metadata.ParagraphShadingForeground; BackgroundColor = layout.Metadata.BackgroundColor })
-    commands.AddRange(tableFillCommands layout.Metadata.BackgroundColor shading blockX layout.Y blockWidth layout.Height)
+    match paragraphShadingRect settings layout with
+    | Some (x, y, width, height) -> commands.AddRange(tableFillCommands layout.Metadata.BackgroundColor shading x y width height)
+    | None -> commands.AddRange(tableFillCommands layout.Metadata.BackgroundColor shading blockX layout.Y blockWidth layout.Height)
 
     commands.AddRange(paragraphBorderCommands settings layout)
 
