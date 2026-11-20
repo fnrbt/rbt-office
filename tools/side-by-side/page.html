@@ -1,0 +1,65 @@
+<!doctype html><meta charset="utf-8"><title>rbt-office</title>
+<style>html,body{margin:0;height:100%;overflow:hidden}#app{height:100vh}</style>
+<body><div id="app"></div>
+<script src="/jszip.min.js"></script><script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script>
+<script type="module">
+// Opens /doc/<hash>; then, while /pos says so, keeps the line Word shows at a probe height at the same
+// height here. /pos: "page yPt probeScreenY" (Word's page, the point down that page under the probe line).
+const name = decodeURIComponent(location.hash.slice(1) || 'magazine-feature.docx');
+const Word = (await import('/word/Word.js')).default;
+const Host = await import('/word/WordHost.js');
+const Shell = await import('/word/WordShell.js');
+const Dom = await import('/word/FableUI/Dom.js');
+const host = Host.create('', 'word-shell');
+Dom.mountApp('#app', Shell.view(host));
+const bytes = await (await fetch('/doc/' + encodeURIComponent(name))).arrayBuffer();
+Host.openFile(host, new File([bytes], name));
+for (let i = 0; i < 200 && /^Opening/.test(host.Status.Value); i++) await new Promise((r) => setTimeout(r, 100));
+window.host = host; window.Word = Word;
+document.title = name.replace(/\.docx$/, '') + ' - rbt-office';
+let frames = null, last = '';
+const scroller = () => document.querySelector('.rb-word-workspace');
+// Word's page pitch (page + the gap it shows) and ours, in points: a position in Word's continuous scroll
+// mapped onto ours page by page, a gap onto the gap.
+const CAL = 8;
+const WORD_PITCH = 850.96, PAGE = 841.9, OUR_GAP = 28 * 0.75;
+const PROBE = 420;
+// (A position read at another probe height, as at the probe's.)
+const wordC = (page, y, probe = PROBE) => (page - 1) * WORD_PITCH + y + (PROBE - probe) * 0.75;
+function ourPt(c) {
+  const page = Math.floor(c / WORD_PITCH), r = c - page * WORD_PITCH;
+  return page * (PAGE + OUR_GAP) + (r <= PAGE ? r : PAGE + (r - PAGE) * OUR_GAP / (WORD_PITCH - PAGE));
+}
+function place(c, probeScreenY) {
+  const s = scroller();
+  const topOnScreen = window.screenY + (window.outerHeight - window.innerHeight) + s.getBoundingClientRect().top;
+  // (CAL: measured from a recording, the rest of Edge's frame not in outerHeight - innerHeight.)
+  s.scrollTop = 18 + ourPt(c) * 4 / 3 - (probeScreenY - topOnScreen) - CAL;
+}
+const ease = (u) => u * u * (3 - 2 * u);
+let plan = null;
+function animate() {
+  if (plan) {
+    const u = Math.max(0, Math.min(1, (performance.now() - plan.t0) / plan.ms));
+    place(plan.c0 + (plan.c1 - plan.c0) * ease(u), plan.probe);
+    if (u >= 1) plan = null;
+  }
+  requestAnimationFrame(animate);
+}
+animate();
+async function tick() {
+  try {
+    const text = await (await fetch('/pos', { cache: 'no-store' })).text();
+    if (text && text !== last) {
+      last = text;
+      const v = text.split(' ');
+      if (v[0] === 'plan') {
+        const n = v.slice(1).map(Number); // p0 y0 probe p1 y1 probe ms
+        plan = { c0: wordC(n[0], n[1], n[2]), c1: wordC(n[3], n[4], n[5]), probe: PROBE, ms: n[6], t0: performance.now() + (n[7] || 0) };
+      } else if (!plan) { const [p, y, probe] = v.map(Number); place(wordC(p, y, probe), PROBE); }
+    }
+  } catch (e) { console.error(e); }
+  setTimeout(tick, 16);
+}
+tick();
+</script>
