@@ -78,7 +78,10 @@ at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into
 `--widths <dir>`, `tests/word/kerning.fsx`) and `fixtures/line-fit.py` (how many characters Word
 puts on a line; read with `long-word.py --lines`) and `fixtures/hang-punct.py` (punctuation that
 hangs past a line's end under East Asian layout, by setting and language; read with `long-word.py --lines`,
-`tests/word/hang-punct.fsx`). A REF field is updated by Word's PDF export: its
+`tests/word/hang-punct.fsx`) and `fixtures/hyphen-break.py` (where a line breaks inside a word: after
+which hyphens, dashes and punctuation; read with `long-word.py --lines`, `hyphen-break.py --table`,
+`tests/word/hyphen-break.fsx`). A page that starts inside a hyperlink (a field) has its start and
+first line in `page-lines.vbs` at the field's start - not where Word's page starts. A REF field is updated by Word's PDF export: its
 line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.
 
 `fixtures/table-width.py` writes `tests/word/fixtures/table-width/` (how wide Word makes a table's

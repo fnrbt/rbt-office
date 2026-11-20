@@ -1971,6 +1971,15 @@ let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasure
 /// What a line in a table cell keeps free of its text (canvas pixels).
 let private tableCellLineFitSafety = 0.25
 
+/// The characters Word breaks a line after inside a word (fixtures hyphen-break, Word 2019, alike
+/// in compatibility modes 14 and 15, under East Asian layout, in a link and in a field's result):
+/// the hyphen, U+2010, the figure, en and em dashes and the soft hyphen - between letters, between
+/// digits, in web addresses, paths and file names, at a word's start, before ")". Never before them,
+/// and not after a non-breaking hyphen (U+2011, w:noBreakHyphen), U+2015, the minus sign or any of
+/// / \ . , : ; _ ? ! & = + % ( ) ~ | * # @ ·.
+let breaksAfterInWord (c: char) =
+    c = '-' || c = '\u2010' || c = '\u2012' || c = '\u2013' || c = '\u2014' || c = '\u00AD'
+
 /// A cell's content as an autofit table's widths need it: its longest word (with its
 /// paragraph's indents) and its widest paragraph set on one line; a nested table counts as
 /// its own columns' widths.
@@ -1994,9 +2003,9 @@ let rec private tableCellContentWidths (measureText: TextMeasurer) (paragraphSty
                 let style = WordLayout.Text.displayStyle textRun.Style
                 let mutable start = 0
                 for i in 0 .. text.Length do
-                    // (A line breaks at a space and after a hyphen.)
-                    if i = text.Length || text.[i] = ' ' || text.[i] = '\t' || text.[i] = '-' then
-                        let stop = if i < text.Length && text.[i] = '-' then i + 1 else i
+                    // (A line breaks at a space and after a hyphen or dash.)
+                    if i = text.Length || text.[i] = ' ' || text.[i] = '\t' || breaksAfterInWord text.[i] then
+                        let stop = if i < text.Length && breaksAfterInWord text.[i] then i + 1 else i
                         if stop > start then word <- word + measureText (text.Substring(start, stop - start)) style
                         if i < text.Length then
                             paraLongest <- max paraLongest word
@@ -2905,7 +2914,7 @@ let private iterWordWrapTokenRanges (text: string) (f: int -> int -> unit) =
         else
             let mutable keepGoing = true
             while keepGoing && index < text.Length && not (isWhitespaceChar text.[index]) do
-                let isHyphenBreak = text.[index] = '-' && index + 1 < text.Length && not (isWhitespaceChar text.[index + 1])
+                let isHyphenBreak = breaksAfterInWord text.[index] && index + 1 < text.Length && not (isWhitespaceChar text.[index + 1])
                 index <- index + 1
                 if isHyphenBreak then
                     keepGoing <- false
@@ -3313,7 +3322,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     /// "§" + 45 digits on a line of 30 is "§" and 29 digits, then the rest).
     let breakBeforeWord (continuesWord: bool) =
         let lastIndex = currentSegments.Count - 1
-        let canBreakAfter (c: char) = isWhitespaceChar c || c = '-'
+        let canBreakAfter (c: char) = isWhitespaceChar c || breaksAfterInWord c
         // The first segment (and where in it) of the word that ends the line: None when the line
         // ends at a break; (0, 0) when it holds nothing but that word.
         let wordStart =
