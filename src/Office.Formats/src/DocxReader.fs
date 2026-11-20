@@ -2234,7 +2234,6 @@ module Docx =
 
     let private paragraphWithRenderedBreakCounter (renderedBreakCounter: int ref option) (pNode: XmlNode) : Paragraph =
         let renderedPageBreaks = Ns.descendantsNs "lastRenderedPageBreak" pNode
-        let hasRenderedPageBreak = not renderedPageBreaks.IsEmpty
         let renderedPageBreakBefore =
             match renderedBreakCounter with
             | Some counter ->
@@ -2248,11 +2247,9 @@ module Docx =
         let props =
             // (A column break goes on in the next column; in one column it is a page break.)
             let columnBreak = Ns.descendantsNs "br" pNode |> List.exists (fun node -> attr "type" node = Some "column")
-            let withRenderedBreak = { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore; ColumnBreak = columnBreak }
-            if hasRenderedPageBreak && rawProps.Style = Some "Heading1" then
-                { withRenderedBreak with PageBreakBefore = Some true; PageBreakBeforeDerived = rawProps.PageBreakBefore <> Some true }
-            else
-                withRenderedBreak
+            // (Not a page break: Word does not break the page where it last did - fixtures heading-mark
+            // stale-mark: a Heading 1 that starts with the mark stays in the middle of the page.)
+            { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore; ColumnBreak = columnBreak }
 
         let rec tokensFromNode node =
             Xml.children node
@@ -6208,19 +6205,16 @@ let internal paragraphPropertiesSetSomething (props: ParagraphProperties) =
     || { props with ParagraphRunProperties = None } <> Styles.parseParagraphPropsFromStyle XmlDsl.Empty
 
 /// The paragraph mark's resolved run properties (outside a table's cell): its paragraph style's (Normal's
-/// for a bare <w:p/> as well - not the document defaults': fixtures mark-font `nrm-pure`, `n12-pure`,
+/// for a bare <w:p/> as well - not the document defaults': fixtures empty-mark, and mark-font `nrm-pure`, `n12-pure`,
 /// `-tbl`: Arial 8pt / 12pt lines under Normal over 11pt defaults, after text or a table), its w:rStyle's
 /// under its own (`*-cstyle`: an empty paragraph under a mark of a Consolas 8pt character style 9.36pt,
 /// as Consolas 8pt stated on the mark).
-let internal paragraphMarkRunProperties (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (_para: Paragraph) =
+let internal paragraphMarkRunProperties (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) =
     match effectiveParaProps.ParagraphRunProperties with
     | Some mark when mark.Style.IsSome ->
         let styled = resolvedRunProperties styleMap effectiveParaProps { emptyRunProperties with Style = mark.Style }
         mergeRunProperties styled mark
     | _ -> resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties
-
-let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
-    wordFontSizeToPoints (paragraphMarkRunProperties styleMap effectiveParaProps para).FontSize
 
 let internal styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps

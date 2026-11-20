@@ -228,7 +228,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
             match tableRun with
             | Some tableRun -> D.resolvedCellMarkRunProperties styleMap tableRun effective D.emptyRunProperties
             | None -> D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties
-        else D.paragraphMarkRunProperties styleMap effective value
+        else D.paragraphMarkRunProperties styleMap effective
     let markSize =
         if inCell then
             match fontSizes with
