@@ -21,15 +21,14 @@
 // - the first-line indent of a line beside it starts from the table (fl-b), and a table is not moved
 //   in by Normal's first-line indent (fl-normal, fl-normal-inline).
 // The cells' paragraphs of a table with a table style (ts-*): Normal's first-line indent, and its
-// font size, over the table style's - Word, not yet ours (see below).
+// font size, over the table style's (the rule: tests/word/table-style-props.fsx).
 // Text is measured here by its length, so only where lines are and where their pieces start (and end,
 // when justified) is compared, and where the table's first cell's text is. Not ours yet, recorded in
 // docs/layout-parity-flow.md: ov-never (tblOverlap never: Word moves the second table to the right of
 // the first), cell, nested (a floating table in a table's cell), vm-y0 (vertAnchor margin, tblpY 0:
 // Word lays it out in the flow), ys-*-text (tblpYSpec with vertAnchor text: Word puts the table a
-// fraction of a point above its paragraph, and the line above goes beside it), fl-normal-inline and
-// ts-* (the cells of a styled table without Normal's first-line indent and font size), sz12 and
-// ts-fl-float (where the table's first cell's text is: half a 1.5pt border, Normal's indent).
+// fraction of a point above its paragraph, and the line above goes beside it), sz12 (where the
+// table's first cell's text is: half a 1.5pt border).
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
@@ -103,15 +102,11 @@ let fixtures = Directory.GetFiles(dir, "*.docx") |> Array.map Path.GetFileNameWi
 check "the fixtures are all there" fixtures.Length 77
 check "Word's results for each" (fixtures |> List.filter (fun name -> not (wordRows.ContainsKey name))) []
 
-let open_ = set [ "ov-never"; "cell"; "nested"; "vm-y0"; "ys-top-text"; "ys-center-text"; "ys-bottom-text"
-                  // (The cells of a table with a table style take Normal's first-line indent and font
-                  // size in Word, not here; and a table in the flow is moved in by Normal's first-line
-                  // indent here in its place - see Layout.tableLeftOffsetForDocument.)
-                  "fl-normal-inline"; "ts-fl-both"; "ts-font"; "ts-font-only" ]
+let open_ = set [ "ov-never"; "cell"; "nested"; "vm-y0"; "ys-top-text"; "ys-center-text"; "ys-bottom-text" ]
 // (Word's table stands half its 1.5pt left border further in than a table in the flow of ours: in
 // Word 2019's layout a table's outer border, not its grid, is at the margin - open; the text round
 // it is compared.)
-let cellOpen = set [ "sz12"; "ts-fl-float" ]
+let cellOpen = set [ "sz12" ]
 // The paragraphs after the anchor's are compared where they go beside the table too.
 let withC = set [ "short"; "empty"; "pb-big" ]
 

@@ -86,14 +86,20 @@ let private serialized action =
     lock conversionGate action
 #endif
 
-let private runFormatting styleMap theme (para: D.ParagraphProperties) (run: D.Run) : RunFormatting =
+/// `tableRun`: in a table's cell, the table style's run properties the paragraph's style does not set
+/// (DocxReader.tableStyleRunUnder) - over the paragraph style's, so stated on the run.
+let private runFormatting styleMap theme (tableRun: D.RunProperties option) (para: D.ParagraphProperties) (run: D.Run) : RunFormatting =
     let direct = match run.Content with D.Link link -> link.Properties | _ -> run.Properties
-    let effective = D.resolvedRunProperties styleMap para direct
+    let effective =
+        match tableRun with
+        | Some tableRun -> D.resolvedCellRunProperties styleMap tableRun para direct
+        | None -> D.resolvedRunProperties styleMap para direct
+    let tableRun = tableRun |> Option.defaultValue D.emptyRunProperties
     let mark = para.ParagraphRunProperties |> Option.defaultValue D.emptyRunProperties
     let explicit pick =
         match pick direct with
         | Some value -> Some value
-        | None when (pick mark).IsSome -> Some (on (pick effective))
+        | None when (pick mark).IsSome || (pick tableRun).IsSome -> Some (on (pick effective))
         | None -> None
     { Style = direct.Style; StyleInfo = None
       Bold = on effective.Bold; Italic = on effective.Italic; Underline = on effective.Underline
@@ -104,14 +110,18 @@ let private runFormatting styleMap theme (para: D.ParagraphProperties) (run: D.R
       FontSize = D.wordFontSizeToPoints effective.FontSize
       CharacterSpacing = defaultArg (D.wordCharacterSpacingToCssPixels effective.CharacterSpacing) 0.0
       FontFamily = D.wordFontFamilyToCss theme effective
-      FontFamilyInherited = Some (direct.FontFamily.IsNone && direct.ThemeFont.IsNone && mark.FontFamily.IsNone && mark.ThemeFont.IsNone)
+      FontFamilyInherited = Some (direct.FontFamily.IsNone && direct.ThemeFont.IsNone && mark.FontFamily.IsNone && mark.ThemeFont.IsNone
+                                  && tableRun.FontFamily.IsNone && tableRun.ThemeFont.IsNone)
       Color = D.wordColorToCss effective.Color; Highlight = effective.Highlight; VertAlign = effective.VertAlign
       EastAsiaLanguage = effective.EastAsiaLanguage
       HasExplicit = true; ExplicitBold = explicit (fun p -> p.Bold); ExplicitItalic = explicit (fun p -> p.Italic)
       ExplicitUnderline = explicit (fun p -> p.Underline); ExplicitAllCaps = explicit (fun p -> p.AllCaps)
       ExplicitSmallCaps = explicit (fun p -> p.SmallCaps); ExplicitStrike = explicit (fun p -> p.Strike)
       ExplicitDoubleStrike = explicit (fun p -> p.DoubleStrike); ExplicitHidden = explicit (fun p -> p.Hidden)
-      ExplicitFontSize = if direct.FontSize.IsSome then Some (D.wordFontSizeToPoints direct.FontSize) elif mark.FontSize.IsSome then Some (D.wordFontSizeToPoints effective.FontSize) else None
+      ExplicitFontSize =
+          if direct.FontSize.IsSome then Some (D.wordFontSizeToPoints direct.FontSize)
+          elif mark.FontSize.IsSome || tableRun.FontSize.IsSome then Some (D.wordFontSizeToPoints effective.FontSize)
+          else None
       ExplicitColorAuto = (direct.Color |> Option.orElse mark.Color) = Some "auto" }
 
 let private image images (value: D.ImageData) : Image =
@@ -128,11 +138,11 @@ let private image images (value: D.ImageData) : Image =
       CropLeft = value.CropLeft; CropTop = value.CropTop; CropRight = value.CropRight; CropBottom = value.CropBottom
       WrapText = value.WrapText; WrapPolygon = value.WrapPolygon; FlipH = value.FlipH; FlipV = value.FlipV; Opaque = value.Opaque }
 
-let private convertRun styleMap theme images noteBodies para (value: D.Run) : EditorRun option =
+let private convertRun styleMap theme images noteBodies tableRun para (value: D.Run) : EditorRun option =
     match value.Content with
     | D.RenderedPageBreak | D.PageBreak -> None
     | _ ->
-        let formatting = runFormatting styleMap theme para value
+        let formatting = runFormatting styleMap theme tableRun para value
         let initial =
             { Content = Text ""; Formatting = formatting
               Hyperlink = value.HyperlinkContext |> Option.bind (fun link -> link.Target) |> Option.filter D.isActiveHyperlinkTarget
@@ -197,18 +207,26 @@ let private levelOf (value: D.NumberingDefinition) : ListLevel =
       MarkFont = value.MarkFont; MarkBold = value.MarkBold; MarkItalic = value.MarkItalic
       MarkColor = D.wordColorToCss value.MarkColor; MarkSize = value.MarkSize |> Option.map (Some >> D.wordFontSizeToPoints) }
 
-let private paragraph styleMap theme images notes numbering styleNumbering levels defaultSpacing inCell (value: D.Paragraph) : EditorParagraph =
+/// `tableRun`: a table's cell's paragraph's share of the table style's run properties (runFormatting).
+let private paragraph styleMap theme images notes numbering styleNumbering levels defaultSpacing inCell (tableRun: D.RunProperties option) (value: D.Paragraph) : EditorParagraph =
     let direct = value.Properties
     let effective = D.resolvedParagraphProperties styleMap direct
+    let runProperties props =
+        match tableRun with
+        | Some tableRun -> D.resolvedCellRunProperties styleMap tableRun effective props
+        | None -> D.resolvedRunProperties styleMap effective props
     let fontSizes =
         value.Runs |> List.choose (fun run ->
             match run.Content with
-            | D.Text _ | D.Link _ | D.FieldRef _ -> Some (D.wordFontSizeToPoints (D.resolvedRunProperties styleMap effective run.Properties).FontSize)
+            | D.Text _ | D.Link _ | D.FieldRef _ -> Some (D.wordFontSizeToPoints (runProperties run.Properties).FontSize)
             | _ -> None)
     let markSize =
         if inCell then
             match fontSizes with
-            | [] -> D.wordFontSizeToPoints (D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties).FontSize
+            | [] ->
+                match tableRun with
+                | Some tableRun -> D.wordFontSizeToPoints (D.resolvedCellMarkRunProperties styleMap tableRun effective D.emptyRunProperties).FontSize
+                | None -> D.wordFontSizeToPoints (D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties).FontSize
             | sizes -> List.max sizes
         else List.fold max (D.paragraphMarkFontSize styleMap effective value) fontSizes
     let breakAtStart, breakAfter = D.paragraphPageBreaks value
@@ -311,7 +329,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
                 FirstLineIndent = if format.FirstLineIndent.IsNone || (ownNumbering && format.ExplicitFirstLineIndent.IsNone && level.FirstLineIndent.IsSome) then level.FirstLineIndent else format.FirstLineIndent
                 RightTabPosition = format.RightTabPosition |> Option.orElse (pixels def.RightTabPosition) }
         | None -> format
-    { Runs = value.Runs |> List.choose (convertRun styleMap theme images notes effective) |> List.toArray
+    { Runs = value.Runs |> List.choose (convertRun styleMap theme images notes tableRun effective) |> List.toArray
       HeadingLevel = if inCell then None else effective.Style |> Option.bind ValueText.StyleName.headingSuffix |> Option.map (fun suffix -> integer (Some suffix) |> Option.defaultValue 1 |> max 1 |> min 3)
       Formatting = format; List = listInfo; SectionBreak = effective.SectionBreak
       SectionPageSetup = effective.SectionGeometry |> Option.map sectionSetup; SectionColumns = effective.SectionColumns |> Option.map columns
@@ -332,10 +350,46 @@ let converter (document: D.WordDocument) : D.DocumentContent list -> Map<string,
         [ yield! document.Footnotes |> List.map (fun note -> ("footnote", note.Id), D.Notes.plainText note)
           yield! document.Endnotes |> List.map (fun note -> ("endnote", note.Id), D.Notes.plainText note) ] |> Map.ofList
     let convert content images =
-        let _, defaults = D.resolveStyle styleMap (Some D.Styles.defaultStyleId)
+        let defaultRun, defaults = D.resolveStyle styleMap (Some D.Styles.defaultStyleId)
         let defaultSpacing = defaults |> Option.exists D.tableStyleParagraphResetsMissingSpacing
-        let para spacing inCell value =
-            paragraph styleMap document.Theme images noteBodies numbering styleNumbering levels spacing inCell value
+        let sizeAndJustificationQuirk = D.tableStyleBeatsNormalSizeAndJustification document.Preserved.SettingsXml
+        let normalId = D.paragraphStyleIdOf styleMap (D.Docx.paragraphProps XmlDsl.Empty)
+        // A cell's paragraph's properties under a table style (`tableStyle`: the whole table's paragraph
+        // properties, its run properties as ParagraphRunProperties, a conditional format's over them):
+        // the paragraph's own properties with the table style's share - what its paragraph style does
+        // not set - and that share of the run properties. `textStyled`: the table style has paragraph
+        // or run properties, or a conditional format of it applies to the cell.
+        let cellParagraph textStyled (tableStyle: D.ParagraphProperties) (own: D.ParagraphProperties) =
+            let styleId = D.paragraphStyleIdOf styleMap own
+            let chainRun, chainPara = D.resolveStyle styleMap styleId
+            let tableRun = tableStyle.ParagraphRunProperties |> Option.defaultValue D.emptyRunProperties
+            let tablePara = { tableStyle with ParagraphRunProperties = None }
+            let fromNormal sets = D.styleSetting styleMap sets styleId = normalId
+            let quirk = sizeAndJustificationQuirk && textStyled
+            // Word 2010's layout: Normal's 12pt gives way to the table style's size, or the document
+            // defaults' - not to 10pt, which is no size (fixtures table-style-props nsz12-tsz8-c14,
+            // calibre, dsz9-nsz12-tline-c14, dsz10-nsz12-tsz10-c14; Normal's 11pt and 13pt stay).
+            let chainRun, tableRun =
+                let size = tableRun.FontSize |> Option.orElse defaultRun.FontSize
+                if quirk && chainRun.FontSize = Some "24" && size <> Some "20" && size.IsSome
+                   && fromNormal (fun style -> style.RunProperties |> Option.exists (fun run -> run.FontSize.IsSome)) then
+                    { chainRun with FontSize = None }, { tableRun with FontSize = size }
+                else chainRun, tableRun
+            // Normal's left justification likewise gives way to the table style's, or the document
+            // defaults' (njcleft-tjccenter-c14, djcright-njcleft-tline-c14; a paragraph style's own
+            // left stays: sjcleft-tjccenter-c14).
+            let left (value: string option) = value |> Option.exists (fun value -> value = "left" || value = "start")
+            let chainPara, tablePara =
+                let alignment = tablePara.Alignment |> Option.orElse (defaults |> Option.bind (fun defaults -> defaults.Alignment))
+                match chainPara with
+                | Some chain when quirk && left chain.Alignment && alignment.IsSome && not (left alignment)
+                                  && fromNormal (fun style -> style.ParagraphProperties |> Option.exists (fun p -> p.Alignment.IsSome)) ->
+                    Some { chain with Alignment = None }, { tablePara with Alignment = alignment }
+                | _ -> chainPara, tablePara
+            let share = D.tableStyleParagraphUnder chainPara tablePara
+            { D.mergeParagraphProperties share own with Style = own.Style }, D.tableStyleRunUnder chainRun tableRun
+        let para spacing inCell tableRun value =
+            paragraph styleMap document.Theme images noteBodies numbering styleNumbering levels spacing inCell tableRun value
         let rec table (value: D.Table) : EditorTable =
             let style = D.resolveTableStyle styleMap value.StyleId
             let tableStyle = style |> Option.bind (fun style -> style.TableProperties)
@@ -358,6 +412,8 @@ let converter (document: D.WordDocument) : D.DocumentContent list -> Map<string,
                 |> D.mergeCellProperties (if column + span >= columnCount && enabled (fun look -> look.LastColumn) then get (fun style -> style.LastColumnTableCellProperties) else None)
                 |> D.mergeCellProperties (if firstRow row then get (fun style -> style.FirstRowTableCellProperties) else None)
                 |> D.mergeCellProperties (if lastRow row then get (fun style -> style.LastRowTableCellProperties) else None)
+            // The table style's paragraph and run properties for a row: its conditional format's over
+            // the whole table's.
             let paragraphStyle index =
                 let common =
                     style |> Option.bind (fun style -> style.ParagraphProperties)
@@ -367,25 +423,30 @@ let converter (document: D.WordDocument) : D.DocumentContent list -> Map<string,
                 | Some baseValue, Some current -> Some (D.mergeParagraphProperties baseValue current)
                 | Some current, None | None, Some current -> Some current
                 | None, None -> None
+            // (Normal's 12pt and left justification give way to the table style's in Word 2010's layout
+            // when the style has paragraph or run properties somewhere, or a conditional format of it
+            // applies to the cell: fixtures table-style-props nsz12-t-c14, nsz12-tline-c14,
+            // nsz12-condsz8-nolook-c14, nsz12-tcondshd-c14.)
+            let styleHasText =
+                style |> Option.exists (fun style ->
+                    style.ParagraphProperties |> Option.exists D.paragraphPropertiesSetSomething
+                    || style.RunProperties |> Option.exists D.runPropertiesSetSomething
+                    || style.FirstRowParagraphProperties.IsSome)
             let preferred amount kind = amount |> Option.map (fun width -> if kind = Some "pct" then width / 50.0 else width)
+            let get' pick = style |> Option.bind pick
             let cell index column (value: D.TableCell) : EditorCell =
                 let properties = D.mergeCellProperties (conditionalCell index column (cellSpan value)) value.Properties
                 let get pick = properties |> Option.bind pick
                 let style = paragraphStyle index
                 let spacing = style |> Option.exists D.tableStyleParagraphResetsMissingSpacing
+                let underConditional = (conditionalCell index column (cellSpan value)).IsSome || (firstRow index && (get' (fun style -> style.FirstRowParagraphProperties)).IsSome)
                 let paragraphs =
                     value.Paragraphs |> List.map (fun original ->
-                        let styled =
-                            match style with
-                            | Some style ->
-                                let properties = D.mergeParagraphProperties style original.Properties
-                                let properties =
-                                    if original.Properties.Style.IsNone && style.Style.IsNone then
-                                        { properties with Style = Some D.Styles.defaultStyleId }
-                                    else properties
-                                { original with Properties = properties }
-                            | None -> original
-                        Paragraph (para spacing true styled)) |> List.toArray
+                        if style.IsSome || underConditional then
+                            let tableStyle = style |> Option.defaultWith (fun () -> D.Docx.paragraphProps XmlDsl.Empty)
+                            let properties, tableRun = cellParagraph (styleHasText || underConditional) tableStyle original.Properties
+                            Paragraph (para spacing true (Some tableRun) { original with Properties = properties })
+                        else Paragraph (para spacing true None original)) |> List.toArray
                 let cellBorder =
                     get (fun p -> p.Borders)
                     |> Option.bind (fun borders -> borders.Top |> Option.orElse borders.Left |> Option.orElse borders.Bottom |> Option.orElse borders.Right)
@@ -443,7 +504,7 @@ let converter (document: D.WordDocument) : D.DocumentContent list -> Map<string,
               Source = noSource; SourceIndex = None; SourceUnchanged = false; SourceWhy = None
               SourceTextChanges = None; SourceTable = None }
         content |> List.map (function
-            | D.Para value -> Paragraph (para (defaultSpacing || D.directParagraphFormattingResetsMissingSpacing value.Properties) false value)
+            | D.Para value -> Paragraph (para (defaultSpacing || D.directParagraphFormattingResetsMissingSpacing value.Properties) false None value)
             | D.Tbl value -> Table (table value)) |> List.toArray
     fun content images -> serialized (fun () -> convert content images)
 

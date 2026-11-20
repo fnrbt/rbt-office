@@ -4411,19 +4411,11 @@ let layoutParagraphAt (settings: LayoutSettings) (measureText: TextMeasurer) (ma
 let layoutParagraphAtWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) =
     layoutParagraphAtWithStyleWithRange settings measureText measureRange maxWidth y xOffset normal effectiveBuffer para numberedCounters
 
-let private defaultParagraphFirstLineOffsetInDocument memo doc =
-    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
-    let paragraphStyle = forBlockInContext (styleContextForLayout memo doc) (Paragraph para)
-    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
-
-/// How far a table stands in from the text's left edge: its indent - and, for a table in the flow,
-/// the first-line indent of the document's Normal paragraphs. Word does not move a table in by that
-/// (fixtures float-table fl-normal-inline: Normal's 0.3in first-line indent moves the cells' text,
-/// not the table); it stands in here for the first-line indent that the cells of a table with a
-/// table style do not get from Normal here (Word: they do - ts-fl, ts-fl-both; calibre-demo's
-/// tables), and is not taken for a floating table, which goes where its w:tblpPr puts it.
-let private tableLeftOffsetForDocument memo doc (tableBlock: TableBlock) =
-    (if tableBlock.Floating then 0.0 else defaultParagraphFirstLineOffsetInDocument memo doc) + WordLayout.Table.tableIndent tableBlock
+/// How far a table stands in from the text's left edge: its indent. (Not by Normal's first-line
+/// indent: that is the cells' paragraphs' - fixtures float-table fl-normal-inline, ts-fl; and
+/// table-style-props, the properties a cell's paragraph takes from Normal and the table style.)
+let private tableLeftOffsetForDocument (tableBlock: TableBlock) =
+    WordLayout.Table.tableIndent tableBlock
 
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
@@ -5858,7 +5850,7 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
     buildTableLayoutPlanWithMemo None ValueNone settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
 let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableY =
-    let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
+    let tableLeftOffset = tableLeftOffsetForDocument tableBlock
     let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
     let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
     let tableMaxWidth = maxWidth + outerLeft + outerRight
@@ -6540,7 +6532,7 @@ let private layoutDocumentPassKept
         let numColumns = WordLayout.Table.columnCount tableBlock
         let result =
             if numColumns > 0 then
-                let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
+                let tableLeftOffset = tableLeftOffsetForDocument tableBlock
                 let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
                 let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
                 let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
