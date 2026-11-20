@@ -1782,20 +1782,31 @@ module Docx =
         let firstResultRun = field.ResultRuns |> Seq.tryFind (isMark >> not)
         let whole () = [ fieldOf firstResultRun None marked ]
         let computed = ValueText.FieldCode.isComputed (code.ToUpperInvariant())
-        // (A result with a mark is the field's one run, which has the mark - at the result's start: a field of one
-        // run is written from its source, see collapseComplexFieldTokens.)
-        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ -> true | _ -> false)
+        // (A mark in the result starts a part of its own there, as a change of format does: the line and the page
+        // it marks start where Word started them - docx4j-headers-footers' "§Error! Reference |source not found."
+        // in a narrow cell, whose mark at the result's start broke the line after "§". A result that is the mark
+        // and one stretch of text is the field's one run, the mark at its start.)
+        let plain = field.ResultRuns |> Seq.forall (fun run -> match run.Content with Text _ | RenderedPageBreak -> true | _ -> false)
         if field.ResultRuns.Count < 2 || computed || not plain then whole ()
         else
-            // The stretches of runs that are formatted alike.
-            let groups = ResizeArray<Run * System.Text.StringBuilder>()
+            // The stretches of runs that are formatted alike, a mark starting one too.
+            let groups = ResizeArray<Run * System.Text.StringBuilder * bool>()
+            let mutable pendingMark = false
             for run in field.ResultRuns do
-                let text = textFromRun run
-                if groups.Count > 0 && (let (first, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties) then
-                    (snd groups.[groups.Count - 1]).Append(text) |> ignore
-                else groups.Add ((run, System.Text.StringBuilder(text)))
+                if isMark run then pendingMark <- true
+                else
+                    let text = textFromRun run
+                    let sameAsLast =
+                        groups.Count > 0 && not pendingMark
+                        && (let (first, _, _) = groups.[groups.Count - 1] in obj.ReferenceEquals(first.Properties, run.Properties) || first.Properties = run.Properties)
+                    if sameAsLast then
+                        let (_, builder, _) = groups.[groups.Count - 1]
+                        builder.Append(text) |> ignore
+                    elif text.Length > 0 || groups.Count = 0 then
+                        groups.Add ((run, System.Text.StringBuilder(text), pendingMark))
+                        pendingMark <- false
             if groups.Count < 2 then whole ()
-            else [ for (first, text) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) false ]
+            else [ for (first, text, mark) in groups do if text.Length > 0 then yield fieldOf (Some first) (Some (text.ToString())) mark ]
 
     // An unbalanced paragraph belongs to a field spanning paragraphs. Its
     // structural tokens must stay in place; collapsing the inner fields or
