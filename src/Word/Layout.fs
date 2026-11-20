@@ -183,6 +183,9 @@ type MeasuredLine = {
     /// The line ends in a word broken by automatic hyphenation: a hyphen is drawn after its last text
     /// (it is not in the text, and Width counts it).
     Hyphenated: bool
+    /// How far the list marker raises the line above its text (a list paragraph's first line, fixtures
+    /// marker-ascent): it has to fit on the page with the text.
+    MarkerRaise: float
 }
 
 /// Layout result for a block.
@@ -499,8 +502,8 @@ let documentSpaceShrink (setup: PageSetup) = if setup.CompatibilityMode >= 15 th
 /// descender and line gap over the em - Calibri 1.2207, Arial 1.1499, Ubuntu 1.149 (Word 2019:
 /// calibre-demo's Ubuntu 12pt at 1.15, 15.84pt a line), Poppins 1.5 (exhibition-leaflet's 9pt single,
 /// 13.56pt; its Windows ascent and descent are 1.762 of the em). None when the file has not got the
-/// tables.
-let fontFileLineFactor (data: byte[]) : float option =
+/// tables. With it, the hhea descender over the em (what of the line is below the baseline).
+let fontFileVerticalFactors (data: byte[]) : (float * float) option =
     let u16 at = (int data.[at] <<< 8) ||| int data.[at + 1]
     let s16 at = let v = u16 at in if v >= 0x8000 then v - 0x10000 else v
     let u32 at = (u16 at <<< 16) ||| u16 (at + 2)
@@ -521,14 +524,18 @@ let fontFileLineFactor (data: byte[]) : float option =
                 let unitsPerEm = float (u16 (head + 18))
                 let ascender, descender, lineGap = float (s16 (hhea + 4)), float (s16 (hhea + 6)), float (s16 (hhea + 8))
                 let height = ascender - descender + max 0.0 lineGap
-                if unitsPerEm > 0.0 && height > 0.0 then Some (height / unitsPerEm) else None
+                if unitsPerEm > 0.0 && height > 0.0 then Some (height / unitsPerEm, max 0.0 (-descender) / unitsPerEm) else None
             | _ -> None
     with _ -> None
+
+let fontFileLineFactor (data: byte[]) : float option = fontFileVerticalFactors data |> Option.map fst
 
 /// The single lines of the families the document being laid out embeds and the table has not
 /// (EmbeddedFonts: Word sets their text in the embedded faces), by lower-case family; set by
 /// documentSettings, of the document it is given.
 let mutable private embeddedLineFactors : Map<string, float> = Map.empty
+/// Their descents (fontFileVerticalFactors), likewise.
+let mutable private embeddedDescentFactors : Map<string, float> = Map.empty
 let mutable private embeddedLineFactorsOf : obj = null
 let mutable private embeddedLineFactorsVersion = 0
 
@@ -536,17 +543,17 @@ let mutable private embeddedLineFactorsVersion = 0
 let private useEmbeddedLineFactors (doc: Document) =
     let preserved = box doc.Package.Preserved
     if not (obj.ReferenceEquals(preserved, embeddedLineFactorsOf)) then
-        let factors =
+        let verticals =
             match doc.Package.Preserved with
-            | None -> Map.empty
+            | None -> []
             | Some package ->
                 EmbeddedFonts.ofPreserved package
                 |> List.groupBy (fun face -> face.Family.Trim().ToLowerInvariant())
                 |> List.choose (fun (family, faces) ->
                     let face = faces |> List.tryFind (fun face -> not face.Bold && not face.Italic) |> Option.defaultValue faces.Head
-                    fontFileLineFactor face.Data |> Option.map (fun factor -> family, factor))
-                |> Map.ofList
-        embeddedLineFactors <- factors
+                    fontFileVerticalFactors face.Data |> Option.map (fun factors -> family, factors))
+        embeddedLineFactors <- verticals |> List.map (fun (family, (line, _)) -> family, line) |> Map.ofList
+        embeddedDescentFactors <- verticals |> List.map (fun (family, (_, descent)) -> family, descent) |> Map.ofList
         embeddedLineFactorsOf <- preserved
         embeddedLineFactorsVersion <- embeddedLineFactorsVersion + 1
 
@@ -915,8 +922,6 @@ let private footnoteLineHeight = 16.0
 // The separator's height outside a layout pass: Word's own separator, a
 // single-spaced paragraph of Calibri 11pt (13.43pt).
 let private footnoteSeparatorEstimate = 13.427 * 96.0 / 72.0
-// Gap below the last body line before the endnote separator + first endnote.
-let private endnoteTopGap = 24.0
 
 /// Page height used when content is measured for its natural height rather
 /// than placed on a page (table rows; see measureTableRow...RowLocal).
@@ -1216,8 +1221,10 @@ let private noteRecordFor (settings: LayoutSettings) (noteType: string) (id: str
 /// itself at the width of the page's text: the document's own (footnotes.xml),
 /// or Word's when it has none - an empty single-spaced paragraph with nothing
 /// before or after in the default paragraph style. (Outside a layout pass:
-/// Word's, as Calibri 11pt.)
-let private footnoteSeparatorOf (settings: LayoutSettings) (kind: string) : FootnoteSeparator =
+/// Word's, as Calibri 11pt.) The endnotes' (`noteType` "endnote": endnotes.xml's) likewise, without its
+/// space before (fixtures endnote-start `sepbefore-*`: a separator 12pt before starts the notes where one
+/// with none does).
+let private noteSeparatorOf (settings: LayoutSettings) (noteType: string) (kind: string) : FootnoteSeparator =
     let ofLine (height: float) (lineTop: float) (lineHeight: float) =
         // (A line is 1.2207 of its size in Calibri: the rule's middle 0.736 of the size below the line's top.)
         { SeparatorHeight = height; RuleCenter = lineTop + lineHeight * 0.603; RuleThickness = max 0.5 (lineHeight * 0.0537) }
@@ -1225,16 +1232,21 @@ let private footnoteSeparatorOf (settings: LayoutSettings) (kind: string) : Foot
     | None -> ofLine footnoteSeparatorEstimate 0.0 footnoteSeparatorEstimate
     | Some context ->
         let width = settings.Width - settings.PaddingLeft - settings.MarginRight
-        let key = kind + "\u0001" + string width
+        let key = noteType + "\u0001" + kind + "\u0001" + string width
         match Portable.Dict.tryFind key context.NoteSeparators with
         | ValueSome separator -> separator
         | ValueNone ->
             let noteSettings = noteRecordSettings settings
-            let body = context.NoteDoc.Package.Notes |> List.tryFind (fun body -> body.NoteType = "footnote" && body.Kind = Some kind && not body.Blocks.IsEmpty)
+            let body = context.NoteDoc.Package.Notes |> List.tryFind (fun body -> body.NoteType = noteType && body.Kind = Some kind && not body.Blocks.IsEmpty)
+            let withoutSpaceBefore (block: Block) =
+                match block with
+                | Paragraph para when noteType = "endnote" ->
+                    Paragraph { para with Metadata = { para.Metadata with SpacingBefore = Some 0.0; Explicit = para.Metadata.Explicit ||| ParagraphExplicit.SpacingBefore } }
+                | other -> other
             let layouts =
                 match body with
                 | Some body ->
-                    noteBlocksLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { context.NoteDoc with Blocks = body.Blocks }
+                    noteBlocksLayouter.Value noteSettings context.NoteMeasure context.NoteMeasureRange { context.NoteDoc with Blocks = List.map withoutSpaceBefore body.Blocks }
                     |> List.filter (fun layout -> not (layout.BlockId.StartsWith footnoteBlockIdPrefix) && not (layout.BlockId.StartsWith endnoteBlockIdPrefix))
                     |> List.map (shiftBlockY (-noteSettings.PaddingTop))
                 | None ->
@@ -1260,12 +1272,17 @@ let private footnoteSeparatorOf (settings: LayoutSettings) (kind: string) : Foot
 /// continuation separator (fixtures footnote-block cont-septext: the separator's word on page 2, not
 /// the continuation separator's; cont-sep1double: page 2's block as high as the double-spaced
 /// separator; cont-sepdouble: a double-spaced continuation separator changes nothing).
+let private footnoteSeparatorOf settings kind = noteSeparatorOf settings "footnote" kind
 let private footnoteSeparatorHeight settings = (footnoteSeparatorOf settings "separator").SeparatorHeight
 
 /// The footnote separator of `kind` of `doc` at the width of the text of
 /// `settings`'s page (for drawing its rule).
 let footnoteSeparatorFor (settings: LayoutSettings) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) (kind: string) : FootnoteSeparator =
     withNoteLayoutContext None None measureText measureRange doc (fun () -> footnoteSeparatorOf settings kind)
+
+/// The endnotes' separator of `doc` (endnotes.xml's w:type="separator"), for drawing its rule.
+let endnoteSeparatorFor (settings: LayoutSettings) (measureText: string -> TextStyle -> float) (measureRange: string -> TextStyle -> int -> int -> float) (doc: Document) : FootnoteSeparator =
+    withNoteLayoutContext None None measureText measureRange doc (fun () -> noteSeparatorOf settings "endnote" "separator")
 
 /// The height of a note at the width of the text of `settings`'s page.
 let private noteHeight (settings: LayoutSettings) (noteType: string) (id: string) (text: string) =
@@ -1648,6 +1665,42 @@ let private singleLineFactorOfFamily (family: string option) =
 let private singleLineHeightOfText (style: TextBuffer.TextStyle) =
     WordLayout.Text.displayFontSize style * singleLineFactorOfFamily style.FontFamily
 
+/// The descents (usWinDescent over the em) of the fonts of the table above, and the single lines and
+/// descents of the two faces Word's bullets are set in. A font not in it is taken as Calibri.
+let private wordFontDescentFactors =
+    [| "Calibri", 0.2686; "Calibri Light", 0.2686; "Carlito", 0.2686
+       "Arial", 0.2119; "ArialMT", 0.2119; "Helvetica", 0.2119; "Liberation Sans", 0.2119; "Arimo", 0.2119
+       "Times New Roman", 0.2163; "Times", 0.2163; "Liberation Serif", 0.2163; "Tinos", 0.2163
+       "Courier New", 0.3003; "Courier", 0.3003; "Liberation Mono", 0.3003; "Cousine", 0.3003
+       "Cambria", 0.2222; "Cambria Math", 0.2222; "Georgia", 0.2192; "Verdana", 0.2100
+       "Trebuchet MS", 0.2222; "Segoe UI", 0.2510; "Consolas", 0.2510
+       "Symbol", 0.2197; "Wingdings", 0.2109 |]
+let private markerFontLineFactors = [| "Symbol", 1.2251; "Wingdings", 1.1099 |]
+
+let private lookupFactor (table: (string * float)[]) (family: string) =
+    let mutable found = None
+    for name, factor in table do
+        if found.IsNone && trimmedEqualsIgnoreCase family name then found <- Some factor
+    found
+
+/// A text's ascent as Word sets a line: its single line less its descent - what line gap the font has
+/// is above the ascender (fixtures marker-ascent: Times New Roman 12pt rises 0.934 of the em, not its
+/// usWinAscent's 0.891; Arial 0.938).
+let private ascentOfText (style: TextBuffer.TextStyle) =
+    let family = style.FontFamily |> Option.defaultValue "Calibri"
+    let line =
+        match lookupFactor markerFontLineFactors family with
+        | Some factor -> factor
+        | None -> singleLineFactorOfFamily (Some family)
+    let descent =
+        match lookupFactor wordFontDescentFactors family with
+        | Some factor -> factor
+        | None ->
+            match Map.tryFind (family.Trim().ToLowerInvariant()) embeddedDescentFactors with
+            | Some factor -> factor
+            | None -> 0.2686
+    WordLayout.Text.displayFontSize style * (line - descent)
+
 /// How much of a line has to fit above the bottom of the page: what of it is more
 /// than single spacing may run below it (Word 2019, a page of lines at 1.15, 1.21,
 /// 1.35, 1.62 and 1.67 lines: the last line stays on the page when its text at
@@ -1661,7 +1714,7 @@ let private lineVisibleFitHeight line =
     for segment in line.Segments do
         let candidate =
             match segment with
-            | TextSegment (_, style, _, _, _) -> Some (min line.Height (singleLineHeightOfText style))
+            | TextSegment (_, style, _, _, _) -> Some (min line.Height (line.MarkerRaise + singleLineHeightOfText style))
             | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _, _) ->
                 if floating then None else Some (height + max 0.0 yOffset)
             | MathSegment (_, _, _, _, ascent, descent, _, _) -> Some (ascent + descent)
@@ -2266,9 +2319,11 @@ let private resolveLineSpacing (paragraphStyle: ParagraphStyle) (rawMetadata: Bl
         | None -> struct (1.0, "auto", 0.0)
 
 /// Whether a paragraph's lines are of an exact height (w:lineRule="exact").
+/// Lines that fit only whole: exact ones, and at-least ones - their text at their foot, what they add above
+/// it (fixtures marker-ascent `*-al30`: 30pt lines of 11pt text, 21 on a 648pt page, not 22).
 let private hasExactLines (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
     let struct (_, rule, _) = resolveLineSpacing paragraphStyle metadata 1.0
-    rule = "exact"
+    rule = "exact" || rule = "atLeast"
 
 /// How much of a paragraph has to fit above the bottom of the page: down to its
 /// last line's text (lineFitHeight) - its spacing after may fall below it
@@ -2519,6 +2574,7 @@ let emptyLine y height : MeasuredLine = {
     StartOffset = 0
     EndOffset = 0
     Hyphenated = false
+    MarkerRaise = 0.0
 }
 
 let private maxLineBottom defaultValue (layouts: BlockLayout list) =
@@ -3280,6 +3336,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 StartOffset = startOffset
                 EndOffset = endOffset
                 Hyphenated = currentHyphenWidth > 0.0
+                MarkerRaise = 0.0
             } :: lines
             hyphenatedRun <- if currentHyphenWidth > 0.0 then hyphenatedRun + 1 else 0
             currentHyphenWidth <- 0.0
@@ -3735,6 +3792,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                 StartOffset = breakOffset
                                 EndOffset = breakOffset
                                 Hyphenated = false
+                                MarkerRaise = 0.0
                             } :: lines
                             flushedLineCount <- flushedLineCount + 1
                             y <- y + settings.LineHeight
@@ -3881,6 +3939,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             StartOffset = trailingBreakOffset
             EndOffset = trailingBreakOffset
             Hyphenated = false
+            MarkerRaise = 0.0
         } :: lines
     List.rev lines, floatObstacles, placedBoxes
 
@@ -3936,6 +3995,7 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
                         StartOffset = textRun.Start
                         EndOffset = textRun.Start + rawText.Length
                         Hyphenated = false
+                        MarkerRaise = 0.0
                     }]
         | _ -> None
 
@@ -4349,7 +4409,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         | Some entry -> entry.MemoContentFontSize, entry.MemoContentTextStyle
         | None -> paragraphContentMetrics paragraphStyle metadata buffer
     let paragraphLineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
-    let struct (lineSpacingMultiple, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
+    let struct (_, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
     // (Punctuation never hangs past a table cell's text - a fixed or autofit cell, with margins or
     // none, its text ending at the page's margin too; it does in a column, a frame, a header:
     // fixtures hang-punct cell*, cols2, frame, header.)
@@ -4410,7 +4470,12 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         | None -> breakLines ()
 
     let mutable hasRenderedPageBreak = false
-    let markerLineBoxFactor = prefixStyle |> Option.bind WordLayout.Numbering.markerLineBoxFactor
+    // A list marker reaching above its line's text raises the first line by that much (fixtures
+    // marker-ascent: Word's first line is its text's at the paragraph's spacing plus the marker's ascent,
+    // at its own size, above the text's tallest - not scaled by the multiple, the marker's descent below
+    // the text's adds nothing; an at-least line is the more of its height and the single line so raised;
+    // an exact one is not grown).
+    let markerAscent = prefixStyle |> Option.map ascentOfText
     let adjustedLines =
         let adjusted = ResizeArray<MeasuredLine>()
         // (What the marker adds to the first line moves the paragraph's other lines down: Word's
@@ -4440,17 +4505,30 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                             adjustedSegments.Add(MathSegment (prims, style, x + dx, width, ascent, descent, startOffset, length))
                     resizeArrayToList adjustedSegments
             let lineHeight =
-                match markerLineBoxFactor with
-                | Some markerFactor when line.StartOffset = 0 ->
-                    // An exact line height is not grown for the list marker.
-                    if lineSpacingRule = "exact" then line.Height
-                    else max line.Height (contentFontSize * lineSpacingMultiple * markerFactor)
+                match markerAscent with
+                | Some markerAscent when line.StartOffset = 0 && lineSpacingRule <> "exact" ->
+                    let mutable textAscent = 0.0
+                    let mutable textLine = 0.0
+                    for segment in line.Segments do
+                        match segment with
+                        | TextSegment (_, style, _, _, _) ->
+                            textAscent <- max textAscent (ascentOfText style)
+                            textLine <- max textLine (singleLineHeightOfText style)
+                        | _ -> ()
+                    if textLine = 0.0 then
+                        textAscent <- ascentOfText contentTextStyle
+                        textLine <- singleLineHeightOfText contentTextStyle
+                    let excess = max 0.0 (markerAscent - textAscent)
+                    if excess = 0.0 then line.Height
+                    elif lineSpacingRule = "atLeast" then max line.Height (textLine + excess)
+                    else line.Height + excess
                 | _ -> line.Height
             adjusted.Add
                 { line with
                     Y = contentY + (line.Y - settings.PaddingTop) + markerGrowth
                     Segments = adjustedSegments
-                    Height = lineHeight }
+                    Height = lineHeight
+                    MarkerRaise = lineHeight - line.Height }
             markerGrowth <- markerGrowth + (lineHeight - line.Height)
         resizeArrayToList adjusted
 
@@ -4505,7 +4583,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         // (Widow control in a table cell is Word 2013's: in compatibility mode 14 and older a cell's lines
         // break where the page is full, widow control or not - fixtures long-word wc-on-c14-cell, wc-on-c12-cell.)
         let widowControlHere = widowControl paragraphStyle metadata && not (settings.InTableCell && settings.CompatibilityMode < 15)
-        paginateLines settings (widowControlHere && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact") para.Metadata.RenderedPageBreakBefore adjustedLines
+        paginateLines settings (widowControlHere && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact" || lineSpacingRule = "atLeast") para.Metadata.RenderedPageBreakBefore adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
@@ -6147,10 +6225,13 @@ let private footnoteLayoutsWithCarry (settings: LayoutSettings) (pageIndex: int)
 
 /// Endnote paragraphs for every endnote referenced in `bodyLayouts`, in document
 /// order, stacked below `bodyBottom` (Word puts endnotes at the end of the
-/// document); Paint draws the separator above the first. `pageAt y` gives the
+/// document) under the endnotes' separator, a paragraph of its own (fixtures endnote-start: the notes
+/// start the separator's line below the last paragraph and its space after - 13.43pt under Calibri 11pt,
+/// 26.86 double-spaced, 24.41 at 20pt; Paint draws its rule). `pageAt y` gives the
 /// content top and bottom of the page holding `y` and the content top of the
-/// page after it, so the notes continue onto further pages: a note that does
-/// not fit below the one before it starts the next page; one longer than a
+/// page after it, so the notes continue onto further pages, the separator atop each: a note that does
+/// not fit below the one before it starts the next page (`base-n47`, `three-n45`: the separator and the
+/// note on page 2 when the note's lines do not all fit); one longer than a
 /// page goes on on the next, broken between the lines of a paragraph.
 let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: BlockLayout seq) (bodyBottom: float) (pageAt: float -> struct (float * float * float)) : BlockLayout list =
     let ordered = ResizeArray<BlockLayout>(bodyLayouts)
@@ -6163,7 +6244,8 @@ let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: Blo
                 if seenEndnotes.Add id then
                     endnotes.Add(id, text)
     let result = ResizeArray<BlockLayout>()
-    let mutable noteY = bodyBottom + endnoteTopGap
+    let separator = if endnotes.Count = 0 then 0.0 else (noteSeparatorOf settings "endnote" "separator").SeparatorHeight
+    let mutable noteY = bodyBottom + separator
     let place (piece: NotePiece) =
         for layout in piece.PieceLayouts do
             result.Add (placeNoteLayout piece.PieceSlot piece.PieceNote noteY layout)
@@ -6175,7 +6257,8 @@ let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: Blo
         | Some record ->
             let struct (contentTop, contentBottom, nextContentTop) = pageAt noteY
             // A note that does not fit on the current page starts the next one.
-            if noteY > contentTop && noteY + record.RecordHeight > contentBottom then noteY <- nextContentTop
+            if noteY > contentTop + separator + pageFitTolerance && noteY + record.RecordHeight > contentBottom + pageFitTolerance then
+                noteY <- nextContentTop + separator
             for piece in notePieces (sprintf "%s%d" endnoteBlockIdPrefix noteIndex) id record do
                 let mutable pending = Some piece
                 while pending.IsSome do
@@ -6188,9 +6271,9 @@ let private endnoteLayoutsAfterBody (settings: LayoutSettings) (bodyLayouts: Blo
                         match splitNotePiece false piece (contentBottom - noteY) with
                         | Some (first, rest) ->
                             place first
-                            noteY <- nextContentTop
+                            noteY <- nextContentTop + separator
                             pending <- Some rest
-                        | None when noteY > contentTop + pageFitTolerance -> noteY <- nextContentTop
+                        | None when noteY > contentTop + separator + pageFitTolerance -> noteY <- nextContentTop + separator
                         | None ->
                             // (Longer than a page and not to be broken: it runs past the page's foot.)
                             place piece

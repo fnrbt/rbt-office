@@ -1053,7 +1053,13 @@ module Numbering =
 
     /// The style the number or bullet is set in: the paragraph's, with what
     /// the list level says of its number (face, bold, italic, colour, size).
+    /// (The paragraph mark's own size is the marker's under the level's: fixtures marker-ascent `*-sym`, a
+    /// Symbol bullet at the 10pt or 12pt of the mark's w:rPr where the style is 11pt.)
     let markerTextStyle (metadata: BlockMetadata) marker (paragraphTextStyle: TextStyle) =
+        let paragraphTextStyle =
+            match metadata.ExplicitMarkFontSize with
+            | Some size when size > 0.0 -> { paragraphTextStyle with FontSize = size }
+            | _ -> paragraphTextStyle
         let styled =
             match ownLevel metadata with
             | None -> paragraphTextStyle
@@ -1107,11 +1113,6 @@ module Numbering =
             .Replace("\uF0B7", "•")
             .Replace("\uF0FC", "✓")
             .Replace("\uF0A7", "▪")
-
-    let markerLineBoxFactor (style: TextStyle) =
-        match style.FontFamily with
-        | Some family when trimmedEqualsIgnoreCase family "symbol" || trimmedEqualsIgnoreCase family "wingdings" -> Some 1.27
-        | _ -> None
 
     let romanNumeral value =
         let table =
