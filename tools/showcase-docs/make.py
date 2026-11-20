@@ -145,6 +145,22 @@ def rule(doc, color=NAVY, sz=12, after=6):
     p.paragraph_format.space_after = Pt(after)
     return p
 
+def box(paragraphs, val="single", sz=6, color="9AA8B5", space=4, fill=None):
+    """The same borders on adjoining paragraphs: Word draws them as one box round the group."""
+    for p in paragraphs:
+        pPr = p._p.get_or_add_pPr()
+        sides = "".join(f'<w:{side} w:val="{val}" w:sz="{sz}" w:space="{space}" w:color="{color}"/>' for side in ("top", "left", "bottom", "right"))
+        pPr.append(parse_xml(f'<w:pBdr {nsdecls("w")}>{sides}</w:pBdr>'))
+        if fill:
+            pPr.append(parse_xml(f'<w:shd {nsdecls("w")} w:val="clear" w:color="auto" w:fill="{fill}"/>'))
+
+def float_table(table, xspec="right", from_text_cm=0.4, y_cm=0.0):
+    """A floating table (w:tblpPr): beside the paragraph after it, the text wrapped round it."""
+    d = int(from_text_cm * 567)
+    table._tbl.tblPr.append(parse_xml(
+        f'<w:tblpPr {nsdecls("w")} w:leftFromText="{d}" w:rightFromText="{d}" w:topFromText="{d // 2}" w:bottomFromText="{d}" '
+        f'w:vertAnchor="text" w:horzAnchor="margin" w:tblpXSpec="{xspec}" w:tblpY="{int(y_cm * 567)}"/>'))
+
 def columns(section, num, space_cm=0.8, sep=False):
     sectPr = section._sectPr
     for old in sectPr.findall(qn("w:cols")):
@@ -203,8 +219,18 @@ def annual_results():
     widths(tiles, [4.15] * 4)
     para(doc, after=4)
     doc.add_heading("Generation by site", 1)
+    # A floating sidebar: the paragraphs after it run down its left side.
+    side = doc.add_table(rows=3, cols=1)
+    table_borders(side, val="single", sz=8, color=TEAL, inside=False); cell_margins(side, 80, 80, 120, 120)
+    shade(side.cell(0, 0), TEAL); text(side.cell(0, 0), "The year in one line", bold=True, color="FFFFFF", size=9)
+    text(side.cell(1, 0), "+5.9%", bold=True, color=NAVY, size=22, font="Georgia")
+    text(side.cell(2, 0), "more electricity than 2025, from 312 MW more capacity and a windier autumn.", size=8.5, color=GREY)
+    widths(side, [4.6])
+    float_table(side, "right", 0.4)
     p = para(doc, "Output rose at every site with a full year of operation. Northgate Offshore, connected in June, "
-                  "contributed seven months; its availability figure covers that period only.")
+                  "contributed seven months; its availability figure covers that period only. The autumn was the "
+                  "windiest in the twelve years we have measured, and the inland sites gained most from it: Millbrook "
+                  "Flats, the most sheltered of them, produced six per cent more than in 2025.")
     notes.add(p, "Availability is the share of hours a turbine could generate, whatever the wind. Planned maintenance counts against it.")
     # Financial table: a two-level header - "2026" spans the four quarters - and a vertically merged "Site".
     t = doc.add_table(rows=8, cols=7)
@@ -654,6 +680,9 @@ def magazine_feature():
             float_picture(doc, p, os.path.join(ASSETS, "otter.jpg"), 4.2, h=("column", "right"), v=("paragraph", Cm(0.2)), wrap="square")
         if i == 6:
             doc.add_heading("Who decides", 3)
+        if i == 7:
+            # A photo at the page's centre: each column's lines run down both its sides.
+            float_picture(doc, p, os.path.join(ASSETS, "turbines.jpg"), 5.0, h=("margin", "center"), v=("paragraph", Cm(0.3)), wrap="square")
     save(doc, "magazine-feature.docx")
 
 # ---------------------------------------------------------------- 7. diagrams
@@ -708,6 +737,7 @@ def handbook():
     fp = sec.footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     r = fp.add_run("Page "); r.font.size = Pt(9); r.font.color.rgb = RGBColor.from_string(GREY)
     field(fp, "PAGE", "1")
+    notes = Footnotes(doc)
     para(doc, after=120)
     para(doc, "Field Operations", size=36, color=NAVY, font="Cambria", after=0)
     para(doc, "Handbook", size=36, color=TEAL, font="Cambria", after=12)
@@ -728,6 +758,45 @@ def handbook():
             if k == 1:
                 for s in ["Confirm the permit is valid for the date.", "Check the weather window twice: the day before and at the yard.", "Brief the crew on the site's own hazards."]:
                     doc.add_paragraph(s, style="List Number")
+            if n == 1 and k == 0:
+                p = para(doc, "Weather limits are set per site and per task, and the crew lead has the last word on the day.", align=WD_ALIGN_PARAGRAPH.JUSTIFY)
+                notes.add(p, " ".join(["The limits in the site files are the minimum. A lead who judges a lift unsafe in lighter wind stops it, "
+                                       "records why in the visit report and is never asked to justify the stop to the client: the duty manager "
+                                       "answers for it. Gusts count, not the mean; a forecast that changes during the day counts from the moment "
+                                       "it changes, and the lead checks it at every break."] * 3))
+            if n == 2 and k == 1:
+                para(doc, "The lock-out sequence, as the crew reads it aloud:", after=4)
+                steps = ["1  Stop the turbine from the controller; wait for the rotor to slow below 2 rpm.",
+                         "2  Apply the rotor lock and check the indicator shows LOCKED.",
+                         "3  Open the main breaker, lock it, and hang the crew's tags on it.",
+                         "4  Test for dead at the converter with the approved tester, then test the tester.",
+                         "5  Record the time and every crew member's initials in the log."]
+                ps = [para(doc, t, font="Consolas", size=9.5, after=0) for t in steps]
+                box(ps, val="single", sz=6, color="9AA8B5", space=4, fill="F4F6F8")
+                para(doc, after=6)
+            if n == 4 and k == 0:
+                w = para(doc, "Never work on a circuit you have not tested yourself. A tag on a breaker is a record, not a guarantee.",
+                         bold=True, color=CORAL, after=6)
+                box([w], val="double", sz=6, color=CORAL, space=6, fill="FBEDE9")
+            if n == 6 and k == 2:
+                para(doc, "Report every near miss online, the same day, at https://www.northwind-energy.example/field-operations/"
+                          "incident-reporting/near-miss-form?site=ridge-park&crew=lead - the form keeps a copy for the crew.",
+                     align=WD_ALIGN_PARAGRAPH.JUSTIFY)
+        if n == 5:
+            # A long table: rows broken across the page, their cells breaking on their own.
+            doc.add_heading("Fault codes", 2)
+            ft = doc.add_table(rows=1, cols=3)
+            table_borders(ft, sz=4, color="D3DAE0"); cell_margins(ft, 40, 40, 80, 80)
+            for c, hd in enumerate(["Code", "Fault", "What the crew does"]):
+                shade(ft.cell(0, c), NAVY); text(ft.cell(0, c), hd, bold=True, color="FFFFFF")
+            header_row(ft.rows[0])
+            faults = ["Pitch", "Yaw", "Converter", "Gearbox oil", "Generator bearing", "Brake", "Hub controller", "Anemometer"]
+            for i in range(24):
+                cells = ft.add_row().cells
+                text(cells[0], f"F{100 + i * 7}", bold=True, font="Consolas")
+                text(cells[1], faults[i % len(faults)] + (" temperature" if i % 3 == 0 else " fault"))
+                text(cells[2], body[i % len(body)] if i % 4 == 0 else body[i % len(body)].split(".")[0] + ".", size=9.5)
+            widths(ft, [1.8, 3.6, 11.2])
         if n == 3:
             # A landscape section for a wide table, then back to portrait.
             wide = doc.add_section(WD_SECTION.NEW_PAGE)
@@ -749,6 +818,7 @@ def handbook():
             back = doc.add_section(WD_SECTION.NEW_PAGE)
             back.orientation = WD_ORIENT.PORTRAIT
             back.page_width, back.page_height = Cm(21.0), Cm(29.7)
+    notes.save()
     save(doc, "handbook.docx")
 
 
