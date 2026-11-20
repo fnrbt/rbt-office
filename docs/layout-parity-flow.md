@@ -34,6 +34,14 @@ pinned down and makes a best guess for the rest, instead of chasing every case w
   balance between the candidates, change the algorithm; otherwise record the difference as residual. Do
   not grow word-by-word exception lists.
 
+## After the queue: the side-by-side video
+
+When the queue is clear: a video of a showcase document (magazine-feature, and the handbook or annual-results)
+in Microsoft Word and in rbt-office side by side, each in its own window with its chrome showing (Word's ribbon
+and title bar; the demo page's editor in a browser), both scrolled together page by page. Recorded on the
+Windows VM in an interactive session (both apps on its screen; ffmpeg gdigrab or the like), the file brought
+back and edited with rbt-video-edit: titles and labels, no commentary.
+
 ## Ledger
 
 One line per hypothesis, refuted ones too. Status: testing, confirmed (implemented), refuted, open.
