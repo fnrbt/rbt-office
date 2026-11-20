@@ -385,39 +385,58 @@ let private borderDashStyle (style: string option) =
     elif optionEqualsIgnoreCase "dotdash" style then 3
     else 0
 
-let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (line: MeasuredLine) =
-    let mutable fontSize = fallbackFontSize
+/// The tallest ascent and descent of a line's content, as Word sets a line: its text's (Layout.textLineAscent;
+/// raised and lowered text only when the line has no other), an inline picture's as tall as it is - it
+/// stands on the baseline -, an equation's box. None for a line with none of these.
+let private lineContentAscentDescent (line: MeasuredLine) =
+    let mutable ascent = 0.0
+    let mutable descent = 0.0
+    let mutable found = false
+    let mutable shiftedAscent = 0.0
+    let mutable shiftedDescent = 0.0
+    let mutable shiftedFound = false
     for segment in line.Segments do
         match segment with
         | TextSegment (_, style, _, _, _) ->
-            fontSize <- max fontSize (WordLayout.Text.printFontSize style)
-        | ImageSegment _ -> ()
-        // Use the equation's box ascent so its top fits within the line and
-        // its baseline aligns with surrounding text (math extends upward).
-        | MathSegment (_, _, _, _, ascent, _, _, _) ->
-            fontSize <- max fontSize ascent
-    line.Y + fontSize + baselineOffset
+            let a = Layout.textLineAscent style
+            let d = Layout.textSingleLineHeight style - a
+            if style.VertAlign.IsSome then
+                shiftedAscent <- max shiftedAscent a
+                shiftedDescent <- max shiftedDescent d
+                shiftedFound <- true
+            else
+                ascent <- max ascent a
+                descent <- max descent d
+                found <- true
+        | ImageSegment (_, _, yOffset, _, height, _, floating, _, _, _, _, _, _, _) ->
+            if not floating then
+                ascent <- max ascent (yOffset + height)
+                found <- true
+        | MathSegment (_, _, _, _, mathAscent, mathDescent, _, _) ->
+            ascent <- max ascent mathAscent
+            descent <- max descent mathDescent
+            found <- true
+    if found then Some (ascent, descent)
+    elif shiftedFound then Some (shiftedAscent, shiftedDescent)
+    else None
 
-let private lineBaseline fallbackFontSize line =
-    lineBaselineWithOffset 0.0 fallbackFontSize line
+/// A line's baseline, as Word places it (fixtures line-baseline: Calibri, Times New Roman, Arial; 8.5, 11
+/// and 20pt; body, header, footer, table cell, footnote; Word 2010's and 2013's layouts alike): its
+/// content's tallest ascent below its top (below the list marker's raise of a first line) at single
+/// spacing and at any multiple - what the multiple adds is all below the text; at an at-least height
+/// the text's tallest descent above the line's bottom - what the height adds is all above the text; at
+/// an exact height four fifths of the line below its top, whatever the text's font and size. (It stood
+/// the larger of the text's size and the document's default size below the line's top.)
+let private lineBaselineWithOffset baselineOffset (fallbackFontSize: float) (rule: string option) (line: MeasuredLine) =
+    match rule, lineContentAscentDescent line with
+    | Some "exact", _ -> line.Y + line.Height * 0.8 + baselineOffset
+    | Some "atLeast", Some (_, descent) -> line.Y + line.Height - descent + baselineOffset
+    | _, Some (ascent, _) -> line.Y + line.MarkerRaise + ascent + baselineOffset
+    | _, None -> line.Y + line.MarkerRaise + fallbackFontSize + baselineOffset
 
-/// The baseline of a line of a paragraph. A line of an exact height
-/// (w:lineRule="exact") that is lower than its text keeps the text's descent
-/// above its bottom, as Word does - what does not fit is cut off at the top:
-/// the baseline is a fifth of the text's size above the line's bottom. (It
-/// stood the text's size below the line's top, which for 55 pt text in a line
-/// of 54 pt is below the line: the text was drawn into what follows, or cut
-/// off by its text box.)
+/// The baseline of a line of a paragraph (lineBaselineWithOffset, by its line spacing rule).
 let private paragraphLineBaseline baselineOffset (fallbackFontSize: float) (metadata: BlockMetadata) (line: MeasuredLine) =
-    let baseline = lineBaselineWithOffset baselineOffset fallbackFontSize line
-    if metadata.LineSpacingRule <> Some "exact" then baseline
-    else
-        let mutable size = 0.0
-        for segment in line.Segments do
-            match segment with
-            | TextSegment (_, style, _, _, _) -> size <- max size (WordLayout.Text.printFontSize style)
-            | _ -> ()
-        if size > 0.0 && size * 1.2 > line.Height then min baseline (line.Y + line.Height - size * 0.2 + baselineOffset) else baseline
+    lineBaselineWithOffset baselineOffset fallbackFontSize metadata.LineSpacingRule line
 
 let private tabLeaderText (measureText: TextMeasurer) (style: TextStyle) (width: float) (leader: string option) =
     if optionTrimmedEqualsIgnoreCase "dot" leader && width > 0.0 then
@@ -1086,42 +1105,76 @@ let private paragraphShadingRect (settings: LayoutSettings) (layout: BlockLayout
         let bottom = if box.LinkedToNext then box.Bottom else box.ContentBottom + paragraphBorderSpace borders.Bottom
         left, top, right - left, bottom - top)
 
+/// The lines of a double paragraph border, from the outside in: each one's distance from the border's
+/// outer edge, and the lines' width (none for any other style).
+let private doubleBorderLines (border: ParagraphBorder option) =
+    match visibleParagraphBorder border with
+    | Some value when optionEqualsIgnoreCase "double" value.Style ->
+        let width = value.Width |> Option.defaultValue (0.5 * 96.0 / 72.0) |> max 0.25
+        Some ([ 0.0; 2.0 * width ], width)
+    | _ -> None
+
+/// A paragraph's border lines, where they meet at a corner as Word draws them (fixtures
+/// para-border-corners, Word's PDFs): two double borders of one width as two frames, one inside the
+/// other - each line meets the other's line as far in (the showcase handbook's warning: the outer lines
+/// 52.8-542.74 x 281.69-313.49, the inner 54.24-541.3 x 283.13-312.05); any other two (a double and a
+/// single border, doubles of two widths, singles) the top or bottom border's lines out to the box's
+/// outer edges, the side border's between them - from the top border's inner edge to the bottom one's.
 let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLayout) =
     match paragraphBordersOf layout.Metadata with
     | None -> []
     | Some borders ->
         let pt = 96.0 / 72.0
         let thickness border = paragraphBorderAdvance border - paragraphBorderSpace border
-        let visible border = (visibleParagraphBorder border).IsSome
         let commands = ResizeArray<PaintCommand>()
-        let stroke (border: ParagraphBorder option) (horizontal: bool) (fixedAt: float) (fromAt: float) (toAt: float) =
+        // (fixedAt: where the border's line starts, its first line's edge; the lines go on from there
+        // downwards / rightwards. outerFirst: whether that edge is the box's outside (top, left). ends:
+        // how far in from fromAt and toAt a line `inset` in from the border's outside starts and ends.)
+        let stroke (border: ParagraphBorder option) (horizontal: bool) (outerFirst: bool) (fixedAt: float) (fromAt: float) (toAt: float)
+                   (ends: float -> float * float) =
             match visibleParagraphBorder border with
             | None -> ()
             | Some value ->
                 let color = value.Color |> Option.filter (fun color -> color <> "" && color <> "auto") |> Option.defaultValue "#000000"
                 let width = value.Width |> Option.defaultValue (0.5 * pt) |> max 0.25
                 let total = thickness border
-                // (fixedAt: where the border's line starts, its first line's edge; the lines go on from
-                // there downwards / rightwards.)
                 let lines =
                     match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
                     | Some "double" -> [ 0.0, width; 2.0 * width, width ]
                     | _ -> [ 0.0, total ]
                 for offset, w in lines do
                     let at = fixedAt + offset + w / 2.0
+                    let inset = if outerFirst then offset else total - offset - w
+                    let startIn, endIn = ends inset
                     let dash = borderDashStyle value.Style
-                    if horizontal then commands.Add(StrokeLine (color, w, dash, 0.0, fromAt, at, toAt, at))
-                    else commands.Add(StrokeLine (color, w, dash, 0.0, at, fromAt, at, toAt))
+                    if horizontal then commands.Add(StrokeLine (color, w, dash, 0.0, fromAt + startIn, at, toAt - endIn, at))
+                    else commands.Add(StrokeLine (color, w, dash, 0.0, at, fromAt + startIn, at, toAt - endIn))
+        // (Two double borders of one width meet as frames: how far in from the crossing border's outside
+        // the line `inset` in from its own border's outside meets it.)
+        let framed (own: ParagraphBorder option) (crossing: ParagraphBorder option) (inset: float) =
+            match doubleBorderLines own, doubleBorderLines crossing with
+            | Some (ownInsets, ownWidth), Some (crossingInsets, crossingWidth) when abs (ownWidth - crossingWidth) < 0.01 ->
+                List.tryFindIndex (fun value -> abs (value - inset) < 0.01) ownInsets
+                |> Option.bind (fun index -> List.tryItem index crossingInsets)
+            | _ -> None
+        let meetAcross (own: ParagraphBorder option) (crossing: ParagraphBorder option) (inset: float) =
+            framed own crossing inset |> Option.defaultValue 0.0
+        let meetDown (own: ParagraphBorder option) (crossing: ParagraphBorder option) (drawn: bool) (inset: float) =
+            if not drawn || (visibleParagraphBorder crossing).IsNone then 0.0
+            else framed own crossing inset |> Option.defaultValue (thickness crossing)
         let box = paragraphBorderBox settings layout borders
         let contentBottom, leftOuter, rightOuter, textRight, reach, top, bottom =
             box.ContentBottom, box.LeftOuter, box.RightOuter, box.TextRight, box.Reach, box.Top, box.Bottom
-        if not box.BeforeLinked then stroke borders.Top true top leftOuter rightOuter
+        let across border inset = meetAcross border borders.Left inset, meetAcross border borders.Right inset
+        if not box.BeforeLinked then stroke borders.Top true true top leftOuter rightOuter (across borders.Top)
         if box.LinkedToNext then
             // (The between border: below this paragraph, its space from the text.)
-            stroke borders.Between true (contentBottom + paragraphBorderSpace borders.Between) leftOuter rightOuter
-        else stroke borders.Bottom true (contentBottom + paragraphBorderSpace borders.Bottom) leftOuter rightOuter
-        stroke borders.Left false leftOuter top bottom
-        stroke borders.Right false (textRight + reach + paragraphBorderSpace borders.Right) top bottom
+            stroke borders.Between true false (contentBottom + paragraphBorderSpace borders.Between) leftOuter rightOuter (fun _ -> 0.0, 0.0)
+        else stroke borders.Bottom true false (contentBottom + paragraphBorderSpace borders.Bottom) leftOuter rightOuter (across borders.Bottom)
+        let down border inset =
+            meetDown border borders.Top (not box.BeforeLinked) inset, meetDown border borders.Bottom (not box.LinkedToNext) inset
+        stroke borders.Left false true leftOuter top bottom (down borders.Left)
+        stroke borders.Right false false (textRight + reach + paragraphBorderSpace borders.Right) top bottom (down borders.Right)
         resizeArrayToList commands
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
@@ -2699,6 +2752,10 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
         let valuesOf (pageIndex: int) : RunningFieldValues =
             if isNull fieldValues then fieldValues <- pageFieldValues sectionPages pagesArray.Length
             fieldValues.[pageIndex]
+        // (A footer ends its footer distance above the page's bottom - its last line's bottom there, as
+        // Layout keeps the body above it: fixtures line-baseline, footers of 1 to 2 x 24.4pt lines.)
+        let footerStoryHeight (blocks: Block list) =
+            if blocks.IsEmpty then 0.0 else Layout.headerFooterStoryHeight settings measureText measureRange doc blocks
         let sourceOf (pageIndex: int) : HeaderFooterPageSource =
             let info = pagesArray.[pageIndex]
             let kind = headerFooterKindOfPage sectionPages doc.PageSetup pageIndex
@@ -2707,7 +2764,7 @@ let private headerFooterPageSources (cache: HeaderFooterCache option) (settings:
             let section = sectionOfPage sectionPages pageIndex
             { SourceHeaders = headers; SourceFooters = footers
               SourceHeaderY = info.Top + sectionPages.SectionHeaderDistance.[section]
-              SourceFooterY = info.Top + info.Height - sectionPages.SectionFooterDistance.[section] - settings.LineHeight * 0.78
+              SourceFooterY = info.Top + info.Height - sectionPages.SectionFooterDistance.[section] - footerStoryHeight footers
               SourceRunning = hasRunningFields headers || hasRunningFields footers }
         let commandsOf (pageIndex: int) (source: HeaderFooterPageSource) : PaintCommand array =
             let values = valuesOf pageIndex
@@ -2805,7 +2862,9 @@ type HeaderFooterTarget = {
 }
 
 /// `sectionEnds`: the layouts of the paragraphs that end a section, in order.
-let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectionEnds: BlockLayout seq) (pages: PageInfo list) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
+/// With `measurers`, a footer's blocks start as high above its footer distance as they are tall (as the
+/// page paints them); without, a line's height above it.
+let headerFooterTargetForPageWith (measurers: (TextMeasurer * TextRangeMeasurer) option) (settings: LayoutSettings) (doc: Document) (sectionEnds: BlockLayout seq) (pages: PageInfo list) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
     let pagesArray = List.toArray pages
     if pageIndex < 0 || pageIndex >= pagesArray.Length then None
     else
@@ -2828,6 +2887,12 @@ let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectio
             match found with
             | Some references -> references
             | None -> if isHeader then doc.PageSetup.HeaderReferences else doc.PageSetup.FooterReferences
+        let part = if parts.Parts.IsEmpty then None else partForPage kind pageIndex parts refs
+        let footerHeight =
+            match measurers, part with
+            | Some (measureText, measureRange), Some part when not part.Blocks.IsEmpty ->
+                Layout.headerFooterStoryHeight settings measureText measureRange doc part.Blocks
+            | _ -> settings.LineHeight * 0.78
         Some {
             TargetIsHeader = isHeader
             TargetPageIndex = pageIndex
@@ -2835,14 +2900,17 @@ let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectio
             TargetSection = section
             TargetSectionCount = sectionPages.SectionEndPages.Length
             TargetSectionStartPage = sectionPages.SectionStartPages.[section]
-            TargetPart = if parts.Parts.IsEmpty then None else partForPage kind pageIndex parts refs
+            TargetPart = part
             TargetOwn = own |> List.exists (fun (referenceKind, _) -> referenceKind = kind)
             TargetReferences = own
             TargetY =
                 if isHeader then pagesArray.[pageIndex].Top + sectionPages.SectionHeaderDistance.[section]
-                else pagesArray.[pageIndex].Top + pagesArray.[pageIndex].Height - sectionPages.SectionFooterDistance.[section] - settings.LineHeight * 0.78
+                else pagesArray.[pageIndex].Top + pagesArray.[pageIndex].Height - sectionPages.SectionFooterDistance.[section] - footerHeight
             TargetFields = (pageFieldValues sectionPages pagesArray.Length).[pageIndex]
         }
+
+let headerFooterTargetForPage (settings: LayoutSettings) (doc: Document) (sectionEnds: BlockLayout seq) (pages: PageInfo list) (pageIndex: int) (isHeader: bool) : HeaderFooterTarget option =
+    headerFooterTargetForPageWith None settings doc sectionEnds pages pageIndex isHeader
 
 /// The blocks of a header or footer with the page number and the page count
 /// in the fields that show them (what a page paints).

@@ -62,8 +62,10 @@ try {
     // Pixels (whole-canvas mode: layout coordinates are canvas pixels).
     const left = first.MarginLeft, middle = first.MarginLeft + (first.Width - first.MarginLeft - first.MarginRight) / 2;
     check('painted: nothing in the bottom margin of the first page, nothing between the pages',
-        // (The band below the text area where the next lines of the merged cell were; the page's footer is further down.)
-        [inkBetween(left - 4, first.Width - first.MarginRight + 4, textBottom + 3, textBottom + 30), inkBetween(0, first.Width, first.Top + first.Height + 2, second.Top - 2)], [0, 0]);
+        // (The band below the text area where the next lines of the merged cell were. The page's footer - one
+        // line and Word's default 8pt after - ends its footer distance above the page's foot, as Word puts it
+        // (fixtures line-baseline -fa12): its line's top 16.6px below the text area's.)
+        [inkBetween(left - 4, first.Width - first.MarginRight + 4, textBottom + 3, textBottom + 16), inkBetween(0, first.Width, first.Top + first.Height + 2, second.Top - 2)], [0, 0]);
     check('painted: the merged column goes on below the repeated header row of the second page', [inkBetween(left + 6, middle - 6, firstOnSecond.Y, firstOnSecond.Y + 60) > 40, inkBetween(left + 6, middle - 6, header[1].Y + 2, header[1].Y + 22) > 20], [true, true]);
     check('painted: the repeated header row holds the header text alone (no merged line under it)', inkBetween(left + 6, middle - 6, header[1].Y - 4, header[1].Y + 24) < inkBetween(left + 6, middle - 6, firstOnSecond.Y, firstOnSecond.Y + 28) + 400, true);
     // A real click on the merged text on the second page, and typing there.

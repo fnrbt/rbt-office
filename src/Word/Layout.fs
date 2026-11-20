@@ -1712,6 +1712,11 @@ let private ascentOfText (style: TextBuffer.TextStyle) =
             | None -> 0.2686
     WordLayout.Text.displayFontSize style * (line - descent)
 
+/// A text's ascent and its single line as Word sets a line (ascentOfText, singleLineHeightOfText), for
+/// placing its baseline (Paint).
+let textLineAscent (style: TextBuffer.TextStyle) = ascentOfText style
+let textSingleLineHeight (style: TextBuffer.TextStyle) = singleLineHeightOfText style
+
 /// How much of a line has to fit above the bottom of the page: what of it is more
 /// than single spacing may run below it (Word 2019, a page of lines at 1.15, 1.21,
 /// 1.35, 1.62 and 1.67 lines: the last line stays on the page when its text at
@@ -8761,6 +8766,11 @@ let private storyHeight (settings: LayoutSettings) (measureText: TextMeasurer) (
 /// at the bottom margin, or above the footer where that reaches further up (Word 2019:
 /// a header of two single-spaced Calibri 11pt paragraphs 36pt from the top, a top
 /// margin of 36pt - the body's first line at 62.9pt).
+/// How tall a header's or footer's blocks are laid out (Paint: a footer's last line ends its footer
+/// distance above the page's bottom).
+let headerFooterStoryHeight (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (blocks: Block list) =
+    storyHeight settings measureText measureRange doc blocks
+
 let private withHeaderFooterExtents (settings: LayoutSettings) measureText measureRange (doc: Document) marginTop marginBottom headerDistance footerDistance (header: Block list option) (footer: Block list option) =
     let top =
         match header with

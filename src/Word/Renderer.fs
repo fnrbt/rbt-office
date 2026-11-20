@@ -660,7 +660,7 @@ let private pageFurnitureShapeRects (ctx: RenderContext) (whole: Document) (body
     | None -> []
     | Some page ->
         let sectionEnds = bodyLayouts |> List.filter (fun layout -> endsSection layout.Metadata)
-        match headerFooterTargetForPage settings whole sectionEnds pages pageIndex isHeader with
+        match headerFooterTargetForPageWith (Some (measureWithContext ctx, measureRangeWithContext ctx)) settings whole sectionEnds pages pageIndex isHeader with
         | Some target when target.TargetPart |> Option.exists (fun part -> part.Blocks |> List.exists (function TextBox _ -> true | _ -> false)) ->
             storyShapeRects settings (measureWithContext ctx) (measureRangeWithContext ctx) whole page target.TargetY target.TargetPart.Value.Blocks
         | _ -> []
@@ -753,7 +753,7 @@ let private storyLayouts (ctx: RenderContext) (story: StoryView) (doc: Document)
     | Some page ->
         let sectionEnds = bodyLayouts |> List.filter (fun layout -> endsSection layout.Metadata)
         let startY =
-            headerFooterTargetForPage settings whole sectionEnds pages story.PageIndex story.IsHeader
+            headerFooterTargetForPageWith (Some (measureWithContext ctx, measureRangeWithContext ctx)) settings whole sectionEnds pages story.PageIndex story.IsHeader
             |> Option.map (fun target -> target.TargetY)
             |> Option.defaultWith (fun () -> headerFooterStartY settings whole.PageSetup page story.IsHeader)
         match ctx.StoryLayouts with
@@ -2544,7 +2544,7 @@ let headerFooterTarget (ctx: RenderContext) (doc: Document) (pageIndex: int) (is
     let layouts, layoutPages = layoutWholeDocumentWithPages ctx doc
     let pages = pageFramesForLayouts ctx (layoutSettings ctx doc) doc layouts layoutPages
     let sectionEnds = layouts |> List.filter (fun layout -> endsSection layout.Metadata)
-    headerFooterTargetForPage (layoutSettings ctx doc) doc sectionEnds pages pageIndex isHeader
+    headerFooterTargetForPageWith (Some (measureWithContext ctx, measureRangeWithContext ctx)) (layoutSettings ctx doc) doc sectionEnds pages pageIndex isHeader
 
 /// What the running fields (PAGE, NUMPAGES, SECTIONPAGES) show on a page,
 /// from the layout there is (not forced to the end of the document: see
