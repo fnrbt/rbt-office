@@ -797,9 +797,10 @@ do
     let marksOf (item: WordEditorPackage.EditorParagraph) =
         item.Runs |> Array.map (fun run -> runText run, run.RenderedPageBreakBefore) |> Array.toList
     ok "a mark in a link is the link run's from it on" (marksOf items.[0] = [ ("link, ", false); ("next page", true) ]) (sprintf "%A" (marksOf items.[0]))
-    // (A complex field's result is the field's one run, with the mark: a field of one run is saved from its source.)
-    ok "a mark in a field's result is the field run's"
-        (marksOf items.[1] |> List.exists (fun (text, mark) -> mark && text = "result, on the next page"))
+    // (A complex field's result is parted at the mark, as at a change of format: the part from the mark on has it,
+    // where Word started its page - not the result's start.)
+    ok "a mark in a field's result is the result's part from it on"
+        (marksOf items.[1] |> List.filter (fun (text, _) -> text <> "") = [ ("result, ", false); ("on the next page", true) ])
         (sprintf "%A" (marksOf items.[1]))
     ok "and in a simple field's" (marksOf items.[2] |> List.exists (fun (text, mark) -> mark && text = "next")) (sprintf "%A" (marksOf items.[2]))
 

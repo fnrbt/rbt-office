@@ -2246,6 +2246,19 @@ let private lineFitSafety = 0.25
 let private tableCellLineFitSafety = 2.0
 let private mixedMetricsLineFitSafety = 0.75
 
+/// What a line must leave free at its end for a word to fit (px). With the fonts' own advances (a host's
+/// text measurer: settings.LongTrailingSpaceFitSafety is then the PDF export's 0.25px) text is as wide
+/// as Word sets it, unkerned (tests/word/kerning.fsx), and a line of mixed fonts holds what Word's does:
+/// docx4j-headers-footers' "SectionWrapper stores, ... sectPr element):", Cambria and Calibri, 0.26pt
+/// short of its margin in Word. The canvas's whole-pixel measuring keeps the 0.75px such a line was
+/// given. A table cell keeps its 2px with either: our columns are not yet Word's (the narrow cell of
+/// docx4j-headers-footers is 58.4pt here, 57.72pt in Word - its grid width), and in that cell Word's
+/// lines are "Reference" / "source" / "not" (fixtures long-word hf-*).
+let private fitSafety (settings: LayoutSettings) inTableCell mixedMetrics =
+    if inTableCell then (if mixedMetrics && settings.LongTrailingSpaceFitSafety >= 1.0 then max tableCellLineFitSafety mixedMetricsLineFitSafety else tableCellLineFitSafety)
+    elif mixedMetrics && settings.LongTrailingSpaceFitSafety >= 1.0 then mixedMetricsLineFitSafety
+    else lineFitSafety
+
 let private visibleTokenLength (text: string) =
     let mutable length = text.Length
     while length > 0 && isWhitespaceChar text.[length - 1] do
@@ -2674,20 +2687,22 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     /// The line is full before a word that goes on from the text before it (its first run starts
     /// where a run of the same word ended: "ch" + "aracter" when every letter has its colour).
     /// Word breaks only where a break may be - a space, after a hyphen, at a tab or a picture - so
-    /// the word's pieces already on this line go to the next one with it. A word that is the whole
-    /// line breaks where it is full, as before.
+    /// the word's pieces already on this line go to the next one with it. False when the word is
+    /// the whole line (nothing is done): Word breaks a word longer than a line where the line is
+    /// full, its pieces in several runs as one word (fixtures long-word sect-L45, glued-p10-L45:
+    /// "§" + 45 digits on a line of 30 is "§" and 29 digits, then the rest).
     let breakBeforeWord (continuesWord: bool) =
         let lastIndex = currentSegments.Count - 1
         let canBreakAfter (c: char) = isWhitespaceChar c || c = '-'
         // The first segment (and where in it) of the word that ends the line: None when the line
-        // ends at a break, or holds nothing but that word.
+        // ends at a break; (0, 0) when it holds nothing but that word.
         let wordStart =
             if not continuesWord || lastIndex < 0 then None
             else
                 match currentSegments.[lastIndex] with
                 | TextSegment (text, _, _, _, _) when text.Length > 0 && not (canBreakAfter text.[text.Length - 1]) ->
                     let mutable index = lastIndex
-                    let mutable found = None
+                    let mutable found = Some (0, 0)
                     let mutable searching = true
                     while searching && index >= 0 do
                         match currentSegments.[index] with
@@ -2704,6 +2719,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                     found
                 | _ -> None
         match wordStart with
+        | Some (0, 0) -> false
         | Some (first, cut) when first <= lastIndex && (first > 0 || cut > 0) ->
             let measured (text: string) style =
                 measureRange (WordLayout.Text.displayText style text) (WordLayout.Text.displayStyle style) 0 text.Length
@@ -2729,7 +2745,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             for text, style, width, start in carried do
                 addTextSegment text style currentX width start
                 currentX <- currentX + width
-        | _ -> flushLine ()
+            true
+        | _ ->
+            flushLine ()
+            true
 
     let anchorPage : WordLayout.Floating.AnchorPage =
         { PageWidth = settings.Width; PageHeight = settings.PageHeight; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
@@ -2929,11 +2948,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                         if currentLineEnd - (currentX + visibleWidth) >= trailingSpaceFitSafety settings visibleLength then visibleWidth else width
                                     else width
 
-                            let fullFitSafety =
-                                if settings.InTableCell then
-                                    if currentHasMixedTextMetrics then max tableCellLineFitSafety mixedMetricsLineFitSafety else tableCellLineFitSafety
-                                elif currentHasMixedTextMetrics then mixedMetricsLineFitSafety
-                                else lineFitSafety
+                            let fullFitSafety = fitSafety settings settings.InTableCell currentHasMixedTextMetrics
 
                             let overflows = currentX + fitWidth > currentLineEnd - fullFitSafety
                             // For the strip-skip decision use the visible width (no trailing
@@ -2945,8 +2960,16 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                     let vw = measureRange displayRunText displayRunStyle consumed visibleLength
                                     currentX + vw > currentLineEnd - fullFitSafety
                                 else overflows
+                            // (The word on the line alone and longer than it: broken where the line is
+                            // full - or at the run's start when not a character more fits.)
+                            let mutable broke = false
+                            let mutable wholeLineWord = false
                             if overflows && currentHasFlowContent then
-                                breakBeforeWord (tokenOffset = 0 && runText.Length > 0 && not (isWhitespaceChar runText.[0]))
+                                if breakBeforeWord (tokenOffset = 0 && runText.Length > 0 && not (isWhitespaceChar runText.[0])) then broke <- true
+                                else wholeLineWord <- true
+                            if broke then ()
+                            elif wholeLineWord && (hasTab || currentX + measureRange displayRunText displayRunStyle consumed 1 > currentLineEnd - fullFitSafety) then
+                                flushLine ()
                             elif visibleOverflows && not currentHasFlowContent && not pendingIntervals.IsEmpty && not hasTab then
                                 // Narrow strip at this y can't hold the next whole word, but
                                 // there's another strip at the same y — leave this one empty
@@ -2968,6 +2991,11 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                     if overflows && not hasTab then
                                         let maxSegmentWidth = max 1.0 (currentLineEnd - currentX)
                                         let take = fittingLength consumed remainingLength maxSegmentWidth
+                                        // (What is left of the token but its spaces: they stay at the end of
+                                        // this line, past its edge, and do not make a line of their own.)
+                                        let take =
+                                            if take < remainingLength && visibleTokenLengthRange runText tokenOffset remainingLength <= take then remainingLength
+                                            else take
                                         take, measureRange displayRunText displayRunStyle consumed take
                                     else
                                         remainingLength, width
@@ -3043,7 +3071,7 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
                 let displayStyle = WordLayout.Text.displayStyle textRun.Style
                 let width = measureRange displayText displayStyle 0 displayText.Length
                 let availableWidth = max 1.0 maxWidth
-                let fitSafety = if settings.InTableCell then tableCellLineFitSafety else lineFitSafety
+                let fitSafety = fitSafety settings settings.InTableCell false
                 if firstLineStart + width > availableWidth - fitSafety then
                     None
                 else
@@ -3103,7 +3131,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                     let displayText = WordLayout.Text.displayText textStyle rawText
                     let displayStyle = WordLayout.Text.displayStyle textStyle
                     let width = measureText displayText displayStyle
-                    let fitSafety = if settings.InTableCell then tableCellLineFitSafety else lineFitSafety
+                    let fitSafety = fitSafety settings settings.InTableCell false
                     if width > max 1.0 availableWidth - fitSafety then
                         None
                     else
@@ -3611,7 +3639,10 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         else adjustedLines
 
     let pagedLines =
-        paginateLines settings ((widowControl paragraphStyle metadata) && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact") para.Metadata.RenderedPageBreakBefore adjustedLines
+        // (Widow control in a table cell is Word 2013's: in compatibility mode 14 and older a cell's lines
+        // break where the page is full, widow control or not - fixtures long-word wc-on-c14-cell, wc-on-c12-cell.)
+        let widowControlHere = widowControl paragraphStyle metadata && not (settings.InTableCell && settings.CompatibilityMode < 15)
+        paginateLines settings (widowControlHere && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact") para.Metadata.RenderedPageBreakBefore adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
@@ -4149,6 +4180,13 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
             if cellSpacing > 0.0 then WordLayout.Table.spacedVerticalMarginExcess textPadding cellPadding else 0.0
         let cellX = tableLeftOffset + spacedStartOffsetFromPrefix columnWidthPrefix cellSpacing startColumn + textPadding.Left - outerStartInset - WordLayout.Table.internalSpacingTextOffset cellSpacing startColumn
         let cellMaxWidth = WordLayout.Table.cellContentWidth colWidth textPadding
+        // A cell's line stays on the page when it and the cell's bottom margin fit above the page's
+        // bottom (fixtures long-word mar-b*: exact 20pt lines 8pt above it stay over a 2.15pt margin and
+        // go over a 10pt one; hf-foot*: Calibri lines 0.8pt above it go over docx4j-headers-footers'
+        // 2.15pt margin, stay without it).
+        let cellSettings =
+            if textPadding.Bottom > 0.0 && cellSettings.MarginBottom > -1000.0 then { cellSettings with MarginBottom = cellSettings.MarginBottom + textPadding.Bottom }
+            else cellSettings
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
         let contentStartY = WordLayout.Table.cellContentStartY (cellY + borderTop) textPadding
         let mutable paraY = contentStartY

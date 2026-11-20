@@ -67,3 +67,10 @@ every line from its PDFs into `<dir>/word/positions.tsv`, and
 floating pictures and shapes); where Word's lines and pictures are in its PDFs
 comes from `pdf-geometry.py` (each line's pieces across and down, each picture's
 box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against.
+
+`fixtures/long-word.py` (where lines break round a word longer than the line, in fields' results,
+at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into `<dir>/word/lines.tsv`,
+`tests/word/long-word.fsx`), `fixtures/kerning.py` (the width Word gives a word, kerned or not;
+`--widths <dir>`, `tests/word/kerning.fsx`) and `fixtures/line-fit.py` (how many characters Word
+puts on a line; read with `long-word.py --lines`). A REF field is updated by Word's PDF export: its
+line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.
