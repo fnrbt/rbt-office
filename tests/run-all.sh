@@ -64,7 +64,7 @@ word_suites=(
     group-shapes roundtrip-layout table-break-borders sections table-insert
     wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
     column-balance section-end macros outline line-boxes row-break rfonts-precedence footnote-block border-space
-    float-wrap long-word kerning hang-punct table-width embedded-fonts
+    float-wrap long-word kerning hang-punct table-width embedded-fonts page-top-space
 )
 
 # These are required corpus anchors and all drawing fixtures that the formats

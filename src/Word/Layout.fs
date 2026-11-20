@@ -466,7 +466,8 @@ type LayoutSettings = {
 }
 
 /// Word 2019 (fixtures hang-punct): punctuation hangs past a line's end in Word 2010's layout
-/// and older (compatibility mode 14, 12, none - not 15) under w:useFELayout; under
+/// and older (compatibility mode 14, 12, none - not 15) under w:useFELayout, not in a table's
+/// cell (layoutParagraphCore's lineSettings); under
 /// compressPunctuation (and ...AndJapaneseKana) not at the paragraph's end. doNotCompress or
 /// no characterSpacingControl: everywhere.
 let documentHangingPunctuation (setup: PageSetup) =
@@ -2216,25 +2217,16 @@ let private startsAtPageContentTop settings y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     abs (y - WordLayout.Page.contentTop settings.PaddingTop pageTop) < 0.5
 
-let private suppressLayoutPageTopBeforeSpacing settings paragraphStyle (layout: BlockLayout) =
-    let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle layout.Metadata
-    match layout.Lines with
-    | firstPaged :: _ when spacingBefore > 0.0 && startsAtPageContentTop settings layout.Y ->
-        let firstPagedPageTop = WordLayout.Page.pageTopForY (pageHeight settings) firstPaged.Y
-        let firstPagedContentTop = WordLayout.Page.contentTop settings.PaddingTop firstPagedPageTop
-        let lineTopOffset = firstPaged.Y - firstPagedContentTop
-        if abs (lineTopOffset - spacingBefore) > 0.5 then layout
-        else
-            let shift = min spacingBefore (max 0.0 lineTopOffset)
-            let firstPagedPage = pageIndexForY settings firstPaged.Y
-            { layout with
-                Height = max 0.0 (layout.Height - shift)
-                Lines =
-                    layout.Lines
-                    |> List.map (fun line ->
-                        if pageIndexForY settings line.Y = firstPagedPage then { line with Y = line.Y - shift }
-                        else line) }
-    | _ -> layout
+/// Whether a paragraph at the top of a page (or a column) has its space before there: Word 2019
+/// (fixtures page-top-space, compatibility mode 14 and 15) drops it when the paragraph came there by
+/// the flow of the text - pushed on by the lines above it (as a whole: see layoutBlock), or
+/// after a page break in a paragraph before it (one of its own, or at the end of one's text:
+/// `breakAbove`); it keeps it on the document's first paragraph, after a section break and after a
+/// page break the paragraph's own text starts with; w:pageBreakBefore (`pageBreakBefore`, the
+/// paragraph's or its style's): kept in mode 14, dropped in 15. (Word drops it after a break in the
+/// paragraph's own text too under w:suppressSpBfAfterPgBrk, in mode 14: not read.)
+let private pageTopDropsSpaceBefore (settings: LayoutSettings) breakAbove pageBreakBefore =
+    breakAbove || (pageBreakBefore && settings.CompatibilityMode >= 15)
 
 /// The borders a paragraph is laid out with: those in effect as read (its style's included), or its own.
 let private paragraphBordersOf (metadata: BlockMetadata) =
@@ -3822,6 +3814,7 @@ type ParagraphPlacementKey = {
     PlacementPrefix: string
     /// The notes at the foot of the page the paragraph starts on (see ParagraphNotes).
     PlacementNotes: ParagraphNotes
+    PlacementDropsSpaceBefore: bool
 }
 
 type ParagraphLayoutMemoEntry = {
@@ -4088,7 +4081,7 @@ let private paragraphMemoEntry (memo: ParagraphLayoutMemo) (paragraphStyle: Para
         memo.MemoEntries.[slotKey (if empty >= 0 then empty elif unused >= 0 then unused else slots - 1)] <- entry
         entry
 
-let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) (memoEntry: ParagraphLayoutMemoEntry option) =
+let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) (memoEntry: ParagraphLayoutMemoEntry option) (dropSpaceBefore: bool) =
     let mutable counters = numberedCounters
     let metadata =
         match memoEntry with
@@ -4098,7 +4091,8 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
     let rightIndent = WordLayout.Paragraph.rightIndent metadata
     let firstLineIndent = WordLayout.Paragraph.firstLineIndent metadata
     let rawSpacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle metadata
-    let spacingBefore = rawSpacingBefore
+    // (None at the top of a page the paragraph came to by the flow of the text: pageTopDropsSpaceBefore.)
+    let spacingBefore = if dropSpaceBefore then 0.0 else rawSpacingBefore
     let spacingAfter = WordLayout.Paragraph.spacingAfter paragraphStyle metadata
     let hasExplicitLineSpacing =
         metadata.LineSpacing.IsSome
@@ -4139,9 +4133,14 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         | None -> paragraphContentMetrics paragraphStyle metadata buffer
     let paragraphLineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
     let struct (lineSpacingMultiple, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
+    // (Punctuation never hangs past a table cell's text - a fixed or autofit cell, with margins or
+    // none, its text ending at the page's margin too; it does in a column, a frame, a header:
+    // fixtures hang-punct cell*, cols2, frame, header.)
     let lineSettings =
         { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight
-                        HangingPunctuation = if metadata.OverflowPunctuation = Some false then NoHanging else settings.HangingPunctuation }
+                        HangingPunctuation =
+                            if metadata.OverflowPunctuation = Some false || settings.InTableCell then NoHanging
+                            else settings.HangingPunctuation }
     // (The column the paragraph is in: where it starts across, and as wide as it is laid out - in a
     // section with columns xOffset is the column's left edge. Not in a table's cell.)
     let column = if settings.InTableCell then (0.0, 0.0) else (xOffset, maxWidth)
@@ -4310,9 +4309,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
 /// Paragraph layout for a pass that may carry a memo. The memo is passed down
 /// the call chain explicitly — there is no shared state, so concurrent
 /// layouts (and layouts of different documents) cannot see each other's memo.
-let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+let private layoutParagraphWithMemoAt (dropSpaceBefore: bool) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let uncached () =
-        layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None
+        layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None dropSpaceBefore
     match memo with
     | Some memo when not (initialObstacles.IsEmpty && initialPlacedBoxes.IsEmpty) ->
         // Next to floating objects: once one is on a page, every paragraph
@@ -4329,6 +4328,7 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
                 PlacementXOffset = xOffset
                 PlacementPrefix = prefixOpt |> Option.defaultValue ""
                 PlacementNotes = paragraphNotes
+                PlacementDropsSpaceBefore = dropSpaceBefore
             }
             match entry.MemoObstaclePlacement with
             | Some (cachedKey, obstaclesIn, boxesIn, layout, obstaclesOut, boxesOut)
@@ -4350,6 +4350,7 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
                 PlacementXOffset = xOffset
                 PlacementPrefix = prefixOpt |> Option.defaultValue ""
                 PlacementNotes = paragraphNotes
+                PlacementDropsSpaceBefore = dropSpaceBefore
             }
             match entry.MemoPlacement, entry.MemoPlacementOlder with
             | Some (cachedKey, layout), _ when cachedKey = key ->
@@ -4362,7 +4363,7 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
                 let linesBefore = entry.MemoLines
                 let linesOlderBefore = entry.MemoLinesOlder
                 let layout, counters, obstacles, placedBoxes =
-                    layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes (Some entry)
+                    layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes (Some entry) dropSpaceBefore
                 // (Lines were broken when a new entry came in, not when the two slots changed places.)
                 if not (obj.ReferenceEquals(linesBefore, entry.MemoLines)) && not (obj.ReferenceEquals(linesOlderBefore, entry.MemoLines)) then
                     memo.LineBreakCount <- memo.LineBreakCount + 1
@@ -4371,8 +4372,11 @@ let private layoutParagraphWithMemo (memo: ParagraphLayoutMemo option) (settings
                 layout, counters, obstacles, placedBoxes
     | _ -> uncached ()
 
+let private layoutParagraphWithMemo memo settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes =
+    layoutParagraphWithMemoAt false memo settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes
+
 let layoutParagraphAtWithStyleAndObstaclesWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
-    layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None
+    layoutParagraphCore settings measureText measureRange maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes None false
 
 let layoutParagraphAtWithStyleAndObstacles (settings: LayoutSettings) (measureText: TextMeasurer) (maxWidth: float) (y: float) (xOffset: float) (paragraphStyle: ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (para: ParagraphBlock) (numberedCounters: Map<string * int, int>) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutParagraphAtWithStyleAndObstaclesWithRange settings measureText (rangeMeasurerFromTextMeasurer measureText) maxWidth y xOffset paragraphStyle effectiveBufferForParagraph para numberedCounters initialObstacles initialPlacedBoxes
@@ -6770,6 +6774,9 @@ let private layoutDocumentPassKept
             let renderedOrdinal = (getParagraph block).Metadata.RenderedPageBreakBefore
             let para = withHintPage hintOffset 0 (getParagraph block)
             let paragraphStyle = forBlockInContext styleContext block
+            // (Laid out without its space before at the top of a page it came to by the flow of the text:
+            // pageTopDropsSpaceBefore.)
+            let dropsSpaceBefore = ref false
             let dropCap = pendingDropCap
             pendingDropCap <- None
             // The paragraph after a drop cap (w:framePr w:dropCap): the
@@ -6787,7 +6794,7 @@ let private layoutDocumentPassKept
                     Some (capLayout, capWidth, capPara.Metadata.DropCap.Value)
             let placeWithDropCap (atY: float) (obstacles: FloatingObstacle list) (placed: PlacedFloatingBox list) =
                 withParagraphNotes (notesAt atY) (fun () ->
-                let laidOut () = layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstacles placed
+                let laidOut () = layoutParagraphWithMemoAt dropsSpaceBefore.Value memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters obstacles placed
                 match capLayoutAt atY with
                 | Some (capLayout, capWidth, cap) when not cap.InMargin && capWidth > 0.0 ->
                     let probe, _, _, _ = laidOut ()
@@ -6796,7 +6803,7 @@ let private layoutDocumentPassKept
                         // (Short of its last line's bottom, so that the line after it is clear.)
                         let frameHeight, _ = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first cap
                         let obstacle = (0.0, first.Y, capWidth + cap.Distance, frameHeight - 0.5)
-                        layoutParagraphWithMemo memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters (obstacle :: obstacles) placed
+                        layoutParagraphWithMemoAt dropsSpaceBefore.Value memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters (obstacle :: obstacles) placed
                     | [] -> laidOut ()
                 | _ -> laidOut ())
             let beforeRenderedHintY = y
@@ -6806,9 +6813,19 @@ let private layoutDocumentPassKept
                 pageBreakIsRenderedMark paragraphStyle para.Metadata && pageIndexForY settings y >= para.Metadata.RenderedPageBreakBefore.Value
             // (A page break the paragraph's text starts with is a break in its text: in the first paragraph too.)
             let breakInText = para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para.Metadata
+            let mutable breakBefore = false
             if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && (layouts.Count > 0 || breakInText) && not pageStartedAtMark then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
+                breakBefore <- true
+            let breakAbove =
+                index > 0
+                && (match tryGetParagraph blocks.[index - 1] with
+                    | Some previous -> previous.Metadata.PageBreakAfter && not previous.Metadata.ColumnBreakAfter
+                    | None -> false)
+            if startsAtPageContentTop settings y
+               && pageTopDropsSpaceBefore settings breakAbove (breakBefore && not breakInText) then
+                dropsSpaceBefore.Value <- true
             let effectiveMetadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
             let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle effectiveMetadata
             let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -6904,14 +6921,13 @@ let private layoutDocumentPassKept
                     initialLayout, initialCounters, initialObstacles, initialPlacedBoxes
                 else
                     let relayoutStart = timingStart ()
+                    // (Pushed on to the top of a page by the flow of the text: there without its space before.)
+                    if startsAtPageContentTop settings pagedY then dropsSpaceBefore.Value <- true
                     let result =
                         let struct (obstaclesPaged, placedPaged) = withAnchoredBoxes para.Id pagedY floatingObstacles placedFloatingBoxes
                         placeWithDropCap pagedY obstaclesPaged placedPaged
                     if traceTimingEnabled then traceSlow (sprintf "block[%d]:relayout" index) relayoutStart
                     result
-            let layout =
-                if pagedY = y then layout
-                else suppressLayoutPageTopBeforeSpacing settings paragraphStyle layout
             let layout =
                 if layout.Lines.IsEmpty && previousBlockIsTable index && not (previousBlockIsTextTable index) && not emptyParagraphWouldMovePage then
                     { layout with Height = layout.Height + 5.0 }
@@ -7624,6 +7640,16 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             // paragraph reports offsets in the paragraph's own text.
             let mutable consumedOffset = 0
             let mutable placed = false
+            // (At the top of a column the paragraph came to by the flow of the text - pushed on, or after a
+            // page break above it - its space before is gone: pageTopDropsSpaceBefore.)
+            let mutable pushed = false
+            let breakAbove =
+                blockIndex > 0
+                && (match tryGetParagraph blocks.[blockIndex - 1] with
+                    | Some previous -> previous.Metadata.PageBreakAfter && not previous.Metadata.ColumnBreakAfter
+                    | None -> false)
+            let dropsAtTop =
+                pageTopDropsSpaceBefore settings breakAbove (pageBreakBefore && not (ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para0.Metadata))
             while not placed do
                 let colBottom = columnBottom ()
                 let isContinuation = consumedOffset > 0
@@ -7636,9 +7662,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && (not (atColumnTop ()) || continuesPage ()) ->
                         collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
                     | _ -> y
+                let dropsHere = not isContinuation && atColumnTop () && not (continuesPage ()) && (pushed || dropsAtTop)
                 // (Laid out where its column is across: what is anchored in it is placed from the column.)
                 let laidOut obstacles =
-                    layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters obstacles []
+                    layoutParagraphWithMemoAt dropsHere memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters obstacles []
                 // (The paragraph's first lines go around the drop cap: they stand beside it.)
                 let cap = if isContinuation then None else capLayoutAt layoutY
                 let rawLayout, newCounters, _, _ =
@@ -7702,13 +7729,17 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     y <- layout.Y + layout.Height
                     previousParagraph <- Some (remaining, style, layout.Metadata, WordLayout.Paragraph.spacingAfter style layout.Metadata)
                     placed <- true
-                if moveKeepGroup then advanceColumn ()
+                if moveKeepGroup then
+                    advanceColumn ()
+                    pushed <- true
                 elif fitCount = layout.Lines.Length then placeWhole ()
                 elif fitCount = 0 then
                     // (A section that goes on on a page above it starts low on the page: what does
                     // not fit there goes to the next column - the top of the next page.)
                     if atColumnTop () && not (startsLowOnPage ()) then placeWhole ()
-                    else advanceColumn ()
+                    else
+                        advanceColumn ()
+                        pushed <- true
                 else
                     let fitLines = takeLines fitCount layout.Lines
                     match lastFit with
