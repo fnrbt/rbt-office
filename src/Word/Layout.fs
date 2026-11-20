@@ -6786,7 +6786,7 @@ let private layoutDocumentPassKept
                     let fixedLayout = tableBlock.LayoutMode = Some FixedTableLayout
                     if floats.IsEmpty || WordLayout.Table.columnCount tableBlock = 0 || (settings.CompatibilityMode < 15 && not fixedLayout) then tableY
                     else
-                        let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
+                        let tableLeftOffset = tableLeftOffsetForDocument tableBlock
                         let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
                         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
                         let columnWidths = tableColumnWidthsInContext measureText styleContext (tableAvailableWidth + outerLeft + outerRight) tableBlock
