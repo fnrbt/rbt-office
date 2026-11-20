@@ -35,6 +35,12 @@ to the next line - unless P may hang past the margin. The probes (the paragraph'
            1.78, 0.78, 0.08pt (e03 - e05); mid-paragraph (e06)
   r<nn>    "." / ")" in a run of their own, at the end (r01, r02) or before " eeee" (r03, r04)
   s<nn>    "?" / "." at 36pt (16.7 / 8.9pt past the line)
+  f<nn>    (round 3) "." in a field's result: the probe's text and it (f01), with w:lang w:val="en-US"
+           (f02), the "." alone, bold, en-US (f03); b<nn> the "." in a run of its own, bold and en-US,
+           en-US, bold (b01 - b03) - docx4j-headers-footers' "Error! Reference source not found."
+
+Round 3 puts the probes where a line ends elsewhere than at the margin - a table cell, a column, a
+frame, a header (WHERE, below).
 
 The documents vary the settings that could switch it on, one at a time (compatibility mode 14
 unless said):
@@ -120,40 +126,60 @@ EXTRA = ['\u00a2', '\u00b0', '\u2032', '\u2033', '\u2103', '\u3009', '\u300b', '
          ')', '.', '!', '\u201d', '\u2019', '\u2026', '\u300c', '\uff08']
 
 
-def probes(rpr, rpr_t=None, rpr_p=None):
-    """(label, paragraph xml) for every probe."""
+def probes(rpr, rpr_t=None, rpr_p=None, line_pt=LINE / 20, ppr0='', fields=False):
+    """(kind, paragraph xml) for every probe, on lines line_pt wide; ppr0 in every paragraph's
+    w:pPr (a frame's w:framePr); fields: the f and b probes too."""
     out = []
-    p = lambda body, ppr='': f'<w:p><w:pPr>{ppr}</w:pPr>{body}</w:p>'
+    p = lambda body, ppr='': f'<w:p><w:pPr>{ppr0}{ppr}</w:pPr>{body}</w:p>'
+    pt = lambda label, s: probe_text(label, s, line_pt)
     for n, c in enumerate(CHARS, 1):
-        out.append(p(run(probe_text(f'c{n:02}', 0.40) + c, rpr)))
+        out.append(('c', p(run(pt(f'c{n:02}', 0.40) + c, rpr))))
     for n, c in enumerate(['.', ')', ','], 1):
-        out.append(p(run(probe_text(f'm{n:02}', 0.40) + c + ' eeee eeee', rpr)))
+        out.append(('m', p(run(pt(f'm{n:02}', 0.40) + c + ' eeee eeee', rpr))))
     for n, c in enumerate(WIDE, 1):
-        out.append(p(run(probe_text(f'w{n:02}', 0.40), rpr) + run(c, MALGUN + rpr)))
+        out.append(('w', p(run(pt(f'w{n:02}', 0.40), rpr) + run(c, MALGUN + rpr))))
     for n, c in enumerate(MULTI, 1):
-        out.append(p(run(probe_text(f'd{n:02}', 0.40) + c, rpr)))
+        out.append(('d', p(run(pt(f'd{n:02}', 0.40) + c, rpr))))
     for n, o in enumerate(OVER, 1):
-        out.append(p(run(probe_text(f't{n:02}', -o), rpr)))
-    out.append(p(run(probe_text('i01', 0.40, (LINE - 1440) / 20) + '.', rpr), '<w:ind w:right="1440"/>'))
+        out.append(('t', p(run(pt(f't{n:02}', -o), rpr))))
+    out.append(('i', p(run(probe_text('i01', 0.40, line_pt - 72) + '.', rpr), '<w:ind w:right="1440"/>')))
     for n, c in enumerate(['.', ')'], 1):
-        out.append(p(run(probe_text(f'k{n:02}', 0.40) + c + ' eeee ', rpr) + run('\uac00\ub098\ub2e4', MALGUN + rpr)))
+        out.append(('k', p(run(pt(f'k{n:02}', 0.40) + c + ' eeee ', rpr) + run('\uac00\ub098\ub2e4', MALGUN + rpr))))
     # round 2
     for n, c in enumerate(EXTRA, 1):
-        out.append(p(run(probe_text(f'x{n:02}', 0.40), rpr) + run(c, MALGUN + rpr)))
-    out.append(p(run(probe_text('e01', 0.40) + '. ', rpr)))                       # a space after it
-    out.append(p(run(probe_text('e02', 0.40) + '.', rpr) + '<w:r><w:br/></w:r>' + run('eeee', rpr)))  # a line break
+        out.append(('x', p(run(pt(f'x{n:02}', 0.40), rpr) + run(c, MALGUN + rpr))))
+    out.append(('e', p(run(pt('e01', 0.40) + '. ', rpr))))                       # a space after it
+    out.append(('e', p(run(pt('e02', 0.40) + '.', rpr) + '<w:r><w:br/></w:r>' + run('eeee', rpr))))  # a line break
     for n, sl in enumerate([1.0, 2.0, 2.7], 3):                                 # '.' over by 1.78, 0.78, 0.08
-        out.append(p(run(probe_text(f'e{n:02}', sl) + '.', rpr)))
-    out.append(p(run(probe_text('e06', 0.40) + '. eeee', rpr)))                  # mid-paragraph, as m01
+        out.append(('e', p(run(pt(f'e{n:02}', sl) + '.', rpr))))
+    out.append(('e', p(run(pt('e06', 0.40) + '. eeee', rpr))))                  # mid-paragraph, as m01
     rt = rpr if rpr_t is None else rpr_t
     rp = rpr if rpr_p is None else rpr_p
     for n, c in enumerate(['.', ')'], 1):                                        # the probe in a run of its own
-        out.append(p(run(probe_text(f'r{n:02}', 0.40), rt) + run(c, rp)))
-        out.append(p(run(probe_text(f'r{n + 2:02}', 0.40), rt) + run(c + ' eeee', rp)))
+        out.append(('r', p(run(pt(f'r{n:02}', 0.40), rt) + run(c, rp))))
+        out.append(('r', p(run(pt(f'r{n + 2:02}', 0.40), rt) + run(c + ' eeee', rp))))
     big = '<w:sz w:val="72"/><w:szCs w:val="72"/>'                              # '?' at 36pt: 16.7pt over
-    out.append(p(run(probe_text('s01', 0.40), rpr) + run('?', big + rpr)))
-    out.append(p(run(probe_text('s02', 0.40), rpr) + run('.', big + rpr)))
+    out.append(('s', p(run(pt('s01', 0.40), rpr) + run('?', big + rpr))))
+    out.append(('s', p(run(pt('s02', 0.40), rpr) + run('.', big + rpr))))
+    if fields:
+        # round 3: docx4j-headers-footers' "Error! Reference source not found." - a REF field's result,
+        # bold, w:lang w:val="en-US" (the East Asian language still ko-KR from docDefaults).
+        en = '<w:lang w:val="en-US"/>'
+        bold = '<w:b/><w:bCs/>'
+        out.append(('f', p(complex_field(' QUOTE "x" ', run(pt('f01', 0.40) + '.', rpr)))))
+        out.append(('f', p(complex_field(' QUOTE "x" ', run(pt('f02', 0.40) + '.', en + rpr)))))
+        out.append(('f', p(run(pt('f03', 0.40), rpr) + complex_field(' QUOTE "x" ', run('.', bold + en + rpr)))))
+        out.append(('f', p(complex_field(' REF nowhere \\h ', run(pt('f04', 0.40) + '.', rpr)))))
+        out.append(('b', p(run(pt('b01', 0.40), rpr) + run('.', bold + en + rpr))))
+        out.append(('b', p(run(pt('b02', 0.40), rpr) + run('.', en + rpr))))
+        out.append(('b', p(run(pt('b03', 0.40), rpr) + run('.', bold + rpr))))
     return out
+
+
+def complex_field(code, result_runs):
+    return ('<w:r><w:fldChar w:fldCharType="begin"/></w:r>'
+            f'<w:r><w:instrText xml:space="preserve">{esc(code)}</w:instrText></w:r>'
+            f'<w:r><w:fldChar w:fldCharType="separate"/></w:r>{result_runs}<w:r><w:fldChar w:fldCharType="end"/></w:r>')
 
 
 def styles(lang=None, op=None, op_style=None):
@@ -216,15 +242,89 @@ DOCS = {
 def write(path, mode, usefe, csc, lang, op, op_style, run_lang, split=None):
     rpr = f'<w:lang w:val="en-AU" w:eastAsia="{run_lang}"/>' if run_lang else ''
     ko = '<w:lang w:val="en-AU" w:eastAsia="ko-KR"/>'
-    body = ''.join(probes(rpr, *({'last': ('', ko), 'notlast': (ko, '')}[split] if split else (None, None))))
-    doc = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{body}{SECT}</w:body></w:document>'
+    body = ''.join(x for _, x in probes(rpr, *({'last': ('', ko), 'notlast': (ko, '')}[split] if split else (None, None))))
+    package(path, body, styles(lang, op, op_style), settings(mode, usefe, csc))
+
+
+R = 'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"'
+HDR_TYPE = '<Override PartName="/word/header1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/>'
+HDR_REL = '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>'
+
+
+def package(path, body, styles_xml, settings_xml, sect=SECT, header=None):
+    doc = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W} {R}><w:body>{body}{sect}</w:body></w:document>'
+    types = TYPES if header is None else TYPES.replace('</Types>', HDR_TYPE + '</Types>')
+    rels = DOC_RELS if header is None else DOC_RELS.replace('</Relationships>', HDR_REL + '</Relationships>')
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr('[Content_Types].xml', TYPES)
+        z.writestr('[Content_Types].xml', types)
         z.writestr('_rels/.rels', RELS)
-        z.writestr('word/_rels/document.xml.rels', DOC_RELS)
+        z.writestr('word/_rels/document.xml.rels', rels)
         z.writestr('word/document.xml', doc)
-        z.writestr('word/styles.xml', styles(lang, op, op_style))
-        z.writestr('word/settings.xml', settings(mode, usefe, csc))
+        z.writestr('word/styles.xml', styles_xml)
+        z.writestr('word/settings.xml', settings_xml)
+        if header is not None:
+            z.writestr('word/header1.xml', f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:hdr {W}>{header}</w:hdr>')
+
+
+def table(paragraphs, tcw, mar, layout='fixed', tblw=None):
+    """One cell of tcw twips, margins of mar twips left and right (none above and below), no borders."""
+    w = tblw or f'<w:tblW w:w="{tcw}" w:type="dxa"/>'
+    lay = '<w:tblLayout w:type="fixed"/>' if layout == 'fixed' else ''
+    return (f'<w:tbl><w:tblPr>{w}{lay}<w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/>'
+            f'<w:left w:w="{mar}" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="{mar}" w:type="dxa"/>'
+            f'</w:tblCellMar></w:tblPr><w:tblGrid><w:gridCol w:w="{tcw}"/></w:tblGrid><w:tr><w:tc><w:tcPr>'
+            f'<w:tcW w:w="{tcw}" w:type="dxa"/></w:tcPr>{paragraphs}</w:tc></w:tr></w:tbl><w:p/>')
+
+
+def pick(ps, kinds, n=None):
+    xs = [x for k, x in ps if k in kinds]
+    return ''.join(xs[:n] if n else xs)
+
+
+# Round 3: where the line ends - a table cell's text, a column, a frame, a header (docx4j-headers-footers'
+# narrow column: "not" / "found." in Word, the period not hung past the cell's text). Every one under fe3's
+# settings (compatibility mode 14, useFELayout, ko-KR, doNotCompress), with the f and b probes (fields,
+# bold, w:lang w:val="en-US" on the punctuation's run):
+#   fe3-fld        the body, as fe3: the f and b probes only
+#   cell           a fixed one-cell table, 300pt of text (cell margins 0)
+#   cell-mar       the same with 0.075in (108 twips) cell margins, the cell 6216 twips: 300pt of text
+#   cell-edge      a fixed one-cell table of the page's text width, margins 0: the cell's text ends at the margin
+#   cell-auto      an autofit 100% table, 108-twip margins (in compatibility mode 14 out by them: its text the page's)
+#   cell-c15       cell in compatibility mode 15 (no hanging anywhere: the control)
+#   cols2          two columns of 207.5pt (727 twips between), the probes in the first of each page
+#   frame          paragraphs in one frame 300pt wide (w:framePr w:w="6000"), at the margin
+#   header         the c probes 1-10 in the header (the page's text width)
+WHERE = ['fe3-fld', 'cell', 'cell-mar', 'cell-edge', 'cell-auto', 'cell-c15', 'cols2', 'frame', 'header']
+MAIN = 'cmwdtiekrsfb'
+
+
+def write_where(path, name):
+    mode = 15 if name == 'cell-c15' else 14
+    st, se = styles('ko-KR'), settings(mode, True, DNC)
+    fe = lambda line_pt=LINE / 20, ppr0='': probes('', line_pt=line_pt, ppr0=ppr0, fields=True)
+    if name == 'fe3-fld':
+        package(path, pick(fe(), 'fb'), st, se)
+    elif name in ('cell', 'cell-c15'):
+        package(path, table(pick(fe(300), MAIN), 6000, 0), st, se)
+    elif name == 'cell-mar':
+        package(path, table(pick(fe(300), MAIN), 6216, 108), st, se)
+    elif name == 'cell-edge':
+        package(path, table(pick(fe(), MAIN), LINE, 0), st, se)
+    elif name == 'cell-auto':
+        package(path, table(pick(fe(), MAIN), LINE, 108, 'auto', '<w:tblW w:w="5000" w:type="pct"/>'), st, se)
+    elif name == 'cols2':
+        # (12 probes in the first column of each page, the second column kept empty - two column
+        # breaks - so that no line of Word's PDF has words of both.)
+        xs = [x for k, x in fe(207.5) if k in MAIN]
+        brk = '<w:p><w:r><w:br w:type="column"/><w:br w:type="column"/></w:r></w:p>'
+        sect = SECT.replace('</w:sectPr>', '<w:cols w:num="2" w:space="727"/></w:sectPr>')
+        package(path, brk.join(''.join(xs[i:i + 12]) for i in range(0, len(xs), 12)), st, se, sect)
+    elif name == 'frame':
+        fr = '<w:framePr w:w="6000" w:wrap="around" w:hAnchor="margin" w:vAnchor="margin" w:x="0" w:y="0"/>'
+        package(path, pick(fe(300, fr), 'cmwdt', 40) + '<w:p/>', st, se)
+    elif name == 'header':
+        sect = SECT.replace('<w:sectPr>', '<w:sectPr><w:headerReference w:type="default" r:id="rId3"/>')
+        package(path, '<w:p/>', st, se, sect, pick(fe(), 'c', 10))
 
 
 if __name__ == '__main__':
@@ -236,4 +336,6 @@ if __name__ == '__main__':
             os.remove(os.path.join(out_dir, f))
     for name, spec in DOCS.items():
         write(os.path.join(out_dir, name + '.docx'), *spec)
-    print(f'{len(DOCS)} fixtures in {out_dir}')
+    for name in WHERE:
+        write_where(os.path.join(out_dir, name + '.docx'), name)
+    print(f'{len(DOCS) + len(WHERE)} fixtures in {out_dir}')
