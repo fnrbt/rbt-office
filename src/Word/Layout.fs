@@ -4615,10 +4615,12 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         else adjustedLines
 
     let pagedLines =
-        // (Widow control in a table cell is Word 2013's: in compatibility mode 14 and older a cell's lines
-        // break where the page is full, widow control or not - fixtures long-word wc-on-c14-cell, wc-on-c12-cell.)
-        let widowControlHere = widowControl paragraphStyle metadata && not (settings.InTableCell && settings.CompatibilityMode < 15)
-        paginateLines settings widowControlHere (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata) (lineSpacingRule = "exact" || lineSpacingRule = "atLeast") spacingAfter adjustedLines
+        // (Widow control and keepLines in a table cell are Word 2013's: in compatibility mode 14 and older a
+        // cell's lines break where the page is full, widow control or keepLines or not - fixtures long-word
+        // wc-on-c14-cell, wc-on-c12-cell; cell-mark kl-base-f55, its -m15 the row moved.)
+        let word2010Cell = settings.InTableCell && settings.CompatibilityMode < 15
+        let widowControlHere = widowControl paragraphStyle metadata && not word2010Cell
+        paginateLines settings widowControlHere (settings.InTableCell && not word2010Cell && WordStyles.keepLines paragraphStyle metadata) (lineSpacingRule = "exact" || lineSpacingRule = "atLeast") spacingAfter adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
