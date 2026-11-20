@@ -318,12 +318,63 @@ let private tryFindFont (fontSet: FontSet) family bold italic =
     ]
     candidates |> List.tryPick (fun key -> fontSet.Fonts |> Map.tryFind key)
 
+// ---- characters an embedded face has no glyph of ----------------------------------------------
+//
+// Word sets a character a document's embedded face has no glyph of (a subset face, w:subsetted) in
+// Calibri - whatever the document's defaults, its theme or the font table's PANOSE and altName say -
+// at Calibri's advance, in Calibri Bold for bold text (fixtures embedded-fonts: subset*, Word 2019 with
+// a session of its own per document). A family that embeds one face sets only that character so; one
+// that embeds more sets the run from that character to its end so ("uuQuu": "uu" embedded, "Quu"
+// Calibri). The layout measures a run's text whole with the range measurer: that is where the run's
+// end is known; text measured alone is taken as a run of its own.
+
+/// Each character's advance in `text` as Word sets it in an embedded family that lacks a glyph of one
+/// of them: None when the face is not embedded or has every glyph.
+let private embeddedAdvances (fontSet: FontSet) (entry: FontEntry) (text: string) (style: TextStyle) : float[] option =
+    let family = normalizeFamily entry.Family
+    if fontSet.Embedded.IsEmpty || not (fontSet.Embedded.Contains family) || System.String.IsNullOrEmpty text then None
+    else
+        let shaped = shapeAsWord entry.Face.Font style.FontSize text
+        let missing = Array.zeroCreate<bool> text.Length
+        let mutable any = false
+        for run in shaped.Runs do
+            for glyph in run.Glyphs do
+                if glyph.GlyphId = 0 && glyph.Cluster >= 0 && glyph.Cluster < text.Length then
+                    missing.[glyph.Cluster] <- true
+                    any <- true
+        if not any then None
+        else
+            let own = Array.init text.Length (fun i -> shaped.PrefixAdvances.[i + 1] - shaped.PrefixAdvances.[i])
+            let calibri = tryFindFont fontSet (Some "Calibri") style.Bold style.Italic
+            let fallback (part: string) =
+                match calibri with
+                | Some face -> (shapeAsWord face.Face.Font style.FontSize part).TotalAdvance
+                | None -> 0.0
+            let faces = fontSet.Fonts |> Map.filter (fun (key, _, _) _ -> key = family) |> Map.count
+            let advances = Array.copy own
+            if faces <= 1 then
+                for i in 0 .. text.Length - 1 do
+                    if missing.[i] then advances.[i] <- fallback (text.Substring(i, 1))
+            else
+                let first = Array.findIndex id missing
+                let rest = text.Substring first
+                let shapedRest = match calibri with Some face -> Some (shapeAsWord face.Face.Font style.FontSize rest) | None -> None
+                for i in first .. text.Length - 1 do
+                    advances.[i] <-
+                        match shapedRest with
+                        | Some r -> r.PrefixAdvances.[i - first + 1] - r.PrefixAdvances.[i - first]
+                        | None -> 0.0
+            Some advances
+
 let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> 0.0
-        | Some entry -> (shapeAsWord entry.Face.Font style.FontSize text).TotalAdvance + TextBuffer.characterSpacingAdvance text style
+        | Some entry ->
+            match embeddedAdvances fontSet entry text style with
+            | Some advances -> Array.sum advances + TextBuffer.characterSpacingAdvance text style
+            | None -> (shapeAsWord entry.Face.Font style.FontSize text).TotalAdvance + TextBuffer.characterSpacingAdvance text style
 
 let tryMeasureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then Some 0.0
@@ -376,6 +427,18 @@ let glyphPath (fontSet: FontSet) (style: TextStyle) glyphId =
 
 let createRangeMeasurer fontSet : Rbt.Word.Layout.TextRangeMeasurer =
     fun text style start length ->
+      let embedded =
+          match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
+          | Some entry -> embeddedAdvances fontSet entry text style
+          | None -> None
+      match embedded with
+      | Some advances ->
+          let startIndex = max 0 (min text.Length start)
+          let endIndex = max startIndex (min text.Length (start + length))
+          let mutable width = 0.0
+          for i in startIndex .. endIndex - 1 do width <- width + advances.[i]
+          width
+      | None ->
         match shapeText fontSet text style with
         | Some (_, shaped) -> Rbt.Text.Engine.measureRange shaped start length
         | None ->

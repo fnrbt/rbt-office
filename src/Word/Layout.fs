@@ -478,10 +478,11 @@ let documentHangingPunctuation (setup: PageSetup) =
 
 /// Document geometry is independent of the host viewport. Font defaults and
 /// trailing-space slack are supplied by the measuring backend.
-/// A font file's single line per unit of size as GDI gives Word it: tmHeight (usWinAscent +
-/// usWinDescent) and tmExternalLeading (the hhea line gap less what the Windows ascent and descent
-/// are beyond hhea's) - Calibri 1.2207, Arial 1.1499, Ubuntu 1.149 (Word 2019: calibre-demo's Ubuntu
-/// 12pt at 1.15, 15.84pt a line). None when the file has not got the tables.
+/// A font file's single line per unit of size as Word sets an embedded face: its hhea ascender and
+/// descender and line gap over the em - Calibri 1.2207, Arial 1.1499, Ubuntu 1.149 (Word 2019:
+/// calibre-demo's Ubuntu 12pt at 1.15, 15.84pt a line), Poppins 1.5 (exhibition-leaflet's 9pt single,
+/// 13.56pt; its Windows ascent and descent are 1.762 of the em). None when the file has not got the
+/// tables.
 let fontFileLineFactor (data: byte[]) : float option =
     let u16 at = (int data.[at] <<< 8) ||| int data.[at + 1]
     let s16 at = let v = u16 at in if v >= 0x8000 then v - 0x10000 else v
@@ -498,14 +499,12 @@ let fontFileLineFactor (data: byte[]) : float option =
                        && System.String(Array.init 4 (fun k -> char data.[record + k])) = tag then
                         found <- Some (u32 (record + 8))
                 found
-            match table "head", table "hhea", table "OS/2" with
-            | Some head, Some hhea, Some os2 ->
+            match table "head", table "hhea" with
+            | Some head, Some hhea ->
                 let unitsPerEm = float (u16 (head + 18))
                 let ascender, descender, lineGap = float (s16 (hhea + 4)), float (s16 (hhea + 6)), float (s16 (hhea + 8))
-                let winAscent, winDescent = float (u16 (os2 + 74)), float (u16 (os2 + 76))
-                let height = winAscent + winDescent
-                let externalLeading = max 0.0 (lineGap - (height - (ascender - descender)))
-                if unitsPerEm > 0.0 && height > 0.0 then Some ((height + externalLeading) / unitsPerEm) else None
+                let height = ascender - descender + max 0.0 lineGap
+                if unitsPerEm > 0.0 && height > 0.0 then Some (height / unitsPerEm) else None
             | _ -> None
     with _ -> None
 

@@ -317,11 +317,43 @@ let segmentByFontCoverage
     | _ -> ()
     result
 
-/// As `measure`, with a document's embedded faces (see resolveWith).
+/// The runs of `text` and the fonts that set them, with a document's embedded faces (see resolveWith):
+/// a character the embedded face of the family has no glyph of is set in Calibri, as Word sets it -
+/// that character alone when the family embeds one face, the rest of the text from it when it embeds
+/// more (fixtures embedded-fonts subset*); any other text as segmentByFontCoverage sets it.
+let segmentWith (embedded: (string * bool * bool * byte[]) list) (family: string option) (bold: bool) (italic: bool) (text: string) =
+    let norm (name: string) = name.Trim().ToLowerInvariant()
+    let primary = resolveWith embedded family bold italic
+    let faces =
+        match family with
+        | Some name when not embedded.IsEmpty && not (hasFamily name) -> embedded |> List.filter (fun (f, _, _, _) -> norm f = norm name) |> List.length
+        | _ -> 0
+    if faces = 0 then segmentByFontCoverage primary bold text
+    else
+        let calibri = resolve (Some "Calibri") bold italic
+        let result = System.Collections.Generic.List<Rbt.Renderer.Text.FontData * string>()
+        let add (font: Rbt.Renderer.Text.FontData) (part: string) =
+            if part <> "" then
+                if result.Count > 0 && obj.ReferenceEquals(fst result.[result.Count - 1], font) then
+                    result.[result.Count - 1] <- (font, snd result.[result.Count - 1] + part)
+                else result.Add((font, part))
+        let mutable i = 0
+        let mutable rest = false
+        while i < text.Length do
+            let width = if System.Char.IsHighSurrogate text.[i] && i + 1 < text.Length then 2 else 1
+            let part = text.Substring(i, width)
+            let cp = System.Char.ConvertToUtf32(part, 0)
+            if rest || not (Rbt.Renderer.Text.hasGlyph primary cp) then
+                add calibri part
+                if faces > 1 then rest <- true
+            else add primary part
+            i <- i + width
+        result
+
+/// As `measure`, with a document's embedded faces (see resolveWith, segmentWith).
 let measureWith (embedded: (string * bool * bool * byte[]) list) (text: string) (sizePx: float) (family: string option) (bold: bool) (italic: bool) =
-    let font = resolveWith embedded family bold italic
     let mutable width = 0.0
-    for face, run in segmentByFontCoverage font bold text do
+    for face, run in segmentWith embedded family bold italic text do
         width <- width + Rbt.Renderer.Text.measureWidth face sizePx run
     width
 

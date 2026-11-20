@@ -2,10 +2,22 @@ all4	TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold ___WRD_EMBED
 bold-only	TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold
 calibri	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT
 editable	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
-names	Cambria TimesNewRomanPSMT ___WRD_EMBED_SUB_51
+glyphs-B	Calibri Calibri-Bold TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold
+glyphs-R	Calibri Calibri-Bold TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+glyphs-RB	Calibri Calibri-Bold TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold
+glyphs-RI	Calibri Calibri-Bold TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+glyphs-all4	Calibri Calibri-Bold TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold
+names	Cambria TimesNewRomanPSMT ___WRD_EMBED_SUB_44
 noprint	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
 reg	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
 reg-noset	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
 restricted	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT
-sans-reg	TimesNewRomanPSMT ___WRD_EMBED_SUB_1293
-subset	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+restricted-roman	Cambria Cambria-Bold Cambria-BoldItalic Cambria-Italic TimesNewRomanPSMT
+restricted-theme-georgia	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT
+sans-reg	TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+subset	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+subset-all4	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT ___WRD_EMBED_SUB_44 ___WRD_EMBED_SUB_44,Bold ___WRD_EMBED_SUB_44,BoldItalic ___WRD_EMBED_SUB_44,Italic
+subset-alt-courier	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+subset-default-georgia	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic Georgia ___WRD_EMBED_SUB_44
+subset-roman	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT ___WRD_EMBED_SUB_44
+subset-theme-georgia	Calibri Calibri-Bold Calibri-BoldItalic Calibri-Italic TimesNewRomanPSMT ___WRD_EMBED_SUB_44

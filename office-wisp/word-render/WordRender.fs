@@ -87,12 +87,11 @@ let private parseHexColor (value: string) =
             Color.black
     | _ -> Color.black
 
-let rec toRendererCommandWith (fontFor: WordPaint.TextPaintStyle -> Rbt.Renderer.Text.FontData) (resolveImage: string -> Framebuffer option) = function
+let rec private toRendererCommandSegmented (segment: WordPaint.TextPaintStyle -> string -> System.Collections.Generic.List<Rbt.Renderer.Text.FontData * string>) (resolveImage: string -> Framebuffer option) = function
     | WordPaint.DrawText (text, style, x, baseline, _) ->
-        let font = fontFor style
         let size = pointsToPixels style.FontSize
         let mutable origin = x
-        [ for face, run in Fonts.segmentByFontCoverage font style.Bold text do
+        [ for face, run in segment style text do
             yield Cmd.DrawGlyphs(vec2 origin baseline, Rbt.Renderer.Text.layout face size run, Solid (parseHexColor style.Color))
             origin <- origin + Rbt.Renderer.Text.measureWidth face size run ]
 
@@ -178,7 +177,7 @@ let rec toRendererCommandWith (fontFor: WordPaint.TextPaintStyle -> Rbt.Renderer
 
     | WordPaint.DrawGroup (clip, rotation, centerX, centerY, opacity, _, inner) ->
         // A text box or shape with its text: clipped to its box, turned about its centre, translucent.
-        let innerCmds = inner |> List.collect (toRendererCommandWith fontFor resolveImage)
+        let innerCmds = inner |> List.collect (toRendererCommandSegmented segment resolveImage)
         let clipped =
             match clip with
             | Some (x, y, width, height) ->
@@ -194,10 +193,13 @@ let rec toRendererCommandWith (fontFor: WordPaint.TextPaintStyle -> Rbt.Renderer
             [ Cmd.Group(xform, opacity, clipped) ]
     | WordPaint.DrawMirrored (flipH, flipV, centerX, centerY, _, inner) ->
         // A flipped picture: mirrored about its middle.
-        let innerCmds = inner |> List.collect (toRendererCommandWith fontFor resolveImage)
+        let innerCmds = inner |> List.collect (toRendererCommandSegmented segment resolveImage)
         let sx, sy = (if flipH then -1.0 else 1.0), (if flipV then -1.0 else 1.0)
         let xform : Matrix3x2 = { M11 = sx; M12 = 0.0; M21 = 0.0; M22 = sy; DX = centerX - sx * centerX; DY = centerY - sy * centerY }
         [ Cmd.Group(xform, 1.0, innerCmds) ]
+
+let toRendererCommandWith (fontFor: WordPaint.TextPaintStyle -> Rbt.Renderer.Text.FontData) (resolveImage: string -> Framebuffer option) command =
+    toRendererCommandSegmented (fun style text -> Fonts.segmentByFontCoverage (fontFor style) style.Bold text) resolveImage command
 
 let toRendererCommand resolveImage command = toRendererCommandWith fontForPaint resolveImage command
 
@@ -206,7 +208,7 @@ let toRendererCommandFor (doc: Document) resolveImage command =
     match embeddedFaces doc with
     | [] -> toRendererCommand resolveImage command
     | embedded ->
-        toRendererCommandWith (fun style -> Fonts.resolveWith embedded style.FontFamily style.Bold style.Italic) resolveImage command
+        toRendererCommandSegmented (fun style text -> Fonts.segmentWith embedded style.FontFamily style.Bold style.Italic text) resolveImage command
 
 /// Decode embedded data URLs once; external paths and URLs are not fetched.
 let createImageResolver () =

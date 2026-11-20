@@ -38,6 +38,16 @@ for name, family in [ "restricted", "Rbt Embed Mono"; "names", "Rbt Inner" ] do
 if Rbt.OfficeNative.Fonts.hasFamily "Calibri" then
     let m, i = widths "calibri" "Calibri" false
     check "calibri: the machine's Calibri" (m - i > 1.0) (sprintf "M %.3f i %.3f" m i)
+// A character the subset face lacks: in Calibri - Q and z of "Quiz" alone with one face embedded, all of
+// "Quiz" (the run from Q) with four.
+if Rbt.OfficeNative.Fonts.hasFamily "Calibri" then
+    let calibri = WR.measureText "Quiz" (style "Calibri" false)
+    let mono = WR.measureTextFor (load "reg") "uu" (style "Rbt Embed Mono" false)
+    let calibriQz = WR.measureText "Q" (style "Calibri" false) + WR.measureText "z" (style "Calibri" false)
+    let one = WR.measureTextFor (load "subset") "Quiz" (style "Rbt Embed Mono" false)
+    let four = WR.measureTextFor (load "subset-all4") "Quiz" (style "Rbt Embed Mono" false)
+    check "subset: Q and z in Calibri, ui embedded" (abs (one - (calibriQz + mono)) < 0.01) (sprintf "%.3f, expected %.3f" one (calibriQz + mono))
+    check "subset-all4: the run from Q in Calibri" (abs (four - calibri) < 0.01) (sprintf "%.3f, expected %.3f" four calibri)
 let paintStyle : Paint.TextPaintStyle =
     { Bold = false; Italic = false; Underline = false; AllCaps = false; SmallCaps = false; Strike = false
       FontSize = 10.0; CharacterSpacing = 0.0; FontFamily = Some "Rbt Embed Mono"; Color = "#000000"; Highlight = None; VertAlign = None }

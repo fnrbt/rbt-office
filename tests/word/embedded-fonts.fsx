@@ -11,10 +11,15 @@
 // - a family sets its other styles in the faces it has: bold and italic of the regular face
 //   with the regular's advances (reg, sans-reg), regular and italic text of a family that
 //   embeds only its bold face in the bold face (bold-only);
-// - a subset face sets a character it lacks as its .notdef (subset: "Quiz" without Q and z
-//   is 4 x 6.0pt);
-// - a line in an embedded face is that face's single line (GDI's: usWinAscent + usWinDescent and
-//   the external leading) - Liberation Mono's 1.1328 of the size, Carlito's 1.2207, Ubuntu's 1.149.
+// - a character the embedded face lacks (a subset face: subset*, glyphs-*) is set in Calibri at
+//   Calibri's advance, whatever the defaults, the theme, the table's PANOSE or altName say: that
+//   character alone when the family embeds one face (subset: "Quiz" 6.72 + 12.0 + 3.96pt), the run
+//   from it to its end when it embeds more (subset-all4: "Quiz" all Calibri, glyphs-RB "uuQuu":
+//   "uu" embedded, "Quu" Calibri). (In one Word session for all the fixtures Word had lost subset's
+//   face: .notdef boxes; page-lines.vbs now opens each in a Word of its own.)
+// - a line in an embedded face is that face's single line: its hhea ascender, descender and line
+//   gap - Liberation Mono's 1.1328 of the size, Carlito's 1.2207, Ubuntu's 1.149, Poppins' 1.5 (the
+//   showcase's exhibition-leaflet: 9pt single, 13.56pt; its Windows metrics would give 1.762).
 // Ours: Office.Formats' EmbeddedFonts reads and de-obfuscates them; ShaperText measures with them
 // added to a font set of fonts/' faces for the families it has none of (addEmbeddedFaces); the PDF
 // writer embeds them (Pdf.withEmbeddedFonts); the layout takes their single lines (Layout.fontFileLineFactor);
@@ -89,17 +94,25 @@ let rows =
     File.ReadAllLines(Path.Combine(folder, "word/widths.tsv"))
     |> Array.filter (fun l -> l.Length > 0)
     |> Array.map (fun l -> let c = l.Split('\t') in c.[0], c.[1], c.[2], float c.[3])
-// (Not checked: "Rbt Inner", a family neither the machine nor the document has - Word set it in
-// Cambria, ours in its default family; that is not the embedded fonts' rule.)
+// (Not checked: "Rbt Inner", a family neither the machine nor the document has, and restricted-roman,
+// whose face Word may not use and whose table entry is Times New Roman's PANOSE - Word set both in
+// Cambria, ours in its default family; that is Word's substitution for a font it has not got, not the
+// embedded fonts' rule.)
 let mutable listed = 0
+let run = "MMMMMMMMMM iiiiiiiiii Quiz"
 for fixture, what, word, width in rows do
     let family, style = let i = what.LastIndexOf '/' in what.Substring(0, i), what.Substring(i + 1)
-    if family = "Rbt Inner" then listed <- listed + 1
+    if family = "Rbt Inner" || fixture = "restricted-roman" then listed <- listed + 1
     else
         let embedded = [ for f in embeddedOf (load fixture) -> ({ Family = f.Family; Bold = f.Bold; Italic = f.Italic; Data = f.Data }: Shaper.FontFace) ]
         let set = Shaper.addEmbeddedFaces machine embedded
         let textStyle = { TB.defaultStyle with FontFamily = Some family; FontSize = 10.0; Bold = style.StartsWith "Bold"; Italic = style.EndsWith "Italic" }
-        let ours = Shaper.measureText set word textStyle
+        let measureRange = Shaper.createRangeMeasurer set
+        // (A word of the paragraph's one run, measured in the run as the layout measures it; a glyphs-*
+        // paragraph's runs each whole.)
+        let ours =
+            if fixture.StartsWith "glyphs-" then word.Split('|') |> Array.sumBy (fun r -> measureRange r textStyle 0 r.Length)
+            else measureRange run textStyle (run.IndexOf word) word.Length
         // (Word's widths are its PDF's word boxes: 1/600in steps, synthetic bold's stroke.)
         check (sprintf "%s %s %s" fixture what word) (abs (ours - width) <= 0.25) (sprintf "Word %.3f ours %.3f" width ours)
 
@@ -131,6 +144,10 @@ for name, family, wordPitch in [ "reg", "Rbt Embed Mono", 33.96 / 3.0; "sans-reg
 let ubuntu = embeddedOf calibre |> List.find (fun f -> f.Family = "Ubuntu" && not f.Bold && not f.Italic)
 let ubuntuFactor = Layout.fontFileLineFactor ubuntu.Data |> Option.defaultValue 0.0
 check "Ubuntu's single line: 1.149 of its size" (abs (ubuntuFactor - 1.149) < 0.0005) (sprintf "%.4f" ubuntuFactor)
+let leaflet = File.ReadAllBytes(Path.Combine(root, "tests/test-documents-showcase/exhibition-leaflet.docx")) |> Docx.loadBytesNative |> Option.get
+let poppins = embeddedOf leaflet |> List.find (fun f -> f.Family = "Poppins" && not f.Bold && not f.Italic)
+let poppinsFactor = Layout.fontFileLineFactor poppins.Data |> Option.defaultValue 0.0
+check "Poppins' single line: 1.5 of its size (hhea; not its Windows 1.762)" (abs (poppinsFactor - 1.5) < 0.0005) (sprintf "%.4f" poppinsFactor)
 check "Calibri's (Carlito's) single line: 1.2207" (abs ((Layout.fontFileLineFactor (font "Carlito-Regular.ttf") |> Option.defaultValue 0.0) - 1.2207) < 0.0005) ""
 check "Arial's (Liberation Sans') single line: 1.1499" (abs ((Layout.fontFileLineFactor (font "LiberationSans-Regular.ttf") |> Option.defaultValue 0.0) - 1.1499) < 0.0005) ""
 

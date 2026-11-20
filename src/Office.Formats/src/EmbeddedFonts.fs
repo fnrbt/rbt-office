@@ -11,7 +11,9 @@
 ///   and print (4) and editable (8) faces are;
 /// - a family with some faces sets its other styles in them (bold of the regular face: the regular's
 ///   advances; regular of the bold face: the bold's) - see ShaperText's face choice;
-/// - a subset face sets a character it has no glyph of as its .notdef, not in another font.
+/// - a character the embedded face has no glyph of (a subset face) is set in Calibri, at Calibri's
+///   advance: that character alone when the family embeds one face, the run from it to its end when it
+///   embeds more (see ShaperText's embeddedAdvances; Rbt.OfficeNative.Fonts.segmentWith).
 ///
 /// The parts are read from the package as it was opened (PreservedPackage: they are kept and written
 /// back as they were on save); nothing is read until a host or the layout asks.
