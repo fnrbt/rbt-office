@@ -3,10 +3,8 @@
 // Word's lines in word/geometry.tsv - pdf-geometry.py). Compared: the probe's page and its top on it (Word's glyph
 // top less 2.81pt for the 14pt bold heading, 2.16 for the 11pt paragraph: 72 at the margin). What Word showed
 // (docs/layout-parity-flow.md, ledger): the mark starts no page - a heading with it stays in the middle of the
-// page, and one the flow takes to a page's top is there without its space before, as one without it.
-// Open: the stale-* documents (ours still takes a mark as where a page starts: the layout follows the marks
-// as hints, and without them the corpus loses pages Word's marks now keep right - see the ledger). They are
-// reported, not failed, until that is settled.
+// page, and one the flow takes to a page's top is there without its space before, as one without it; the
+// layout takes no mark as a page's start (stale-*).
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
@@ -42,17 +40,13 @@ let oursOf (name: string) =
 
 let mutable pass = 0
 let mutable fail = 0
-let mutable known = 0
 for name in rows |> Array.map (fun c -> c.[0]) |> Array.distinct |> Array.sort do
     let wordPage, wordTop = wordOf name
     let ourPage, ourTop = oursOf name
     if wordPage = ourPage && abs (wordTop - ourTop) < 0.3 then pass <- pass + 1
-    elif name.StartsWith "stale-" && name.Contains "-mark" then
-        known <- known + 1
-        printfn "open %-22s Word: page %d at %.2fpt; ours page %d at %.2fpt" name wordPage wordTop ourPage ourTop
     else
         fail <- fail + 1
         printfn "FAIL %-22s Word: page %d at %.2fpt; ours page %d at %.2fpt" name wordPage wordTop ourPage ourTop
 
-printfn "Rendered page break marks against Word: %d documents as Word, %d not, %d open" pass fail known
+printfn "Rendered page break marks against Word: %d documents as Word, %d not" pass fail
 if fail > 0 then exit 1

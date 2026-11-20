@@ -1541,54 +1541,31 @@ check "nested merged table spreads content too"
     true
 
 // ---------------------------------------------------------------------------
-// A w:lastRenderedPageBreak at a paragraph's start (Word started page N there
-// when it last laid the document out) starts a page unless this layout has
-// started that page already: lines that went on to a page of their own before
-// the mark (the text came out taller than Word's) are on Word's page N, and a
-// page break at the mark left them alone on a page (docx4j-getting-started:
-// five pages of one line each).
+// A w:lastRenderedPageBreak is where Word broke the page when it last laid the
+// document out, not a break: the layout starts no page there and breaks no line
+// there (fixtures heading-mark stale-*: Word keeps a paragraph with the mark in
+// the middle of its page).
 // ---------------------------------------------------------------------------
 let hintLine index = { paragraph (sprintf "hint-line-%d" index) (sprintf "line %d" index) with Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0 } }
 // (Word's page `ordinal`, from 0; the mark is the first run's too, as the reader gives it.)
-let hintedPara id ordinal derivedBreak =
+let hintedPara id ordinal =
     { paragraph id "hinted paragraph" with
         Buffer = ofString "hinted paragraph" |> applyStyle 0 16 (fun style -> { style with RenderedPageBreakBefore = true })
-        Metadata =
-            { Doc.defaultMetadata with
-                SpacingAfter = Some 0.0
-                RenderedPageBreakBefore = Some ordinal
-                // (The reader makes a Heading 1's mark a page break of the paragraph's: see DocxReader.)
-                PageBreakBefore = derivedBreak
-                Explicit = if derivedBreak then Doc.ParagraphExplicit.DerivedPageBreakBefore else 0 } }
+        Metadata = { Doc.defaultMetadata with SpacingAfter = Some 0.0; RenderedPageBreakBefore = Some ordinal } }
+let hintLayouts blocks =
+    layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText) { Doc.empty with Blocks = blocks; PageSetup = flowPageSetup; Selection = None }
 let hintPages blocks =
-    let layouts, pages = layoutDocumentPages flowSettings measureText (rangeMeasurerFromTextMeasurer measureText) { Doc.empty with Blocks = blocks; PageSetup = flowPageSetup; Selection = None }
+    let layouts, pages = hintLayouts blocks
     fun id -> layouts |> List.find (fun layout -> layout.BlockId = id) |> fun layout -> pageIndexForYInPages pages layout.Lines.Head.Y
-// As many lines as fit on a page and two more, which go on to the next.
-let linesOnFirstPage =
-    let pageOf = hintPages [ for index in 1 .. 100 -> Doc.Paragraph (hintLine index) ]
-    [ 1 .. 100 ] |> List.filter (fun index -> pageOf (sprintf "hint-line-%d" index) = 0) |> List.length
-let overflowing = [ for index in 1 .. linesOnFirstPage + 2 -> Doc.Paragraph (hintLine index) ]
-let lastOverflowing = sprintf "hint-line-%d" (linesOnFirstPage + 2)
-check "the text before Word's page 1 runs on to page 1" ((hintPages overflowing) lastOverflowing) 1
-check "a mark of Word's page 1 on our page 1 starts no page"
-    ((hintPages (overflowing @ [ Doc.Paragraph (hintedPara "hinted" 1 false) ])) "hinted") 1
-check "nor does a Heading 1's page break made of the mark"
-    ((hintPages (overflowing @ [ Doc.Paragraph (hintedPara "hinted" 1 true) ])) "hinted") 1
-check "a mark of Word's page 1 on our page 0 starts page 1"
-    ((hintPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (hintedPara "hinted" 1 false) ]) "hinted") 1
-// From the mark on the pages are counted as Word's: the next mark, with nothing run on to a
-// page since, starts its page.
-check "the next mark starts the page after"
-    ((hintPages (overflowing @ [ Doc.Paragraph (hintedPara "hinted" 1 false); Doc.Paragraph (hintLine 0); Doc.Paragraph (hintedPara "hinted-2" 2 false) ])) "hinted-2") 2
-// In a section after the first, whose pages are numbered from the section's first: before its
-// first mark, a page the section started by itself is the mark's.
-let firstSection = { hintLine 0 with Metadata = { (hintLine 0).Metadata with SectionBreak = Some "nextPage" } }
-let sectionPages blocks = hintPages (Doc.Paragraph firstSection :: blocks)
-check "in a later section the text runs on to its second page" ((sectionPages overflowing) lastOverflowing) 2
-check "a mark in a later section on a page it started starts no page"
-    ((sectionPages (overflowing @ [ Doc.Paragraph (hintedPara "hinted" 2 false) ])) "hinted") 2
-check "a mark in a later section on its first page starts a page"
-    ((sectionPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (hintedPara "hinted" 2 false) ]) "hinted") 2
+check "a mark of Word's page 1 on our page 0 starts no page"
+    ((hintPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (hintedPara "hinted" 1) ]) "hinted") 0
+check "nor does the next mark"
+    ((hintPages [ Doc.Paragraph (hintLine 1); Doc.Paragraph (hintedPara "hinted" 1); Doc.Paragraph (hintedPara "hinted-2" 2) ]) "hinted-2") 0
+let midMarked =
+    { paragraph "mid-marked" "hinted paragraph" with
+        Buffer = ofString "hinted paragraph" |> applyStyle 7 9 (fun style -> { style with RenderedPageBreakBefore = true }) }
+check "a mark inside a paragraph's text breaks no line"
+    ((hintLayouts [ Doc.Paragraph (hintLine 1); Doc.Paragraph midMarked ]) |> fst |> List.find (fun layout -> layout.BlockId = "mid-marked") |> fun layout -> layout.Lines.Length) 1
 
 // ---------------------------------------------------------------------------
 // Each line is as tall as its own text: a paragraph whose first word is set

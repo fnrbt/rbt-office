@@ -660,9 +660,6 @@ let private pageFitTolerance = 0.5
 /// text ends 0.2pt below the bottom margin - fixtures footnote-block limit-nofn-*).
 let private lineFitTolerance = 0.01
 
-let private applyRenderedPageBreakHint settings y (para: ParagraphBlock) =
-    y
-
 let private shiftLinesY delta lines =
     let result = ResizeArray<MeasuredLine>()
     for line in lines do
@@ -1677,7 +1674,9 @@ let private wordFontLineFactors =
        "Times New Roman", 1.1499; "Times", 1.1499; "Liberation Serif", 1.1499; "Tinos", 1.1499
        "Courier New", 1.1328; "Courier", 1.1328; "Liberation Mono", 1.1328; "Cousine", 1.1328
        "Cambria", 1.1724; "Cambria Math", 1.1724; "Georgia", 1.1362; "Verdana", 1.2153
-       "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709 |]
+       "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709
+       // (Office's cloud font, which Word downloads for a document that names it.)
+       "Open Sans", 1.3618 |]
 let private wordFontLineFactor (family: string) =
     let mutable factor = calibriLineFactor
     let mutable found = false
@@ -1715,6 +1714,7 @@ let private wordFontDescentFactors =
        "Courier New", 0.3003; "Courier", 0.3003; "Liberation Mono", 0.3003; "Cousine", 0.3003
        "Cambria", 0.2222; "Cambria Math", 0.2222; "Georgia", 0.2192; "Verdana", 0.2100
        "Trebuchet MS", 0.2222; "Segoe UI", 0.2510; "Consolas", 0.2510
+       "Open Sans", 0.2930
        "Symbol", 0.2197; "Wingdings", 0.2109 |]
 let private markerFontLineFactors = [| "Symbol", 1.2251; "Wingdings", 1.1099 |]
 
@@ -1787,6 +1787,16 @@ let private tryLastLine lines =
 let private lineFitHeight exactLines (line: MeasuredLine) =
     if exactLines then line.Height else lineVisibleFitHeight line
 
+/// The same in a table's cell: all of the line, what its spacing multiple adds too, and below a
+/// paragraph's last line its space after (`cellAfter`) - with the cell's bottom margin and the border
+/// under the row, which the cell's settings take off the page (fixtures cell-line-fit: a 1.15 or 1.5
+/// line whose text at single spacing fits goes when the whole line is 0.8pt over, stays 1pt under, in
+/// Word 2010's and 2013's layouts; a last line that fits goes when its 10pt after does not, the cell's
+/// last paragraph or not; a body line by its text).
+let private pagedLineFitHeight settings exactLines (cellAfter: float) isLast (line: MeasuredLine) =
+    if settings.InTableCell then line.Height + (if isLast then cellAfter else 0.0)
+    else lineFitHeight exactLines line
+
 let private paginateTableRow settings (row: TableRow) y rowHeight =
     let canSplit = WordLayout.Table.rowCanSplit row
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -1845,16 +1855,17 @@ let private splitRowLeavesCellEmpty settings headerHeight rowY (measurement: Tab
 /// room for 3 keeps 2, in the body and in a table cell alike. With keepLines
 /// (keep lines together; the body's paragraphs see to it themselves) a
 /// paragraph that would break goes whole.
-let private breakParagraphLines settings widowControl keepLines exactLines (lines: MeasuredLine list) =
+let private breakParagraphLines settings widowControl keepLines exactLines cellAfter (lines: MeasuredLine list) =
     match lines with
     | first :: _ :: _ ->
         let lineArray = List.toArray lines
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) first.Y
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
         let contentBottom = flowBodyBottom settings pageTop
-        let lineFits (line: MeasuredLine) = line.Y + lineFitHeight exactLines line <= contentBottom + pageFitTolerance
+        let lineFits index (line: MeasuredLine) =
+            line.Y + pagedLineFitHeight settings exactLines cellAfter (index = lineArray.Length - 1) line <= contentBottom + pageFitTolerance
         let mutable fitCount = 0
-        while fitCount < lineArray.Length && lineFits lineArray.[fitCount] do
+        while fitCount < lineArray.Length && lineFits fitCount lineArray.[fitCount] do
             fitCount <- fitCount + 1
         let count = lineArray.Length
         // The lines from `keep` on start the next page.
@@ -1882,58 +1893,6 @@ let private lineEndsInBreak (line: MeasuredLine) =
         | ImageSegment (src, _, _, _, _, _, false, _, _, _, _, _, _, _) when TextBuffer.isInlineBreakSource src -> Some src
         | _ -> None)
 
-let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
-    let rec loop segments =
-        match segments with
-        | [] -> false
-        | TextSegment (_, style, _, _, _) :: _ when style.RenderedPageBreakBefore -> true
-        | _ :: rest -> loop rest
-
-    loop line.Segments
-
-/// Whether the w:lastRenderedPageBreak a paragraph starts with starts a page
-/// here: the pass has said which page Word started there, in its own pages
-/// (renderedBreakPage, see hintPage); on that page or one after it, the page
-/// has been started already.
-let private renderedBreakStartsPage settings (renderedBreakPage: int option) (line: MeasuredLine) shiftedY =
-    match renderedBreakPage with
-    | Some page when line.StartOffset = 0 -> pageIndexForY settings shiftedY < page
-    | _ -> true
-
-/// A paragraph that starts with a w:lastRenderedPageBreak is where Word started
-/// page `ordinal` (from 0: the marks of the body up to it, see the reader) when
-/// it last laid the document out. The page of a pass that is: the pass's pages
-/// less Word's as they were where the last such paragraph was placed (`offset`)
-/// on from it; before any, the page after the one the pass started on. A page
-/// the pass has started since by itself - its text came out taller than
-/// Word's, and the lines before the mark went on to a page of their own - is
-/// that page already: starting another one at the mark left a page with only
-/// those few lines on it.
-let private hintPage (hintOffset: int option) passStartPage (ordinal: int) =
-    match hintOffset with
-    | Some offset -> ordinal + offset
-    | None -> passStartPage + 1
-
-/// The paragraph as a pass lays it out: its mark's page in the pass's pages (see hintPage).
-let private withHintPage (hintOffset: int option) passStartPage (para: ParagraphBlock) =
-    match para.Metadata.RenderedPageBreakBefore with
-    | Some ordinal ->
-        let page = hintPage hintOffset passStartPage ordinal
-        if page = ordinal then para
-        else { para with Metadata = { para.Metadata with RenderedPageBreakBefore = Some page } }
-    | None -> para
-
-/// The page break before a Heading 1 that the reader made of the
-/// w:lastRenderedPageBreak the heading starts with (not one of the paragraph's
-/// or its style's own): it is the mark's, and starts a page where the mark does.
-let private pageBreakIsRenderedMark (paragraphStyle: ParagraphStyle) (metadata: BlockMetadata) =
-    metadata.PageBreakBefore
-    && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore metadata
-    // (A page break its text starts with is a break as any other.)
-    && not (ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore metadata)
-    && metadata.RenderedPageBreakBefore.IsSome
-    && paragraphStyle.PageBreakBefore <> Some true
-
 /// The lines of a body paragraph that refers to notes, or that starts on a page
 /// with notes at its foot (`context`, see ParagraphNotes), put on their pages
 /// with the notes in view: a line stays where its text ends above the page's
@@ -1947,7 +1906,7 @@ let private pageBreakIsRenderedMark (paragraphStyle: ParagraphStyle) (metadata: 
 /// it may be (para-ref5: the note keeps 2 lines, not the 3 it would have with
 /// the last line on the next page as in para-ref5-nowidow). A page that notes
 /// go on onto from the page before is theirs as far as they take it.
-let private paginateLinesWithNotes settings widowControl exactLines (renderedBreakPage: int option) (context: ParagraphNotes) (lines: MeasuredLine list) =
+let private paginateLinesWithNotes settings widowControl exactLines (context: ParagraphNotes) (lines: MeasuredLine list) =
     let separatorHeight = footnoteSeparatorHeight settings
     let notice = continuationNoticeHeight settings
     let mutable delta = 0.0
@@ -1991,7 +1950,7 @@ let private paginateLinesWithNotes settings widowControl exactLines (renderedBre
         let shiftedY = line.Y + delta
         let fitHeight = lineFitHeight exactLines line
         let notes = appendNewNotes [] (footnotesInLine line)
-        let mutable leaveFirst = afterBreak || (lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY)
+        let mutable leaveFirst = afterBreak
         afterBreak <- (lineEndsInBreak line).IsSome
         let mutable y = shiftedY
         let mutable settled = false
@@ -2054,7 +2013,7 @@ let private paginateLinesWithNotes settings widowControl exactLines (renderedBre
                 y <- WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
     resizeArrayToList pagedLines
 
-let private paginateLinesPlain settings exactLines (renderedBreakPage: int option) (lines: MeasuredLine list) =
+let private paginateLinesPlain settings exactLines cellAfter (lines: MeasuredLine list) =
     let unpagedMeasurement = settings.PageHeight >= unpagedMeasurementPageHeight
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
@@ -2072,12 +2031,6 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
         let contentBottom =
             flowBodyBottom settings pageTop
             - footnoteReserveHeight settings pageFootnotes
-        // A lastRenderedPageBreak hint only means something on a real page.
-        // Table rows are first measured on a 1,000,000px "page" to get their
-        // natural height; honouring the hint there would move the line a
-        // million pixels down and report that as the row height.
-        let renderedBreakBefore =
-            not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
         let breakBefore =
             not unpagedMeasurement && not settings.InTableCell && lineIndex > 0 && (lineEndsInBreak lineArray.[lineIndex - 1]).IsSome
         // (Word 2013's layout does not end a page with a hyphenated word: the line goes on to the next
@@ -2087,7 +2040,7 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
             && lineIndex + 1 < lineArray.Length
             && (let next = lineArray.[lineIndex + 1]
                 next.Y + delta + lineFitHeight exactLines next > contentBottom + lineFitTolerance)
-        if shiftedY > contentTop && (breakBefore || renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance || hyphenEndsPage ()) then
+        if shiftedY > contentTop && (breakBefore || shiftedY + pagedLineFitHeight settings exactLines cellAfter (lineIndex = lineArray.Length - 1) line > contentBottom + lineFitTolerance || hyphenEndsPage ()) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -2102,7 +2055,7 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
             pagedLines.Add { line with Y = shiftedY }
     resizeArrayToList pagedLines
 
-let private paginateLines settings widowControl keepLines exactLines (renderedBreakPage: int option) (lines: MeasuredLine list) =
+let private paginateLines settings widowControl keepLines exactLines cellAfter (lines: MeasuredLine list) =
     let unpagedMeasurement = settings.PageHeight >= unpagedMeasurementPageHeight
     let context = if settings.InTableCell || unpagedMeasurement then noParagraphNotes else paragraphNotes
     // (Widow control above the notes already at the foot of the page the paragraph starts on.)
@@ -2111,11 +2064,11 @@ let private paginateLines settings widowControl keepLines exactLines (renderedBr
         | first :: _ when context.NotesPage >= 0 && pageIndexForY settings first.Y = context.NotesPage ->
             { settings with MarginBottom = settings.MarginBottom + context.NotesTaken }
         | _ -> settings
-    let lines = if widowControl || keepLines then breakParagraphLines breakSettings widowControl keepLines exactLines lines else lines
+    let lines = if widowControl || keepLines then breakParagraphLines breakSettings widowControl keepLines exactLines cellAfter lines else lines
     if not settings.InTableCell && not unpagedMeasurement
        && (context.NotesPage >= 0 || lines |> List.exists (fun line -> not (footnotesInLine line).IsEmpty)) then
-        paginateLinesWithNotes settings widowControl exactLines renderedBreakPage context lines
-    else paginateLinesPlain settings exactLines renderedBreakPage lines
+        paginateLinesWithNotes settings widowControl exactLines context lines
+    else paginateLinesPlain settings exactLines cellAfter lines
 
 let private linesSpanPages settings (lines: MeasuredLine list) =
     match lines with
@@ -2402,13 +2355,16 @@ let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: 
 /// Nextq's line 8.6pt below it under the 12pt after) Keepq goes on; `a0-b0-n46` (Nextq's text ends
 /// 3.4pt above) stays; `a0-b0-n46-w` (Nextq four lines, its second below the margin) goes on - ours
 /// counted the group's lines without the space between them and its first line's full height.
+/// Under keepLines all of it (fixtures keep-next-widow `hk-n4-r2-kl`, `-r3-kl`: a heading and a keepNext
+/// paragraph before a 4-line keepLines paragraph with room for 2 or 3 go on with it).
 let private keepGroupNextEnd (nextStyle: ParagraphStyle) (nextLayout: BlockLayout) =
     match nextLayout.Lines with
     | [] -> nextLayout.Y + paragraphVisibleFitHeight nextStyle nextLayout
     | lines ->
         let count = lines.Length
         let needed =
-            if count <= 1 || not (WordStyles.widowControl nextStyle nextLayout.Metadata) then 1
+            if WordStyles.keepLines nextStyle nextLayout.Metadata then count
+            elif count <= 1 || not (WordStyles.widowControl nextStyle nextLayout.Metadata) then 1
             elif count <= 3 then count
             else 2
         let line = List.item (needed - 1) lines
@@ -3840,9 +3796,6 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 // Unparseable equation — fall back to the literal run text.
                 fallbackText (WordLayout.Text.displayText textRun.Style (runText textRun))
         | TextBuffer.Text textRun ->
-            if textRun.Style.RenderedPageBreakBefore && currentSegments.Count > 0 then
-                flushLine ()
-
             let runText = runText textRun
             let displayRunText = WordLayout.Text.displayText textRun.Style runText
             let displayRunStyle = WordLayout.Text.displayStyle textRun.Style
@@ -4057,8 +4010,7 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
     else
         match buffer.Runs with
         | [TextBuffer.Text textRun] when not textRun.Style.Hidden
-                                      && textRun.Style.EquationXml.IsNone
-                                      && not textRun.Style.RenderedPageBreakBefore ->
+                                      && textRun.Style.EquationXml.IsNone  ->
             let rawText =
                 TextBuffer.trySliceNoCopy textRun.Start textRun.Length buffer
                 |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length buffer)
@@ -4118,8 +4070,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
             let borderRight = paragraphBorderRightAdvance metadata
             match para.Buffer.Runs with
             | [TextBuffer.Text textRun] when not textRun.Style.Hidden
-                                          && textRun.Style.EquationXml.IsNone
-                                          && not textRun.Style.RenderedPageBreakBefore ->
+                                          && textRun.Style.EquationXml.IsNone  ->
                 let textStyle = effectiveTextStyleForParagraph paragraphStyle textRun.Style
                 let rawText =
                     TextBuffer.trySliceNoCopy textRun.Start textRun.Length para.Buffer
@@ -4233,9 +4184,6 @@ type PassCheckpoint = {
     CheckPlacedBoxes: PlacedFloatingBox list
     /// A drop cap read and not yet placed: it is placed with the paragraph after it.
     CheckDropCap: (ParagraphBlock * ParagraphStyle) option
-    /// This pass's pages against Word's as the last w:lastRenderedPageBreak at a paragraph's
-    /// start had them (see hintPage).
-    CheckHintOffset: int option
 }
 
 /// What a block-by-block pass was given and what it made, kept for the next
@@ -4564,7 +4512,6 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                 lines, obstacles, placedBoxes
         | None -> breakLines ()
 
-    let mutable hasRenderedPageBreak = false
     // A list marker reaching above its line's text raises the first line by that much (fixtures
     // marker-ascent: Word's first line is its text's at the paragraph's spacing plus the marker's ascent,
     // at its own size, above the text's tallest - not scaled by the multiple, the marker's descent below
@@ -4580,19 +4527,12 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
             let dx = xOffset + indent
             let adjustedSegments =
                 if abs dx < 0.001 then
-                    for segment in line.Segments do
-                        match segment with
-                        | TextSegment (_, style, _, _, _) when style.RenderedPageBreakBefore ->
-                            hasRenderedPageBreak <- true
-                        | _ -> ()
                     line.Segments
                 else
                     let adjustedSegments = ResizeArray<Segment>()
                     for segment in line.Segments do
                         match segment with
                         | TextSegment (text, style, x, width, startOffset) ->
-                            if style.RenderedPageBreakBefore then
-                                hasRenderedPageBreak <- true
                             adjustedSegments.Add(TextSegment (text, style, x + dx, width, startOffset))
                         | ImageSegment (src, x, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom, flip) ->
                             adjustedSegments.Add(ImageSegment (src, x + dx, yOffset, width, height, startOffset, floating, wrap, relativeHeight, cropLeft, cropTop, cropRight, cropBottom, flip))
@@ -4678,7 +4618,7 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         // (Widow control in a table cell is Word 2013's: in compatibility mode 14 and older a cell's lines
         // break where the page is full, widow control or not - fixtures long-word wc-on-c14-cell, wc-on-c12-cell.)
         let widowControlHere = widowControl paragraphStyle metadata && not (settings.InTableCell && settings.CompatibilityMode < 15)
-        paginateLines settings (widowControlHere && not hasRenderedPageBreak) (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata && not hasRenderedPageBreak) (lineSpacingRule = "exact" || lineSpacingRule = "atLeast") para.Metadata.RenderedPageBreakBefore adjustedLines
+        paginateLines settings widowControlHere (settings.InTableCell && WordStyles.keepLines paragraphStyle metadata) (lineSpacingRule = "exact" || lineSpacingRule = "atLeast") spacingAfter adjustedLines
 
     let blockHeight =
         if pagedLines.IsEmpty then paragraphLineHeight
@@ -6451,7 +6391,6 @@ let private samePassState (left: PassCheckpoint) (right: PassCheckpoint) =
         | None, None -> true
         | Some (leftPara, leftStyle), Some (rightPara, rightStyle) -> obj.ReferenceEquals(leftPara, rightPara) && sameOrEqual leftStyle rightStyle
         | _ -> false)
-    && left.CheckHintOffset = right.CheckHintOffset
 
 /// How many blocks two block arrays have in common at the start and (of the
 /// rest) at the end: the same objects in the same order.
@@ -6754,7 +6693,6 @@ let private layoutDocumentPassKeptAt
     let mutable previousParagraphLayout: BlockLayout option = None
     let mutable hasEndnoteRefs = false
     let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
-    let mutable hintOffset: int option = Some 0
     let blocks = doc.Blocks |> List.toArray
     // The pages whose notes do not all fit at their foot (see NoteBreaks), and
     // what the room for the text is with them: the functions of the same name
@@ -6798,10 +6736,9 @@ let private layoutDocumentPassKeptAt
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage (Some noteBreaks.Value) (pageIndexForY settings y))
         CheckPrevious = previousParagraphContext; CheckPreviousLayout = previousParagraphLayout
         CheckObstacles = floatingObstacles; CheckPlacedBoxes = placedFloatingBoxes
-        CheckDropCap = pendingDropCap; CheckHintOffset = hintOffset
+        CheckDropCap = pendingDropCap
     }
     let restoreState (state: PassCheckpoint) =
-        hintOffset <- state.CheckHintOffset
         y <- state.CheckY
         numberedCounters <- state.CheckCounters
         footnotesByPage <- state.CheckFootnotes
@@ -7292,8 +7229,7 @@ let private layoutDocumentPassKeptAt
             pendingDropCap <- Some (getParagraph block, forBlockInContext styleContext block)
         | _ ->
             let blockStart = timingStart ()
-            let renderedOrdinal = (getParagraph block).Metadata.RenderedPageBreakBefore
-            let para = withHintPage hintOffset 0 (getParagraph block)
+            let para = getParagraph block
             let paragraphStyle = forBlockInContext styleContext block
             // (Laid out without its space before at the top of a page it came to by the flow of the text:
             // pageTopDropsSpaceBefore.)
@@ -7327,15 +7263,10 @@ let private layoutDocumentPassKeptAt
                         layoutParagraphWithMemoAt dropsSpaceBefore.Value memo settings measureText measureRange maxWidth atY 0.0 paragraphStyle (effectiveBufferInContext styleContext) para numberedCounters (obstacle :: obstacles) placed
                     | [] -> laidOut ()
                 | _ -> laidOut ())
-            let beforeRenderedHintY = y
-            y <- applyRenderedPageBreakHint settings y para
-            if y <> beforeRenderedHintY then resetPreviousParagraph ()
-            let pageStartedAtMark =
-                pageBreakIsRenderedMark paragraphStyle para.Metadata && pageIndexForY settings y >= para.Metadata.RenderedPageBreakBefore.Value
             // (A page break the paragraph's text starts with is a break in its text: in the first paragraph too.)
             let breakInText = para.Metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para.Metadata
             let mutable breakBefore = false
-            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && (layouts.Count > 0 || breakInText) && not pageStartedAtMark then
+            if (para.Metadata.PageBreakBefore || paragraphStyle.PageBreakBefore = Some true) && (layouts.Count > 0 || breakInText) then
                 y <- advanceToNextPage settings y
                 resetPreviousParagraph ()
                 breakBefore <- true
@@ -7470,9 +7401,6 @@ let private layoutDocumentPassKeptAt
                 | None -> ()
             | [] -> ()
             addBodyLayout layout
-            match renderedOrdinal, layout.Lines with
-            | Some ordinal, first :: _ -> hintOffset <- Some (pageIndexForY settings first.Y - ordinal)
-            | _ -> ()
             footnotesByPage <- addLayoutFootnotes settings footnotesByPage layout
             recordNoteBreaks layout
             y <- layout.Y + layout.Height
@@ -7971,14 +7899,13 @@ let private sectionEndTakesNoRoom (para: ParagraphBlock) =
     && para.Metadata.ListStyle = NoList
     && para.Metadata.DropCap.IsNone
 
-let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialCounters: Map<string * int, int>) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
+let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialCounters: Map<string * int, int>) (initialFootnotes: Map<int, (string * string) list>) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = initialCounters; CheckFootnotes = initialFootnotes; CheckNoteBreaks = Map.empty
         CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes None startPage)
         CheckPrevious = initialPrevious; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
-        CheckHintOffset = initialHintOffset
     }
     let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced collapsesEnd initialState doc
     // The last pass over the very same blocks: it stands as a whole.
@@ -8042,7 +7969,6 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let mutable col = 0
     let mutable page = startPage
     let mutable y = startY
-    let mutable hintOffset = initialHintOffset
     let mutable counters : Map<string * int, int> = initialCounters
     // Footnotes referenced so far, by page. Their block sits at the bottom of
     // the page, so each page's columns end above it.
@@ -8144,10 +8070,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage; CheckNoteBreaks = Map.empty
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage None page)
         CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = placedShapes; CheckDropCap = pendingDropCap
-        CheckHintOffset = hintOffset
     }
     let restoreState (state: PassCheckpoint) =
-        hintOffset <- state.CheckHintOffset
         pendingDropCap <- state.CheckDropCap
         placedShapes <- state.CheckPlacedBoxes
         col <- state.CheckCol
@@ -8215,23 +8139,11 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             // A drop cap takes no room of its own: it is placed with the paragraph after it.
             pendingDropCap <- Some (para0, forBlockInContext styleContext block)
         | Some para0 ->
-            // (In columns a mark may be where Word started a column: it starts one here too.)
-            let renderedOrdinal = if n <= 1 then para0.Metadata.RenderedPageBreakBefore else None
-            let para0 = if n <= 1 then withHintPage hintOffset startPage para0 else para0
-            let renderedBreak =
-                match para0.Metadata.RenderedPageBreakBefore with
-                | Some hinted -> n >= 2 || page < hinted
-                | None -> false
-            let pageBreakBefore =
-                para0.Metadata.PageBreakBefore
-                && (renderedBreak || not (pageBreakIsRenderedMark (forBlockInContext styleContext block) para0.Metadata))
+            let pageBreakBefore = para0.Metadata.PageBreakBefore
             if pageBreakBefore && n >= 2 && balancedHeight.IsNone then
                 if not (atPageTop ()) then advancePage ()
-            elif (pageBreakBefore || renderedBreak) && not (atColumnTop ()) then
+            elif pageBreakBefore && not (atColumnTop ()) then
                 advanceColumn ()
-            match renderedOrdinal with
-            | Some ordinal -> hintOffset <- Some (page - ordinal)
-            | None -> ()
             let style = forBlockInContext styleContext block
             let dropCap = pendingDropCap
             pendingDropCap <- None
@@ -8703,7 +8615,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         record, page, y, footnotesByPage
 
 let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
-    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced false None Map.empty initialFootnotes (Some 0)
+    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced false None Map.empty initialFootnotes
     List.ofArray record.PassResults, page, y, footnotes
 
 /// Absolute geometry of one rendered page. For single-section documents every
@@ -9039,7 +8951,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             else
                 let pageOwner = pageSettings.[currentPage]
                 { secSettings with FirstPageExtraRoom = secSettings.MarginBottom - pageOwner.MarginBottom }
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo flowSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes (if i = 0 then Some 0 else None)
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo flowSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage

@@ -28,7 +28,8 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
 - Our side is the browser layout of `dist` in Chromium, with Word's fonts
   registered as web fonts under the family their name tables give: the faces
   of `RB_WORD_FONT_DIR` and of `RB_WORD_EXTRA_FONT_DIR` (default `windows-extra`
-  beside it: Consolas, Courier New, Tahoma, Georgia ...). Both come from the VM
+  beside it: Consolas, Courier New, Tahoma, Georgia ..., and Office cloud fonts
+  Word downloads for a document, such as Open Sans). Both come from the VM
   with `fetch-windows-fonts.sh`. Text is measured as a host that installs
   ShaperText's measurers measures it (`setTextMeasurers`: the fonts' own
   advances, from the same files); `--measurer canvas` leaves the canvas's
