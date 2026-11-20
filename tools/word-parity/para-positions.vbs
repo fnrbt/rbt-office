@@ -14,15 +14,16 @@
 Option Explicit
 Dim fso, word, folder, file, doc, outDir, out, i, p, r, n, w, lastPage, lastTop, pg, tp
 Set fso = CreateObject("Scripting.FileSystemObject")
-Set word = CreateObject("Word.Application")
-word.Visible = False
-word.DisplayAlerts = 0
-word.AutomationSecurity = 3
+' (A Word of its own for each document: see page-lines.vbs - a session can lose a document's embedded fonts.)
 outDir = WScript.Arguments(1)
 If Not fso.FolderExists(outDir) Then fso.CreateFolder outDir
 Set folder = fso.GetFolder(WScript.Arguments(0))
 For Each file In folder.Files
     If LCase(fso.GetExtensionName(file.Name)) = "docx" Then
+        Set word = CreateObject("Word.Application")
+        word.Visible = False
+        word.DisplayAlerts = 0
+        word.AutomationSecurity = 3
         Set doc = word.Documents.Open(file.Path, False, True, False)
         doc.ActiveWindow.View.Type = 3
         doc.Repaginate
@@ -51,6 +52,6 @@ For Each file In folder.Files
         Next
         out.Close
         doc.Close 0
+        word.Quit
     End If
 Next
-word.Quit

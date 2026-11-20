@@ -32,20 +32,30 @@ outDir = fso.GetAbsolutePathName(WScript.Arguments(1))
 wantPdf = WScript.Arguments.Count > 2
 If Not fso.FolderExists(outDir) Then fso.CreateFolder outDir
 
-Set w = CreateObject("Word.Application")
-w.Visible = False
-w.DisplayAlerts = 0
-w.AutomationSecurity = 3
-w.Options.UpdateLinksAtOpen = False
-On Error Resume Next
-w.Options.Pagination = True
-On Error GoTo 0
-WScript.Echo "Word " & w.Version & " build " & w.Build
+' A Word of its own for each document: in one session, a document opened after others can be set in
+' a stand-in for its embedded fonts (the showcase's exhibition-leaflet came out in Nirmala UI on one
+' page in a batch, in Poppins on two alone) - a session's state, not the document's layout.
+Sub StartWord()
+  Set w = CreateObject("Word.Application")
+  w.Visible = False
+  w.DisplayAlerts = 0
+  w.AutomationSecurity = 3
+  w.Options.UpdateLinksAtOpen = False
+  On Error Resume Next
+  w.Options.Pagination = True
+  On Error GoTo 0
+End Sub
 
-For Each f In fso.GetFolder(inDir).Files
-  If LCase(fso.GetExtensionName(f.Name)) = "docx" Then ProcessFile f.Path
-Next
+StartWord
+WScript.Echo "Word " & w.Version & " build " & w.Build
 w.Quit
+For Each f In fso.GetFolder(inDir).Files
+  If LCase(fso.GetExtensionName(f.Name)) = "docx" Then
+    StartWord
+    ProcessFile f.Path
+    w.Quit
+  End If
+Next
 WScript.Echo "DONE"
 
 Function Clean(s)

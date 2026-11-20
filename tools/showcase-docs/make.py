@@ -751,5 +751,120 @@ def handbook():
             back.page_width, back.page_height = Cm(21.0), Cm(29.7)
     save(doc, "handbook.docx")
 
-for make in (annual_results, conference_programme, field_guide, product_spec, invoice, magazine_feature, diagrams, handbook):
+
+# ---------------------------------------------------------------- embedded fonts (Word's "Embed fonts in the file")
+
+import re, uuid, zipfile
+FONTS = os.path.join(ASSETS, "fonts")
+
+def _obfuscate(data, key):
+    """ECMA-376 Part 2 font obfuscation (its own inverse): the first 32 bytes XOR the key GUID's 16 bytes, last byte first."""
+    k = bytes.fromhex(key.replace("-", ""))[::-1]
+    head = bytes(b ^ k[i % 16] for i, b in enumerate(data[:32]))
+    return head + data[32:]
+
+def embed_fonts(path, families):
+    """Embed TrueType faces in a saved .docx as Word does: families = {"Family": {"Regular": "file.ttf", "Bold": ...}}."""
+    src = zipfile.ZipFile(path)
+    items = {n: src.read(n) for n in src.namelist()}
+    src.close()
+    table = items["word/fontTable.xml"].decode()
+    rels = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+    n = 0
+    for family, faces in families.items():
+        embeds = ""
+        for face, file in faces.items():
+            n += 1
+            key = str(uuid.uuid4()).upper()
+            items[f"word/fonts/font{n}.odttf"] = _obfuscate(open(os.path.join(FONTS, file), "rb").read(), key)
+            rels += f'<Relationship Id="rId{n}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/font" Target="fonts/font{n}.odttf"/>'
+            embeds += f'<w:embed{face} r:id="rId{n}" w:fontKey="{{{key}}}"/>'
+        entry = (f'<w:font w:name="{family}"><w:panose1 w:val="00000000000000000000"/><w:charset w:val="00"/>'
+                 f'<w:family w:val="auto"/><w:pitch w:val="variable"/>{embeds}</w:font>')
+        table = re.sub(rf'<w:font w:name="{re.escape(family)}">.*?</w:font>', "", table, flags=re.S)
+        table = table.replace("</w:fonts>", entry + "</w:fonts>")
+    rels += "</Relationships>"
+    if 'xmlns:r=' not in table[:400]:
+        table = table.replace("<w:fonts ", '<w:fonts xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ', 1)
+    items["word/fontTable.xml"] = table.encode()
+    items["word/_rels/fontTable.xml.rels"] = rels.encode()
+    ct = items["[Content_Types].xml"].decode()
+    if 'Extension="odttf"' not in ct:
+        ct = ct.replace("<Default ", '<Default Extension="odttf" ContentType="application/vnd.openxmlformats-officedocument.obfuscatedFont"/><Default ', 1)
+    items["[Content_Types].xml"] = ct.encode()
+    settings = items["word/settings.xml"].decode()
+    if "embedTrueTypeFonts" not in settings:
+        settings = re.sub(r"(<w:settings[^>]*>)", r"\1<w:embedTrueTypeFonts/>", settings, count=1)
+    items["word/settings.xml"] = settings.encode()
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in items.items():
+            z.writestr(name, data)
+
+# ---------------------------------------------------------------- 9. exhibition leaflet (embedded fonts)
+
+def exhibition_leaflet():
+    SERIF, SANS = "Instrument Serif", "Poppins"
+    doc = base(SANS, SERIF, size=9.5)
+    for level in (1, 2, 3):
+        doc.styles["Heading %d" % level].font.bold = False
+    doc.styles["Heading 2"].font.name = SANS
+    doc.styles["Heading 2"].font.bold = True
+    hf = doc.styles["Heading 2"].element.get_or_add_rPr().find(qn("w:rFonts"))
+    for k in ("w:ascii", "w:hAnsi", "w:cs", "w:eastAsia"):
+        hf.set(qn(k), SANS)
+    para(doc, "THE WEATHER MUSEUM  ·  SPRING EXHIBITION", size=8.5, color=CORAL, bold=True, after=0)
+    p = para(doc, "Weather", size=64, color=NAVY, font=SERIF, after=0)
+    p.paragraph_format.line_spacing = 0.9
+    r = p.add_run(" you can see"); r.italic = True; r.font.size = Pt(64); r.font.name = SERIF; r.font.color.rgb = RGBColor.from_string(TEAL)
+    para(doc, "Clouds, storms and the people who drew them, 1800 to now. Eleven rooms, two hundred works, one very large barometer.",
+         size=13, color=GREY, font=SERIF, italic=True, after=10)
+    rule(doc, CORAL, sz=8)
+    intro = doc.add_table(rows=1, cols=3); no_borders(intro); cell_margins(intro, 60, 60, 0, 160)
+    blocks = [("Where", "West wing, rooms 4–14", "Lift to the first floor; step-free throughout"),
+              ("When", "14 March – 2 August", "Daily 10:00–17:30, Thursdays until 21:00"),
+              ("Tickets", "€14, concessions €9", "Free for members and under-18s")]
+    for i, (h, big, small) in enumerate(blocks):
+        c = intro.cell(0, i)
+        text(c, h.upper(), bold=True, size=7.5, color=CORAL)
+        text(c, big, size=15, font=SERIF, color=NAVY)
+        text(c, small, size=8.5, color=GREY)
+    widths(intro, [5.5, 5.5, 5.6])
+    para(doc, after=6)
+    doc.add_heading("The rooms", 2)
+    rooms = [("4", "Before the names", "Clouds in landscape painting before Luke Howard classified them in 1803."),
+             ("5", "Cirrus, cumulus, stratus", "Howard's own watercolours, and the letters Goethe wrote him about them."),
+             ("6–7", "The storm", "Shipwrecks, squalls and a hurricane drawn from the deck of the ship that survived it."),
+             ("8", "Instruments", "Barometers, hygrometers and the eleven-metre water barometer, working."),
+             ("9–10", "The forecast", "The first weather maps, telegraphed in from fifty stations at eight each morning."),
+             ("11–14", "Seen from above", "Satellite images, from the first fuzzy frame in 1960 to this morning's.")]
+    t = doc.add_table(rows=len(rooms), cols=3)
+    table_borders(t, val="nil", sz=0, color="auto"); cell_margins(t, 70, 70, 0, 120)
+    for i, (num, name, what) in enumerate(rooms):
+        text(t.cell(i, 0), num, font=SERIF, size=22, color=TEAL)
+        text(t.cell(i, 1), name, bold=True, size=10)
+        text(t.cell(i, 2), what, size=9, color=INK)
+        for c in range(3):
+            borders(t.cell(i, c), bottom=("single", 4, "D9DEE3"))
+    widths(t, [1.8, 4.6, 10.2])
+    para(doc, after=6)
+    q = doc.add_table(rows=1, cols=1); no_borders(q); cell_margins(q, 160, 160, 300, 300)
+    c = q.cell(0, 0); shade(c, SAND)
+    text(c, "“I have attempted to give names to the clouds, which before had none.”", font=SERIF, size=20, italic=True, color=NAVY, space_after=4)
+    text(c, "LUKE HOWARD, ON THE MODIFICATIONS OF CLOUDS, 1803", size=7.5, bold=True, color=CORAL)
+    para(doc, after=6)
+    doc.add_heading("Talks and walks", 2)
+    for when, what in [("Thursdays, 19:00", "Late talks with the curators, in the barometer room"),
+                       ("Saturdays, 11:00", "Cloud-spotting walk on the roof terrace, weather permitting"),
+                       ("Every day, 15:00", "The water barometer, read aloud")]:
+        p = doc.add_paragraph(style="List Bullet")
+        r = p.add_run(when + "  "); r.bold = True
+        p.add_run(what)
+    para(doc, "Set in Instrument Serif and Poppins, both under the SIL Open Font License, embedded in this file.",
+         size=7.5, color=GREY, italic=True, before=10)
+    save(doc, "exhibition-leaflet.docx")
+    embed_fonts(os.path.join(OUT, "exhibition-leaflet.docx"), {
+        SERIF: {"Regular": "InstrumentSerif-Regular.ttf", "Italic": "InstrumentSerif-Italic.ttf"},
+        SANS: {"Regular": "Poppins-Regular.ttf", "Bold": "Poppins-Bold.ttf"}})
+
+for make in (annual_results, conference_programme, field_guide, product_spec, invoice, magazine_feature, diagrams, handbook, exhibition_leaflet):
     make()
