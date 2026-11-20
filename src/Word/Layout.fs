@@ -3013,9 +3013,11 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                     active.RemoveAt i
             if not inserted then
                 active.Add((startX, endX))
+        // (The obstacles stand across from the text's left edge, the lines from the paragraph's
+        // indent: float-table ind-* - a paragraph indented 1in goes on beside a table at the margin.)
         for (x, top, width, height) in floatObstacles do
             if lineBottom > top && globalLineY < top + height then
-                addActiveInterval x (x + width)
+                addActiveInterval (x - tabOrigin) (x - tabOrigin + width)
         let mutable gaps = []
         let mutable cursor = 0.0
         for (oxStart, oxEnd) in active do
@@ -3050,8 +3052,12 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     let private_setIntervalToFirst () =
         match pendingIntervals with
         | (s, e) :: rest ->
-            // (The first-line indent applies from the indent, not beside a float.)
-            currentX <- if flushedLineCount = 0 && s <= 0.01 then firstLineStart else s
+            // (The first-line indent applies from the indent, and beside a float from the float -
+            // float-table fl-b: the first line beside a table a 0.3in indent in from it.)
+            currentX <-
+                if flushedLineCount = 0 && s <= 0.01 then firstLineStart
+                elif flushedLineCount = 0 && not hanging then s + max 0.0 firstLineStart
+                else s
             currentLineEnd <- e
             pendingIntervals <- rest
         | [] ->
@@ -3376,7 +3382,8 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     let addObstacleFor (floatingBox: WordLayout.Floating.Box) =
         let obstacleX, obstacleTop, obstacleWidth, obstacleHeight = WordLayout.Floating.obstacleForBox availableWidth floatingBox
         if WordLayout.Floating.wrapsTopAndBottom floatingBox.Wrap then
-            floatObstacles <- (0.0, obstacleTop, availableWidth, obstacleHeight) :: floatObstacles
+            // (Across every line, whatever its paragraph's indents.)
+            floatObstacles <- (-availableWidth, obstacleTop, 3.0 * availableWidth + 2.0 * abs tabOrigin, obstacleHeight) :: floatObstacles
         else
             // (A picture with an outline to wrap along: the outline, slab by slab; else its box.)
             match WordLayout.Floating.outlineObstacles availableWidth floatingBox with
@@ -4400,21 +4407,40 @@ let private defaultParagraphFirstLineOffsetInDocument memo doc =
     let paragraphStyle = forBlockInContext (styleContextForLayout memo doc) (Paragraph para)
     paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
 
-let private defaultParagraphFirstLineOffsetInContext context =
-    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
-    let paragraphStyle = forBlockInContext context (Paragraph para)
-    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
-
+/// How far a table stands in from the text's left edge: its indent - and, for a table in the flow,
+/// the first-line indent of the document's Normal paragraphs. Word does not move a table in by that
+/// (fixtures float-table fl-normal-inline: Normal's 0.3in first-line indent moves the cells' text,
+/// not the table); it stands in here for the first-line indent that the cells of a table with a
+/// table style do not get from Normal here (Word: they do - ts-fl, ts-fl-both; calibre-demo's
+/// tables), and is not taken for a floating table, which goes where its w:tblpPr puts it.
 let private tableLeftOffsetForDocument memo doc (tableBlock: TableBlock) =
-    defaultParagraphFirstLineOffsetInDocument memo doc + WordLayout.Table.tableIndent tableBlock
-
-let private tableLeftOffsetForContext context (tableBlock: TableBlock) =
-    defaultParagraphFirstLineOffsetInContext context + WordLayout.Table.tableIndent tableBlock
+    (if tableBlock.Floating then 0.0 else defaultParagraphFirstLineOffsetInDocument memo doc) + WordLayout.Table.tableIndent tableBlock
 
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
     elif optionEqualsIgnoreCase "right" alignment || optionEqualsIgnoreCase "end" alignment then max 0.0 (availableWidth - tableWidth)
     else 0.0
+
+/// Where a table stands across: its offset from the text's left edge (`tableLeftOffset` its indent,
+/// `availableWidth` the room it is laid out in; the outer cells' margins it hangs out by in Word
+/// 2010's layout are taken off after it, see outerCellInsets). A floating table (w:tblpPr) stands
+/// tblpX from the text's (the margin's) or the page's left edge, or where tblpXSpec puts its box in
+/// that room - at its left or right edge or in its middle; in Word 2010's layout it hangs out by
+/// its cells' margin on the side it is aligned to (Word 2019: fixtures float-table h*-x*, xs-*,
+/// xs-*-c14, hmargin-x72-c14).
+let tableHorizontalOffset (settings: LayoutSettings) (tableBlock: TableBlock) (tableLeftOffset: float) (availableWidth: float) (tableWidth: float) =
+    match WordLayout.Floating.tablePosition tableBlock with
+    | None -> tableLeftOffset + tableAlignmentOffset tableBlock.Alignment availableWidth tableWidth
+    | Some position ->
+        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+        let roomLeft, roomWidth =
+            if position.HorizontalAnchor = "page" then -settings.PaddingLeft, settings.Width
+            else 0.0, settings.Width - settings.PaddingLeft - settings.MarginRight
+        match position.XSpec with
+        | Some "center" -> roomLeft + (roomWidth - tableWidth) / 2.0 + outerLeft
+        | Some ("right" | "outside") -> roomLeft + roomWidth - tableWidth + outerLeft + outerRight
+        | Some _ -> roomLeft
+        | None -> roomLeft + position.X
 
 let private paragraphIsVisuallyEmpty (para: ParagraphBlock) =
     TextBuffer.isWhiteSpace para.Buffer
@@ -5829,7 +5855,7 @@ let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (i
     let tableMaxWidth = maxWidth + outerLeft + outerRight
     let columnWidths = tableColumnWidthsInContext measureText (styleContextForLayout memo doc) tableMaxWidth tableBlock
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
-    let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
+    let tableHorizontalOffset = tableHorizontalOffset settings tableBlock tableLeftOffset maxWidth tableWidth
     buildTableLayoutPlanWithMemo memo initialCounters settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
 
 let buildTableLayoutPlanForDocumentAt settings measureText measureRange doc tableBlock tableY =
@@ -6512,7 +6538,7 @@ let private layoutDocumentPassKept
                 let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
                 let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
                 let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
-                let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
+                let tableHorizontalOffset = tableHorizontalOffset settings tableBlock tableLeftOffset tableAvailableWidth tableWidth
                 let mutable rowY = tableY
                 let headerRows = WordLayout.Table.headerRows tableBlock
                 let tableRowCountForTrace =
@@ -6737,27 +6763,70 @@ let private layoutDocumentPassKept
              placedFloatingBoxes <- placed)
             resetPreviousParagraph ()
             let blockStart = timingStart ()
-            let nextY, tableWidth = layoutTableAt tableBlock tableY
-            if tableBlock.Floating then
-                let tableLeftOffset = tableLeftOffsetForContext styleContext tableBlock
-                let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
-                let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
-                let tableHeight = max 0.0 (nextY - tableY - WordLayout.Table.afterSpacing)
-                floatingObstacles <- (tableHorizontalOffset, tableY, tableWidth + 12.0, tableHeight) :: floatingObstacles
-                placedFloatingBoxes <- {
-                    Kind = WordLayout.Floating.TableBox tableBlock
-                    X = tableHorizontalOffset
-                    Y = tableY
-                    Width = tableWidth
-                    Height = tableHeight
-                    Wrap = Some "square"
-                    DistanceTop = 0.0
-                    DistanceRight = 12.0
-                    DistanceBottom = 0.0
-                    DistanceLeft = 0.0
-                } :: placedFloatingBoxes
-            else
+            match WordLayout.Floating.tablePosition tableBlock with
+            | None ->
+                let nextY, _ = layoutTableAt tableBlock tableY
                 y <- nextY
+            | Some position ->
+                // A floating table (w:tblpPr) is placed from the paragraph after it - its top,
+                // the page's margin or the page - and takes no room in the flow: the text goes round
+                // it as round a square-wrapped picture, on both sides, every line whose box reaches
+                // into its box (with its distances from text, and never nearer than half a point).
+                // It is placed once: a later pass puts it where the first did (the lines above that it
+                // reaches go round it, its paragraph moves down). Broken at a page's foot as a table
+                // in the flow is, its paragraph goes on beside the part on the page it ends on, from
+                // that page's top (Word 2019: fixtures float-table).
+                let placedBefore =
+                    placedFloatingBoxes |> List.tryPick (fun box ->
+                        match box.Kind with
+                        | WordLayout.Floating.TableBox (other, top) when other.Id = tableBlock.Id -> Some top
+                        | _ -> None)
+                let pageTop = if settings.PageHeight < 50000.0 then WordLayout.Page.pageTopForY settings.PageHeight tableY else 0.0
+                let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+                let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+                let top =
+                    match placedBefore with
+                    | Some top -> top
+                    | None ->
+                        let height =
+                            match position.YSpec with
+                            | Some ("center" | "bottom" | "outside") when position.VerticalAnchor <> "text" ->
+                                let plan = buildTableLayoutPlanAtWithMemo memo (ValueSome numberedCounters) settings measureText measureRange doc tableBlock contentTop
+                                plan.NextY - contentTop - WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock
+                            | _ -> 0.0
+                        WordLayout.Floating.tableTop pageTop contentTop contentBottom (pageHeight settings) tableY height position
+                let nextY, tableWidth = layoutTableAt tableBlock top
+                let tableBottom = nextY - WordLayout.Table.tableAfterSpacing WordLayout.canvasScale tableBlock
+                // (The part of it on the page it ends on: from that page's text top when it broke.)
+                let partTop =
+                    let lastPageTop = if settings.PageHeight < 50000.0 then WordLayout.Page.pageTopForY settings.PageHeight (max top (tableBottom - 0.01)) else 0.0
+                    if lastPageTop > WordLayout.Page.pageTopForY settings.PageHeight top + 0.5 && settings.PageHeight < 50000.0 then
+                        WordLayout.Page.contentTop settings.PaddingTop lastPageTop
+                    else top
+                if partTop > top then y <- max y partTop
+                if placedBefore.IsNone then
+                    let tableLeftOffset = WordLayout.Table.tableIndent tableBlock
+                    let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
+                    let offset = tableHorizontalOffset settings tableBlock tableLeftOffset tableAvailableWidth tableWidth
+                    let outerLeft, _ = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+                    // (Its box: its outer borders, all of them in Word 2019's layout, the half outside
+                    // its grid in Word 2010's - float-table base, sz12, *-c14.)
+                    let leftBorder, rightBorder = WordLayout.Table.outerSideBorderWidths tableBlock
+                    let outside = if settings.CompatibilityMode >= 15 then 1.0 else 0.5
+                    let least = 0.5 * 4.0 / 3.0
+                    let box : PlacedFloatingBox =
+                        { Kind = WordLayout.Floating.TableBox (tableBlock, top)
+                          X = offset - outerLeft - leftBorder * outside
+                          Y = partTop
+                          Width = tableWidth + (leftBorder + rightBorder) * outside
+                          Height = max 0.0 (tableBottom - partTop)
+                          Wrap = Some "square"
+                          DistanceTop = position.FromTop
+                          DistanceRight = max least position.FromRight
+                          DistanceBottom = position.FromBottom
+                          DistanceLeft = max least position.FromLeft }
+                    floatingObstacles <- WordLayout.Floating.obstacleForBox maxWidth box :: floatingObstacles
+                    placedFloatingBoxes <- box :: placedFloatingBoxes
             if traceTimingEnabled then
                 traceSlow (sprintf "block[%d]:table rows=%d" index (List.length tableBlock.Rows)) blockStart
 
@@ -7237,6 +7306,9 @@ let private computeAnchorExtendedObstacles
                         | Some "page" | Some "margin" | Some "topMargin" | Some "bottomMargin" -> false
                         | Some _ -> true  // paragraph, line, etc. — image position is already paragraph-anchored
                         | None -> false
+                    // (A floating table stays where it was placed, wherever it is placed from: the
+                    // lines it reaches go round it - float-table ym20, ys-top.)
+                    | WordLayout.Floating.TableBox _ -> true
                     | _ -> false
                 then
                     // Paragraph/line-relative posV: the image's Y is already

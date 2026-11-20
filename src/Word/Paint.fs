@@ -1326,19 +1326,17 @@ let private addParagraphCommandsKept (settings: LayoutSettings) (fontFamily: str
 // spaced table cells, whose visual text boxes sit higher than our default paint.
 let private spacedTableCellBaselineOffset = -4.0
 
-let private defaultParagraphFirstLineOffsetInDocument doc =
-    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
-    let paragraphStyle = forBlockInDocument doc (Paragraph para)
-    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
-
 let private defaultParagraphFirstLineOffsetInContext context =
     let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
     let paragraphStyle = forBlockInContext context (Paragraph para)
     paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
 
-let private tableLeftOffsetForStyleContext = function
-    | Some context -> defaultParagraphFirstLineOffsetInContext context
-    | None -> 0.0
+// (A table in the flow is moved in by the first-line indent of the document's paragraphs, a floating
+// table is not - see Layout.tableLeftOffsetForDocument.)
+let private tableLeftOffsetForStyleContext (styleContext: DocumentStyleContext option) (tableBlock: TableBlock) =
+    match styleContext with
+    | Some context when not tableBlock.Floating -> defaultParagraphFirstLineOffsetInContext context
+    | _ -> 0.0
 
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
@@ -1422,7 +1420,9 @@ let rec private tableBorderCommandsCoreAt isNestedBorderPass nestedTablePaintDep
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let fallbackColumnWidth = tableMaxWidth / float numColumns
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
-        let tableHorizontalOffset = baseHorizontalOffset + WordLayout.Table.tableIndent tableBlock + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
+        let tableHorizontalOffset =
+            if nestedTablePaintDepth > 0 || isNestedBorderPass then baseHorizontalOffset + WordLayout.Table.tableIndent tableBlock + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth
+            else baseHorizontalOffset + tableHorizontalOffset settings tableBlock (WordLayout.Table.tableIndent tableBlock) tableAvailableWidth tableWidth
         let tableX = settings.PaddingLeft + tableHorizontalOffset - outerLeft - WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock
 
         let columnX spacing startColumn =
@@ -1730,7 +1730,7 @@ let rec private tableBorderCommandsCoreAt isNestedBorderPass nestedTablePaintDep
 
 let private tableBorderCommandsCore (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) =
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let tableLeftOffset = tableLeftOffsetForStyleContext styleContext
+    let tableLeftOffset = tableLeftOffsetForStyleContext styleContext tableBlock
     let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
     tableBorderCommandsCoreAt false 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset None
 
@@ -2926,14 +2926,14 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         None
     else
         let styleContext = WordStyles.styleContext doc
-        let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext) + WordLayout.Table.tableIndent tableBlock
+        let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext) tableBlock + WordLayout.Table.tableIndent tableBlock
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight
         let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
-        let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
+        let tableHorizontalOffset = tableHorizontalOffset settings tableBlock tableLeftOffset maxWidth tableWidth
         let mutable result = None
 
         for row in tableBlock.Rows do

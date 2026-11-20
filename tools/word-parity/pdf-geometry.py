@@ -27,12 +27,13 @@ def line_rows(pdf):
             x0, y0, x1, y1 = map(float, m.groups()[:4])
             pages[-1].append((y1, x0, y0, x1, m.group(5)))
     for number, ws in enumerate(pages, 1):
-        # Words on one baseline (bottoms within 0.5pt), left to right; a gap wider than 12pt starts a fragment.
+        # Words on one baseline (bottoms within 0.5pt), left to right; a gap wider than 12pt (or a word
+        # left of the one before: a table's cell beside a line) starts a fragment.
         ws.sort(key=lambda w: (round(w[0] * 2) / 2, w[1]))
         rows = []
         for bottom, x0, top, x1, text in ws:
             last = rows[-1] if rows else None
-            if last and abs(last['bottom'] - bottom) <= 0.5 and x0 - last['right'] <= 12:
+            if last and abs(last['bottom'] - bottom) <= 0.5 and -1 <= x0 - last['right'] <= 12:
                 last['right'] = x1; last['last'] = text; last['top'] = min(last['top'], top)
             else:
                 rows.append({'bottom': bottom, 'top': top, 'left': x0, 'right': x1, 'first': text, 'last': text})

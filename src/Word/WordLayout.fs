@@ -345,7 +345,8 @@ module Floating =
     type BoxKind =
         | ImageBox of ImageRun
         | TextBox of TextBoxBlock
-        | TableBox of TableBlock
+        /// A floating table, with where its top is (its box may be the part of it on the page it ends on).
+        | TableBox of TableBlock * top: float
 
     type Box = {
         Kind: BoxKind
@@ -359,6 +360,68 @@ module Floating =
         DistanceBottom: float
         DistanceLeft: float
     }
+
+    /// Where a floating table (w:tblpPr) stands and the room it keeps free of text, canvas px.
+    /// HorizontalAnchor: "text" (the column), "margin" or "page"; VerticalAnchor: "text" (the
+    /// paragraph after the table, its anchor), "margin" or "page"; XSpec / YSpec: an alignment
+    /// that takes the place of X / Y.
+    type TablePosition = {
+        HorizontalAnchor: string
+        VerticalAnchor: string
+        X: float
+        XSpec: string option
+        Y: float
+        YSpec: string option
+        FromLeft: float
+        FromRight: float
+        FromTop: float
+        FromBottom: float
+    }
+
+    let private tablePositions = Dictionary<string, TablePosition>()
+
+    /// The position a floating table's w:tblpPr (TableBlock.FloatingXml) gives, None for a table
+    /// in the text flow. Twips to px (15 to the px); an attribute left out: 0, the anchors
+    /// "text" across, "margin" down (ECMA-376 17.4.58).
+    let tablePosition (table: TableBlock) : TablePosition option =
+        if not table.Floating then None
+        else
+            let xml = table.FloatingXml |> Option.defaultValue ""
+            match tablePositions.TryGetValue xml with
+            | true, position -> Some position
+            | _ ->
+                let attributes = Dictionary<string, string>()
+                for m in System.Text.RegularExpressions.Regex.Matches(xml, "w:([A-Za-z]+)=\"([^\"]*)\"") do
+                    attributes.[m.Groups.[1].Value] <- m.Groups.[2].Value
+                let text name = match attributes.TryGetValue name with | true, value when value <> "" -> Some value | _ -> None
+                let twips name =
+                    match text name |> Option.bind (fun value -> match Double.TryParse(value, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with | true, v -> Some v | _ -> None) with
+                    | Some value -> value / 15.0
+                    | None -> 0.0
+                let position =
+                    { HorizontalAnchor = text "horzAnchor" |> Option.defaultValue "text"
+                      VerticalAnchor = text "vertAnchor" |> Option.defaultValue "margin"
+                      X = twips "tblpX"; XSpec = text "tblpXSpec"
+                      Y = twips "tblpY"; YSpec = text "tblpYSpec"
+                      FromLeft = twips "leftFromText"; FromRight = twips "rightFromText"
+                      FromTop = twips "topFromText"; FromBottom = twips "bottomFromText" }
+                tablePositions.[xml] <- position
+                Some position
+
+    /// A floating table's top (canvas px, down the document): from its anchor paragraph's top
+    /// (`anchorY`, vertAnchor text), the page's margin or the page itself - tblpY, or tblpYSpec
+    /// in that room (top, center, bottom; with vertAnchor text, its top).
+    let tableTop (pageTop: float) (contentTop: float) (contentBottom: float) (pageHeight: float) (anchorY: float) (height: float) (position: TablePosition) =
+        let top, room =
+            match position.VerticalAnchor with
+            | "page" -> pageTop, pageHeight
+            | "margin" -> contentTop, contentBottom - contentTop
+            | _ -> anchorY, 0.0
+        match position.YSpec with
+        | Some ("center") when room > 0.0 -> top + (room - height) / 2.0
+        | Some ("bottom" | "outside") when room > 0.0 -> top + room - height
+        | Some _ -> top
+        | None -> top + position.Y
 
     let private isPageRelative = function
         | Some "page" -> true
@@ -1797,6 +1860,25 @@ module Table =
             | "hidden" -> 0.0
             | _ -> value.Width |> Option.defaultValue 1.0
         | None -> 0.0
+
+    /// The widths of a table's left and right outer borders (its first and last cells' of its
+    /// first row, or the table's own), canvas px.
+    let outerSideBorderWidths (table: TableBlock) =
+        let tableBorders = table.Borders
+        match table.Rows with
+        | row :: _ when not row.Cells.IsEmpty ->
+            let first = List.head row.Cells
+            let last = List.last row.Cells
+            let side (cell: TableCell) pick tablePick =
+                match cell.Borders |> Option.bind pick with
+                | Some border -> visibleBorderWidth (Some border)
+                | None ->
+                    match tableBorders |> Option.bind tablePick with
+                    | Some border -> visibleBorderWidth (Some border)
+                    | None -> cell.BorderWidth |> Option.defaultValue 0.0
+            side first (fun (b: TableBorders) -> b.Left) (fun (b: TableBorders) -> b.Left),
+            side last (fun (b: TableBorders) -> b.Right) (fun (b: TableBorders) -> b.Right)
+        | _ -> 0.0, 0.0
 
     /// What a horizontal border takes in the flow of rows: its width - three widths for a
     /// double line, five for a triple (Word: fixtures table-border).

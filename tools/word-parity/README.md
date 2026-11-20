@@ -68,7 +68,9 @@ every line from its PDFs into `<dir>/word/positions.tsv`, and
 `fixtures/float-wrap.py` writes `tests/word/fixtures/float-wrap/` (text round
 floating pictures and shapes); where Word's lines and pictures are in its PDFs
 comes from `pdf-geometry.py` (each line's pieces across and down, each picture's
-box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against.
+box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against. `fixtures/float-table.py` writes
+`tests/word/fixtures/float-table/` (where a floating table, `w:tblpPr`, is placed and the text round
+it), read the same way into its `word/geometry.tsv` for `tests/word/float-table.fsx`.
 
 `fixtures/long-word.py` (where lines break round a word longer than the line, in fields' results,
 at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into `<dir>/word/lines.tsv`,
