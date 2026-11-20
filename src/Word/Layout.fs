@@ -54,12 +54,35 @@ let private hasNonWhitespace (text: string) =
         index <- index + 1
     found
 
+/// Text of only spaces and tabs: it takes no part in its line's height or baseline (fixtures
+/// blank-run-height: a 20pt run of a tab or a space before, between or after 10pt text, or alone, leaves
+/// the line 10pt's - 12.21pt in Calibri, Word 2010's and 2013's layouts, a cell alike; a 20pt "x" makes it
+/// 24.41). docx4j-getting-started's code lines: a Consolas 12pt tab before 10pt text, 11.71pt lines.
+let isBlankText (text: string) =
+    let mutable blank = text.Length > 0
+    let mutable index = 0
+    while blank && index < text.Length do
+        let ch = text.[index]
+        if ch <> ' ' && ch <> '\t' then blank <- false
+        index <- index + 1
+    blank
+
+let private isBlankRun (buffer: TextBuffer.TextBuffer) (run: TextBuffer.TextRun) =
+    let mutable blank = run.Length > 0
+    let mutable offset = run.Start
+    while blank && offset < run.Start + run.Length do
+        let ch = Rope.charAtOrNull offset buffer.Rope
+        if ch <> ' ' && ch <> '\t' then blank <- false
+        offset <- offset + 1
+    blank
+
 let private paragraphContentMetrics paragraphStyle metadata (buffer: TextBuffer.TextBuffer) =
     let mutable foundText = false
     let mutable contentFontSize = 0.0
     let mutable contentTextStyle = paragraphStyle.Text
     for run in buffer.Runs do
         match run with
+        | Text textRun when isBlankRun buffer textRun -> ()
         | Text textRun ->
             let displaySize = WordLayout.Text.displayFontSize textRun.Style
             if not foundText || displaySize > contentFontSize then
@@ -70,8 +93,15 @@ let private paragraphContentMetrics paragraphStyle metadata (buffer: TextBuffer.
     if foundText then
         contentFontSize, contentTextStyle
     else
+        // (An empty paragraph's line is its mark's: the mark's font as well as its size - w:pPr/w:rPr's
+        // w:rFonts or w:rStyle over the paragraph style's; fixtures mark-font: Consolas 8pt 9.36pt,
+        // Calibri 8pt 9.77, Times New Roman 20pt 23.0, the w:eastAsia slot no part.)
+        let markStyle =
+            match metadata.ParagraphMarkFontFamily with
+            | Some family when family <> "" -> { paragraphStyle.Text with FontFamily = Some family }
+            | _ -> paragraphStyle.Text
         metadata.ParagraphMarkFontSize |> Option.defaultValue paragraphStyle.Text.FontSize,
-        paragraphStyle.Text
+        markStyle
 
 let private snippet (text: string) =
     let mutable start = 0
@@ -2365,6 +2395,25 @@ let private paragraphVisibleFitHeight (paragraphStyle: ParagraphStyle) (layout: 
     | Some lastLine -> max 0.0 ((lastLine.Y - layout.Y) + lineFitHeight (hasExactLines paragraphStyle layout.Metadata) lastLine)
     | None -> max 0.0 (layout.Height - spacingAfter)
 
+/// Where what a keep-with-next group needs of the paragraph after it ends (absolute, as the layout's
+/// lines): the text of its first line where it stands - below the space after the paragraph it keeps
+/// with -, or with widow control of as many of its lines as cannot be parted (two; all of two or
+/// three). Fixtures keep-next-fit (Word 2019): `a12-b0-n46` (Keepq's text ends 3.4pt above the margin,
+/// Nextq's line 8.6pt below it under the 12pt after) Keepq goes on; `a0-b0-n46` (Nextq's text ends
+/// 3.4pt above) stays; `a0-b0-n46-w` (Nextq four lines, its second below the margin) goes on - ours
+/// counted the group's lines without the space between them and its first line's full height.
+let private keepGroupNextEnd (nextStyle: ParagraphStyle) (nextLayout: BlockLayout) =
+    match nextLayout.Lines with
+    | [] -> nextLayout.Y + paragraphVisibleFitHeight nextStyle nextLayout
+    | lines ->
+        let count = lines.Length
+        let needed =
+            if count <= 1 || not (WordStyles.widowControl nextStyle nextLayout.Metadata) then 1
+            elif count <= 3 then count
+            else 2
+        let line = List.item (needed - 1) lines
+        line.Y + lineFitHeight (hasExactLines nextStyle nextLayout.Metadata) line
+
 let private resolvedLineHeightForSettings (paragraphStyle: ParagraphStyle) (rawMetadata: BlockMetadata) textStyle fontSize hasExplicitLineSpacing defaultParagraphSpacing =
     let struct (multiple, rule, pixels) = resolveLineSpacing paragraphStyle rawMetadata fontSize
     lineHeightForSettings textStyle fontSize (if rule = "auto" then multiple else pixels) rule hasExplicitLineSpacing defaultParagraphSpacing
@@ -3355,10 +3404,11 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                         let displayStyle = WordLayout.Text.displayStyle style
                         widthEnd <- x + measureRange displayText displayStyle 0 visibleLength
                 match segment with
-                | TextSegment _ -> hasText <- true
+                | TextSegment (text, _, _, _, _) when not (isBlankText text) -> hasText <- true
                 | _ -> ()
                 let height =
                     match segment with
+                    | TextSegment (text, _, _, _, _) when isBlankText text -> 0.0
                     | TextSegment (_, style, _, _, _) when contentLineRatio > 0.0 ->
                         segmentHeight (scale * fontLineRatio style / contentLineRatio) segment
                     | _ -> segmentHeight scale segment
@@ -4012,7 +4062,7 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
             let rawText =
                 TextBuffer.trySliceNoCopy textRun.Start textRun.Length buffer
                 |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length buffer)
-            if rawText.Length = 0 || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
+            if rawText.Length = 0 || isBlankText rawText || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
                 None
             else
                 let displayText = WordLayout.Text.displayText textRun.Style rawText
@@ -4074,7 +4124,7 @@ let private trySingleLineParagraphHeightNoObstacles (settings: LayoutSettings) (
                 let rawText =
                     TextBuffer.trySliceNoCopy textRun.Start textRun.Length para.Buffer
                     |> Option.defaultWith (fun () -> TextBuffer.slice textRun.Start textRun.Length para.Buffer)
-                if rawText.Length = 0 || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
+                if rawText.Length = 0 || isBlankText rawText || rangeContainsTab rawText 0 rawText.Length || rawText.Contains("\r") || rawText.Contains("\n") then
                     None
                 else
                     let availableWidth = maxWidth - indent - rightIndent - firstLineIndent - borderRight
@@ -7338,14 +7388,11 @@ let private layoutDocumentPassKeptAt
                             else
                                 let nextLayout, _, _, _ = layoutParagraphWithMemo memo settings measureText measureRange maxWidth probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara numberedCounters initialObstacles initialPlacedBoxes
                                 let nextKeepsFurther = WordStyles.keepNext nextStyle nextPara.Metadata
-                                let nextContribution =
-                                    if nextKeepsFurther then
-                                        paragraphVisibleFitHeight nextStyle nextLayout
-                                    else
-                                        match nextLayout.Lines with
-                                        | firstLine :: _ -> max settings.LineHeight firstLine.Height
-                                        | [] -> min nextLayout.Height settings.LineHeight
-                                groupHeight <- groupHeight + nextContribution
+                                // (The group ends where what it needs of the next paragraph does: keepGroupNextEnd.)
+                                let nextEnd =
+                                    if nextKeepsFurther then nextLayout.Y + paragraphVisibleFitHeight nextStyle nextLayout
+                                    else keepGroupNextEnd nextStyle nextLayout
+                                groupHeight <- max groupHeight (nextEnd - y)
                                 probeY <- nextLayout.Y + nextLayout.Height
                                 probedLines <- probedLines + nextLayout.Lines.Length
                                 if nextPara.Metadata.PageBreakAfter then
@@ -8134,19 +8181,17 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         let nextLayout, _, _, _ =
                             layoutParagraphWithMemo memo flowSettings measureText measureRange (columnWidth col) probeY 0.0 nextStyle (effectiveBufferInContext styleContext) nextPara counters [] []
                         let keepsFurther = WordStyles.keepNext nextStyle nextPara.Metadata
-                        groupHeight <-
-                            groupHeight
-                            + (if keepsFurther then paragraphVisibleFitHeight nextStyle nextLayout
-                               else
-                                   match nextLayout.Lines with
-                                   | firstLine :: _ -> max settings.LineHeight firstLine.Height
-                                   | [] -> min nextLayout.Height settings.LineHeight)
+                        // (The group ends where what it needs of the next paragraph does: keepGroupNextEnd.)
+                        let nextEnd =
+                            if keepsFurther then nextLayout.Y + paragraphVisibleFitHeight nextStyle nextLayout
+                            else keepGroupNextEnd nextStyle nextLayout
+                        groupHeight <- max groupHeight (nextEnd - layout.Y)
                         probeY <- nextLayout.Y + nextLayout.Height
                         probed <- true
                         probing <- keepsFurther && not nextPara.Metadata.PageBreakAfter
                         probeIndex <- probeIndex + 1
                 | None -> probing <- false
-            movable && probed && y + groupHeight > colBottom + 0.5 && groupHeight <= colBottom - columnTop ()
+            movable && probed && layout.Y + groupHeight > colBottom + 0.5 && groupHeight <= colBottom - columnTop ()
 
     let flowBlock (blockIndex: int) =
         let block = blocks.[blockIndex]
@@ -8361,6 +8406,11 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     advanceColumn ()
                     pushed <- true
                 if moveKeepGroup then movesOn ()
+                // (An empty paragraph - no lines - is a line of its mark's height: one that does not fit
+                // goes on to the next column, as on a page in the single-column pass. Fixtures empty-foot
+                // letter<k>-e74: after a Letter section, the A4 section's empty paragraph past the foot
+                // starts the next page in Word; ours kept it below the margin - docx4j-getting-started p21.)
+                elif layout.Lines.IsEmpty && not (atColumnTop ()) && layout.Y + paragraphVisibleFitHeight style layout > colBottom + pageFitTolerance then movesOn ()
                 elif fitCount = layout.Lines.Length then placeWhole ()
                 elif fitCount = 0 then
                     // (A section that goes on on a page above it starts low on the page: what does

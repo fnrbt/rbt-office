@@ -294,6 +294,7 @@ type ParagraphFormatting = {
     HasMarkProperties: bool
     ExplicitMarkFontSize: float option
     ParagraphMarkFontSize: float option
+    ParagraphMarkFontFamily: string option
     MarkRevision: Revision option
     DropCapKind: string option
     DropCapLines: int option
@@ -1199,6 +1200,7 @@ let private paragraphFormatFields (format: ParagraphFormatting) =
     "HasMarkProperties" ==> format.HasMarkProperties
     "ExplicitMarkFontSize" ==> format.ExplicitMarkFontSize
     "ParagraphMarkFontSize" ==> format.ParagraphMarkFontSize
+    "ParagraphMarkFontFamily" ==> format.ParagraphMarkFontFamily
     "MarkRevisionType" ==> (format.MarkRevision |> Option.bind (fun mark -> mark.Kind))
     "MarkRevisionId" ==> (format.MarkRevision |> Option.bind (fun mark -> mark.Id))
     "MarkRevisionAuthor" ==> (format.MarkRevision |> Option.bind (fun mark -> mark.Author))
@@ -1947,6 +1949,7 @@ let private readParagraphFormat value =
       HasMarkProperties = boolean value "HasMarkProperties"
       ExplicitMarkFontSize = number value "ExplicitMarkFontSize"
       ParagraphMarkFontSize = number value "ParagraphMarkFontSize"
+      ParagraphMarkFontFamily = textOf value "ParagraphMarkFontFamily"
       MarkRevision = markRevision
       DropCapKind = textOf value "DropCapKind"
       DropCapLines = integer value "DropCapLines"

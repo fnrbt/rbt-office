@@ -218,17 +218,23 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
     let fontSizes =
         value.Runs |> List.choose (fun run ->
             match run.Content with
+            // (Spaces and tabs alone do not make a line taller: fixtures blank-run-height `only-tab`, a 20pt
+            // tab alone under a 10pt mark, is a 10pt line.)
+            | D.Text text when text.Length > 0 && text |> Seq.forall (fun ch -> ch = ' ' || ch = '\t') -> None
             | D.Text _ | D.Link _ | D.FieldRef _ -> Some (D.wordFontSizeToPoints (runProperties run.Properties).FontSize)
             | _ -> None)
+    let markProperties =
+        if inCell then
+            match tableRun with
+            | Some tableRun -> D.resolvedCellMarkRunProperties styleMap tableRun effective D.emptyRunProperties
+            | None -> D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties
+        else D.paragraphMarkRunProperties styleMap effective value
     let markSize =
         if inCell then
             match fontSizes with
-            | [] ->
-                match tableRun with
-                | Some tableRun -> D.wordFontSizeToPoints (D.resolvedCellMarkRunProperties styleMap tableRun effective D.emptyRunProperties).FontSize
-                | None -> D.wordFontSizeToPoints (D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties).FontSize
+            | [] -> D.wordFontSizeToPoints markProperties.FontSize
             | sizes -> List.max sizes
-        else List.fold max (D.paragraphMarkFontSize styleMap effective value) fontSizes
+        else List.fold max (D.wordFontSizeToPoints markProperties.FontSize) fontSizes
     let breakAtStart, breakAfter = D.paragraphPageBreaks value
     let breakAtStart = not inCell && breakAtStart
     let breakAfter = if inCell then value.Runs |> List.exists (fun run -> run.Content = D.PageBreak) else breakAfter
@@ -281,6 +287,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
           ExplicitTabs = not direct.TabStops.IsEmpty; HasMarkProperties = direct.ParagraphRunProperties.IsSome
           ExplicitMarkFontSize = direct.ParagraphRunProperties |> Option.bind (fun mark -> mark.FontSize |> Option.map (Some >> D.wordFontSizeToPoints))
           ParagraphMarkFontSize = Some markSize
+          ParagraphMarkFontFamily = Some (D.wordFontFamilyToCss theme markProperties)
           MarkRevision = value.MarkRevision |> Option.map (fun (kind, mark) -> revision kind mark)
           DropCapKind = effective.DropCap |> Option.map (fun (kind, _, _) -> kind)
           DropCapLines = effective.DropCap |> Option.map (fun (_, lines, _) -> lines)

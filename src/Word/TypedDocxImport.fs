@@ -136,7 +136,7 @@ let private metadata cache (item: WordEditorPackage.EditorParagraph) =
         RightTabPosition = f.RightTabPosition; RightTabLeader = f.RightTabLeader
         TabStops = f.TabStops |> List.map (fun x -> { Position = x.Position; Alignment = x.Alignment; Leader = x.Leader })
         Rtl = f.Rtl; SpacingBefore = f.SpacingBefore; SpacingAfter = f.SpacingAfter
-        ParagraphMarkFontSize = f.ParagraphMarkFontSize; ContextualSpacing = f.ContextualSpacing
+        ParagraphMarkFontSize = f.ParagraphMarkFontSize; ParagraphMarkFontFamily = f.ParagraphMarkFontFamily; ContextualSpacing = f.ContextualSpacing
         LineSpacing = f.LineSpacing; LineSpacingRule = f.LineSpacingRule; WidowControl = f.WidowControl
         KeepNext = f.KeepNext; KeepLines = f.KeepLines; BackgroundColor = f.BackgroundColor
         ParagraphShadingPattern = f.ShadingPattern; ParagraphShadingForeground = f.ShadingForeground

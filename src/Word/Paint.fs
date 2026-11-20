@@ -397,6 +397,8 @@ let private lineContentAscentDescent (line: MeasuredLine) =
     let mutable shiftedFound = false
     for segment in line.Segments do
         match segment with
+        // (Spaces and tabs alone take no part: Layout.isBlankText.)
+        | TextSegment (text, _, _, _, _) when Layout.isBlankText text -> ()
         | TextSegment (_, style, _, _, _) ->
             let a = Layout.textLineAscent style
             let d = Layout.textSingleLineHeight style - a

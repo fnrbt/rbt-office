@@ -630,6 +630,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           ExplicitShadingPattern = metadata.ExplicitParagraphShadingPattern; ExplicitShadingForeground = metadata.ExplicitParagraphShadingForeground
           ExplicitTabs = ParagraphExplicit.has ParagraphExplicit.Tabs metadata; HasMarkProperties = metadata.HasMarkProperties
           ExplicitMarkFontSize = metadata.ExplicitMarkFontSize; ParagraphMarkFontSize = metadata.ParagraphMarkFontSize
+          ParagraphMarkFontFamily = metadata.ParagraphMarkFontFamily
           MarkRevision = metadata.MarkRevision |> Option.map (fun revision ->
             ({ Id = revision.Mark.Id; Kind = Some revision.RevisionType; Author = revision.Mark.Author; Date = revision.Mark.Date; Inserted = None; MoveName = None } : WordEditorPackage.Revision))
           DropCapKind = metadata.DropCap |> Option.map (fun cap -> if cap.InMargin then "margin" else "drop")

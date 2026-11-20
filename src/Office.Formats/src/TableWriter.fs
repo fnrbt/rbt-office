@@ -234,7 +234,7 @@ let private editorParagraph (para: EditorParagraph) : WordEditorPackage.EditorPa
         ExplicitSpacingBefore = None; ExplicitSpacingAfter = None; ExplicitLineSpacing = None
         ExplicitContextualSpacing = None; ExplicitBackgroundColor = None
         ExplicitShadingPattern = None; ExplicitShadingForeground = None; ExplicitTabs = false
-        HasMarkProperties = false; ExplicitMarkFontSize = None; ParagraphMarkFontSize = None
+        HasMarkProperties = false; ExplicitMarkFontSize = None; ParagraphMarkFontSize = None; ParagraphMarkFontFamily = None
         MarkRevision = None; DropCapKind = None; DropCapLines = None; DropCapDistance = None
         ContentControlId = None; ContentControlTag = None; ContentControlAlias = None
         ContentControlXml = None; ContentControlGroup = None; ContentControlAncestors = []; EnclosingCellControls = [] }

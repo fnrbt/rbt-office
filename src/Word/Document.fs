@@ -199,6 +199,9 @@ type BlockMetadata = {
     SpacingBefore: float option
     SpacingAfter: float option
     ParagraphMarkFontSize: float option
+    /// The paragraph mark's font (CSS family, as a run's), its own w:pPr/w:rPr over its style's: an empty
+    /// paragraph's line is as tall as it (fixtures mark-font).
+    ParagraphMarkFontFamily: string option
     ContextualSpacing: bool option
     LineSpacing: float option
     LineSpacingRule: string option
@@ -341,6 +344,7 @@ let defaultMetadata = {
     SpacingBefore = None
     SpacingAfter = None
     ParagraphMarkFontSize = None
+    ParagraphMarkFontFamily = None
     ContextualSpacing = None
     LineSpacing = None
     LineSpacingRule = None

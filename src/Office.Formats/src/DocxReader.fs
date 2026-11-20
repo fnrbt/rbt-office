@@ -5747,41 +5747,6 @@ let internal directParagraphFormattingResetsMissingSpacing (props: ParagraphProp
 let internal tableStyleParagraphResetsMissingSpacing (props: ParagraphProperties) =
     props.LineSpacing.IsSome || props.LineRule.IsSome
 
-let private hasDirectParagraphFormatting (props: ParagraphProperties) =
-    props.Style.IsSome
-    || props.Alignment.IsSome
-    || props.IndentLeft.IsSome
-    || props.IndentRight.IsSome
-    || props.FirstLineIndent.IsSome
-    || props.HangingIndent.IsSome
-    || props.RightTabPosition.IsSome
-    || props.RightTabLeader.IsSome
-    || props.SpacingBefore.IsSome
-    || props.SpacingBeforeAuto.IsSome
-    || props.SpacingAfter.IsSome
-    || props.SpacingAfterAuto.IsSome
-    || props.LineSpacing.IsSome
-    || props.LineRule.IsSome
-    || props.OutlineLevel.IsSome
-    || props.KeepNext.IsSome
-    || props.KeepLines.IsSome
-    || props.PageBreakBefore.IsSome
-    || props.WidowControl.IsSome
-    || props.ContextualSpacing.IsSome
-    || props.BackgroundColor.IsSome
-    || props.ParagraphRunProperties.IsSome
-    || props.ParagraphBorders.IsSome
-    || props.ListInfo.IsSome
-    || props.SectionBreak.IsSome
-    || props.SectionPageNumberStart.IsSome
-    || props.SectionPageNumberFormat.IsSome
-    || props.RenderedPageBreakBefore.IsSome
-    || not props.HeaderReferences.IsEmpty
-    || not props.FooterReferences.IsEmpty
-
-let private isPureEmptyParagraph (para: Paragraph) =
-    para.Runs.IsEmpty && not (hasDirectParagraphFormatting para.Properties)
-
 let internal emptyRunProperties = {
     Style = None
     Bold = None
@@ -6242,14 +6207,20 @@ let internal paragraphPropertiesSetSomething (props: ParagraphProperties) =
     props.ParagraphRunProperties |> Option.exists runPropertiesSetSomething
     || { props with ParagraphRunProperties = None } <> Styles.parseParagraphPropsFromStyle XmlDsl.Empty
 
+/// The paragraph mark's resolved run properties (outside a table's cell): its paragraph style's (Normal's
+/// for a bare <w:p/> as well - not the document defaults': fixtures mark-font `nrm-pure`, `n12-pure`,
+/// `-tbl`: Arial 8pt / 12pt lines under Normal over 11pt defaults, after text or a table), its w:rStyle's
+/// under its own (`*-cstyle`: an empty paragraph under a mark of a Consolas 8pt character style 9.36pt,
+/// as Consolas 8pt stated on the mark).
+let internal paragraphMarkRunProperties (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (_para: Paragraph) =
+    match effectiveParaProps.ParagraphRunProperties with
+    | Some mark when mark.Style.IsSome ->
+        let styled = resolvedRunProperties styleMap effectiveParaProps { emptyRunProperties with Style = mark.Style }
+        mergeRunProperties styled mark
+    | _ -> resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties
+
 let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
-    let fallbackRunProps =
-        if isPureEmptyParagraph para then
-            let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
-            docDefaultRun
-        else
-            resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties
-    wordFontSizeToPoints fallbackRunProps.FontSize
+    wordFontSizeToPoints (paragraphMarkRunProperties styleMap effectiveParaProps para).FontSize
 
 let internal styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps
