@@ -114,6 +114,111 @@ let private outlineFont (entry: FontEntry) : Rbt.OpenType.Font.Font =
         entry.Face.Outline <- Some font
         font
 
+// ---- shaping as Word sets text ------------------------------------------------
+//
+// Word sets a run without kerning and without ligatures unless the run asks for them (w:kern at
+// its size and up, w14:ligatures): Word 2019's PDFs of tests/word/fixtures/kerning give every word
+// the sum of its glyphs' advances - "AVAVAVAVAV" 63.04pt of Calibri 11pt, kerned 58.73pt only under
+// w:kern - and "office" its own letters, fused only under w14:ligatures. The engine's shaping
+// applies the fonts' kerning and ligatures, and a line laid out with it held text Word's does not
+// (docx4j-headers-footers' "Reference", 45.68pt kerned and 46.24pt as Word measures it, in a 46.25pt
+// cell; test-long-document's lines a word longer). So text of the scripts that need neither (Latin,
+// Greek, Cyrillic and the punctuation and symbols round them) is shaped here with the features
+// that compose and place marks only; other text as the engine shapes it.
+let private wordFeatures =
+    Some (Set.ofList [ Rbt.Shaper.OpenType.Types.Features.ccmp; Rbt.Shaper.OpenType.Types.Features.locl
+                       Rbt.Shaper.OpenType.Types.Features.rlig; Rbt.Shaper.OpenType.Types.Features.mark
+                       Rbt.Shaper.OpenType.Types.Features.mkmk ])
+let private wordConfig : Rbt.Shaper.Shaper.ShaperConfig = { Features = wordFeatures; Language = None; Script = None }
+
+/// Text that left-to-right shaping with no features but composition and marks sets as Word does:
+/// below U+0590 (Latin, IPA, combining marks, Greek, Cyrillic, Armenian) or general punctuation,
+/// letterlike symbols, arrows and the like (U+2000 - U+2BFF).
+let private isSimpleText (text: string) =
+    let mutable simple = true
+    let mutable i = 0
+    while simple && i < text.Length do
+        let code = int text.[i]
+        simple <- code < 0x0590 || (code >= 0x2000 && code < 0x2C00)
+        i <- i + 1
+    simple
+
+let private wordShapeCache = System.Collections.Generic.Dictionary<struct (int * string), Rbt.Text.Engine.ShapedText>()
+let private wordShapeCacheLimit = 4096
+let private wordCacheLock = obj ()
+// (The shaper's own caches are not safe to share between threads: shaping is one at a time.)
+let private wordShapeLock = obj ()
+
+/// Each glyph's advance spread over the characters it stands for (as the engine does).
+let private prefixAdvances (text: string) (glyphs: Rbt.Text.Engine.PositionedGlyph[]) =
+    let prefixes = Array.zeroCreate (text.Length + 1)
+    let mutable total = 0.0
+    for index in 0 .. glyphs.Length - 1 do
+        let glyph = glyphs.[index]
+        let nextCluster = if index + 1 < glyphs.Length then glyphs.[index + 1].Cluster else text.Length
+        let startCluster = max 0 (min text.Length glyph.Cluster)
+        let endCluster = max startCluster (min text.Length nextCluster)
+        let span = endCluster - startCluster
+        if span <= 1 then
+            total <- total + glyph.XAdv
+            prefixes.[endCluster] <- max prefixes.[endCluster] total
+        else
+            let perStep = glyph.XAdv / float span
+            for step in 1 .. span do
+                let pos = startCluster + step
+                prefixes.[pos] <- max prefixes.[pos] (total + perStep * float step)
+            total <- total + glyph.XAdv
+    let mutable current = 0.0
+    for i in 0 .. prefixes.Length - 1 do
+        current <- max current prefixes.[i]
+        prefixes.[i] <- current
+    prefixes, total
+
+let private shapeSimple (font: Rbt.Text.Engine.TextFont) (fontSize: float) (text: string) : Rbt.Text.Engine.ShapedText =
+    let scale = fontSize / float font.ShaperFont.UnitsPerEm
+    let codepoints = Array.init text.Length (fun i -> int text.[i])
+    let shaped = lock wordShapeLock (fun () -> Rbt.Shaper.Shaper.shapeCodepoints font.ShaperFont wordConfig codepoints Rbt.Shaper.Shaper.LeftToRight)
+    let mutable x = 0.0
+    let glyphs =
+        [| for g in shaped.Glyphs do
+            let adv = float g.XAdvance * scale
+            yield ({ GlyphId = g.GlyphId; X = x + float g.XOffset * scale; Y = float g.YOffset * scale; XAdv = adv; Cluster = g.Cluster }: Rbt.Text.Engine.PositionedGlyph)
+            x <- x + adv |]
+    let prefixes, total = prefixAdvances text glyphs
+    { Text = text; FontSize = fontSize
+      Runs = [ { FontSize = fontSize; Glyphs = glyphs; Direction = Rbt.Shaper.Shaper.LeftToRight } ]
+      PrefixAdvances = prefixes; TotalAdvance = total }
+
+let private scaled (fontSize: float) (shaped: Rbt.Text.Engine.ShapedText) : Rbt.Text.Engine.ShapedText =
+    if shaped.FontSize = fontSize then shaped
+    else
+        let ratio = fontSize / shaped.FontSize
+        { shaped with
+            FontSize = fontSize
+            Runs = shaped.Runs |> List.map (fun run ->
+                { run with
+                    FontSize = fontSize
+                    Glyphs = run.Glyphs |> Array.map (fun g -> { g with X = g.X * ratio; Y = g.Y * ratio; XAdv = g.XAdv * ratio }) })
+            PrefixAdvances = shaped.PrefixAdvances |> Array.map ((*) ratio)
+            TotalAdvance = shaped.TotalAdvance * ratio }
+
+/// `text` shaped as Word sets it (see wordFeatures).
+let private shapeAsWord (font: Rbt.Text.Engine.TextFont) (fontSize: float) (text: string) : Rbt.Text.Engine.ShapedText =
+    if System.String.IsNullOrEmpty text || not (isSimpleText text) then
+        // (Under the same lock: the engine shapes with the same shaper.)
+        lock wordShapeLock (fun () -> Rbt.Text.Engine.shapeText font fontSize text)
+    else
+        let key = struct (LanguagePrimitives.PhysicalHash font.ShaperFont, text)
+        let cached = lock wordCacheLock (fun () -> match wordShapeCache.TryGetValue key with | true, c -> Some c | _ -> None)
+        match cached with
+        | Some shaped -> scaled fontSize shaped
+        | None ->
+            let shaped = shapeSimple font fontSize text
+            lock wordCacheLock (fun () ->
+                if wordShapeCache.Count >= wordShapeCacheLimit then wordShapeCache.Clear()
+                wordShapeCache.[key] <- shaped)
+            shaped
+
 /// How many font files were read since the module was loaded: for shaping
 /// (once per distinct array of bytes given in a FontFace) and for their
 /// outlines (once per file a glyph of which was drawn).
@@ -192,14 +297,14 @@ let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> 0.0
-        | Some entry -> Rbt.Text.Engine.measureWidth entry.Face.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style
+        | Some entry -> (shapeAsWord entry.Face.Font style.FontSize text).TotalAdvance + TextBuffer.characterSpacingAdvance text style
 
 let tryMeasureText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then Some 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
         | None -> None
-        | Some entry -> Some (Rbt.Text.Engine.measureWidth entry.Face.Font style.FontSize text + TextBuffer.characterSpacingAdvance text style)
+        | Some entry -> Some ((shapeAsWord entry.Face.Font style.FontSize text).TotalAdvance + TextBuffer.characterSpacingAdvance text style)
 
 let tryLineMetrics (fontSet: FontSet) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
@@ -224,7 +329,7 @@ let createMeasurer fontSet : Rbt.Word.Layout.TextMeasurer =
 let shapeText (fontSet: FontSet) (text: string) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
     | None -> None
-    | Some entry -> Some (entry.Face.Font, Rbt.Text.Engine.shapeText entry.Face.Font style.FontSize text)
+    | Some entry -> Some (entry.Face.Font, shapeAsWord entry.Face.Font style.FontSize text)
 
 let unitsPerEm (fontSet: FontSet) (style: TextStyle) =
     match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
