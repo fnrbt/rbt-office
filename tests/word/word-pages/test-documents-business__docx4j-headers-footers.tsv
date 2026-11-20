@@ -2,31 +2,31 @@ pages	31
 1	0	Docx4j headers/footers	Other pages	Docx4j headers/footers	Other pages
 2	1190	Section 2	• The value of top margin	Section 2	• The value of top margin
 3	3145	• The extent of the header text	ie the region before goes in the region body margin	• The extent of the header text	ie the region before goes in the region body margin
-4	4324	/	Done	The spacing between the last four regions and the fo:region-body is determined by subtracting the	Done
-5	5057	Case 3: negative value for top margin	sections_multiple: A docx with multiple sections	Case 3: negative value for top margin	sections_multiple: A docx with multiple sections
-6	7117	odd_even_different_first_page: A docx with a different first page header		odd_even_different_first_page: A docx with a different first page header	odd_even_different_first_page: A docx with a different first page header
-7	7193	Appendix: Excerpt from OpenXML spec	odd page header.	Appendix: Excerpt from OpenXML spec	odd page header.
-8	9020	This setting does not affect the presence of a first page header on each section, which is specified		This setting does not affect the presence of a first page header on each section, which is specified	Description
-9	11085	The following XML Schema fragment defines the contents of this element:	as follows:	The following XML Schema fragment defines the contents of this element:	as follows:
-10	13268	/		This document defines three footers, each of have a relationship from the document part with a	sectPr (§Error! Reference source not found.); sectPr (§Error! Reference source not found.)
-11	14706	Attributes	example]	Attributes	example]
-12	16779		In this particular example, the content is a single paragraph. end example]	The possible values for this attribute are defined by the ST_HdrFtr simple type	In this particular example, the content is a single paragraph. end example]
-13	18205	[Example: Consider a more complex three page document with different first, odd, and even page	end example]	[Example: Consider a more complex three page document with different first, odd, and even page	end example]
-14	18782	Parent Elements	Reference	Parent Elements	Reference
-15	20077	source	not	source	not
-16	21390	§Error! Reference source not found.		§Error! Reference source not found.	§Error! Reference source not found.
-17	22565	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:
-18	23849	<w:hdr>	Odd page header part:	<w:hdr>	Odd page header part:
-19	24596	<w:hdr>	source	<w:hdr>	source
-20	25692	not		not	§Error! Reference source not found.
-21	27029	moveFrom (Move Source Run Content)	Reference	moveFrom (Move Source Run Content)	Reference
-22	28322	source	If any type of header is omitted for a given section, then the following rules shall apply.	source	If any type of header is omitted for a given section, then the following rules shall apply.
-23	29911	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>
-24	31710	These relationships are then referenced in the section's properties using the following	the document shall be considered non-conformant.	These relationships are then referenced in the section's properties using the following	the document shall be considered non-conformant.
-25	33964		(another header type shall not be used in its place).	[Example: Consider a document with the following WordprocessingML:	(another header type shall not be used in its place).
-26	35970	If this element is omitted, then its value shall be assumed to be false.		If this element is omitted, then its value shall be assumed to be false.	</complexType>
-27	37650	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall
-28	39824	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]
-29	42235		top (Top Margin	The possible values for this attribute are defined by the ST_TwipsMeasure	top (Top Margin
-30	44529	top (Top Margin Spacing)		top (Top Margin Spacing)	
-31	46627	The following XML Schema fragment defines the contents of this element:		The following XML Schema fragment defines the contents of this element:	</complexType>
+4	4263	/	Done	The spacing between the last four regions and the fo:region-body is determined by subtracting the	Done
+5	4996	Case 3: negative value for top margin	sections_multiple: A docx with multiple sections	Case 3: negative value for top margin	sections_multiple: A docx with multiple sections
+6	7056	odd_even_different_first_page: A docx with a different first page header		odd_even_different_first_page: A docx with a different first page header	odd_even_different_first_page: A docx with a different first page header
+7	7132	Appendix: Excerpt from OpenXML spec	odd page header.	Appendix: Excerpt from OpenXML spec	odd page header.
+8	8959	This setting does not affect the presence of a first page header on each section, which is specified		This setting does not affect the presence of a first page header on each section, which is specified	Description
+9	10860	The following XML Schema fragment defines the contents of this element:	as follows:	The following XML Schema fragment defines the contents of this element:	as follows:
+10	13043	/		This document defines three footers, each of have a relationship from the document part with a	sectPr (§Error! Reference source not found.); sectPr (§Error! Reference source not found.)
+11	14373	Attributes	example]	Attributes	example]
+12	16392		In this particular example, the content is a single paragraph. end example]	The possible values for this attribute are defined by the ST_HdrFtr simple type	In this particular example, the content is a single paragraph. end example]
+13	17710	[Example: Consider a more complex three page document with different first, odd, and even page	end example]	[Example: Consider a more complex three page document with different first, odd, and even page	end example]
+14	18287	Parent Elements	Reference	Parent Elements	Reference
+15	19097	source	not	source	not
+16	19924	§Error! Reference source not found.		§Error! Reference source not found.	§Error! Reference source not found.
+17	20612	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:
+18	21680	<w:hdr>	Odd page header part:	<w:hdr>	Odd page header part:
+19	22427	<w:hdr>	source	<w:hdr>	source
+20	23146	not		not	§Error! Reference source not found.
+21	23996	moveFrom (Move Source Run Content)	Reference	moveFrom (Move Source Run Content)	Reference
+22	24750	source	If any type of header is omitted for a given section, then the following rules shall apply.	source	If any type of header is omitted for a given section, then the following rules shall apply.
+23	26122	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>
+24	27921	These relationships are then referenced in the section's properties using the following	the document shall be considered non-conformant.	These relationships are then referenced in the section's properties using the following	the document shall be considered non-conformant.
+25	30013		(another header type shall not be used in its place).	[Example: Consider a document with the following WordprocessingML:	(another header type shall not be used in its place).
+26	31909	If this element is omitted, then its value shall be assumed to be false.		If this element is omitted, then its value shall be assumed to be false.	</complexType>
+27	33373	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall
+28	35385	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]
+29	37688		top (Top Margin	The possible values for this attribute are defined by the ST_TwipsMeasure	top (Top Margin
+30	39750	top (Top Margin Spacing)		top (Top Margin Spacing)	
+31	41794	The following XML Schema fragment defines the contents of this element:		The following XML Schema fragment defines the contents of this element:	</complexType>

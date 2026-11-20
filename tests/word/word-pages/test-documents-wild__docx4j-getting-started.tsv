@@ -1,46 +1,46 @@
 pages	45
 1	0	Docx4j - Getting Started	Samples 18	Docx4j - Getting Started	Samples 18
-2	2391	Creating a new docx 20	Binding other rich content 39	Creating a new docx 20	Binding other rich content 39
-3	5287	Authoring 39	friendly classes (as opposed to DOM or SAX).	Authoring 39	friendly classes (as opposed to DOM or SAX).
-4	7454	docx4j is usually deployed as part of a web application (eg on Tomcat, JBOSS, WebSphere etc – see the	Template substitution; CustomXML binding	docx4j is usually deployed as part of a web application (eg on Tomcat, JBOSS, WebSphere etc – see the	Template substitution; CustomXML binding
-5	9424	Mail merge	As on the Java platform, docx4j.NET comes in community and commercial editions.	Mail merge	As on the Java platform, docx4j.NET comes in community and commercial editions.
-6	11025	See https://www.nuget.org/packages/docx4j.NET/	consider browsing relevant docx4j source code	See https://www.nuget.org/packages/docx4j.NET/	consider browsing relevant docx4j source code
-7	13080	This discussion is generally in English.  If you would like to moderate a forum in another language (for	<artifactId>docx4j-JAXB-MOXy</artifactId>	This discussion is generally in English.  If you would like to moderate a forum in another language (for	<artifactId>docx4j-JAXB-MOXy</artifactId>
-8	14809	<version>8.3.3</version>	If you want to use log4j, then include it, and:	<version>8.3.3</version>	If you want to use log4j, then include it, and:
-9	16297	<dependency>	Command line -via Maven	<dependency>	Command line -via Maven
-10	17842	export MAVEN_OPTS=-Xmx512m	Docx4J.load(new java.io.File(inputfilepath));	export MAVEN_OPTS=-Xmx512m	Docx4J.load(new java.io.File(inputfilepath));
-11	19198	which does the same thing under the covers.	http://www.ecma-international.org/publications/standards/Ecma-376.htm or http://www.ecma-international.org/news/TC45_current_work/TC45_available_docs.htm	which does the same thing under the covers.	http://www.ecma-international.org/publications/standards/Ecma-376.htm or http://www.ecma-international.org/news/TC45_current_work/TC45_available_docs.htm
-12	21552	http://www.ecma-international.org/news/TC45_current_work/TC45_available_docs.htm (a better link for the 1st edition	OpenPackaging handles things at the Open Packaging Conventions level.	http://www.ecma-international.org/news/TC45_current_work/TC45_available_docs.htm (a better link for the 1st edition	OpenPackaging handles things at the Open Packaging Conventions level.
-13	23919			It includes objects corresponding to each Office file type:	org.docx4j.model
-14	25619	This package builds on the lower two layers to provide extra functionality, and is being	output the content of a JAXB object, to see what XML it represents.	This package builds on the lower two layers to provide extra functionality, and is being	output the content of a JAXB object, to see what XML it represents.
-15	27446	Parts List	public DocPropsCustomPart getDocPropsCustomPart()	Parts List	public DocPropsCustomPart getDocPropsCustomPart()
-16	30060		To add a part, see the section Adding a Part below.	on the document part:	To add a part, see the section Adding a Part below.
-17	31666	MainDocumentPart	public class P implements Child, ContentAccessor	MainDocumentPart	public class P implements Child, ContentAccessor
-18	32868	The ContentAccessor interface is simply:	contains examples of how to do things with docx4j. You can find them in the GitHub repo.	The ContentAccessor interface is simply:	contains examples of how to do things with docx4j. You can find them in the GitHub repo.
-19	33743	The docx4j samples include:		The docx4j samples include:	ConvertInFlatOpenPackage
-20	34879	Creating a new docx	pptx4j.PageOrientationLandscape=false	Creating a new docx	pptx4j.PageOrientationLandscape=false
-21	36838		}	# These will be injected into docProps/app.xml	para.getContent().add(run); // ContentAccessor
-22	38574		To figure this out, start with a docx that contains the construct (create it in Word if necessary).	return para;	To figure this out, start with a docx that contains the construct (create it in Word if necessary).
-23	39966	Now look at its XML. Choices:	</w:p>	Now look at its XML. Choices:	</w:p>
-24	42389	you can simply:	which you “repeat” a table row).	you can simply:	which you “repeat” a table row).
-25	44724	Selecting your insertion/editing point;	noted above).	Selecting your insertion/editing point;	noted above).
-26	47065	Note also, in package org.docx4j.utils:	See the samples at https://github.com/plutext/docx4j-ImportXHTML/tree/master/src/samples	Note also, in package org.docx4j.utils:	See the samples at https://github.com/plutext/docx4j-ImportXHTML/tree/master/src/samples
-27	49068	docx to (X)HTML	consider:	docx to (X)HTML	consider:
-28	51098	/	pdf Via FO	Best results are achieved using Microsoft Graph or if Microsoft Word is available -locally or remotely	pdf Via FO
-29	51792	The façade can't use Microsoft Graph at this time.  If you want to use that, do so directly (see below).	find a part in the resulting docx, containing the image in base 64 format).	The façade can't use Microsoft Graph at this time.  If you want to use that, do so directly (see below).	find a part in the resulting docx, containing the image in base 64 format).
-30	54777	When you open the document in docx4j, docx4j will create an image part representing it.	<w:p>	When you open the document in docx4j, docx4j will create an image part representing it.	<w:p>
-31	56664	<w:r>	(see w:drawing and w:pict examples above)	<w:r>	(see w:drawing and w:pict examples above)
-32	58645	This means that if you are moving images around, you need to take care to ensure that the		This means that if you are moving images around, you need to take care to ensure that the	PresentationMLPackage
-33	60050	ProtectPresentation getProtectionSettings()	A table of contents field is just one type of field, amongst many:	ProtectPresentation getProtectionSettings()	A table of contents field is just one type of field, amongst many:
-34	62420	date-and-time:	When inserting a TOC, both approaches documented here insert it in a content control.	date-and-time:	When inserting a TOC, both approaches documented here insert it in a content control.
-35	63786	When updating a TOC, the pure Java approach assumes the TOC is located in such a content control.	\b field-	When updating a TOC, the pure Java approach assumes the TOC is located in such a content control.	\b field-
-36	65457	\b field-argument	are not defined.  The hard coded defaults come from:	\b field-argument	are not defined.  The hard coded defaults come from:
-37	67705	InputStream is = ResourceUtils.getResourceViaProperty(	See the UnmarshallFromTemplate example, which operates on a string containing:	InputStream is = ResourceUtils.getResourceViaProperty(	See the UnmarshallFromTemplate example, which operates on a string containing:
-38	69418	<w:p>	= customXmlDataStoragePart.getData();	<w:p>	= customXmlDataStoragePart.getData();
-39	71567		mailmerge operation from within Microsoft Word).	To apply the bindings:	mailmerge operation from within Microsoft Word).
-40	73266	SmartArt	be able to marshall ie save your document).	SmartArt	be able to marshall ie save your document).
-41	75036	@XmlRootElement	to a comment in the comments part, and if there is a problem with this reference, the	@XmlRootElement	to a comment in the comments part, and if there is a problem with this reference, the
-42	77595	document is invalid. You must take care when moving / inserting / deleting paragraphs to	The HTML version was generated using docx4j.	document is invalid. You must take care when moving / inserting / deleting paragraphs to	The HTML version was generated using docx4j.
-43	79540	Contacting Plutext		Contacting Plutext	Plutext can be contacted at either jason@plutext.org, or jharrop@plutext.com
-44	80012		// Here we have to do this before calling createContent,	Appendix 1 – Font Mapping	// Here we have to do this before calling createContent,
-45	82134	// since that discovers fonts		// since that discovers fonts	PhysicalFonts.setRegex(regex);
+2	686	Creating a new docx 20	Binding other rich content 39	Creating a new docx 20	Binding other rich content 39
+3	1662	Authoring 39	friendly classes (as opposed to DOM or SAX).	Authoring 39	friendly classes (as opposed to DOM or SAX).
+4	3020	docx4j is usually deployed as part of a web application (eg on Tomcat, JBOSS, WebSphere etc – see the	Template substitution; CustomXML binding	docx4j is usually deployed as part of a web application (eg on Tomcat, JBOSS, WebSphere etc – see the	Template substitution; CustomXML binding
+5	4904	Mail merge	As on the Java platform, docx4j.NET comes in community and commercial editions.	Mail merge	As on the Java platform, docx4j.NET comes in community and commercial editions.
+6	6388	See https://www.nuget.org/packages/docx4j.NET/	consider browsing relevant docx4j source code	See https://www.nuget.org/packages/docx4j.NET/	consider browsing relevant docx4j source code
+7	8295	This discussion is generally in English.  If you would like to moderate a forum in another language (for	<artifactId>docx4j-JAXB-MOXy</artifactId>	This discussion is generally in English.  If you would like to moderate a forum in another language (for	<artifactId>docx4j-JAXB-MOXy</artifactId>
+8	10024	<version>8.3.3</version>	If you want to use log4j, then include it, and:	<version>8.3.3</version>	If you want to use log4j, then include it, and:
+9	11390	<dependency>	Command line -via Maven	<dependency>	Command line -via Maven
+10	12702	export MAVEN_OPTS=-Xmx512m	Docx4J.load(new java.io.File(inputfilepath));	export MAVEN_OPTS=-Xmx512m	Docx4J.load(new java.io.File(inputfilepath));
+11	13814	which does the same thing under the covers.	international.org/publications/standards/Ecma-376.htm or http://www.ecma-	which does the same thing under the covers.	international.org/publications/standards/Ecma-376.htm or http://www.ecma-
+12	15709	international.org/news/TC45_current_work/TC45_available_docs.htm (a better link for the 1st edition	OpenPackaging handles things at the Open Packaging Conventions level.	international.org/news/TC45_current_work/TC45_available_docs.htm (a better link for the 1st edition	OpenPackaging handles things at the Open Packaging Conventions level.
+13	17301			It includes objects corresponding to each Office file type:	org.docx4j.model
+14	18708	This package builds on the lower two layers to provide extra functionality, and is being	output the content of a JAXB object, to see what XML it represents.	This package builds on the lower two layers to provide extra functionality, and is being	output the content of a JAXB object, to see what XML it represents.
+15	20535	Parts List	public DocPropsCustomPart getDocPropsCustomPart()	Parts List	public DocPropsCustomPart getDocPropsCustomPart()
+16	22923		To add a part, see the section Adding a Part below.	on the document part:	To add a part, see the section Adding a Part below.
+17	24503	MainDocumentPart	public class P implements Child, ContentAccessor	MainDocumentPart	public class P implements Child, ContentAccessor
+18	25705	The ContentAccessor interface is simply:	contains examples of how to do things with docx4j. You can find them in the GitHub repo.	The ContentAccessor interface is simply:	contains examples of how to do things with docx4j. You can find them in the GitHub repo.
+19	26580	The docx4j samples include:		The docx4j samples include:	ConvertInFlatOpenPackage
+20	27716	Creating a new docx	pptx4j.PageOrientationLandscape=false	Creating a new docx	pptx4j.PageOrientationLandscape=false
+21	29552		}	# These will be injected into docProps/app.xml	para.getContent().add(run); // ContentAccessor
+22	31288		To figure this out, start with a docx that contains the construct (create it in Word if necessary).	return para;	To figure this out, start with a docx that contains the construct (create it in Word if necessary).
+23	32680	Now look at its XML. Choices:	</w:p>	Now look at its XML. Choices:	</w:p>
+24	34862	you can simply:	which you “repeat” a table row).	you can simply:	which you “repeat” a table row).
+25	36596	Selecting your insertion/editing point;	noted above).	Selecting your insertion/editing point;	noted above).
+26	38716	Note also, in package org.docx4j.utils:	See the samples at https://github.com/plutext/docx4j-ImportXHTML/tree/master/src/samples	Note also, in package org.docx4j.utils:	See the samples at https://github.com/plutext/docx4j-ImportXHTML/tree/master/src/samples
+27	40573	docx to (X)HTML	consider:	docx to (X)HTML	consider:
+28	42484	/	pdf Via FO	Best results are achieved using Microsoft Graph or if Microsoft Word is available -locally or remotely	pdf Via FO
+29	43178	The façade can't use Microsoft Graph at this time.  If you want to use that, do so directly (see below).	find a part in the resulting docx, containing the image in base 64 format).	The façade can't use Microsoft Graph at this time.  If you want to use that, do so directly (see below).	find a part in the resulting docx, containing the image in base 64 format).
+30	45117	When you open the document in docx4j, docx4j will create an image part representing it.	<w:p>	When you open the document in docx4j, docx4j will create an image part representing it.	<w:p>
+31	47004	<w:r>	(see w:drawing and w:pict examples above)	<w:r>	(see w:drawing and w:pict examples above)
+32	48985	This means that if you are moving images around, you need to take care to ensure that the		This means that if you are moving images around, you need to take care to ensure that the	PresentationMLPackage
+33	50275	ProtectPresentation getProtectionSettings()	A table of contents field is just one type of field, amongst many:	ProtectPresentation getProtectionSettings()	A table of contents field is just one type of field, amongst many:
+34	52158	date-and-time:	When inserting a TOC, both approaches documented here insert it in a content control.	date-and-time:	When inserting a TOC, both approaches documented here insert it in a content control.
+35	53524	When updating a TOC, the pure Java approach assumes the TOC is located in such a content control.	\b field-	When updating a TOC, the pure Java approach assumes the TOC is located in such a content control.	\b field-
+36	55195	\b field-argument	are not defined.  The hard coded defaults come from:	\b field-argument	are not defined.  The hard coded defaults come from:
+37	57443	InputStream is = ResourceUtils.getResourceViaProperty(	See the UnmarshallFromTemplate example, which operates on a string containing:	InputStream is = ResourceUtils.getResourceViaProperty(	See the UnmarshallFromTemplate example, which operates on a string containing:
+38	59156	<w:p>	= customXmlDataStoragePart.getData();	<w:p>	= customXmlDataStoragePart.getData();
+39	61172		mailmerge operation from within Microsoft Word).	To apply the bindings:	mailmerge operation from within Microsoft Word).
+40	62741	SmartArt	be able to marshall ie save your document).	SmartArt	be able to marshall ie save your document).
+41	64511	@XmlRootElement	to a comment in the comments part, and if there is a problem with this reference, the	@XmlRootElement	to a comment in the comments part, and if there is a problem with this reference, the
+42	66854	document is invalid. You must take care when moving / inserting / deleting paragraphs to	The HTML version was generated using docx4j.	document is invalid. You must take care when moving / inserting / deleting paragraphs to	The HTML version was generated using docx4j.
+43	68581	Contacting Plutext		Contacting Plutext	Plutext can be contacted at either jason@plutext.org, or jharrop@plutext.com
+44	68923		// Here we have to do this before calling createContent,	Appendix 1 – Font Mapping	// Here we have to do this before calling createContent,
+45	71045	// since that discovers fonts		// since that discovers fonts	PhysicalFonts.setRegex(regex);

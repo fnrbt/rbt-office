@@ -1,9 +1,9 @@
 pages	8
 1	0	Are Word 2013 repeatingSection content	As top-5-reasons-developers-will-love-word-2013 explains:	Are Word 2013 repeatingSection content	As top-5-reasons-developers-will-love-word-2013 explains:
-2	1605	/	<inv:lineitem>	The XML mapping pane is certainly a welcome addition.  (It is based on – or at least similar in functionality to	<inv:lineitem>
-3	2749	<inv:productcode>ITEM1</inv:productcode>	Suppose you accept the suggestion to map “lines” to a repeat:	<inv:productcode>ITEM1</inv:productcode>	Suppose you accept the suggestion to map “lines” to a repeat:
-4	3889	/	/	When you do that, you should see on the document surface:	But as soon as you try to toggle design mode off, you get a nasty message:
-5	4152	(though Word does let you save & close the docx, and when you re-open it, you’re out of design mode … but you’ve	And second, you now have 2 rows.	(though Word does let you save & close the docx, and when you re-open it, you’re out of design mode … but you’ve	And second, you now have 2 rows.
-6	5146	(Also, you could look at Properties (with or without Design Mode))	appropriately.	(Also, you could look at Properties (with or without Design Mode))	appropriately.
-7	6897	RepeatingSection positives	are fixed, OpenDoPE repeats remain our recommended approach	RepeatingSection positives	are fixed, OpenDoPE repeats remain our recommended approach
-8	9139		In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)	In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)	In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)
+2	1509	/	<inv:lineitem>	The XML mapping pane is certainly a welcome addition.  (It is based on – or at least similar in functionality to	<inv:lineitem>
+3	2606	<inv:productcode>ITEM1</inv:productcode>	Suppose you accept the suggestion to map “lines” to a repeat:	<inv:productcode>ITEM1</inv:productcode>	Suppose you accept the suggestion to map “lines” to a repeat:
+4	3746	/	/	When you do that, you should see on the document surface:	But as soon as you try to toggle design mode off, you get a nasty message:
+5	4009	(though Word does let you save & close the docx, and when you re-open it, you’re out of design mode … but you’ve	And second, you now have 2 rows.	(though Word does let you save & close the docx, and when you re-open it, you’re out of design mode … but you’ve	And second, you now have 2 rows.
+6	5003	(Also, you could look at Properties (with or without Design Mode))	appropriately.	(Also, you could look at Properties (with or without Design Mode))	appropriately.
+7	6754	RepeatingSection positives	are fixed, OpenDoPE repeats remain our recommended approach	RepeatingSection positives	are fixed, OpenDoPE repeats remain our recommended approach
+8	8854		In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)	In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)	In this document, all Word 2013 testing is with 15.0.4420.1017 (64-bit)

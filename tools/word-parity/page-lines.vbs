@@ -126,6 +126,17 @@ Sub ProcessFile(path)
   d.ActiveWindow.View.Type = wdPrintView
   d.Repaginate
   n = d.ComputeStatistics(wdStatisticPages)
+  ' (A line inside a field reads as the whole field - a hyperlink across a page break gave its page's
+  ' first line as the whole address. The main story's fields become their results, in this copy only
+  ' (opened read-only, never saved); if that moved a page, they are put back.)
+  If d.Fields.Count > 0 Then
+    d.Fields.Unlink
+    d.Repaginate
+    If d.ComputeStatistics(wdStatisticPages) <> n Then
+      d.Undo
+      d.Repaginate
+    End If
+  End If
   Set out = fso.CreateTextFile(fso.BuildPath(outDir, name & ".tsv"), True, True)
   out.WriteLine "pages" & vbTab & n
   ReDim starts(n + 1)
