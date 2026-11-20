@@ -1326,18 +1326,6 @@ let private addParagraphCommandsKept (settings: LayoutSettings) (fontFamily: str
 // spaced table cells, whose visual text boxes sit higher than our default paint.
 let private spacedTableCellBaselineOffset = -4.0
 
-let private defaultParagraphFirstLineOffsetInContext context =
-    let para = { Id = ""; Buffer = TextBuffer.empty; Metadata = defaultMetadata }
-    let paragraphStyle = forBlockInContext context (Paragraph para)
-    paragraphStyle.FirstLineIndent |> Option.defaultValue 0.0 |> max 0.0
-
-// (A table in the flow is moved in by the first-line indent of the document's paragraphs, a floating
-// table is not - see Layout.tableLeftOffsetForDocument.)
-let private tableLeftOffsetForStyleContext (styleContext: DocumentStyleContext option) (tableBlock: TableBlock) =
-    match styleContext with
-    | Some context when not tableBlock.Floating -> defaultParagraphFirstLineOffsetInContext context
-    | _ -> 0.0
-
 let private tableAlignmentOffset (alignment: string option) availableWidth tableWidth =
     if optionEqualsIgnoreCase "center" alignment then max 0.0 ((availableWidth - tableWidth) / 2.0)
     elif optionEqualsIgnoreCase "right" alignment || optionEqualsIgnoreCase "end" alignment then max 0.0 (availableWidth - tableWidth)
@@ -1730,7 +1718,7 @@ let rec private tableBorderCommandsCoreAt isNestedBorderPass nestedTablePaintDep
 
 let private tableBorderCommandsCore (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) =
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let tableLeftOffset = tableLeftOffsetForStyleContext styleContext tableBlock
+    let tableLeftOffset = 0.0
     let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
     tableBorderCommandsCoreAt false 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset None
 
@@ -2926,7 +2914,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         None
     else
         let styleContext = WordStyles.styleContext doc
-        let tableLeftOffset = tableLeftOffsetForStyleContext (Some styleContext) tableBlock + WordLayout.Table.tableIndent tableBlock
+        let tableLeftOffset = WordLayout.Table.tableIndent tableBlock
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight

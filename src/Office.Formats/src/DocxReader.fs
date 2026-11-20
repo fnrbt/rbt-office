@@ -6036,6 +6036,127 @@ let internal resolvedRunProperties styleMap paraProps runProps = resolvedRunProp
 /// The paragraph mark's properties: a run's, with the mark's own (w:pPr/w:rPr) over them.
 let internal resolvedMarkRunProperties styleMap paraProps runProps = resolvedRunPropertiesWith true styleMap paraProps runProps
 
+/// The paragraph style of a paragraph (its own, or the document's default paragraph style).
+let internal paragraphStyleIdOf (styleMap: Map<string, StyleDefinition>) (props: ParagraphProperties) =
+    props.Style |> Option.orElseWith (fun () -> defaultParagraphStyleId styleMap)
+
+/// The style of the chain from `styleId` (it, then what it is based on) whose own properties set
+/// what `sets` looks for.
+let internal styleSetting (styleMap: Map<string, StyleDefinition>) (sets: StyleDefinition -> bool) (styleId: string option) =
+    let rec find visited id =
+        if Set.contains id visited then None
+        else
+            match Map.tryFind id styleMap with
+            | None -> None
+            | Some style when sets style -> Some id
+            | Some style -> style.BasedOn |> Option.bind (find (Set.add id visited))
+    styleId |> Option.bind (find Set.empty)
+
+/// A table style's paragraph properties as a cell's paragraph takes them: those its paragraph style
+/// (`chain`: Normal or the style the paragraph has, with what it is based on, without the document
+/// defaults) does not set - the document defaults, the table style, the paragraph style, the
+/// paragraph's own (fixtures table-style-props: Normal's first-line indent, spacing, line spacing and
+/// justification beat the table style's, its whole table's and its conditional formats' alike).
+let internal tableStyleParagraphUnder (chain: ParagraphProperties option) (ts: ParagraphProperties) : ParagraphProperties =
+    match chain with
+    | None -> ts
+    | Some chain ->
+        let unless (set: bool) value = if set then None else value
+        let firstSet = chain.FirstLineIndent.IsSome || chain.HangingIndent.IsSome
+        let beforeSet = chain.SpacingBefore.IsSome || chain.SpacingBeforeAuto.IsSome
+        let afterSet = chain.SpacingAfter.IsSome || chain.SpacingAfterAuto.IsSome
+        let lineSet = chain.LineSpacing.IsSome || chain.LineRule.IsSome
+        let shadingSet = chain.BackgroundColor.IsSome || chain.ShadingPattern.IsSome || chain.ShadingForeground.IsSome
+        { ts with
+            Alignment = unless chain.Alignment.IsSome ts.Alignment
+            IndentLeft = unless chain.IndentLeft.IsSome ts.IndentLeft
+            IndentRight = unless chain.IndentRight.IsSome ts.IndentRight
+            FirstLineIndent = unless firstSet ts.FirstLineIndent
+            HangingIndent = unless firstSet ts.HangingIndent
+            RightTabPosition = unless chain.RightTabPosition.IsSome ts.RightTabPosition
+            RightTabLeader = unless chain.RightTabPosition.IsSome ts.RightTabLeader
+            TabStops = if chain.TabStops.IsEmpty then ts.TabStops else []
+            Rtl = unless chain.Rtl.IsSome ts.Rtl
+            SpacingBefore = unless beforeSet ts.SpacingBefore
+            SpacingBeforeAuto = unless beforeSet ts.SpacingBeforeAuto
+            SpacingAfter = unless afterSet ts.SpacingAfter
+            SpacingAfterAuto = unless afterSet ts.SpacingAfterAuto
+            LineSpacing = unless lineSet ts.LineSpacing
+            LineRule = unless lineSet ts.LineRule
+            OutlineLevel = unless chain.OutlineLevel.IsSome ts.OutlineLevel
+            KeepNext = unless chain.KeepNext.IsSome ts.KeepNext
+            KeepLines = unless chain.KeepLines.IsSome ts.KeepLines
+            PageBreakBefore = unless chain.PageBreakBefore.IsSome ts.PageBreakBefore
+            WidowControl = unless chain.WidowControl.IsSome ts.WidowControl
+            ContextualSpacing = unless chain.ContextualSpacing.IsSome ts.ContextualSpacing
+            OverflowPunctuation = unless chain.OverflowPunctuation.IsSome ts.OverflowPunctuation
+            BackgroundColor = unless shadingSet ts.BackgroundColor
+            ShadingPattern = unless shadingSet ts.ShadingPattern
+            ShadingForeground = unless shadingSet ts.ShadingForeground
+            ParagraphBorders = unless chain.ParagraphBorders.IsSome ts.ParagraphBorders
+            ListInfo = unless chain.ListInfo.IsSome ts.ListInfo
+            ParagraphRunProperties = None }
+
+/// A table style's run properties as the runs of a cell's paragraph take them: those its paragraph
+/// style (`chain`, as for tableStyleParagraphUnder) does not set. An on/off property the paragraph
+/// style turns off does not turn the table style's off (fixtures table-style-props nb0-tb: Normal's
+/// b 0 under a table style's b is bold).
+let internal tableStyleRunUnder (chain: RunProperties) (ts: RunProperties) : RunProperties =
+    let unless (set: bool) value = if set then None else value
+    let toggle (own: bool option) value = if own = Some true then None else value
+    let fontSet = chain.FontFamily.IsSome || chain.ThemeFont.IsSome
+    let colorSet = chain.Color.IsSome || chain.ThemeColor.IsSome
+    { Style = None
+      Bold = toggle chain.Bold ts.Bold; Italic = toggle chain.Italic ts.Italic
+      Underline = unless chain.Underline.IsSome ts.Underline
+      UnderlineStyle = unless chain.Underline.IsSome ts.UnderlineStyle
+      UnderlineColor = unless chain.Underline.IsSome ts.UnderlineColor
+      AllCaps = toggle chain.AllCaps ts.AllCaps; SmallCaps = toggle chain.SmallCaps ts.SmallCaps
+      FontSize = unless chain.FontSize.IsSome ts.FontSize
+      CharacterSpacing = unless chain.CharacterSpacing.IsSome ts.CharacterSpacing
+      FontFamily = unless fontSet ts.FontFamily; ThemeFont = unless fontSet ts.ThemeFont
+      Color = unless colorSet ts.Color; ThemeColor = unless colorSet ts.ThemeColor
+      ThemeTint = unless colorSet ts.ThemeTint; ThemeShade = unless colorSet ts.ThemeShade
+      Highlight = unless chain.Highlight.IsSome ts.Highlight
+      Strike = toggle chain.Strike ts.Strike; DoubleStrike = toggle chain.DoubleStrike ts.DoubleStrike
+      Hidden = toggle chain.Hidden ts.Hidden
+      Position = unless chain.Position.IsSome ts.Position
+      EmphasisMark = unless chain.EmphasisMark.IsSome ts.EmphasisMark
+      VertAlign = unless chain.VertAlign.IsSome ts.VertAlign
+      EastAsiaLanguage = unless chain.EastAsiaLanguage.IsSome ts.EastAsiaLanguage }
+
+/// A run's properties in a table's cell: as resolvedRunProperties, with the table style's run
+/// properties (`tableRun`: what tableStyleRunUnder left of them) over the paragraph style's.
+let internal resolvedCellRunProperties styleMap (tableRun: RunProperties) (paraProps: ParagraphProperties) (runProps: RunProperties) =
+    let resolved = resolvedRunProperties styleMap paraProps emptyRunProperties
+    let characterRun, _ = resolveStyle styleMap runProps.Style
+    mergeRunProperties (mergeRunProperties (mergeRunProperties resolved tableRun) characterRun) runProps
+
+/// The paragraph mark's properties in a table's cell (resolvedMarkRunProperties, with `tableRun`).
+let internal resolvedCellMarkRunProperties styleMap (tableRun: RunProperties) (paraProps: ParagraphProperties) (runProps: RunProperties) =
+    let mark = paraProps.ParagraphRunProperties |> Option.defaultValue emptyRunProperties
+    resolvedCellRunProperties styleMap tableRun paraProps (mergeRunProperties mark runProps)
+
+/// Whether Normal's 12pt and its left justification give way to a table style's size and
+/// justification in its cells: in Word 2010's layout and before (compatibilityMode 14 or less, or
+/// none), unless the settings' overrideTableStyleFontSizeAndJustification is on (fixtures
+/// table-style-props: nsz12-tsz8-c14 / -c12 / -cnone 8pt, nsz12-tsz8-ov-c14 and nsz12-tsz8 12pt).
+let tableStyleBeatsNormalSizeAndJustification (settingsXml: string option) =
+    let settings = settingsXml |> Option.map XmlDsl.parse
+    let setting name =
+        settings |> Option.bind (fun settings ->
+            Ns.descendantsNs "compatSetting" settings |> List.tryFind (fun node -> Docx.attr "name" node = Some name))
+        |> Option.bind (Docx.attr "val")
+    let mode = setting "compatibilityMode" |> Option.bind (fun value -> match System.Int32.TryParse value with | true, mode -> Some mode | _ -> None)
+    let overridden = setting "overrideTableStyleFontSizeAndJustification" |> Option.exists (fun value -> value = "1" || value = "true" || value = "on")
+    mode |> Option.forall (fun mode -> mode <= 14) && not overridden
+
+let internal runPropertiesSetSomething (props: RunProperties) = props <> emptyRunProperties
+
+let internal paragraphPropertiesSetSomething (props: ParagraphProperties) =
+    props.ParagraphRunProperties |> Option.exists runPropertiesSetSomething
+    || { props with ParagraphRunProperties = None } <> Styles.parseParagraphPropsFromStyle XmlDsl.Empty
+
 let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
     let fallbackRunProps =
         if isPureEmptyParagraph para then
