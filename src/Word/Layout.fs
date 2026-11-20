@@ -5172,9 +5172,16 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
         // bottom (fixtures long-word mar-b*: exact 20pt lines 8pt above it stay over a 2.15pt margin and
         // go over a 10pt one; hf-foot*: Calibri lines 0.8pt above it go over docx4j-headers-footers'
         // 2.15pt margin, stay without it).
+        // (And the border under the row where it breaks: WordLayout.Table.rowBreakBorderBand.)
+        let breakBorder = if cellSpacing > 0.0 then 0.0 else WordLayout.Table.rowBreakBorderBand tableBlock row
         let cellSettings =
-            if textPadding.Bottom > 0.0 && cellSettings.MarginBottom > -1000.0 then { cellSettings with MarginBottom = cellSettings.MarginBottom + textPadding.Bottom }
+            if textPadding.Bottom + breakBorder > 0.0 && cellSettings.MarginBottom > -1000.0 then { cellSettings with MarginBottom = cellSettings.MarginBottom + textPadding.Bottom + breakBorder }
             else cellSettings
+        // What goes on on the next page starts as a row of its own does there: below the repeated
+        // header rows, the row's top border and the cell's top margin (fixtures row-continue: h0-m100-b24
+        // 8pt below the margin, Word 2010 and 2019 alike; ours was at the header's foot).
+        let cellSettings =
+            { cellSettings with TableContinuationHeaderHeight = cellSettings.TableContinuationHeaderHeight + borderTop + textPadding.Top }
         let cellY = rowY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
         let contentStartY = WordLayout.Table.cellContentStartY (cellY + borderTop) textPadding
         let mutable paraY = contentStartY
@@ -6638,7 +6645,8 @@ let private bodyBottoms (layouts: seq<BlockLayout>) (pageOf: float -> int) : int
         | ValueSome bottom -> bottom
         | ValueNone -> System.Double.NegativeInfinity
 
-let private layoutDocumentPassKept
+let private layoutDocumentPassKeptAt
+        (startY: float voption)
         (slot: string)
         (memo: ParagraphLayoutMemo option)
         (settings: LayoutSettings)
@@ -6652,7 +6660,7 @@ let private layoutDocumentPassKept
     // function per column at the column width; here we always use the full width.
     let styleContext = styleContextForLayout memo doc
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
-    let mutable y = settings.PaddingTop
+    let mutable y = match startY with ValueSome start -> start | ValueNone -> settings.PaddingTop
     let layouts = ResizeArray<BlockLayout>()
     let mutable numberedCounters = initialCounters
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
@@ -7587,6 +7595,11 @@ let private layoutDocumentPassKept
         notes.Add layouts.[index]
     resizeArrayToList layouts, placedFloatingBoxes, bodyRecord, resizeArrayToList notes
 
+/// The single-column pass from the top of the first page (layoutDocumentPassKeptAt from where a
+/// block of a section's flow starts: see flowColumnsKept).
+let private layoutDocumentPassKept slot memo settings measureText measureRange doc initialCounters initialObstacles initialPlacedBoxes =
+    layoutDocumentPassKeptAt ValueNone slot memo settings measureText measureRange doc initialCounters initialObstacles initialPlacedBoxes
+
 let private layoutDocumentWithRangeAndInitial
         (memo: ParagraphLayoutMemo option)
         (settings: LayoutSettings)
@@ -7912,6 +7925,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             x <- x + fst widthsArr.[i] + snd widthsArr.[i]
         x
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (pageTopOf page)
+    // (The section's pages as the single-column pass has them: one height, from 0.)
+    let uniformPages = pageTopOf 0 = 0.0 && abs (pageTopOf 1 - (pageHeight settings + pageGap)) < 0.01
     let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (pageTopOf page)
     // When pages are non-uniform (multi-section), lay each paragraph out without
     // the engine's own (uniform-stride) pagination — flowColumns controls
@@ -8375,6 +8390,33 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 elif para0.Metadata.ColumnBreakAfter || n <= 1 || balancedHeight.IsSome then
                     if not (atColumnTop ()) then advanceColumn ()
                 elif not (atPageTop ()) then advancePage ()
+        | None when n <= 1 && balancedHeight.IsNone && uniformPages
+                    && (match block with Table tableBlock -> not tableBlock.Floating | _ -> false) ->
+            // A table in the flow of a section of one column is laid out as in the single-column pass,
+            // from where it starts on the section's pages (of one height, as that pass's): a row that
+            // does not fit at a page's foot breaks there, each cell at its own last line that fits,
+            // under the header rows repeated on the next page (the row-break rules: Word breaks the
+            // showcase handbook's fault-code rows so; on a strip, below, a row was never divided).
+            previousParagraph <- None
+            let sub = { doc with Blocks = [block] }
+            let subLayouts, _, record, _ = layoutDocumentPassKeptAt (ValueSome y) "" memo settings measureText measureRange sub counters [] []
+            let pageOfY (at: float) =
+                let mutable p = page
+                while pageTopOf (p + 1) <= at + 0.01 do p <- p + 1
+                p
+            for sl in subLayouts do
+                if not (sl.BlockId.StartsWith footnoteBlockIdPrefix) && not (sl.BlockId.StartsWith endnoteBlockIdPrefix) then
+                    results.Add sl
+                    match layoutFootnotes sl.Lines with
+                    | [] -> ()
+                    | notes ->
+                        let p = pageOfY sl.Y
+                        footnotesByPage <- footnotesByPage |> Map.add p (appendNewNotes (footnotesByPage |> Map.tryFind p |> Option.defaultValue []) notes)
+            y <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckY
+            page <- pageOfY y
+            match block with
+            | Table tableBlock -> counters <- listCountersAfterTable counters tableBlock
+            | _ -> ()
         | None ->
             previousParagraph <- None
             let sub = { doc with Blocks = [block] }

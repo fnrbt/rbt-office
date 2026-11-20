@@ -1956,6 +1956,23 @@ module Table =
             | true, position -> position = index.Rows.Length - 1, (if position > 0 then Some index.Rows.[position - 1] else None)
             | _ -> false, None
 
+    /// The widest of the cells' borders on one side of a row, a cell without its own taking the table's.
+    let private rowEdgeBorderWidth (table: TableBlock) (row: TableRow) (cells: TableCell list) (skipContinued: bool) (own: TableBorders -> TableBorder option) (fallback: TableBorders -> TableBorder option) =
+        let tableBorders = row.BordersOverride |> Option.orElse table.Borders
+        let fallbackWidth = match tableBorders with Some borders -> horizontalBorderAdvance (fallback borders) | None -> 0.0
+        let mutable widest = 0.0
+        for cell in cells do
+            if not (skipContinued && cell.VerticalMerge = Some ContinueMerge) then
+                let width =
+                    match cell.Borders with
+                    | Some borders ->
+                        match own borders with
+                        | Some _ as border -> horizontalBorderAdvance border
+                        | None -> fallbackWidth
+                    | None -> fallbackWidth
+                if width > widest then widest <- width
+        widest
+
     /// The borders a row's content is below and the table's last row above (Word: fixtures
     /// table-border): above a row, the widest horizontal border on its top edge - the table's
     /// top border (first row) or inside one, or a cell's own top border, or the bottom border
@@ -1963,22 +1980,7 @@ module Table =
     /// is not one of the table's (a header row's copy) is taken as its first. Tables with
     /// cell spacing draw each cell's own frame: none.
     let rowBorderBands (table: TableBlock) (row: TableRow) =
-        let tableBorders = row.BordersOverride |> Option.orElse table.Borders
-        // The widest of the cells' borders on one side, a cell without its own taking the table's.
-        let edge (cells: TableCell list) (skipContinued: bool) (own: TableBorders -> TableBorder option) (fallback: TableBorders -> TableBorder option) =
-            let fallbackWidth = match tableBorders with Some borders -> horizontalBorderAdvance (fallback borders) | None -> 0.0
-            let mutable widest = 0.0
-            for cell in cells do
-                if not (skipContinued && cell.VerticalMerge = Some ContinueMerge) then
-                    let width =
-                        match cell.Borders with
-                        | Some borders ->
-                            match own borders with
-                            | Some _ as border -> horizontalBorderAdvance border
-                            | None -> fallbackWidth
-                        | None -> fallbackWidth
-                    if width > widest then widest <- width
-            widest
+        let edge = rowEdgeBorderWidth table row
         let isLast, above = rowPlaceIn table row
         let top =
             match above with
@@ -1986,6 +1988,14 @@ module Table =
             | Some above -> max (edge row.Cells true _.Top _.InsideH) (edge above.Cells false _.Bottom _.InsideH)
         let bottom = if isLast then edge row.Cells false _.Bottom _.Bottom else 0.0
         top, bottom
+
+    /// The border under the part of a row a page ends (it breaks there): the widest of its cells'
+    /// bottom borders, the table's inside one (its bottom one under the last row) for a cell without
+    /// its own. A row's lines stay on the page when that and the cells' bottom margin fit under them
+    /// (fixtures row-continue h1-m0-b24: a 20pt line 2pt above the page's bottom goes, under 3pt borders).
+    let rowBreakBorderBand (table: TableBlock) (row: TableRow) =
+        let isLast, _ = rowPlaceIn table row
+        rowEdgeBorderWidth table row row.Cells false _.Bottom (if isLast then _.Bottom else _.InsideH)
 
     let verticalContentOffset verticalAlignment rowHeight paddingTop paddingBottom contentHeight =
         let available = max 0.0 (rowHeight - paddingTop - paddingBottom - contentHeight)
