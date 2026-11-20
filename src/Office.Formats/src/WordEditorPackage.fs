@@ -104,6 +104,8 @@ type PageSetup = {
     UseFarEastLayout: bool option
     /// See DocxReader.PageSetup.CharacterSpacingControl.
     CharacterSpacingControl: string option
+    /// See DocxReader.PageSetup.Hyphenation.
+    Hyphenation: string option
     Columns: SectionColumns option
     SectionStart: string option
     HeaderReferences: HeaderFooterReference list
@@ -1140,6 +1142,7 @@ let private pageSetupToObject (setup: PageSetup option) : obj =
             "CompatibilityMode" ==> setup.CompatibilityMode
             "UseFarEastLayout" ==> setup.UseFarEastLayout
             "CharacterSpacingControl" ==> setup.CharacterSpacingControl
+            "Hyphenation" ==> setup.Hyphenation
             "ColumnCount" ==> columns.Count; "ColumnSpace" ==> columns.Gap
             "ColumnSeparator" ==> columns.Separator
             "ColumnWidths" ==> (columns.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> List.toArray)
@@ -1639,6 +1642,7 @@ let private readPageSetup value =
             CompatibilityMode = integer value "CompatibilityMode"
             UseFarEastLayout = get<bool> value "UseFarEastLayout"
             CharacterSpacingControl = textOf value "CharacterSpacingControl"
+            Hyphenation = textOf value "Hyphenation"
             Columns = columns
             SectionStart = textOf value "SectionStart"
             HeaderReferences = readRefs value "HeaderReferences"

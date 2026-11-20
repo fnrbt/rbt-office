@@ -90,6 +90,12 @@ which hyphens, dashes and punctuation; read with `long-word.py --lines`, `hyphen
 first line in `page-lines.vbs` at the field's start - not where Word's page starts. A REF field is updated by Word's PDF export: its
 line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.
 
+`fixtures/hyphen-words.py` (where Word hyphenates: thousands of probes, each a word Word must break or
+move; `--points <dir>` reads Word's break of each from its PDFs, four columns a page, into `word/points.tsv`;
+`--c14` the same in compatibility mode 14) and `fixtures/hyphen-rules.py` (when it does: the zone, the limit,
+capitals, digits, languages, page and column feet; read with `long-word.py --lines`, `hyphen-rules.py --table`)
+are checked by `tests/word/hyphenation.fsx`.
+
 `fixtures/table-width.py` writes `tests/word/fixtures/table-width/` (how wide Word makes a table's
 columns: grid, cell and table widths, fixed and autofit, content, indents, columns, nesting, spans,
 compatibility mode 14); `table-width.py --edges <pdfs>` reads where each cell's left-aligned label

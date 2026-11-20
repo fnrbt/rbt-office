@@ -54,7 +54,7 @@ let private defaultPage : PageSetup =
     { PageWidth = 816.0; PageHeight = 1056.0; MarginLeft = 96.0; MarginRight = 96.0
       MarginTop = 96.0; MarginBottom = 96.0; HeaderDistance = 48.0; FooterDistance = 48.0
       DifferentFirstPage = false; EvenAndOddHeaders = false; DefaultTabStop = None; CompatibilityMode = None
-      UseFarEastLayout = None; CharacterSpacingControl = None
+      UseFarEastLayout = None; CharacterSpacingControl = None; Hyphenation = None
       Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
       PageNumberStart = None; PageNumberFormat = None; VerticalAlign = None }
 let pageSetup (value: D.PageSetup) : PageSetup =
@@ -64,7 +64,7 @@ let pageSetup (value: D.PageSetup) : PageSetup =
       HeaderDistance = defaultArg value.HeaderDistance defaultPage.HeaderDistance; FooterDistance = defaultArg value.FooterDistance defaultPage.FooterDistance
       DifferentFirstPage = on value.DifferentFirstPage; EvenAndOddHeaders = on value.EvenAndOddHeaders
       DefaultTabStop = value.DefaultTabStop; CompatibilityMode = value.CompatibilityMode
-      UseFarEastLayout = value.UseFarEastLayout; CharacterSpacingControl = value.CharacterSpacingControl; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
+      UseFarEastLayout = value.UseFarEastLayout; CharacterSpacingControl = value.CharacterSpacingControl; Hyphenation = value.Hyphenation; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
       HeaderReferences = references value.HeaderReferences; FooterReferences = references value.FooterReferences
       PageNumberStart = value.PageNumberStart; PageNumberFormat = value.PageNumberFormat; VerticalAlign = value.VerticalAlign }
 let private sectionSetup (value: D.SectionGeometry) : PageSetup =
