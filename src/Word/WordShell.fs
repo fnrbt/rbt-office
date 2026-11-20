@@ -384,7 +384,9 @@ module Shell =
                 WordHost.openContentControlEdit host controlId tag alias
                 host.Status.Value <- sprintf "Editing content control: %s" (if alias = "" then tag else alias)
 
-            div [ cls "word-markup-navigator"; attr "role" "region"; attr "aria-label" "Document markup"; attr "data-testid" "word-markup-navigator" ] [
+            // (Shown only for a document that has bookmarks or content controls: an empty panel is clutter.)
+            div [ cls "word-markup-navigator"; attr "role" "region"; attr "aria-label" "Document markup"; attr "data-testid" "word-markup-navigator"
+                  attrR "style" (fun () -> if (bookmarkItems ()).Length = 0 && (contentControlItems ()).Length = 0 then "display:none" else "") ] [
                 div [ cls "word-markup-navigator-section" ] [
                     div [ cls "word-markup-navigator-title" ] [ text "Bookmarks" ]
                     div [ cls "word-markup-navigator-list"; attr "data-testid" "word-bookmark-list" ] [
