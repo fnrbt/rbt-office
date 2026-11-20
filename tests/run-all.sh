@@ -67,7 +67,7 @@ word_suites=(
     float-wrap long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
     table-style-props border-across vmerge-content row-continue list-sections
     hyphen-break hyphenation justify-squeeze
-    section-margins inline-break section-top-space
+    section-margins inline-break section-top-space line-baseline
 )
 
 # These are required corpus anchors and all drawing fixtures that the formats

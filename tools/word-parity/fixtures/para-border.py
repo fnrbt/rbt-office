@@ -8,6 +8,9 @@ then, to ask Word (winvm) and read where it put every line:
     node tools/word-parity/page-parity.mjs --dist dist --dir tests/word/fixtures/para-border --refresh-word
     python3 tools/word-parity/fixtures/para-border.py --positions tests/word/fixtures/para-border
 
+--across and --corners write the families of where borders run (para-border-across) and how double
+lines meet at a box's corners (para-border-corners), read with pdf-geometry.py --paths.
+
 Every line is one label in Arial 10pt at exactly 20pt a line, no space before or
 after unless the fixture is about it, on a Letter page with 1in margins; so where
 Word puts a line depends only on the borders (and the spacing a fixture names),
@@ -211,6 +214,30 @@ def across():
     return out
 
 
+def corners():
+    """The --corners family (tests/word/fixtures/para-border-corners): how double lines meet at a box's
+    corners (the showcase handbook's warning: Word draws two frames, one inside the other). name ->
+    (body, compatibility mode, w:cols); a01, b01 (b02: a group of two), c01; read like --across."""
+    def one(ppr, count=1):
+        return para('a01') + ''.join(para(f'b{i:02d}', ppr) for i in range(1, count + 1)) + para('c01')
+    def pbdr(*sides):
+        return '<w:pBdr>' + ''.join(sides) + '</w:pBdr>'
+    def sides(top, left, bottom, right):
+        return pbdr(bdr('top', *top), bdr('left', *left), bdr('bottom', *bottom), bdr('right', *right))
+    dbl = lambda sz, sp: (sz, sp, 'double')
+    sgl = lambda sz, sp: (sz, sp, 'single')
+    out = {}
+    out['dbl-box'] = (one(sides(dbl(6, 4), dbl(6, 4), dbl(6, 4), dbl(6, 4))), 15, '')
+    out['dbl-box-c14'] = (one(sides(dbl(6, 4), dbl(6, 4), dbl(6, 4), dbl(6, 4))), 14, '')
+    out['dbl-box-sz12'] = (one(sides(dbl(12, 4), dbl(12, 4), dbl(12, 4), dbl(12, 4))), 15, '')
+    out['dbl-box-mixed'] = (one(sides(dbl(12, 4), dbl(6, 4), dbl(12, 4), dbl(6, 4))), 15, '')
+    out['dbl-topbottom'] = (one(sides(dbl(6, 4), sgl(6, 4), dbl(6, 4), sgl(6, 4))), 15, '')
+    out['dbl-sides'] = (one(sides(sgl(6, 4), dbl(6, 4), sgl(6, 4), dbl(6, 4))), 15, '')
+    out['dbl-group'] = (one(sides(dbl(6, 4), dbl(6, 4), dbl(6, 4), dbl(6, 4)), 2), 15, '')
+    out['dbl-top-left'] = (one(pbdr(bdr('top', 6, 4, 'double'), bdr('left', 6, 4, 'double'))), 15, '')
+    return out
+
+
 def positions(folder):
     """<folder>/word/positions.tsv from Word's PDFs: name, label, page, top of the label's glyphs (pt)."""
     word = os.path.join(folder, 'word')
@@ -251,6 +278,13 @@ if __name__ == '__main__':
         for name, (body, mode, cols) in across().items():
             write(os.path.join(out_dir, name + '.docx'), body, mode, cols)
         print(f'{len(across())} fixtures in {out_dir}')
+        sys.exit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == '--corners':
+        out_dir = sys.argv[2] if len(sys.argv) > 2 else os.path.join(repo, 'tests/word/fixtures/para-border-corners')
+        os.makedirs(out_dir, exist_ok=True)
+        for name, (body, mode, cols) in corners().items():
+            write(os.path.join(out_dir, name + '.docx'), body, mode, cols)
+        print(f'{len(corners())} fixtures in {out_dir}')
         sys.exit(0)
     out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(repo, 'tests/word/fixtures/para-border')
     os.makedirs(out_dir, exist_ok=True)

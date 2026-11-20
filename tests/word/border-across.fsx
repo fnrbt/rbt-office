@@ -29,7 +29,11 @@ open Rbt.Word.TextBuffer
 module Layout = Rbt.Word.Layout
 module Paint = Rbt.Word.Paint
 
-let dir = Path.Combine(__SOURCE_DIRECTORY__, "fixtures/para-border-across")
+// (And `--corners`, tests/word/fixtures/para-border-corners: double lines at a box's corners - Word draws
+// two frames, the outer lines meeting at the outer corner, the inner at the inner one: dbl-box, -c14,
+// -sz12, -mixed, -group; where a double border meets a single one, the double one's lines run out to
+// the single one's outer edge, the single one's to the double one's (dbl-topbottom, dbl-sides).)
+let families = [ "fixtures/para-border-across", 32; "fixtures/para-border-corners", 8 ]
 let measureText (text: string) (style: TextStyle) = float text.Length * style.FontSize * 0.5
 let measureRange = Layout.rangeMeasurerFromTextMeasurer measureText
 let pt (px: float) = px * 0.75
@@ -72,7 +76,7 @@ let bands (rects: (float * float * float * float) list) =
             { v with Top = top; Bottom = bottom })
     across @ down |> List.sortBy (fun b -> b.Horizontal, b.Top, b.Left)
 
-let wordBands =
+let wordBandsOf dir =
     File.ReadAllLines(Path.Combine(dir, "word/geometry.tsv")) |> Array.map (fun l -> l.Split '\t')
     |> Array.filter (fun r -> r.[1] = "path" && r.[2] = "1")
     |> Array.groupBy (fun r -> r.[0])
@@ -81,7 +85,7 @@ let wordBands =
         name, rs |> Array.map (fun r -> float r.[3], float r.[4] - 72.0, float r.[5], float r.[6] - 72.0) |> Array.distinct |> Array.toList |> bands)
     |> Map.ofArray
 
-let oursOf name =
+let oursOf dir name =
     let doc = File.ReadAllBytes(Path.Combine(dir, name + ".docx")) |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
     let settings = Layout.documentSettings 16.0 24.0 3.5 doc
     let layouts, pages = Layout.layoutDocumentPages settings measureText measureRange doc
@@ -102,13 +106,16 @@ let oursOf name =
 
 let mutable pass = 0
 let mutable fail = 0
-let fixtures = Directory.GetFiles(dir, "*.docx") |> Array.map Path.GetFileNameWithoutExtension |> Array.sort
-if fixtures.Length <> 32 || fixtures |> Array.exists (fun name -> not (wordBands.ContainsKey name)) then
-    printfn "FAIL the fixtures and Word's borders of each: %d fixtures, %d with Word's" fixtures.Length wordBands.Count
+for family, count in families do
+  let dir = Path.Combine(__SOURCE_DIRECTORY__, family)
+  let wordBands = wordBandsOf dir
+  let fixtures = Directory.GetFiles(dir, "*.docx") |> Array.map Path.GetFileNameWithoutExtension |> Array.sort
+  if fixtures.Length <> count || fixtures |> Array.exists (fun name -> not (wordBands.ContainsKey name)) then
+    printfn "FAIL %s: the fixtures and Word's borders of each: %d fixtures, %d with Word's" family fixtures.Length wordBands.Count
     fail <- fail + 1
-for name in fixtures do
+  for name in fixtures do
     let word = wordBands.[name]
-    let ours = oursOf name
+    let ours = oursOf dir name
     // (Word draws on a 300dpi grid: its edges are within 0.25pt of where they are. In a table's cell
     // Word's text area is 0.5pt narrower on each side than ours - a table without cell margins, open
     // in the ledger -: the border's ends there are compared to 0.7pt.)

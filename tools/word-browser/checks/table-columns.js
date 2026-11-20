@@ -53,7 +53,9 @@ try {
     const textBottom = first.Top + first.Height - first.MarginBottom;
     check('painted: the left and right border of the table beside a row of the second column', [inkBetween(secondColumnX - 3, secondColumnX + 4, firstOfSecond.Y + 4, firstOfSecond.Y + 12) > 3, inkBetween(secondColumnX + 288 - 4, secondColumnX + 288 + 4, firstOfSecond.Y + 4, firstOfSecond.Y + 12) > 3], [true, true]);
     check('painted: its text, in the column', inkBetween(secondColumnX + 4, secondColumnX + 140, firstOfSecond.Y, firstOfSecond.Y + 18) > 20, true);
-    check('painted: nothing between the columns, nothing of the table below the text area', [inkBetween(first.MarginLeft + 288 + 6, secondColumnX - 6, first.Top + first.MarginTop, textBottom), inkBetween(first.MarginLeft - 4, first.Width - first.MarginRight + 4, textBottom + 4, textBottom + 30)], [0, 0]);
+    check('painted: nothing between the columns, nothing of the table below the text area', [inkBetween(first.MarginLeft + 288 + 6, secondColumnX - 6, first.Top + first.MarginTop, textBottom), inkBetween(first.MarginLeft - 4, first.Width - first.MarginRight + 4, textBottom + 4, textBottom + 16)], [0, 0]);
+    // (Not further down: the page's footer - a line and Word's default 8pt after it - ends its footer distance
+    // above the page's foot, its line's top 16.6px below the text area's.)
     check('painted: a line under the last row of the first column', inkBetween(first.MarginLeft + 20, first.MarginLeft + 200, lastOfFirst.Y + 14, lastOfFirst.Y + 40) > 100, true);
     window.state = {};
     window.drive = [

@@ -78,6 +78,14 @@ section part-way down it), `fixtures/inline-break.py` (a page or column break in
 `tests/word/section-margins.fsx` (Word's pages' first lines), `tests/word/inline-break.fsx` and
 `tests/word/section-top-space.fsx` (Word's lines from `pdf-geometry.py`).
 
+`fixtures/line-baseline.py` (where a line's baseline is inside the line: line spacing, font, size, story)
+writes `tests/word/fixtures/line-baseline/`; `line-baseline.py --table` reads each probe word's baseline from
+the text matrix of the PDFs' content streams (exact, where pdftotext's word box depends on the font
+descriptor) into `word/baselines.tsv`, checked by `tests/word/line-baseline.fsx`. `para-border.py --corners`
+writes `tests/word/fixtures/para-border-corners/` (how double border lines meet at a box's corners), read with
+`pdf-geometry.py --paths` and checked by `tests/word/border-across.fsx`. (tools/pdf-runner's PDFs have their
+MediaBox in whole points - Rbt.Pdf -: measured from the page's top they are that fraction high, 0.9pt on A4.)
+
 `fixtures/float-wrap.py` writes `tests/word/fixtures/float-wrap/` (text round
 floating pictures and shapes); where Word's lines and pictures are in its PDFs
 comes from `pdf-geometry.py` (each line's pieces across and down, each picture's
