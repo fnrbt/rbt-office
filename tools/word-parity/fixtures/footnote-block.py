@@ -38,6 +38,18 @@ the name says varies:
   cont-k<k>                     a 10-line footnote referenced in Body k = 44 ... 47: room on page 1 for 3, 2, 1, 0
                                 of its lines under the separator - how much of it has to stay with its reference?
   cont-k45-nowidow, cont-k46-nowidow   the same with FootnoteText's widow control off
+  cont11-k38[-nowidow]         an 11-line note with room for 10: does widow control keep 9 + 2 (10 + 1 without)?
+  two-split-k<k>                a 3-line note (Body 30) and a 10-line one in Body k = 38, 43, 44 (room for 7, 1, 0 of it)
+  cont-new                      cont-40 and a 3-line note in Body 40 (on page 2 under the continued one?)
+  cont-new-sep24, cont-sep24    the same and cont-40 with the continuation separator 24pt before (which separator is used)
+  cont-new-sepdouble, cont-sepdouble   ... with the continuation separator double-spaced
+  cont-septext                  cont-40 with a word after each separator's mark (which paragraph is shown where)
+  para-ref2, para-ref5[-nowidow]   39 body lines, then a 6-line paragraph with a 10-line note's reference at the end
+                                of its line 2 (room for 6 note lines under it) or 5 (room for 3: the line after it alone on page 2)
+  cont-notice-empty-k44         cont-k44 with an empty continuation notice paragraph (does it take a line?)
+  cont-sep1double               cont-40 with the separator double-spaced, the continuation separator single
+  cont-100                      a 100-line note in Body 35: on over two page breaks
+  cont-notice-40, -100, -k44..46   cont-40, cont-100 and cont-k44..46 with a continuation notice (id 1; the note id 2)
   fnbefore-1, fnbefore-two      FootnoteText 12pt before (single, 0 after): one, two one-line footnotes
   body-super                    no footnotes: 40 body lines with a 11pt superscript "x" each (does it raise the line?)
   limit-<d>                     a body that ends <d>pt from where the hypothesis puts its limit above a
@@ -69,10 +81,17 @@ def styles(ppr_default="<w:pPr>" + SINGLE + "</w:pPr>", fn_ppr=SINGLE, ref_rpr='
             '<w:style w:type="character" w:styleId="FootnoteReference"><w:name w:val="footnote reference"/><w:basedOn w:val="DefaultParagraphFont"/>'
             f'<w:rPr>{ref_rpr}</w:rPr></w:style></w:styles>')
 
-def separators(sep_ppr=SINGLE, sep_rpr=""):
+def separators(sep_ppr=SINGLE, sep_rpr="", cont_ppr=None, notice=None):
+    """`cont_ppr`: the continuation separator's own paragraph properties (default: the separator's);
+    `notice`: the text of a continuation notice (w:type="continuationNotice", id 1, in FootnoteText)."""
     rpr = f'<w:rPr>{sep_rpr}</w:rPr>' if sep_rpr else ''
+    cont_ppr = sep_ppr if cont_ppr is None else cont_ppr
+    notice_run = f'<w:r><w:t>{notice}</w:t></w:r>' if notice else ''
+    notice_xml = (f'<w:footnote w:type="continuationNotice" w:id="1"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>'
+                  f'{notice_run}</w:p></w:footnote>') if notice is not None else ''
     return (f'<w:footnote w:type="separator" w:id="-1"><w:p><w:pPr>{sep_ppr}{rpr}</w:pPr><w:r>{rpr}<w:separator/></w:r></w:p></w:footnote>'
-            f'<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:pPr>{sep_ppr}{rpr}</w:pPr><w:r>{rpr}<w:continuationSeparator/></w:r></w:p></w:footnote>')
+            f'<w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:pPr>{cont_ppr}{rpr}</w:pPr><w:r>{rpr}<w:continuationSeparator/></w:r></w:p></w:footnote>'
+            + notice_xml)
 
 def lines_text(note, count, super_each=False):
     parts = []
@@ -113,7 +132,7 @@ def body(count=60, refs=None, spacer=None):
         ps.append(body_para(k, refs.get(k, "")))
     return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {NS}><w:body>{"".join(ps)}{SECT}</w:body></w:document>')
 
-def write(name, document, notes, styles_xml=None, seps=None):
+def write(name, document, notes, styles_xml=None, seps=None, notice=False):
     styles_xml = styles_xml or styles()
     seps = seps if seps is not None else separators()
     ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
@@ -130,7 +149,8 @@ def write(name, document, notes, styles_xml=None, seps=None):
              '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footnotes" Target="footnotes.xml"/></Relationships>')
     settings = (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:settings {NS}><w:compat>'
                 '<w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>'
-                '<w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/></w:footnotePr></w:settings>')
+                '<w:footnotePr><w:footnote w:id="-1"/><w:footnote w:id="0"/>' + ('<w:footnote w:id="1"/>' if notice else '') +
+                '</w:footnotePr></w:settings>')
     footnotes = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:footnotes {NS}>{seps}{"".join(notes)}</w:footnotes>'
     with zipfile.ZipFile(os.path.join(out, name + ".docx"), "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("[Content_Types].xml", ct); z.writestr("_rels/.rels", rels)
@@ -157,6 +177,44 @@ for k in (44, 45, 46, 47):
     write(f"cont-k{k}", body(refs={k: ref(1)}), [footnote(1, 10)])
 for k in (45, 46):
     write(f"cont-k{k}-nowidow", body(refs={k: ref(1)}), [footnote(1, 10)], styles(fn_ppr='<w:widowControl w:val="0"/>' + SINGLE))
+# A note broken across pages (the rule the cont-* above confirmed), at its edges:
+write("cont11-k38", body(refs={38: ref(1)}), [footnote(1, 11)])
+write("cont11-k38-nowidow", body(refs={38: ref(1)}), [footnote(1, 11)], styles(fn_ppr='<w:widowControl w:val="0"/>' + SINGLE))
+for k in (38, 43, 44):
+    write(f"two-split-k{k}", body(refs={30: ref(1), k: ref(2)}), [footnote(1, 3), footnote(2, 10)])
+write("cont-new", body(refs={35: ref(1), 40: ref(2)}), [footnote(1, 40), footnote(2, 3)])
+BEFORE24 = '<w:spacing w:before="480" w:after="0" w:line="240" w:lineRule="auto"/>'
+DOUBLE = '<w:spacing w:before="0" w:after="0" w:line="480" w:lineRule="auto"/>'
+write("cont-new-sep24", body(refs={35: ref(1), 40: ref(2)}), [footnote(1, 40), footnote(2, 3)], seps=separators(cont_ppr=BEFORE24))
+write("cont-sep24", body(refs={35: ref(1)}), [footnote(1, 40)], seps=separators(cont_ppr=BEFORE24))
+write("cont-new-sepdouble", body(refs={35: ref(1), 40: ref(2)}), [footnote(1, 40), footnote(2, 3)], seps=separators(cont_ppr=DOUBLE))
+write("cont-sepdouble", body(refs={35: ref(1)}), [footnote(1, 40)], seps=separators(cont_ppr=DOUBLE))
+TEXTSEPS = separators().replace('<w:separator/></w:r>', '<w:separator/></w:r><w:r><w:t>Sepword</w:t></w:r>').replace(
+    '<w:continuationSeparator/></w:r>', '<w:continuationSeparator/></w:r><w:r><w:t>Contword</w:t></w:r>')
+write("cont-septext", body(refs={35: ref(1)}), [footnote(1, 40)], seps=TEXTSEPS)
+def body_with_para(before, lines, ref_line, note, widow=True, after=20):
+    """`before` single-line paragraphs, then one paragraph of `lines` lines (line breaks) with the
+    reference to `note` at the end of line `ref_line`, then `after` more."""
+    runs = []
+    for k in range(1, lines + 1):
+        if k > 1: runs.append('<w:r><w:br/></w:r>')
+        runs.append(f'<w:r><w:t xml:space="preserve">Para line {k}</w:t></w:r>')
+        if k == ref_line: runs.append(ref(note))
+    ppr = SINGLE + ('' if widow else '<w:widowControl w:val="0"/>')
+    ps = [body_para(k) for k in range(1, before + 1)]
+    ps.append(f'<w:p><w:pPr>{ppr}</w:pPr>{"".join(runs)}</w:p>')
+    ps += [body_para(k) for k in range(before + 1, before + after + 1)]
+    return (f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {NS}><w:body>{"".join(ps)}{SECT}</w:body></w:document>')
+write("para-ref2", body_with_para(39, 6, 2, 1), [footnote(1, 10)])
+write("para-ref5", body_with_para(39, 6, 5, 1), [footnote(1, 10)])
+write("para-ref5-nowidow", body_with_para(39, 6, 5, 1, widow=False), [footnote(1, 10)])
+write("cont-notice-empty-k44", body(refs={44: ref(2)}), [footnote(2, 10)], seps=separators(notice=""), notice=True)
+write("cont-sep1double", body(refs={35: ref(1)}), [footnote(1, 40)], seps=separators(sep_ppr=DOUBLE, cont_ppr=SINGLE))
+write("cont-100", body(count=120, refs={35: ref(1)}), [footnote(1, 100)])
+write("cont-notice-40", body(refs={35: ref(2)}), [footnote(2, 40)], seps=separators(notice="Continued on the next page"), notice=True)
+for k in (44, 45, 46):
+    write(f"cont-notice-k{k}", body(refs={k: ref(2)}), [footnote(2, 10)], seps=separators(notice="Continued on the next page"), notice=True)
+write("cont-notice-100", body(count=120, refs={35: ref(2)}), [footnote(2, 100)], seps=separators(notice="Continued on the next page"), notice=True)
 BEFORE12 = '<w:spacing w:before="240" w:after="0" w:line="240" w:lineRule="auto"/>'
 write("fnbefore-1", body(refs={1: ref(1)}), [footnote(1, 1)], styles(fn_ppr=BEFORE12))
 write("fnbefore-two", body(refs={1: ref(1), 2: ref(2)}), [footnote(1, 1), footnote(2, 1)], styles(fn_ppr=BEFORE12))

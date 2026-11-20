@@ -3373,13 +3373,11 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
             match Portable.Dict.tryFind page footnoteTopByPage with
             | ValueSome top when top.Y <= layout.Y -> ()
             | _ -> footnoteTopByPage.[page] <- layout
-        // (The separator is a paragraph above the first note, its rule in its line; above the part
-        // of a note that goes on from the page before, the continuation separator.)
+        // (The separator is a paragraph above the first note, its rule in its line - above the part
+        // of a note that goes on from the page before too: Word 2019 does not show the continuation
+        // separator, see Layout.footnoteSeparatorHeight.)
         let separator = Layout.footnoteSeparatorFor settings measureText measureRange doc "separator"
-        let continuation = lazy (Layout.footnoteSeparatorFor settings measureText measureRange doc "continuationSeparator")
         for KeyValue(page, top) in footnoteTopByPage do
-            let carried = not ((noteAreaSlotOfLayoutId top.BlockId).StartsWith (footnoteBlockIdPrefix + string page + "_"))
-            let separator = if carried then continuation.Force() else separator
             let separatorX = settings.PaddingLeft
             let ruleY = top.Y - separator.SeparatorHeight + separator.RuleCenter
             commands.Add(StrokeLine ("#000000", separator.RuleThickness, 0, 0.0, separatorX, ruleY, separatorX + 192.0, ruleY))

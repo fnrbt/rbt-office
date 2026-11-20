@@ -13,10 +13,12 @@
 // - the separator is a paragraph of its own above the notes (footnotes.xml's w:type="separator"):
 //   double-spaced, or in 20pt, it takes that much more room;
 // - the body runs down to the separator's top: a line whose text ends below it goes on.
-// Not yet ours (the cont-* fixtures, recorded in docs/layout-parity-flow.md): a note too long for the
-// room under its reference is broken there, as a paragraph with widow control - the reference's line
-// stays when two of its lines fit (one without widow control), the rest goes on under the next
-// page's continuation separator.
+// - a note too long for the room under its reference is broken there, as a paragraph with widow
+//   control - the reference's line stays when two of its lines fit (one without widow control), and
+//   the page's text ends with it; the rest goes on at the next page's foot, before that page's own
+//   notes, under the separator (not the continuation separator: cont-septext, cont-sep*); a page it
+//   takes all of has no text (cont-100); the continuation notice, when there is one, under the part
+//   that goes on (cont-notice-*). Word's note lines by page are its PDFs' (word/pdf-lines.tsv).
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
@@ -60,12 +62,16 @@ let ours name =
                 yield (match l.Lines with line :: _ -> pageOf line.Y | [] -> pageOf l.Y) ]
     let notes =
         [ for l in layouts do
-            if l.BlockId.StartsWith Layout.footnoteBlockIdPrefix then
+            if l.BlockId.StartsWith Layout.footnoteBlockIdPrefix && not (l.BlockId.Contains "_notice_") then
                 for line in l.Lines do
                     let page = pageOf line.Y
                     yield page, toPt (line.Y - pageTop page), toPt line.Height ]
         |> List.sortBy (fun (page, top, _) -> page, top)
-    body, notes
+    let notices =
+        [ for l in layouts do
+            if l.BlockId.StartsWith Layout.footnoteBlockIdPrefix && l.BlockId.Contains "_notice_" then
+                for line in l.Lines do yield pageOf line.Y ]
+    body, notes, notices
 
 /// Word's: the page of each body paragraph, and the tops of the footnotes' lines.
 let word name =
@@ -74,25 +80,40 @@ let word name =
     let notes = [ for r in rows do if r.[0].StartsWith "fn" then yield float r.[2] ]
     body, notes
 
+/// Word's note lines (the lines starting "Note") and continuation notices ("Continued ...") by page, from its PDF.
+let wordPdf =
+    File.ReadAllLines(Path.Combine(dir, "word", "pdf-lines.tsv"))
+    |> Array.map (fun l -> l.Split '\t')
+    |> Array.filter (fun r -> r.[1] = "text")
+    |> Array.groupBy (fun r -> r.[0])
+    |> Map.ofArray
+let wordNotesByPage name word =
+    match wordPdf.TryFind name with
+    | Some rows -> rows |> Array.filter (fun r -> r.[6] = word) |> Array.countBy (fun r -> int r.[2]) |> Array.sort |> List.ofArray
+    | None -> []
+
 let fixtures =
     Directory.GetFiles(dir, "*.docx") |> Array.map Path.GetFileNameWithoutExtension |> Array.sort |> Array.toList
 // The note broken at its reference (not ours yet), and two where Word's single line of Calibri 11pt
 // (13.4307pt in its PDFs, ours 13.4277) puts the 45th line's text 0.03 and 0.3pt below the limit.
-let pending = set [ "cont-40"; "cont-k44"; "cont-k45"; "cont-k45-nowidow"; "cont-k46-nowidow"; "limit-p00"; "dflt115-inherit-two" ]
-check "the fixtures are all there" (fixtures.Length) 35
+let pending = set [ "limit-p00"; "dflt115-inherit-two" ]
+check "the fixtures are all there" (fixtures.Length) 57
 
 for name in fixtures do
-    let ourBody, ourNotes = ours name
+    let ourBody, ourNotes, ourNotices = ours name
     let wordBody, wordNotes = word name
     if not (pending.Contains name) then
         check (sprintf "%s: the pages of the body's paragraphs" name) ourBody wordBody
-        if not (name.StartsWith "cont") then
-            check (sprintf "%s: footnote lines" name) ourNotes.Length wordNotes.Length
-            // (Word's tops are whole pixels, rounded either way: 707.79pt is 943 or 944px.)
+        check (sprintf "%s: footnote lines" name) ourNotes.Length wordNotes.Length
+        // (Word's tops are whole pixels, rounded either way: 707.79pt is 943 or 944px.)
+        if ourNotes.Length = wordNotes.Length then
             List.iteri2 (fun i (_, top, _) wordTop -> near 0.75 (sprintf "%s: footnote line %d's top" name (i + 1)) top wordTop) ourNotes wordNotes
+        if wordPdf.ContainsKey name && (name.StartsWith "cont" || name.StartsWith "two-split" || name.StartsWith "para-ref") then
+            check (sprintf "%s: note lines by page" name) (ourNotes |> List.countBy (fun (page, _, _) -> page) |> List.sort) (wordNotesByPage name "Note")
+            check (sprintf "%s: continuation notices by page" name) (ourNotices |> List.countBy id |> List.sort) (wordNotesByPage name "Continued")
 
 // The block ends at the bottom margin, the last line's bottom at 720pt.
-let lastBottom name = let _, notes = ours name in notes |> List.last |> fun (_, top, height) -> top + height
+let lastBottom name = let _, notes, _ = ours name in notes |> List.last |> fun (_, top, height) -> top + height
 for name in [ "one-1"; "one-3"; "two-1"; "custom-1"; "nosuper-1"; "super-10" ] do
     near 0.01 (sprintf "%s: the last footnote line ends at the bottom margin" name) (lastBottom name) 720.0
 // ... and the last note's space after (12pt; 8pt inherited) with it.
@@ -100,13 +121,13 @@ near 0.01 "fnspaced-2: the last line and its 12pt after end at 720pt" (lastBotto
 near 0.01 "dflt115-inherit-2: the last line and its inherited 8pt after end at 720pt" (lastBottom "dflt115-inherit-2" + 8.0) 720.0
 // A 10pt Calibri note line is 12.21pt, its reference mark raised or not.
 for name in [ "one-1"; "nosuper-1"; "custom-1" ] do
-    let _, notes = ours name
+    let _, notes, _ = ours name
     near 0.01 (sprintf "%s: the note's line is 12.21pt" name) (notes.Head |> fun (_, _, h) -> h) 12.207
 // The separator is its paragraph: Body 46 (its text 689.8pt down) fits above a single-spaced
 // Calibri 11pt separator (13.43pt) and a one-line note, not above a double-spaced or a 20pt one.
-check "one-1: Body 46 on page 1" (fst (ours "one-1") |> List.item 45) 1
-check "sep-double-1: Body 46 on page 2" (fst (ours "sep-double-1") |> List.item 45) 2
-check "sep-big-1: Body 46 on page 2" (fst (ours "sep-big-1") |> List.item 45) 2
+check "one-1: Body 46 on page 1" ((let b, _, _ = ours "one-1" in b) |> List.item 45) 1
+check "sep-double-1: Body 46 on page 2" ((let b, _, _ = ours "sep-double-1" in b) |> List.item 45) 2
+check "sep-big-1: Body 46 on page 2" ((let b, _, _ = ours "sep-big-1" in b) |> List.item 45) 2
 
 printfn "footnote-block: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
