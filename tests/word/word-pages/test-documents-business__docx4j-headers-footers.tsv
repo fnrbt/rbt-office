@@ -14,11 +14,11 @@ pages	31
 13	17710	[Example: Consider a more complex three page document with different first, odd, and even page	end example]	[Example: Consider a more complex three page document with different first, odd, and even page	end example]
 14	18287	Parent Elements	Reference	Parent Elements	Reference
 15	19097	source	not	source	not
-16	19924	§Error! Reference source not found.		§Error! Reference source not found.	§Error! Reference source not found.
+16	19924	found.		found.	found.
 17	20612	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:	proofErr (Proofing Error Anchor)	Header part. The resulting header is represented by the following WordprocessingML:
 18	21680	<w:hdr>	Odd page header part:	<w:hdr>	Odd page header part:
 19	22427	<w:hdr>	source	<w:hdr>	source
-20	23146	not		not	§Error! Reference source not found.
+20	23146	not		not	found.
 21	23996	moveFrom (Move Source Run Content)	Reference	moveFrom (Move Source Run Content)	Reference
 22	24750	source	If any type of header is omitted for a given section, then the following rules shall apply.	source	If any type of header is omitted for a given section, then the following rules shall apply.
 23	26122	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>	If no headerReference for the first page header is specified and the titlePg element is	</Relationships>
@@ -28,5 +28,5 @@ pages	31
 27	33373	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall	pgMar (Page Margins)	bottom of the page extent, but the contents of the main document story shall
 28	35385	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]	start one-half of an inch from the page extents. To specify these boundaries, the	after which any margin value shall be added. end example]
 29	37688		top (Top Margin	The possible values for this attribute are defined by the ST_TwipsMeasure	top (Top Margin
-30	39750	top (Top Margin Spacing)		top (Top Margin Spacing)	
+30	39750	Spacing)		Spacing)	
 31	41794	The following XML Schema fragment defines the contents of this element:		The following XML Schema fragment defines the contents of this element:	</complexType>

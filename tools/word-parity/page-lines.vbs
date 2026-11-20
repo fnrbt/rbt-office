@@ -8,8 +8,8 @@ Option Explicit
 '   <page> TAB <start> TAB <first line> TAB <last line> TAB <first text line> TAB <last text line>
 ' where <start> is the character position of the page's first character in the
 ' main story, the lines are the text of the page's first and last line
-' (Selection's HomeKey / EndKey of wdLine) - tabs, paragraph, cell and line marks
-' as spaces - and the text lines the first and last with a letter or number (up
+' (Selection's HomeKey / EndKey of wdLine; in a table's cell, see LineRange) - tabs,
+' paragraph, cell and line marks as spaces - and the text lines the first and last with a letter or number (up
 ' to 12 lines in from either end; empty when none).
 ' With "pdf" it also exports <out dir>\<name>.pdf. Read-only, macros off, links
 ' not updated; the document is closed unsaved.
@@ -70,13 +70,55 @@ Function Clean(s)
   Clean = Trim(t)
 End Function
 
-Function LineAt(d, pos)
-  Dim sel
+' The line at pos. Outside a table: Selection's HomeKey / EndKey of wdLine. In a table's cell those
+' go by the row and the paragraph, not the line: the whole of a cell paragraph a page break splits,
+' from its start on the page before (docx4j-headers-footers p16 gave "Error! Reference source not
+' found." for the "found." atop the page), a cell paragraph's lines all as one, a row's line across its
+' cells ("Panel: who pays for the wires?Room B - 50 min"); the predefined bookmark \Line is no better
+' there (at a cell's end it starts a character late: "9" of "29"). In a cell the line is the characters
+' of pos's paragraph on pos's page at pos's height (Information wdActiveEndPageNumber,
+' wdVerticalPositionRelativeToPage): those only go down along the paragraph, so a binary search either
+' way finds where the line starts and ends.
+Function LineKey(d, i)
+  Dim r
+  Set r = d.Range(i, i)
+  LineKey = r.Information(3) * 100000 + r.Information(6)
+End Function
+
+Function LineRange(d, pos)
+  Dim sel, para, ps, pe, k, lo, hi, m
   Set sel = d.ActiveWindow.Selection
   sel.SetRange pos, pos
-  sel.HomeKey 5
-  sel.EndKey 5, 1
-  LineAt = Clean(sel.Text)
+  If sel.Information(12) Then
+    Set para = d.Range(pos, pos).Paragraphs(1).Range
+    ps = para.Start
+    pe = para.End - 1
+    If pos > pe Then pos = pe
+    If pos < ps Then pos = ps
+    k = LineKey(d, pos)
+    lo = ps
+    hi = pos
+    Do While lo < hi
+      m = (lo + hi) \ 2
+      If LineKey(d, m) < k Then lo = m + 1 Else hi = m
+    Loop
+    ps = lo
+    lo = pos
+    hi = pe
+    Do While lo < hi
+      m = (lo + hi + 1) \ 2
+      If LineKey(d, m) > k Then hi = m - 1 Else lo = m
+    Loop
+    Set LineRange = d.Range(ps, lo + 1)
+  Else
+    sel.HomeKey 5
+    sel.EndKey 5, 1
+    Set LineRange = d.Range(sel.Start, sel.End)
+  End If
+End Function
+
+Function LineAt(d, pos)
+  LineAt = Clean(LineRange(d, pos).Text)
 End Function
 
 Function HasText(s)
@@ -93,21 +135,20 @@ End Function
 
 ' The first (dir = 1) or last (dir = -1) line between a and b with text.
 Function TextLine(d, a, b, dir)
-  Dim sel, i, t, prev
+  Dim sel, i, t, prev, r
   Set sel = d.ActiveWindow.Selection
   TextLine = ""
   If dir = 1 Then sel.SetRange a, a Else sel.SetRange b, b
   For i = 1 To 12
-    sel.HomeKey 5
-    sel.EndKey 5, 1
-    If sel.Start > b Or sel.End < a Then Exit Function
-    t = Clean(sel.Text)
+    Set r = LineRange(d, sel.Start)
+    If r.Start > b Or r.End < a Then Exit Function
+    t = Clean(r.Text)
     If HasText(t) Then
       TextLine = t
       Exit Function
     End If
-    prev = sel.Start
-    sel.Collapse 1
+    prev = r.Start
+    sel.SetRange r.Start, r.Start
     If dir = 1 Then sel.MoveDown 5, 1 Else sel.MoveUp 5, 1
     If sel.Start = prev Then Exit Function
   Next
