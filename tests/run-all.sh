@@ -66,7 +66,7 @@ word_suites=(
     column-balance section-end macros outline line-boxes marker-ascent endnote-start row-break rfonts-precedence footnote-block border-space
     float-wrap long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
     table-style-props border-across vmerge-content row-continue list-sections
-    hyphen-break hyphenation justify-squeeze
+    hyphen-break hyphenation justify-squeeze data-binding
 )
 
 # These are required corpus anchors and all drawing fixtures that the formats

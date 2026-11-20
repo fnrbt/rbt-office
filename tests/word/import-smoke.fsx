@@ -452,7 +452,8 @@ check "not numbered: the style's" (indentsOf numberedDoc "not numbered") (Some (
 
 // A run-level bound control is not a block control: its sibling text remains
 // outside the wrapper, and both the binding and its custom XML must survive
-// the native model -> writer-package path.
+// the native model -> writer-package path. (The first control shows its custom XML node's value, "the
+// UPDATED element 1 contents", as Word does - not the text cached in document.xml: DataBinding.)
 let bindingNative = importFixture "tests/test-documents-business/docx4j-binding-simple.docx" Rbt.Word.Import.importDoc
 let bindingParagraphs = paragraphsOfBlocks bindingNative.Blocks
 let boundRuns (paras: ParagraphBlock list) =
@@ -464,15 +465,15 @@ let boundRuns (paras: ParagraphBlock list) =
 let boundNative = boundRuns bindingParagraphs
 check "bound text stays inline with sibling text"
     (bindingParagraphs |> List.map textOfPara)
-    [ "Contents of element 1: element 1 contents"; "Contents of element 2: element 2 contents" ]
+    [ "Contents of element 1: the UPDATED element 1 contents"; "Contents of element 2: element 2 contents" ]
 check "both inline controls keep their distinct XPath bindings"
     (boundNative |> List.map (fun (text, controls) ->
         text, controls |> List.map (fun control ->
             control.Xml |> Option.map (fun xml ->
                 xml.Contains "<w:dataBinding" && xml.Contains "w:storeItemID="
-                && xml.Contains (if text = "element 1 contents" then "/myxml[1]/element1[1]" else "/myxml[1]/element2[1]"))
+                && xml.Contains (if text = "the UPDATED element 1 contents" then "/myxml[1]/element1[1]" else "/myxml[1]/element2[1]"))
             |> Option.defaultValue false)))
-    [ "element 1 contents", [ true ]; "element 2 contents", [ true ] ]
+    [ "the UPDATED element 1 contents", [ true ]; "element 2 contents", [ true ] ]
 ok "bound controls keep separate identities"
     (boundNative.Length = 2 && (snd boundNative.[0]).Head.Group <> (snd boundNative.[1]).Head.Group)
     "inline wrappers were merged"
@@ -488,12 +489,12 @@ check "bound custom XML part is retained"
 let firstBound = bindingParagraphs.Head
 let editedBound =
     bindingNative
-    |> Rbt.Word.Document.setCursor firstBound.Id ("Contents of element 1: e".Length)
+    |> Rbt.Word.Document.setCursor firstBound.Id ("Contents of element 1: t".Length)
     |> Rbt.Word.Document.insertText "!"
 let editedRuns = boundRuns (paragraphsOfBlocks editedBound.Blocks)
 check "typing inside a binding stays inside that control"
     (editedRuns |> List.map (fun (text, layers) -> text, layers.Head.Group))
-    [ "e!lement 1 contents", (snd boundNative.[0]).Head.Group
+    [ "t!he UPDATED element 1 contents", (snd boundNative.[0]).Head.Group
       "element 2 contents", (snd boundNative.[1]).Head.Group ]
 
 let boundExport =
@@ -515,7 +516,7 @@ check "model-only XML retains two inline bound controls"
 check "edited control text is inside its binding"
     (writtenControls |> List.map (fun control ->
         control.Descendants(wordName "t") |> Seq.map (fun text -> text.Value) |> String.concat ""))
-    [ "e!lement 1 contents"; "element 2 contents" ]
+    [ "t!he UPDATED element 1 contents"; "element 2 contents" ]
 
 // A TOC field encloses several paragraphs and nested page-reference fields.
 // Model-only regeneration must write the actual begin/instruction/separate/end

@@ -159,6 +159,18 @@ function preservedParts(name, expect) {
 
 // Mapped rich-text controls store a flat WordprocessingML package (escaped as XML text),
 // rather than the visible text of the control, in their custom XML node.
+// A block-level control bound to custom XML around the first paragraph, an inline one in the second (DataBinding).
+const boundBody = (name, city) => `<w:sdt><w:sdtPr><w:alias w:val="Customer"/><w:id w:val="201"/>` +
+    `<w:dataBinding w:prefixMappings="xmlns:ns0='urn:example:bound'" w:xpath="/ns0:root[1]/ns0:name[1]" w:storeItemID="{9B2E4D66-1E3C-4F88-AD2F-6C3B7A1E4F22}"/><w:text/></w:sdtPr>` +
+    `<w:sdtContent>${p(name)}</w:sdtContent></w:sdt>` +
+    `<w:p><w:r><w:t xml:space="preserve">City: </w:t></w:r><w:sdt><w:sdtPr><w:id w:val="202"/><w:dataBinding w:prefixMappings="xmlns:ns0='urn:example:bound'" w:xpath="/ns0:root[1]/ns0:city[1]" w:storeItemID="{9B2E4D66-1E3C-4F88-AD2F-6C3B7A1E4F22}"/><w:text/></w:sdtPr>` +
+    `<w:sdtContent><w:r><w:t>${city}</w:t></w:r></w:sdtContent></w:sdt></w:p>` + p('closing paragraph');
+const boundStore = {
+    'customXml/item1.xml': '<b:root xmlns:b="urn:example:bound"><b:name>Bea Ray</b:name><b:city>Newport</b:city></b:root>',
+    'customXml/itemProps1.xml': '<?xml version="1.0" encoding="UTF-8" standalone="no"?>\n<ds:datastoreItem xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml" ds:itemID="{9B2E4D66-1E3C-4F88-AD2F-6C3B7A1E4F22}"><ds:schemaRefs/></ds:datastoreItem>',
+    'customXml/_rels/item1.xml.rels': '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/></Relationships>',
+};
+
 const notesBinding = `<?xml version="1.0" standalone="yes"?><?mso-application progid="Word.Document"?>` +
     `<pkg:package xmlns:pkg="http://schemas.microsoft.com/office/2006/xmlPackage">` +
     `<pkg:part pkg:name="/_rels/.rels" pkg:contentType="application/vnd.openxmlformats-package.relationships+xml"><pkg:xmlData>` +
@@ -384,6 +396,37 @@ const docs = [
             { boldKeeps: '<w:dataBinding [^>]*w:xpath="/root\\[1\\]/name\\[1\\]"' },
             { boldKeeps: '<w14:checkbox><w14:checked w14:val="1"/>' },
             { boldKeeps: '<w15:dataBinding [^>]*w:xpath="/root\\[1\\]/notes\\[1\\]"' },
+        ],
+    },
+    {
+        // Controls bound to custom XML (DataBinding), their cached text their nodes' values: the Q typed into
+        // the first paragraph - a block-level control of its own - goes into its node of the custom XML part
+        // when the edit is saved; nothing else of the part changes.
+        name: 'synthetic/bound-controls',
+        body: boundBody('Bea Ray', 'Newport'),
+        rels: `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
+        extra: boundStore,
+        types: '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>',
+        expect: [
+            { readText: 'Bea Ray' }, { readText: 'City: Newport' },
+            { same: 'customXml/item1.xml' }, { same: 'customXml/itemProps1.xml' },
+            { editPart: 'customXml/item1.xml', editHas: '<b:name>QBea Ray</b:name><b:city>Newport</b:city>' },
+            { editKeeps: '<w:dataBinding [^>]*w:xpath="/ns0:root\\[1\\]/ns0:name\\[1\\]"' },
+        ],
+    },
+    {
+        // The same, the cached text not the nodes' values ("Ann Lee", "Oldtown"): the reader shows the values,
+        // as Word does on opening it, and a save writes them in document.xml ({bound}: the unedited save's
+        // document.xml is not the original's).
+        name: 'synthetic/bound-values',
+        body: boundBody('Ann Lee', 'Oldtown'),
+        rels: `<Relationship Id="rId44" Type="${REL}/customXml" Target="../customXml/item1.xml"/>`,
+        extra: boundStore,
+        types: '<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>',
+        expect: [
+            { bound: true }, { readText: 'Bea Ray' }, { readText: 'City: Newport' },
+            { same: 'customXml/item1.xml' },
+            { part: 'word/document.xml', has: '<w:t>Newport</w:t>' }, { part: 'word/document.xml', lacks: 'Oldtown' },
         ],
     },
     {

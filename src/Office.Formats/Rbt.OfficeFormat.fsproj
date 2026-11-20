@@ -18,6 +18,7 @@
     <Compile Include="src/VbaProject.fs" />
     <Compile Include="src/XmlText.fs" />
     <Compile Include="src/DocxTypes.fs" />
+    <Compile Include="src/DataBinding.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/WordEditorPackage.fs" />
     <Compile Include="src/EmbeddedFonts.fs" />
