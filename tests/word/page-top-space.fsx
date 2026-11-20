@@ -63,13 +63,13 @@ let oursOf (file: string) =
 
 // What ours does not do yet (docs/layout-parity-flow.md, ledger: open):
 // - a page break inside a paragraph's text: the reader makes it a break after the paragraph (brkmid);
-// - w:suppressSpBfAfterPgBrk is not read (pages-c14-sup's brkin);
-// - a column break in a paragraph of its own: Word puts its paragraph mark at the next column's top.
+// - w:suppressSpBfAfterPgBrk is not read (pages-c14-sup's brkin).
+// (A column break in a paragraph of its own - cols-brkpara: its mark at the next column's top, a line
+// high - is ours: see tests/word/float-wrap.fsx, cbr-*.)
 let known =
     set [ for d in [ "pages-c14"; "pages-c14-sup"; "pages-c15"; "pages-c15-sup" ] -> d, "P-brkmid"
           for d in [ "sect-c14"; "sect-c15" ] -> d, "P-s-brkmid"
-          yield "pages-c14-sup", "P-brkin"
-          for d in [ "cols-brkpara-c14"; "cols-brkpara-c15" ] -> d, "P-col-brkpara" ]
+          yield "pages-c14-sup", "P-brkin" ]
 
 let mutable pass = 0
 let mutable fail = 0

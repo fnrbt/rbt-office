@@ -50,6 +50,14 @@ the name says. Only what the name says varies:
   col-cross                     the picture anchored in column 1 (A), 300pt from the margin (into column 2)
   col-tb-low                    the magazine's case: a shape topped-and-bottomed in a paragraph near
                                 the first column's bottom (col-tb-low-start: its anchor at B's start)
+  colq-k<k>-<end|start>-c<14|15>   the pull quote (216 x 73.7pt, 0.2cm down, top and bottom) at the end /
+                                start of a 6-line B, k one-line paragraphs above it in the first of two columns;
+                                -full: the second column full of text; -a6 / -a4: B 6pt / 4pt after;
+                                colq-k46-a6-noshape: no shape
+  mag-*                         the showcase's magazine-feature.docx, its quote moved / resized, Word 2019's
+                                layout, without hyphenation, indent, space after ... (see Batch 7)
+  cbr-*                         a column break's paragraph mark: text ending in one, a paragraph of only one
+                                (12pt after, its mark 20pt, its break 20pt), two in a row
   <name>-c14                    the same in Word 2010's layout (compatibilityMode 14)
   gapil-<g>[-c14|-c12|-nocompat], gapilr-<g>   5pt words ("il") in a band of g pt (gapil-165t: 16.5pt),
                                 in that compatibility mode
@@ -335,4 +343,83 @@ for compat in (14, 12, None):
     for g in (16, 18, 24, 36, 48, 72):
         tag = f"c{compat}" if compat else "nocompat"
         write(f"gapil-{g}-{tag}", A + para(picture(2 * IN, IN, ("margin", g), TOP) + run(" ".join(["il"] * 700))) + C, compat=compat)
+# Batch 6. The magazine's pull quote: a shape (216 x 73.7pt, 0.2cm down its paragraph, top and bottom)
+# anchored at the end (or start) of a 6-line paragraph B that starts k lines down the first of two
+# columns (k one-line paragraphs above it; a column holds 48): does B stay, go below the shape, go on in
+# the second column whole or in part, and where is the shape? In Word 2010's and 2019's layouts.
+B6 = lambda where: b_para(shape(216, 2.6 / 2.54 * IN, ("column", 0), ("paragraph", 0.2 / 2.54 * IN), wrap="topAndBottom"), where, count=48)
+for compat in (14, 15):
+    for k in (30, 36, 37, 39, 41, 42, 43):
+        write(f"colq-k{k}-end-c{compat}", lines_of(k) + B6("end") + C, columns=2, compat=compat)
+    for k in (39, 42, 43):
+        write(f"colq-k{k}-start-c{compat}", lines_of(k) + B6("start") + C, columns=2, compat=compat)
+# A column break's paragraph mark: text ending in a column break (B after it, nothing before / 12pt
+# before), a paragraph that is only a column break with 12pt after, with its mark 20pt (w:pPr/w:rPr), with
+# its break's run 20pt, and two such paragraphs in a row.
+def colbreak(text="", ppr="", mark="", brk=""):
+    return f'<w:p><w:pPr>{ppr}{SINGLE}{mark}</w:pPr>{run(text) if text else ""}<w:r>{brk}<w:br w:type="column"/></w:r></w:p>'
+B_PROBE = para(run(words("b", 40, 3)))
+B_PROBE12 = ('<w:p><w:pPr><w:spacing w:before="240" w:after="0" w:line="240" w:lineRule="auto"/><w:jc w:val="both"/></w:pPr>'
+             + run(words("b", 40, 3)) + '</w:p>')
+for compat in (14, 15):
+    write(f"cbr-text-c{compat}", A + colbreak(words("t", 5, 2)) + B_PROBE, columns=2, compat=compat)
+    write(f"cbr-text-b12-c{compat}", A + colbreak(words("t", 5, 2)) + B_PROBE12, columns=2, compat=compat)
+    write(f"cbr-own-a12-c{compat}", A + colbreak().replace(SINGLE, '<w:spacing w:before="0" w:after="240" w:line="240" w:lineRule="auto"/>') + B_PROBE, columns=2, compat=compat)
+    write(f"cbr-own-mark20-c{compat}", A + colbreak(mark='<w:rPr><w:sz w:val="40"/></w:rPr>') + B_PROBE, columns=2, compat=compat)
+    write(f"cbr-own-run20-c{compat}", A + colbreak(brk='<w:rPr><w:sz w:val="40"/></w:rPr>') + B_PROBE, columns=2, compat=compat)
+    write(f"cbr-two-c{compat}", A + colbreak() + colbreak() + B_PROBE, columns=2, compat=compat)
+# Batch 7. Two lines' room below the shape (k40); and the showcase's magazine-feature.docx itself (its pull
+# quote's paragraph would start 2 lines above the first column's foot below the quote: Word 2010's layout
+# moved it to the second column whole) in Word 2019's layout, the quote at the paragraph's top (3 lines'
+# room), 60pt / 47pt high (3 / 4 lines' room).
+for compat in (14, 15):
+    write(f"colq-k40-end-c{compat}", lines_of(40) + B6("end") + C, columns=2, compat=compat)
+def magazine(name, compat=14, offset=None, height=None, part_edits=()):
+    source = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../tests/test-documents-showcase/magazine-feature.docx")
+    with zipfile.ZipFile(source) as z:
+        parts = {item: z.read(item) for item in z.namelist()}
+    doc = parts["word/document.xml"].decode("utf-8")
+    if offset is not None:
+        doc = doc.replace('<wp:positionV relativeFrom="paragraph"><wp:posOffset>72000</wp:posOffset>',
+                          f'<wp:positionV relativeFrom="paragraph"><wp:posOffset>{round(offset * EMU)}</wp:posOffset>', 1)  # (the quote's: the first)
+    if height is not None:
+        doc = doc.replace('cx="2736000" cy="936000"', f'cx="2736000" cy="{round(height * EMU)}"')
+    parts["word/document.xml"] = doc.encode("utf-8")
+    for part, old, new in part_edits:
+        parts[part] = parts[part].decode("utf-8").replace(old, new, 1).encode("utf-8")
+    settings = parts["word/settings.xml"].decode("utf-8")
+    parts["word/settings.xml"] = settings.replace('w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="14"',
+                                                  f'w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="{compat}"').encode("utf-8")
+    with zipfile.ZipFile(os.path.join(out, name + ".docx"), "w", zipfile.ZIP_DEFLATED) as z:
+        for item, data in parts.items():
+            z.writestr(item, data)
+for compat in (14, 15):
+    magazine(f"mag-c{compat}", compat)
+    magazine(f"mag-off0-c{compat}", compat, offset=0)
+    magazine(f"mag-h60-c{compat}", compat, height=60)
+    magazine(f"mag-h47-c{compat}", compat, height=47)
+# The second column full of text where the shape would be across in it (C of 800 words): does Word 2010's
+# layout then move B whole, as in the magazine?
+C_LONG = para(run(words("c", 800, 3)))
+for compat in (14, 15):
+    for k in (39, 40):
+        write(f"colq-k{k}-full-c{compat}", lines_of(k) + B6("end") + C_LONG, columns=2, compat=compat)
+# What in the magazine makes Word 2010's layout move the paragraph whole: without automatic hyphenation,
+# with single line spacing (Normal's 1.15 gone), without the paragraph's first-line indent.
+magazine("mag-nohyph-c14", part_edits=[("word/settings.xml", "<w:autoHyphenation/>", "")])
+magazine("mag-single-c14", part_edits=[("word/styles.xml", 'w:line="276" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Georgia"', 'w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:rFonts w:ascii="Georgia"')])
+magazine("mag-noind-c14", part_edits=[("word/document.xml", '<w:ind w:firstLine="283"/><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:b w:val="0"/><w:i w:val="0"/></w:rPr><w:t>The engineers', '<w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:b w:val="0"/><w:i w:val="0"/></w:rPr><w:t>The engineers')])
+# ... with the quote as wide as the column (224.1pt), and with the paragraph's own space after 0.
+magazine("mag-wide-c14", part_edits=[("word/document.xml", 'cx="2736000" cy="936000"', 'cx="2846070" cy="936000"'),
+                                     ("word/document.xml", 'cx="2736000" cy="936000"', 'cx="2846070" cy="936000"')])
+magazine("mag-after0-c14", part_edits=[("word/document.xml", '<w:spacing w:after="120"/><w:ind w:firstLine="283"/><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:b w:val="0"/><w:i w:val="0"/></w:rPr><w:t>The engineers', '<w:spacing w:after="0"/><w:ind w:firstLine="283"/><w:jc w:val="both"/></w:pPr><w:r><w:rPr><w:b w:val="0"/><w:i w:val="0"/></w:rPr><w:t>The engineers')])
+# Its space after 0 the magazine's paragraph goes on in the first column (2 lines) in Word 2010's layout too:
+# B with space after (6pt: its 2 lines and that past the column's foot; 4pt: within it), and without the shape.
+def b_after(obj, after, where="end"):
+    return b_para(obj, where, count=48).replace(SINGLE, f'<w:spacing w:before="0" w:after="{after * 20}" w:line="240" w:lineRule="auto"/>', 1)
+SHAPE6 = lambda: shape(216, 2.6 / 2.54 * IN, ("column", 0), ("paragraph", 0.2 / 2.54 * IN), wrap="topAndBottom")
+for compat in (14, 15):
+    write(f"colq-k40-a6-c{compat}", lines_of(40) + b_after(SHAPE6(), 6) + C, columns=2, compat=compat)
+    write(f"colq-k40-a4-c{compat}", lines_of(40) + b_after(SHAPE6(), 4) + C, columns=2, compat=compat)
+    write(f"colq-k46-a6-noshape-c{compat}", lines_of(46) + b_after("", 6) + C, columns=2, compat=compat)
 print(out)
