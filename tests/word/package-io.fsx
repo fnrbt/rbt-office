@@ -50,7 +50,7 @@ let load bytes = Docx.loadBytesNative bytes |> Option.defaultWith (fun () -> fai
 let markerSettings : Rbt.Word.Layout.LayoutSettings =
     { Width = 600.0; PageHeight = 1000.0; FontSize = 16.0; LineHeight = 24.0
       PaddingLeft = 0.0; PaddingTop = 0.0; MarginRight = 0.0; MarginBottom = 0.0
-      InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12 }
+      InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging }
 let controlFrameCount doc =
     let measureText (value: string) (_: Rbt.Word.TextBuffer.TextStyle) = float value.Length * 7.0
     Rbt.Word.Layout.layoutDocument markerSettings measureText doc

@@ -33,6 +33,8 @@ type RunProperties = {
     Position: string option     // w:position@val (half-points, signed)
     EmphasisMark: string option // w:em@val
     VertAlign: string option  // superscript/subscript
+    /// w:lang@eastAsia: the language of the run's East Asian text (ko-KR, ja-JP, zh-CN ...).
+    EastAsiaLanguage: string option
 }
 
 type Hyperlink = {
@@ -267,6 +269,8 @@ type ParagraphProperties = {
     PageBreakBeforeDerived: bool
     WidowControl: bool option
     ContextualSpacing: bool option
+    /// w:overflowPunct: punctuation may hang past the line's end (East Asian line breaking).
+    OverflowPunctuation: bool option
     BackgroundColor: string option
     ShadingPattern: string option
     ShadingForeground: string option
@@ -636,6 +640,11 @@ type PageSetup = {
     /// The compatibilityMode compatSetting of the settings part (14: Word 2010,
     /// 15: Word 2013 and later); None when it has none (an older document).
     CompatibilityMode: int option
+    /// w:useFELayout of the settings part's w:compat (East Asian line breaking).
+    UseFarEastLayout: bool option
+    /// w:characterSpacingControl of the settings part: doNotCompress, compressPunctuation,
+    /// compressPunctuationAndJapaneseKana; None when it has none.
+    CharacterSpacingControl: string option
     Columns: SectionColumns option
     SectionStart: string option   // body sectPr w:type (e.g. "continuous")
     /// Header / footer references and page number start of the body-level
@@ -900,6 +909,7 @@ module Docx =
                 Position = getPropVal "position" "val" props
                 EmphasisMark = getPropVal "em" "val" props
                 VertAlign = getPropVal "vertAlign" "val" props
+                EastAsiaLanguage = getPropVal "lang" "eastAsia" props
             }
         | None ->
             {
@@ -926,6 +936,7 @@ module Docx =
                 Position = None
                 EmphasisMark = None
                 VertAlign = None
+                EastAsiaLanguage = None
             }
 
     // Paragraph properties extraction
@@ -1038,6 +1049,7 @@ module Docx =
                 PageBreakBeforeDerived = false
                 WidowControl = onOff "widowControl" props
                 ContextualSpacing = onOff "contextualSpacing" props
+                OverflowPunctuation = onOff "overflowPunct" props
                 BackgroundColor = getPropVal "shd" "fill" props
                 ShadingPattern = getPropVal "shd" "val" props
                 ShadingForeground = getPropVal "shd" "color" props
@@ -1098,6 +1110,7 @@ module Docx =
                 PageBreakBeforeDerived = false
                 WidowControl = None
                 ContextualSpacing = None
+                OverflowPunctuation = None
                 BackgroundColor = None
                 ShadingPattern = None
                 ShadingForeground = None
@@ -2102,6 +2115,7 @@ module Docx =
                 FontSize = None; CharacterSpacing = None; FontFamily = None; ThemeFont = None; Color = None
                 ThemeColor = None; ThemeTint = None; ThemeShade = None; Highlight = None; Strike = None
                 DoubleStrike = None; Hidden = None; Position = None; EmphasisMark = None; VertAlign = None
+                EastAsiaLanguage = None
             }
             // (The w:r a link run is of, where it is one alone: docs/save-architecture.md.)
             let linkRun (text: string) (props: RunProperties) (source: XmlDsl.Span) (renderedPageBreak: bool) =
@@ -2720,6 +2734,7 @@ module Styles =
             Position = Ns.childNs "position" rPr |> Option.bind (Docx.attr "val")
             EmphasisMark = Ns.childNs "em" rPr |> Option.bind (Docx.attr "val")
             VertAlign = Ns.childNs "vertAlign" rPr |> Option.bind (Docx.attr "val")
+            EastAsiaLanguage = Ns.childNs "lang" rPr |> Option.bind (Docx.attr "eastAsia")
         }
 
     let parseParagraphPropsFromStyle (pPr: XmlNode) : ParagraphProperties =
@@ -2767,6 +2782,7 @@ module Styles =
             PageBreakBeforeDerived = false
             WidowControl = Docx.onOff "widowControl" pPr
             ContextualSpacing = Docx.onOff "contextualSpacing" pPr
+            OverflowPunctuation = Docx.onOff "overflowPunct" pPr
             BackgroundColor = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "fill")
             ShadingPattern = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "val")
             ShadingForeground = Ns.childNs "shd" pPr |> Option.bind (Docx.attr "color")
@@ -4358,7 +4374,21 @@ let private parseCompatibilityMode (xml: string option) =
     |> Option.bind (Docx.attr "val")
     |> Option.bind (fun value -> match System.Int32.TryParse value with | true, mode -> Some mode | _ -> None)
 
-let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode (sectPr: XmlNode option) : PageSetup option =
+/// w:useFELayout of the settings part's w:compat.
+let private parseUseFarEastLayout (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.bind (fun settings -> Ns.descendantsNs "compat" settings |> List.tryHead)
+    |> Option.bind (Docx.onOff "useFELayout")
+
+/// w:characterSpacingControl of the settings part.
+let private parseCharacterSpacingControl (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.bind (fun settings -> Ns.descendantsNs "characterSpacingControl" settings |> List.tryHead)
+    |> Option.bind (Docx.attr "val")
+
+let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode useFarEastLayout characterSpacingControl (sectPr: XmlNode option) : PageSetup option =
     sectPr
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
@@ -4377,6 +4407,8 @@ let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode (s
             EvenAndOddHeaders = Some evenAndOddHeaders
             DefaultTabStop = defaultTabStop
             CompatibilityMode = compatibilityMode
+            UseFarEastLayout = useFarEastLayout
+            CharacterSpacingControl = characterSpacingControl
             Columns = columns
             SectionStart = Docx.getPropVal "type" "val" section
             HeaderReferences = Docx.headerFooterReferences "headerReference" section
@@ -4592,6 +4624,10 @@ type private MainPart = {
     DefaultTabStop: float option
     /// See PageSetup.CompatibilityMode.
     CompatibilityMode: int option
+    /// See PageSetup.UseFarEastLayout.
+    UseFarEastLayout: bool option
+    /// See PageSetup.CharacterSpacingControl.
+    CharacterSpacingControl: string option
     Properties: DocumentProperties option
 }
 
@@ -4661,6 +4697,8 @@ let private readMainPart (source: PartSource) : MainPart option =
           EvenAndOddHeaders = parseSettings settingsXml
           DefaultTabStop = parseDefaultTabStop settingsXml
           CompatibilityMode = parseCompatibilityMode settingsXml
+          UseFarEastLayout = parseUseFarEastLayout settingsXml
+          CharacterSpacingControl = parseCharacterSpacingControl settingsXml
           Properties = propsXml |> Option.map Properties.parseProperties })
 
 /// The headers, the footers, the notes and the comments. `headerRefTypes` /
@@ -4904,7 +4942,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
-            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode
+            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl
 
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
@@ -5178,7 +5216,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
         let finalSetup =
             cursorAndFinal
             |> Option.bind (fun (cursor, (start, node)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some node))
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some node))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
@@ -5211,7 +5249,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     else
                         openSectionAt <- at
                         openSectionSetup <-
-                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some (parseElement cursor at))
+                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some (parseElement cursor at))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -5368,7 +5406,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     // body that has more than one.)
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
-                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode (Some (parseElement cursor firstSectionProperties))
+                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some (parseElement cursor firstSectionProperties))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup
@@ -5683,6 +5721,7 @@ let internal emptyRunProperties = {
     Position = None
     EmphasisMark = None
     VertAlign = None
+    EastAsiaLanguage = None
 }
 
 let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties) : RunProperties = {
@@ -5699,6 +5738,7 @@ let private mergeRunProperties (baseProps: RunProperties) (props: RunProperties)
     Hidden = props.Hidden |> Option.orElse baseProps.Hidden
     Position = props.Position |> Option.orElse baseProps.Position
     EmphasisMark = props.EmphasisMark |> Option.orElse baseProps.EmphasisMark
+    EastAsiaLanguage = props.EastAsiaLanguage |> Option.orElse baseProps.EastAsiaLanguage
     FontSize = props.FontSize |> Option.orElse baseProps.FontSize
     CharacterSpacing = props.CharacterSpacing |> Option.orElse baseProps.CharacterSpacing
     FontFamily =
@@ -5753,6 +5793,7 @@ let internal mergeParagraphProperties baseProps props = {
     PageBreakBeforeDerived = props.PageBreakBeforeDerived
     WidowControl = props.WidowControl |> Option.orElse baseProps.WidowControl
     ContextualSpacing = props.ContextualSpacing |> Option.orElse baseProps.ContextualSpacing
+    OverflowPunctuation = props.OverflowPunctuation |> Option.orElse baseProps.OverflowPunctuation
     BackgroundColor = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.BackgroundColor else baseProps.BackgroundColor
     ShadingPattern = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.ShadingPattern else baseProps.ShadingPattern
     ShadingForeground = if props.ShadingPattern.IsSome || props.ShadingForeground.IsSome || props.BackgroundColor.IsSome then props.ShadingForeground else baseProps.ShadingForeground

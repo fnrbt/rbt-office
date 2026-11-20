@@ -434,6 +434,14 @@ let tableCellVerticalAlignmentHeightForPlan (plan: TableLayoutPlan) rowIndex sou
     let resolveHeight = tableCellVerticalAlignmentHeightResolverForPlan plan
     resolveHeight rowIndex sourceCellIndex fallback
 
+/// Whether Word lets a line's last character run past the line's end when it is punctuation
+/// of the run's East Asian language (Layout.hangsPastLineEnd).
+type HangingPunctuation =
+    | NoHanging
+    | HangingEverywhere
+    /// Under compressPunctuation: not the paragraph's last character (before its mark).
+    | HangingInsideParagraph
+
 type LayoutSettings = {
     Width: float
     PageHeight: float
@@ -452,7 +460,21 @@ type LayoutSettings = {
     DefaultTabStop: float
     /// Word's compatibility mode of the document (PageSetup.CompatibilityMode).
     CompatibilityMode: int
+    /// Punctuation that may hang past a line's end (documentHangingPunctuation; a paragraph
+    /// with w:overflowPunct off has none).
+    HangingPunctuation: HangingPunctuation
 }
+
+/// Word 2019 (fixtures hang-punct): punctuation hangs past a line's end in Word 2010's layout
+/// and older (compatibility mode 14, 12, none - not 15) under w:useFELayout; under
+/// compressPunctuation (and ...AndJapaneseKana) not at the paragraph's end. doNotCompress or
+/// no characterSpacingControl: everywhere.
+let documentHangingPunctuation (setup: PageSetup) =
+    if setup.CompatibilityMode > 14 || not setup.UseFarEastLayout then NoHanging
+    else
+        match setup.CharacterSpacingControl with
+        | Some "compressPunctuation" | Some "compressPunctuationAndJapaneseKana" -> HangingInsideParagraph
+        | _ -> HangingEverywhere
 
 /// Document geometry is independent of the host viewport. Font defaults and
 /// trailing-space slack are supplied by the measuring backend.
@@ -473,7 +495,8 @@ let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) 
       TableContinuationHeaderHeight = 0.0
       LongTrailingSpaceFitSafety = trailingSpaceFitSafety
       DefaultTabStop = doc.PageSetup.DefaultTabStop
-      CompatibilityMode = doc.PageSetup.CompatibilityMode }
+      CompatibilityMode = doc.PageSetup.CompatibilityMode
+      HangingPunctuation = documentHangingPunctuation doc.PageSetup }
 
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
@@ -2700,6 +2723,30 @@ let private rangeContainsTab (text: string) start length =
         index <- index + 1
     found
 
+/// The characters Word lets hang past the end of a line, by the East Asian language of their
+/// run (w:lang w:eastAsia; fixtures hang-punct, Word 2019). Korean: its kinsoku list of
+/// characters a line may not start with. Japanese, Chinese (PRC, Taiwan): the characters of
+/// those lists that Word was seen to hang - not ")" ";" "!" "?" in Japanese, nor "…" "›" "～"
+/// "‖" "―" in Chinese. Another language (en-US as the East Asian one too): none.
+/// Only one character hangs: what is before it must fit; it hangs whatever its width.
+let private hangingPunctuationKo = "!%),.:;?]}¢°’”′″℃〉》」』】〕！％），．：；？］｝￠"
+let private hangingPunctuationJa = ",.’”、。」』】），．］｝｡､"
+let private hangingPunctuationZhCn = "!%),.:;?]}¢°·ˇ’”‰′″℃、。〃〉》」』】〕〗〞！＂％＇），．：；？］｝￠"
+let private hangingPunctuationZhTw = "!),.:;?]}’”′、。〉》」』】〕〞！），．：；？］｝"
+
+let hangsPastLineEnd (language: string option) (ch: char) =
+    match language with
+    | None -> false
+    | Some language ->
+        let set =
+            match language.ToLowerInvariant() with
+            | l when l.StartsWith "ko" -> hangingPunctuationKo
+            | l when l.StartsWith "ja" -> hangingPunctuationJa
+            | "zh-cn" -> hangingPunctuationZhCn
+            | "zh-tw" -> hangingPunctuationZhTw
+            | _ -> ""
+        set.IndexOf ch >= 0
+
 let private trailingSpaceFitSafety settings visibleLength =
     if visibleLength <= 3 then shortTrailingSpaceFitSafety else settings.LongTrailingSpaceFitSafety
 
@@ -3012,6 +3059,22 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 moveToWrappableLine ()
 
     let runs = buffer.Runs |> List.toArray
+    // The offset of the paragraph's last visible character (HangingInsideParagraph: it does not hang).
+    let lastVisibleOffset =
+        lazy (
+            let mutable index = runs.Length - 1
+            let mutable result = -1
+            while result < 0 && index >= 0 do
+                match runs.[index] with
+                | TextBuffer.Text textRun when not textRun.Style.Hidden ->
+                    let mutable offset = textRun.Start + textRun.Length - 1
+                    while result < 0 && offset >= textRun.Start do
+                        if not (isWhitespaceChar (Rope.charAtOrNull offset buffer.Rope)) then result <- offset
+                        offset <- offset - 1
+                    index <- index - 1
+                | TextBuffer.Text _ -> index <- index - 1
+                | TextBuffer.Image _ -> result <- System.Int32.MaxValue
+            result)
     let fullText =
         if runs.Length > 1 then ValueSome (TextBuffer.toString buffer)
         else ValueNone
@@ -3356,11 +3419,25 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                             let width =
                                 if hasTab then tabWidth runIndex (consumed + remainingLength) displayRunText displayRunStyle
                                 else measureRange displayRunText displayRunStyle consumed remainingLength
+                            // The token's last visible character, when it is punctuation that may hang
+                            // past the line's end: its width (it need not fit, what is before it must).
+                            let hangWidth =
+                                if hasTab || settings.HangingPunctuation = NoHanging then 0.0
+                                else
+                                    let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
+                                    if visibleLength > 0
+                                       && hangsPastLineEnd textRun.Style.EastAsiaLanguage runText.[tokenOffset + visibleLength - 1]
+                                       && (settings.HangingPunctuation = HangingEverywhere
+                                           || textRun.Start + tokenOffset + visibleLength - 1 < lastVisibleOffset.Force()) then
+                                        measureRange displayRunText displayRunStyle (consumed + visibleLength - 1) 1
+                                    else 0.0
                             let fitWidth =
                                 if hasTab then width
                                 else
                                     let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
-                                    if visibleLength > 0 && visibleLength < remainingLength then
+                                    if hangWidth > 0.0 then
+                                        measureRange displayRunText displayRunStyle consumed visibleLength - hangWidth
+                                    elif visibleLength > 0 && visibleLength < remainingLength then
                                         // Word fits the visible token; a trailing space may cross
                                         // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
@@ -3376,7 +3453,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                             let visibleOverflows =
                                 let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
                                 if visibleLength > 0 && visibleLength < remainingLength && not hasTab then
-                                    let vw = measureRange displayRunText displayRunStyle consumed visibleLength
+                                    let vw = measureRange displayRunText displayRunStyle consumed visibleLength - hangWidth
                                     currentX + vw > currentLineEnd - fullFitSafety
                                 else overflows
                             // (The word on the line alone and longer than it: broken where the line is
@@ -3922,7 +3999,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         | None -> paragraphContentMetrics paragraphStyle metadata buffer
     let paragraphLineHeight = resolvedLineHeightForSettings paragraphStyle para.Metadata contentTextStyle contentFontSize hasExplicitLineSpacing defaultParagraphSpacing
     let struct (lineSpacingMultiple, lineSpacingRule, lineSpacingPixels) = resolveLineSpacing paragraphStyle para.Metadata contentFontSize
-    let lineSettings = { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight }
+    let lineSettings =
+        { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight
+                        HangingPunctuation = if metadata.OverflowPunctuation = Some false then NoHanging else settings.HangingPunctuation }
     // (The column the paragraph is in: where it starts across, and as wide as it is laid out - in a
     // section with columns xOffset is the column's left edge. Not in a table's cell.)
     let column = if settings.InTableCell then (0.0, 0.0) else (xOffset, maxWidth)

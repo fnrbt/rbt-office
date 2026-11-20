@@ -203,6 +203,9 @@ type BlockMetadata = {
     LineSpacing: float option
     LineSpacingRule: string option
     WidowControl: bool option
+    /// w:overflowPunct in effect, the style's and the defaults' included (None: not stated,
+    /// on): punctuation may hang past the line's end (Layout.hangsPastLineEnd).
+    OverflowPunctuation: bool option
     /// w:keepNext / w:keepLines set directly on the paragraph (None = as the style says).
     KeepNext: bool option
     KeepLines: bool option
@@ -342,6 +345,7 @@ let defaultMetadata = {
     LineSpacing = None
     LineSpacingRule = None
     WidowControl = None
+    OverflowPunctuation = None
     KeepNext = None
     KeepLines = None
     BackgroundColor = None
@@ -766,6 +770,12 @@ type PageSetup = {
     /// compatibility mode). A new document is 12 too: it is saved without a settings
     /// part, and so Word shows it. Layout differs by it: see LayoutSettings.CompatibilityMode.
     CompatibilityMode: int
+    /// w:useFELayout of the settings part's w:compat: Word breaks lines by East Asian rules
+    /// (with CompatibilityMode 14 or older, punctuation may hang: Layout.hangsPastLineEnd).
+    UseFarEastLayout: bool
+    /// w:characterSpacingControl of the settings part (doNotCompress, compressPunctuation,
+    /// compressPunctuationAndJapaneseKana); None when it states none.
+    CharacterSpacingControl: string option
     Columns: SectionColumns option
     SectionStart: string option
     /// Header / footer references (kind, relationship id) of the final section,
@@ -918,6 +928,8 @@ let defaultPageSetup = {
     EvenAndOddHeaders = false
     DefaultTabStop = 48.0
     CompatibilityMode = 12
+    UseFarEastLayout = false
+    CharacterSpacingControl = None
     Columns = None
     SectionStart = None
     HeaderReferences = []

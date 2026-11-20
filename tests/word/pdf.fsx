@@ -105,7 +105,7 @@ let blankPlan: Pdf.PaintPlan =
           MarginBottom = 0.0
           InTableCell = false
           TableContinuationHeaderHeight = 0.0
-          LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12 }
+          LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging }
       Commands = []
       Pages =
         [ { Top = 0.0

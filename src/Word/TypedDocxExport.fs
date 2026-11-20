@@ -91,7 +91,7 @@ let private withFormatOf (format: TextBuffer.TextStyle) (style: TextBuffer.TextS
         SmallCaps = format.SmallCaps; Strike = format.Strike; DoubleStrike = format.DoubleStrike; Hidden = format.Hidden
         Position = format.Position; EmphasisMark = format.EmphasisMark; FontSize = format.FontSize
         CharacterSpacing = format.CharacterSpacing; FontFamily = format.FontFamily; Color = format.Color
-        Highlight = format.Highlight; VertAlign = format.VertAlign; Explicit = format.Explicit
+        Highlight = format.Highlight; VertAlign = format.VertAlign; EastAsiaLanguage = format.EastAsiaLanguage; Explicit = format.Explicit
         RenderedPageBreakBefore = format.RenderedPageBreakBefore }
 
 let private bufferOfCharacters (text: string) (runs: TextBuffer.Run array) =
@@ -426,14 +426,15 @@ let private pageSetup (value: PageSetup) : WordEditorPackage.PageSetup =
     { PageWidth = value.PageWidth; PageHeight = value.PageHeight; MarginLeft = value.MarginLeft; MarginRight = value.MarginRight
       MarginTop = value.MarginTop; MarginBottom = value.MarginBottom; HeaderDistance = value.HeaderDistance; FooterDistance = value.FooterDistance
       DifferentFirstPage = value.DifferentFirstPage; EvenAndOddHeaders = value.EvenAndOddHeaders
-      DefaultTabStop = Some value.DefaultTabStop; CompatibilityMode = Some value.CompatibilityMode; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
+      DefaultTabStop = Some value.DefaultTabStop; CompatibilityMode = Some value.CompatibilityMode
+      UseFarEastLayout = Some value.UseFarEastLayout; CharacterSpacingControl = value.CharacterSpacingControl; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
       HeaderReferences = references value.HeaderReferences; FooterReferences = references value.FooterReferences
       PageNumberStart = value.PageNumberStart; PageNumberFormat = value.PageNumberFormat; VerticalAlign = value.VerticalAlign }
 let private sectionSetup (value: SectionPageSetup) : WordEditorPackage.PageSetup =
     { PageWidth = value.PageWidth; PageHeight = value.PageHeight; MarginLeft = value.MarginLeft; MarginRight = value.MarginRight
       MarginTop = value.MarginTop; MarginBottom = value.MarginBottom; HeaderDistance = value.HeaderDistance; FooterDistance = value.FooterDistance
       DifferentFirstPage = value.DifferentFirstPage; EvenAndOddHeaders = value.EvenAndOddHeaders
-      DefaultTabStop = None; CompatibilityMode = None; Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
+      DefaultTabStop = None; CompatibilityMode = None; UseFarEastLayout = None; CharacterSpacingControl = None; Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
       PageNumberStart = None; PageNumberFormat = None; VerticalAlign = None }
 let private paragraphBorders (value: ParagraphBorders option) : WordEditorPackage.Borders option =
     let border (value: ParagraphBorder) : WordEditorPackage.Border =
@@ -525,7 +526,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           Position = style.Position; EmphasisMark = style.EmphasisMark; FontSize = style.FontSize; CharacterSpacing = style.CharacterSpacing
           FontFamily = Option.defaultValue "Calibri" style.FontFamily
           FontFamilyInherited = Some (not (ExplicitFormat.has ExplicitFormat.FontFamily style) && (style.FontFamily.IsNone || inherited |> Option.exists (fun (s: TextBuffer.TextStyle) -> s.FontFamily = style.FontFamily)))
-          Color = style.Color; Highlight = style.Highlight; VertAlign = style.VertAlign; HasExplicit = true
+          Color = style.Color; Highlight = style.Highlight; VertAlign = style.VertAlign; EastAsiaLanguage = style.EastAsiaLanguage; HasExplicit = true
           ExplicitBold = explicitToggle ExplicitFormat.Bold (fun s -> s.Bold) inherited style
           ExplicitItalic = explicitToggle ExplicitFormat.Italic (fun s -> s.Italic) inherited style
           ExplicitUnderline = explicitToggle ExplicitFormat.Underline (fun s -> s.Underline) inherited style
@@ -597,7 +598,7 @@ let private paragraphToEditor (context: WordStyles.DocumentStyleContext option) 
           SpacingBefore = metadata.SpacingBefore; SpacingAfter = metadata.SpacingAfter; LineSpacing = metadata.LineSpacing; LineSpacingRule = metadata.LineSpacingRule
           RightTabPosition = metadata.RightTabPosition; RightTabLeader = metadata.RightTabLeader
           TabStops = metadata.TabStops |> List.map (fun stop -> ({ Position = stop.Position; Alignment = stop.Alignment; Leader = stop.Leader } : WordEditorPackage.TabStop))
-          Rtl = metadata.Rtl; ContextualSpacing = metadata.ContextualSpacing; KeepNext = metadata.KeepNext; KeepLines = metadata.KeepLines; WidowControl = metadata.WidowControl
+          Rtl = metadata.Rtl; ContextualSpacing = metadata.ContextualSpacing; OverflowPunctuation = metadata.OverflowPunctuation; KeepNext = metadata.KeepNext; KeepLines = metadata.KeepLines; WidowControl = metadata.WidowControl
           PageBreakBefore = metadata.PageBreakBefore; PageBreakBeforeDerived = metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.DerivedPageBreakBefore metadata
           PageBreakAtStart = metadata.PageBreakBefore && ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore metadata
           PageBreakAfter = metadata.PageBreakAfter; ColumnBreakAfter = metadata.PageBreakAfter && metadata.ColumnBreakAfter

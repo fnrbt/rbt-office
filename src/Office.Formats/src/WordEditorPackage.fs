@@ -100,6 +100,10 @@ type PageSetup = {
     DefaultTabStop: float option
     /// See DocxReader.PageSetup.CompatibilityMode.
     CompatibilityMode: int option
+    /// See DocxReader.PageSetup.UseFarEastLayout.
+    UseFarEastLayout: bool option
+    /// See DocxReader.PageSetup.CharacterSpacingControl.
+    CharacterSpacingControl: string option
     Columns: SectionColumns option
     SectionStart: string option
     HeaderReferences: HeaderFooterReference list
@@ -179,6 +183,8 @@ type RunFormatting = {
     Color: string option
     Highlight: string option
     VertAlign: string option
+    /// w:lang@eastAsia in effect (DocxReader.RunProperties.EastAsiaLanguage).
+    EastAsiaLanguage: string option
     HasExplicit: bool
     ExplicitBold: bool option
     ExplicitItalic: bool option
@@ -253,6 +259,8 @@ type ParagraphFormatting = {
     TabStops: TabStop list
     Rtl: bool
     ContextualSpacing: bool option
+    /// w:overflowPunct in effect (DocxReader.ParagraphProperties.OverflowPunctuation).
+    OverflowPunctuation: bool option
     KeepNext: bool option
     KeepLines: bool option
     WidowControl: bool option
@@ -1043,6 +1051,7 @@ let private runToEditorObject (run: EditorRun) =
     o?Color <- format.Color
     o?Highlight <- format.Highlight
     o?VertAlign <- format.VertAlign
+    o?EastAsiaLanguage <- format.EastAsiaLanguage
     o?HasExplicit <- format.HasExplicit
     o?ExplicitBold <- format.ExplicitBold
     o?ExplicitItalic <- format.ExplicitItalic
@@ -1129,6 +1138,8 @@ let private pageSetupToObject (setup: PageSetup option) : obj =
             "EvenAndOddHeaders" ==> setup.EvenAndOddHeaders
             "DefaultTabStop" ==> setup.DefaultTabStop
             "CompatibilityMode" ==> setup.CompatibilityMode
+            "UseFarEastLayout" ==> setup.UseFarEastLayout
+            "CharacterSpacingControl" ==> setup.CharacterSpacingControl
             "ColumnCount" ==> columns.Count; "ColumnSpace" ==> columns.Gap
             "ColumnSeparator" ==> columns.Separator
             "ColumnWidths" ==> (columns.Widths |> List.map (fun (w, s) -> createObj [ "W" ==> w; "S" ==> s ]) |> List.toArray)
@@ -1155,6 +1166,7 @@ let private paragraphFormatFields (format: ParagraphFormatting) =
     "SpacingAfter" ==> format.SpacingAfter; "LineSpacing" ==> format.LineSpacing
     "LineSpacingRule" ==> format.LineSpacingRule
     "ContextualSpacing" ==> format.ContextualSpacing
+    "OverflowPunctuation" ==> format.OverflowPunctuation
     "KeepNext" ==> format.KeepNext; "KeepLines" ==> format.KeepLines
     "WidowControl" ==> format.WidowControl
     "PageBreakBefore" ==> format.PageBreakBefore
@@ -1625,6 +1637,8 @@ let private readPageSetup value =
             EvenAndOddHeaders = boolean value "EvenAndOddHeaders"
             DefaultTabStop = number value "DefaultTabStop"
             CompatibilityMode = integer value "CompatibilityMode"
+            UseFarEastLayout = get<bool> value "UseFarEastLayout"
+            CharacterSpacingControl = textOf value "CharacterSpacingControl"
             Columns = columns
             SectionStart = textOf value "SectionStart"
             HeaderReferences = readRefs value "HeaderReferences"
@@ -1798,6 +1812,7 @@ let private readRunFormat value = {
     Color = textOf value "Color"
     Highlight = textOf value "Highlight"
     VertAlign = textOf value "VertAlign"
+    EastAsiaLanguage = textOf value "EastAsiaLanguage"
     HasExplicit = boolean value "HasExplicit"
     ExplicitBold = get<bool> value "ExplicitBold"
     ExplicitItalic = get<bool> value "ExplicitItalic"
@@ -1897,6 +1912,7 @@ let private readParagraphFormat value =
           |> List.ofArray
       Rtl = boolean value "Rtl"
       ContextualSpacing = get<bool> value "ContextualSpacing"
+      OverflowPunctuation = get<bool> value "OverflowPunctuation"
       KeepNext = get<bool> value "KeepNext"
       KeepLines = get<bool> value "KeepLines"
       WidowControl = get<bool> value "WidowControl"

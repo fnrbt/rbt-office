@@ -39,7 +39,7 @@ let settings : Layout.LayoutSettings =
       MarginBottom = 96.0
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12 }
+      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging }
 
 let pageSetup =
     { Doc.defaultPageSetup with
