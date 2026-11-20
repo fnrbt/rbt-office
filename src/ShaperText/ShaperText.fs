@@ -366,7 +366,16 @@ let private embeddedAdvances (fontSet: FontSet) (entry: FontEntry) (text: string
                         | None -> 0.0
             Some advances
 
-let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
+/// The style a run is set in: superscript and subscript text at 0.7 of its size, as the
+/// painter draws it (Paint's font size) and the canvas and PDF measurers measure it - the
+/// layout hands the measurers the run's own style. (shapeText takes the size as given: the
+/// PDF export scales the style itself.)
+let private setStyle (style: TextStyle) =
+    match style.VertAlign with
+    | Some _ -> { style with FontSize = style.FontSize * 0.7 }
+    | None -> style
+
+let private measureSetText (fontSet: FontSet) (text: string) (style: TextStyle) =
     if System.String.IsNullOrEmpty text then 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
@@ -376,7 +385,11 @@ let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
             | Some advances -> Array.sum advances + TextBuffer.characterSpacingAdvance text style
             | None -> (shapeAsWord entry.Face.Font style.FontSize text).TotalAdvance + TextBuffer.characterSpacingAdvance text style
 
+let measureText (fontSet: FontSet) (text: string) (style: TextStyle) =
+    measureSetText fontSet text (setStyle style)
+
 let tryMeasureText (fontSet: FontSet) (text: string) (style: TextStyle) =
+    let style = setStyle style
     if System.String.IsNullOrEmpty text then Some 0.0
     else
         match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
@@ -427,6 +440,7 @@ let glyphPath (fontSet: FontSet) (style: TextStyle) glyphId =
 
 let createRangeMeasurer fontSet : Rbt.Word.Layout.TextRangeMeasurer =
     fun text style start length ->
+      let style = setStyle style
       let embedded =
           match tryFindFont fontSet style.FontFamily style.Bold style.Italic with
           | Some entry -> embeddedAdvances fontSet entry text style
@@ -445,7 +459,7 @@ let createRangeMeasurer fontSet : Rbt.Word.Layout.TextRangeMeasurer =
             let startIndex = max 0 (min text.Length start)
             let endIndex = max startIndex (min text.Length (start + length))
             if endIndex = startIndex then 0.0
-            else measureText fontSet (text.Substring(startIndex, endIndex - startIndex)) style
+            else measureSetText fontSet (text.Substring(startIndex, endIndex - startIndex)) style
 
 let advanceAt shapedText offset = Rbt.Text.Engine.advanceAt shapedText offset
 
