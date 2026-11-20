@@ -21,7 +21,12 @@
 // - widow/orphan control: a first line alone stays not, a last line alone takes the one
 //   before it along (widow-*: 10 lines with room for 9 keep 8), in the body and in cells
 //   alike; with no w:widowControl anywhere it is on (widow-unset*);
-// - a line of an exact height fits when all of it does, not only its text (exact-body).
+// - a line of an exact height fits when all of it does, not only its text (exact-body);
+// - a row whose w:trHeight (at least or exact) is more than the room left goes to the next
+//   page whole, however much of its content fits (height-least50_f30, height-least100_f28-30,
+//   height-least100-short_f28-30; on room just its height it breaks: _f27); a row of an exact
+//   height never breaks and is that high whatever it holds (height-exact100_f27 stays whole on
+//   100pt, its lines past it over the margin; _f28-30 go whole).
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Office.Formats/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"

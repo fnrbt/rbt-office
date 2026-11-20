@@ -1562,6 +1562,23 @@ module Table =
             resolved.Add({ rowArray.[rowIndex] with Cells = arrayToList cellRows.[rowIndex] })
         resizeArrayToList resolved
 
+    /// How much wider than the text a table's room is (a percentage's base, an autofit table's
+    /// most): in compatibility mode 14 and older its outer cells' margins, a centred or
+    /// right-aligned table's too (fixtures nested-width calibre-c14: a centred 70% table 70% of
+    /// the text and margins); none from mode 15 on.
+    let outerCellRoom scale (compatibilityMode: int) (table: TableBlock) =
+        if compatibilityMode >= 15 then (0.0, 0.0)
+        else
+            table.Rows
+            |> List.tryPick (fun row ->
+                match positionedCells row with
+                | [] -> None
+                | first :: _ ->
+                    let rowPadding = rowCellPaddingDefaults scale table row
+                    let firstPadding = cellPaddingForRow scale table row first.Cell
+                    Some (firstPadding.Left, rowPadding.Right))
+            |> Option.defaultValue (0.0, 0.0)
+
     /// How far a table reaches past its indent on the left and right. In a document of
     /// compatibilityMode 14 or older Word puts the text of the first cell where the
     /// paragraphs' text is: the table starts that cell's left margin further left (and a
@@ -1573,17 +1590,7 @@ module Table =
             match table.Alignment with
             | Some alignment -> (match alignment.ToLowerInvariant() with "center" | "right" | "end" -> true | _ -> false)
             | None -> false
-        if compatibilityMode >= 15 || aligned then (0.0, 0.0)
-        else
-            table.Rows
-            |> List.tryPick (fun row ->
-                match positionedCells row with
-                | [] -> None
-                | first :: _ ->
-                    let rowPadding = rowCellPaddingDefaults scale table row
-                    let firstPadding = cellPaddingForRow scale table row first.Cell
-                    Some (firstPadding.Left, rowPadding.Right))
-            |> Option.defaultValue (0.0, 0.0)
+        if aligned then (0.0, 0.0) else outerCellRoom scale compatibilityMode table
 
     let rowColumnCount (row: TableRow) =
         let mutable currentColumn = max 0 row.GridBefore
@@ -1620,10 +1627,12 @@ module Table =
     ///   column is its cells' longest word and margins (a column is never narrower), of a fixed
     ///   one its margins and one pixel.
     /// A table with no widths at all (one the editor has just made) fills `maxWidth` evenly.
-    let tableColumnWidthsWith scale (maxWidth: float option) (content: (TableCell -> struct (float * float)) option) (table: TableBlock) =
+    /// `fixedLayout`: whether the table is laid out fixed - a nested table is laid out as the
+    /// table it is in (fixtures nested-width nest-fixed, nest-*-outfixed). Also gives the table's
+    /// least width: its columns' least widths, or its w:tblW where that is more and not a percentage.
+    let tableColumnWidthsAndLeast scale (fixedLayout: bool) (maxWidth: float option) (content: (TableCell -> struct (float * float)) option) (table: TableBlock) : float list * float =
         let columns = columnCount table
-        if columns = 0 then [] else
-        let fixedLayout = table.LayoutMode = Some FixedTableLayout
+        if columns = 0 then [], 0.0 else
         // (A percentage is of the whole width the table could have, its indent included:
         // docx4j-getting-started's 78.76% table, indented 745 twips, is its grid's 7291.)
         let tableWidth =
@@ -1665,7 +1674,7 @@ module Table =
         let hasCellWidths =
             table.Rows |> List.exists (fun row -> row.Cells |> List.exists (fun cell -> (cellPreferredWidth scale percentBase cell).IsSome))
         if table.PreferredWidth.IsNone && table.GridColumns.IsEmpty && not hasCellWidths then
-            List.replicate columns ((maxWidth |> Option.map (fun width -> width / float columns)) |> Option.defaultValue scale.DefaultColumnWidth)
+            List.replicate columns ((maxWidth |> Option.map (fun width -> width / float columns)) |> Option.defaultValue scale.DefaultColumnWidth), 0.0
         else
         let preferred: float option array = Array.create columns None
         let least = Array.create columns 0.0
@@ -1693,6 +1702,11 @@ module Table =
                         | None -> ()
                     else
                         spanning.Add((column, min columns (column + span) - 1, width, cellLeast))
+                elif span = 1 && column < columns then
+                    // (A continuation's width counts for nothing, but the merge's paragraphs the
+                    // import hands out to it - distributeVerticalMergeContent - are the merge's
+                    // content: the calibre family's nested "Three".)
+                    least.[column] <- max least.[column] (cellLeast row cell)
                 column <- column + span
         for first, last, width, cellLeast in spanning do
             let mutable known = 0.0
@@ -1726,13 +1740,23 @@ module Table =
                 match maxWidth with
                 | Some room -> max leastTotal (min total room)
                 | None -> total
-        if abs (target - total) <= 0.01 || total <= 0.0 then
-            arrayToList widths
-        elif target < total && target > leastTotal && total - leastTotal > 0.0 then
-            let factor = (target - leastTotal) / (total - leastTotal)
-            widths |> Array.mapi (fun column width -> least.[column] + (width - least.[column]) * factor) |> arrayToList
-        else
-            widths |> Array.map (fun width -> width * target / total) |> arrayToList
+        let tableLeast =
+            // (A percentage resolves to nothing without a room: fixtures nested-width nest-pct.)
+            match table.PreferredWidth |> Option.map preferredWidthFromDocument |> Option.bind (resolvePreferredWidth scale None) with
+            | Some width -> max width leastTotal
+            | None -> leastTotal
+        let columnWidths =
+            if abs (target - total) <= 0.01 || total <= 0.0 then
+                arrayToList widths
+            elif target < total && target >= leastTotal && total - leastTotal > 0.0 then
+                let factor = (target - leastTotal) / (total - leastTotal)
+                widths |> Array.mapi (fun column width -> least.[column] + (width - least.[column]) * factor) |> arrayToList
+            else
+                widths |> Array.map (fun width -> width * target / total) |> arrayToList
+        columnWidths, tableLeast
+
+    let tableColumnWidthsWith scale (maxWidth: float option) (content: (TableCell -> struct (float * float)) option) (table: TableBlock) =
+        tableColumnWidthsAndLeast scale (table.LayoutMode = Some FixedTableLayout) maxWidth content table |> fst
 
     let tableColumnWidths scale maxWidth table = tableColumnWidthsWith scale maxWidth None table
 
@@ -1823,6 +1847,21 @@ module Table =
         row.Height
         |> Option.map (fun twips -> max 0.0 (twips / scale.DxaPerUnit))
         |> Option.defaultValue (defaultRowHeight lineHeight)
+
+    /// Whether a row may break across pages: not a cantSplit one, nor one of an exact height (Word
+    /// 2019: fixtures row-break height-exact100_f27 - a 100pt row of 20 lines on 100pt of room stays
+    /// whole, its lines past the row drawn over the margin - and _f28-30, moved whole).
+    let rowHeightIsExact (row: TableRow) =
+        row.HeightRule = Some "exact" && (row.Height |> Option.exists (fun height -> height > 0.0))
+
+    let rowCanSplit (row: TableRow) =
+        row.CanSplit <> Some false && not (rowHeightIsExact row)
+
+    /// The height a row has to have room for on a page to start there (w:trHeight, at-least or exact;
+    /// not hRule auto): Word moves a row whole when it does not (fixtures row-break height-least50_f30,
+    /// height-least100_f28-30, height-least100-short_f28-30; _f27 of 100pt room keeps it).
+    let rowHeightToStart scale lineHeight (row: TableRow) =
+        if row.HeightRule = Some "auto" then 0.0 else rowMinHeight scale lineHeight row
 
     /// The least a row takes with the borders above and below it (rowBorderBands): an exact
     /// height holds the border above, an at-least height is the content's and the borders come

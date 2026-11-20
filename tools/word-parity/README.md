@@ -101,3 +101,7 @@ columns: grid, cell and table widths, fixed and autofit, content, indents, colum
 compatibility mode 14); `table-width.py --edges <pdfs>` reads where each cell's left-aligned label
 starts and its right-aligned one ends from Word's PDFs into `word/edges.tsv`, which
 `tests/word/table-width.fsx` checks ours against (the same `--edges` reads tools/pdf-runner's PDFs).
+`fixtures/nested-width.py` writes `tests/word/fixtures/nested-width/` with the same labels and page
+(how far a column whose cell holds a nested table gives way; how a nested table is laid out in a
+fixed or an autofit table; aligned tables' room in compatibility mode 14), read with
+`table-width.py --edges` and checked by the same `table-width.fsx`.

@@ -49,9 +49,11 @@ let outer =
     // lines, and with widow control a page bottom that would leave it split leaves it
     // nothing on the page - Word then moves the whole row (tests/word/row-break.fsx), and
     // there would be no split row to check the borders of.
+    // Nor its row's at-least height (1079 twips): a row with less room than that left on the page
+    // goes whole too (row-break height-*).
     |> fun table ->
         let noWidow (para: ParagraphBlock) = { para with Metadata = { para.Metadata with WidowControl = Some false } }
-        { table with Rows = table.Rows |> List.map (fun row -> { row with Cells = row.Cells |> List.map (fun cell -> { cell with Content = List.map noWidow cell.Content }) }) }
+        { table with Rows = table.Rows |> List.map (fun row -> { row with Height = None; HeightRule = None; Cells = row.Cells |> List.map (fun cell -> { cell with Content = List.map noWidow cell.Content }) }) }
 let nested = outer.Rows |> List.collect (fun row -> row.Cells |> List.collect (fun cell -> cell.NestedTables)) |> List.head
 ok "the document has a table with a nested table of two rows" (nested.Rows.Length = 2) (string nested.Rows.Length)
 

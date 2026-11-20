@@ -220,6 +220,18 @@ def families():
         rows = [header, row([cell(3000, run(['r01'])), cell(3000, run(['s01']))]),
                 row([cell(3000, run(lines('a', 10))), cell(3000, run(lines('b', 3), extra_ppr=tall_line))])]
         out[f'header-first-tall_f{f}'] = filler(f) + table([3000, 3000], rows)
+    # A row's height (w:trHeight; the calibre family's is at least 1079 twips) over the page's bottom:
+    # a cell of 20 lines beside one of 3, the row at least 50pt or 100pt high or exactly 100pt, with
+    # room for 2 - 5 lines; and a row of a 3-line cell and a 1-line one, at least 100pt high.
+    for f in range(27, 31):
+        for h, rule in ((1000, 'atLeast'), (2000, 'atLeast'), (2000, 'exact')):
+            trh = f'<w:trPr><w:trHeight w:val="{h}" w:hRule="{rule}"/></w:trPr>'
+            tag = f'height-{"least" if rule == "atLeast" else "exact"}{h // 20}'
+            cells = cell(3000, run(lines('a', 20))) + cell(3000, run(lines('b', 3)))
+            out[f'{tag}_f{f}'] = filler(f) + table([3000, 3000], [f'<w:tr>{trh}{cells}</w:tr>'])
+        trh = '<w:trPr><w:trHeight w:val="2000"/></w:trPr>'
+        cells = cell(3000, run(lines('b', 3))) + cell(3000, run(['c01']))
+        out[f'height-least100-short_f{f}'] = filler(f) + table([3000, 3000], [f'<w:tr>{trh}{cells}</w:tr>'])
     return out
 
 

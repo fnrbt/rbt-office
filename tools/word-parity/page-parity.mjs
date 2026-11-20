@@ -206,7 +206,7 @@ window.layoutOf = async (url) => {
 };
 window.linesOf = async (url) => {
     const { editor } = await editorOf(url);
-    return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.PageY * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId + "@" + Math.round(l.BlockHeight * 75) / 100, l.Text, (l.Segments ?? []).map((s) => s.Text + "=" + Math.round(s.Width * 75) / 100).join(" ").slice(0, 120)]);
+    return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.PageY * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId + "@" + Math.round(l.BlockHeight * 75) / 100, l.Text, (l.Segments ?? []).map((s) => s.Text + "=" + Math.round(s.Width * 75) / 100).join(" ").slice(0, 120), "x=" + (l.Segments?.length ? Math.round(l.Segments[0].X * 75) / 100 : "")]);
 };
 window.ready = true;
 
