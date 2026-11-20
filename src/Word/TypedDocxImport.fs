@@ -36,6 +36,7 @@ let private pageSetup (value: WordEditorPackage.PageSetup) : PageSetup =
       CompatibilityMode = value.CompatibilityMode |> Option.defaultValue 12
       UseFarEastLayout = value.UseFarEastLayout |> Option.defaultValue false
       CharacterSpacingControl = value.CharacterSpacingControl
+      Hyphenation = value.Hyphenation
       Columns = value.Columns |> Option.filter (fun x -> x.Count >= 2) |> Option.map columns
       SectionStart = value.SectionStart; HeaderReferences = references value.HeaderReferences
       FooterReferences = references value.FooterReferences; PageNumberStart = value.PageNumberStart

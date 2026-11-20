@@ -776,6 +776,9 @@ type PageSetup = {
     /// w:characterSpacingControl of the settings part (doNotCompress, compressPunctuation,
     /// compressPunctuationAndJapaneseKana); None when it states none.
     CharacterSpacingControl: string option
+    /// The settings part's automatic hyphenation when on (Office.Formats DocxReader.PageSetup.Hyphenation:
+    /// "<zone twips, -1 none> <consecutive limit> <doNotHyphenateCaps 1/0>"); None: off. See Layout.hyphenationSettings.
+    Hyphenation: string option
     Columns: SectionColumns option
     SectionStart: string option
     /// Header / footer references (kind, relationship id) of the final section,
@@ -930,6 +933,7 @@ let defaultPageSetup = {
     CompatibilityMode = 12
     UseFarEastLayout = false
     CharacterSpacingControl = None
+    Hyphenation = None
     Columns = None
     SectionStart = None
     HeaderReferences = []

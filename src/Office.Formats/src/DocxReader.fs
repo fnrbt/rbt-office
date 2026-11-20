@@ -645,6 +645,9 @@ type PageSetup = {
     /// w:characterSpacingControl of the settings part: doNotCompress, compressPunctuation,
     /// compressPunctuationAndJapaneseKana; None when it has none.
     CharacterSpacingControl: string option
+    /// w:autoHyphenation of the settings part, when on: "<zone> <limit> <caps>" - w:hyphenationZone in
+    /// twips (-1: none), w:consecutiveHyphenLimit (0: none), w:doNotHyphenateCaps (1 or 0); None when off.
+    Hyphenation: string option
     Columns: SectionColumns option
     SectionStart: string option   // body sectPr w:type (e.g. "continuous")
     /// Header / footer references and page number start of the body-level
@@ -4388,7 +4391,18 @@ let private parseCharacterSpacingControl (xml: string option) =
     |> Option.bind (fun settings -> Ns.descendantsNs "characterSpacingControl" settings |> List.tryHead)
     |> Option.bind (Docx.attr "val")
 
-let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode useFarEastLayout characterSpacingControl (sectPr: XmlNode option) : PageSetup option =
+/// The settings part's hyphenation (see PageSetup.Hyphenation).
+let private parseHyphenation (xml: string option) =
+    xml
+    |> Option.map XmlDsl.parse
+    |> Option.bind (fun settings ->
+        let on name = Ns.descendantsNs name settings |> List.tryHead |> Option.map (fun node -> Docx.attr "val" node |> Option.forall (fun v -> v <> "0" && v <> "false" && v <> "off"))
+        let number name = Ns.descendantsNs name settings |> List.tryHead |> Option.bind (Docx.attr "val") |> Option.bind (fun v -> match System.Int32.TryParse v with | true, n -> Some n | _ -> None)
+        if on "autoHyphenation" = Some true then
+            Some (sprintf "%d %d %d" (number "hyphenationZone" |> Option.defaultValue -1) (number "consecutiveHyphenLimit" |> Option.defaultValue 0) (if on "doNotHyphenateCaps" = Some true then 1 else 0))
+        else None)
+
+let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode useFarEastLayout characterSpacingControl hyphenation (sectPr: XmlNode option) : PageSetup option =
     sectPr
     |> Option.map (fun section ->
         let pgSz = Ns.childNs "pgSz" section
@@ -4409,6 +4423,7 @@ let private parsePageSetup evenAndOddHeaders defaultTabStop compatibilityMode us
             CompatibilityMode = compatibilityMode
             UseFarEastLayout = useFarEastLayout
             CharacterSpacingControl = characterSpacingControl
+            Hyphenation = hyphenation
             Columns = columns
             SectionStart = Docx.getPropVal "type" "val" section
             HeaderReferences = Docx.headerFooterReferences "headerReference" section
@@ -4628,6 +4643,8 @@ type private MainPart = {
     UseFarEastLayout: bool option
     /// See PageSetup.CharacterSpacingControl.
     CharacterSpacingControl: string option
+    /// See PageSetup.Hyphenation.
+    Hyphenation: string option
     Properties: DocumentProperties option
 }
 
@@ -4699,6 +4716,7 @@ let private readMainPart (source: PartSource) : MainPart option =
           CompatibilityMode = parseCompatibilityMode settingsXml
           UseFarEastLayout = parseUseFarEastLayout settingsXml
           CharacterSpacingControl = parseCharacterSpacingControl settingsXml
+          Hyphenation = parseHyphenation settingsXml
           Properties = propsXml |> Option.map Properties.parseProperties })
 
 /// The headers, the footers, the notes and the comments. `headerRefTypes` /
@@ -4942,7 +4960,7 @@ let parseFromSource (source: PartSource) : WordDocument option =
         let pageSetup =
             body
             |> Option.bind (Ns.childNs "sectPr")
-            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl
+            |> parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl main.Hyphenation
 
         let revisions = Revisions.parseRevisionsWhere docHolds doc
         let shapes =
@@ -5216,7 +5234,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
         let finalSetup =
             cursorAndFinal
             |> Option.bind (fun (cursor, (start, node)) ->
-                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some node))
+                try Some (cursor, start, parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl main.Hyphenation (Some node))
                 with _ -> None)
         match finalSetup with
         | None -> parseFromSource source |> Option.map wholeReader
@@ -5249,7 +5267,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     else
                         openSectionAt <- at
                         openSectionSetup <-
-                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some (parseElement cursor at))
+                            (try parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl main.Hyphenation (Some (parseElement cursor at))
                              with _ -> finalPageSetup)
                 openSectionSetup
             let mutable made = 0
@@ -5406,7 +5424,7 @@ let openProgressiveFromSource (keepContent: bool) (source: PartSource) : Progres
                     // body that has more than one.)
                     let pageSetup =
                         if firstSectionProperties >= 0 && firstSectionProperties <> finalStart then
-                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl (Some (parseElement cursor firstSectionProperties))
+                            parsePageSetup main.EvenAndOddHeaders main.DefaultTabStop main.CompatibilityMode main.UseFarEastLayout main.CharacterSpacingControl main.Hyphenation (Some (parseElement cursor firstSectionProperties))
                         else finalPageSetup
                     let doc =
                         assembleDocument main stories (List.ofSeq allContent) (List.ofSeq allShapes) pageSetup

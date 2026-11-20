@@ -180,6 +180,9 @@ type MeasuredLine = {
     Height: float
     StartOffset: int
     EndOffset: int
+    /// The line ends in a word broken by automatic hyphenation: a hyphen is drawn after its last text
+    /// (it is not in the text, and Width counts it).
+    Hyphenated: bool
 }
 
 /// Layout result for a block.
@@ -534,8 +537,31 @@ let private useEmbeddedLineFactors (doc: Document) =
         embeddedLineFactorsOf <- preserved
         embeddedLineFactorsVersion <- embeddedLineFactorsVersion + 1
 
+/// A document's automatic hyphenation (PageSetup.Hyphenation), as Word 2019 does it (fixtures
+/// hyphen-rules): in Word 2013's layout (compatibility mode 15) no zone and 3 letters at least after a
+/// break; in Word 2010's and before the zone (w:hyphenationZone, 360 twips when it states none) and 2.
+let hyphenationSettings (setup: PageSetup) : Hyphenation.Settings option =
+    setup.Hyphenation
+    |> Option.map (fun value ->
+        let parts = value.Split ' '
+        let number index fallback =
+            if index < parts.Length then (match System.Int32.TryParse parts.[index] with | true, n -> n | _ -> fallback) else fallback
+        let zoneTwips = number 0 -1
+        let modern = setup.CompatibilityMode >= 15
+        { Zone = (if modern then 0.0 else float (if zoneTwips < 0 then 360 else zoneTwips) / 15.0)
+          ConsecutiveLimit = max 0 (number 1 0)
+          DoNotHyphenateCaps = number 2 0 = 1
+          RightMin = if modern then 3 else 2 })
+
+/// The hyphenation of the document being laid out (hyphenationSettings; set by documentSettings).
+let mutable private documentHyphenation : Hyphenation.Settings option = None
+
+/// Whether a document asks for automatic hyphenation (the browser then imports the patterns).
+let wantsHyphenation (doc: Document) = doc.PageSetup.Hyphenation.IsSome
+
 let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) : LayoutSettings =
     useEmbeddedLineFactors doc
+    documentHyphenation <- hyphenationSettings doc.PageSetup
     let footerReserve =
         if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then
             doc.PageSetup.FooterDistance + lineHeight * 1.5
@@ -1897,7 +1923,9 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
     let mutable delta = 0.0
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
     let pagedLines = ResizeArray<MeasuredLine>()
-    for line in lines do
+    let lineArray = List.toArray lines
+    for lineIndex in 0 .. lineArray.Length - 1 do
+        let line = lineArray.[lineIndex]
         let shiftedY = line.Y + delta
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) shiftedY
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
@@ -1914,7 +1942,14 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
         // million pixels down and report that as the row height.
         let renderedBreakBefore =
             not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
-        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance) then
+        // (Word 2013's layout does not end a page with a hyphenated word: the line goes on to the next
+        // page - fixtures hyphen-rules bottom-m15-last, colbottom-m15; Word 2010's keeps it, bottom-m14-last.)
+        let hyphenEndsPage () =
+            line.Hyphenated && settings.CompatibilityMode >= 15 && not settings.InTableCell && not unpagedMeasurement
+            && lineIndex + 1 < lineArray.Length
+            && (let next = lineArray.[lineIndex + 1]
+                next.Y + delta + lineFitHeight exactLines next > contentBottom + lineFitTolerance)
+        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance || hyphenEndsPage ()) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -2440,6 +2475,7 @@ let emptyLine y height : MeasuredLine = {
     Height = height
     StartOffset = 0
     EndOffset = 0
+    Hyphenated = false
 }
 
 let private maxLineBottom defaultValue (layouts: BlockLayout list) =
@@ -2965,6 +3001,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     let mutable flushedLineCount = 0
     let availableWidth = max 1.0 maxWidth
     let mutable currentLineEnd = availableWidth
+    // (Automatic hyphenation: the line being made ends in a broken word, with a hyphen this wide;
+    // how many lines in a row before it did.)
+    let mutable currentHyphenWidth = 0.0
+    let mutable hyphenatedRun = 0
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
 
@@ -3174,6 +3214,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             let inlineImageDescent = if hasInlineImage then settings.FontSize * 0.27 else 0.0
             let floor = if hasText then min settings.LineHeight textLineFloor else settings.LineHeight
             let lineHeight = max floor (segmentMaxHeight + inlineImageDescent)
+            let widthEnd = widthEnd + currentHyphenWidth
             let lineWidth = min currentX widthEnd
             let segments = coalescedSegmentList currentSegments
             lines <- {
@@ -3183,7 +3224,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 Height = lineHeight
                 StartOffset = startOffset
                 EndOffset = endOffset
+                Hyphenated = currentHyphenWidth > 0.0
             } :: lines
+            hyphenatedRun <- if currentHyphenWidth > 0.0 then hyphenatedRun + 1 else 0
+            currentHyphenWidth <- 0.0
             currentSegments.Clear()
             currentHasTextMetric <- false
             currentFirstFontFamily <- None
@@ -3423,6 +3467,74 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
 
     moveToWrappableLine ()
 
+    // Automatic hyphenation (Hyphenation.fs; Word 2019, fixtures hyphen-words and hyphen-rules): a word
+    // that does not fit is broken at the last of its points where it and a hyphen fit - at least 2
+    // letters in and Settings.RightMin from its end; leading ( [ { and quotes and trailing punctuation
+    // ("accessibil-" / "ity," ) aside - when the zone is no more than the room from its start to the
+    // line's end and the paragraph's lines before did not end in Settings.ConsecutiveLimit hyphens.
+    // Not: words with digits or other characters but letters, all capitals (acronyms - Word breaks
+    // those, unless w:doNotHyphenateCaps), a word that goes on into the next run or follows a hyphen.
+    // Returns how many of the token's characters go on this line, and the hyphen's width.
+    let hyphenationBreak (runIndex: int) (runText: string) (displayRunText: string) (displayRunStyle: TextBuffer.TextStyle) (consumed: int) (tokenOffset: int) (tokenLength: int) (fitSafety: float) : struct (int * float) =
+        match documentHyphenation with
+        | Some hyphenation when Hyphenation.isLoaded ()
+                                && (hyphenation.ConsecutiveLimit = 0 || hyphenatedRun < hyphenation.ConsecutiveLimit)
+                                && (hyphenation.Zone <= 0.0 || currentLineEnd - currentX >= hyphenation.Zone) ->
+            let visible = visibleTokenLengthRange runText tokenOffset tokenLength
+            // (The word starts here: after a space in the run, or the line's or a space-ended run's end.)
+            let startsWord =
+                if tokenOffset > 0 then isWhitespaceChar runText.[tokenOffset - 1]
+                elif currentSegments.Count = 0 then true
+                else
+                    match currentSegments.[currentSegments.Count - 1] with
+                    | TextSegment (text, _, _, _, _) -> text.Length = 0 || isWhitespaceChar text.[text.Length - 1]
+                    | _ -> true
+            // (... and ends in it: a space after it, or the next run does not go on with it.)
+            let endsWord =
+                tokenOffset + visible < runText.Length
+                || runIndex + 1 >= runs.Length
+                || (match runs.[runIndex + 1] with
+                    | TextBuffer.Text next when next.Length > 0 && not next.Style.Hidden ->
+                        let first = Rope.charAtOrNull next.Start buffer.Rope
+                        isWhitespaceChar first || first = '\r' || first = '\n'
+                    | _ -> true)
+            if not startsWord || not endsWord || visible < 5 then struct (0, 0.0)
+            else
+                let isOpening (c: char) = c = '(' || c = '[' || c = '{' || c = '"' || c = '\'' || c = '\u201C' || c = '\u2018'
+                let isClosing (c: char) =
+                    c = ',' || c = '.' || c = ';' || c = ':' || c = '!' || c = '?' || c = ')' || c = ']' || c = '}'
+                    || c = '"' || c = '\'' || c = '\u201D' || c = '\u2019'
+                let mutable lead = 0
+                while lead < visible && isOpening runText.[tokenOffset + lead] do lead <- lead + 1
+                let mutable coreEnd = lead
+                while coreEnd < visible && (let c = runText.[tokenOffset + coreEnd] in (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) do
+                    coreEnd <- coreEnd + 1
+                // (After the letters: closing punctuation, or a possessive 's.)
+                let mutable tailOk = true
+                let mutable index = coreEnd
+                while tailOk && index < visible do
+                    let c = runText.[tokenOffset + index]
+                    if isClosing c then index <- index + 1
+                    elif (c = 's' || c = 'S') && index > coreEnd && (runText.[tokenOffset + index - 1] = '\'' || runText.[tokenOffset + index - 1] = '\u2019') then index <- index + 1
+                    else tailOk <- false
+                let core = runText.Substring(tokenOffset + lead, coreEnd - lead)
+                let allCaps = core.Length > 1 && core.ToUpperInvariant() = core
+                if not tailOk || core.Length < 5 || allCaps then struct (0, 0.0)
+                else
+                    let points = Hyphenation.points (core.ToLowerInvariant())
+                    let hyphenWidth = measureRange "-" displayRunStyle 0 1
+                    let room = currentLineEnd - fitSafety - currentX - hyphenWidth
+                    let mutable chosen = 0
+                    let mutable index = points.Length - 1
+                    while chosen = 0 && index >= 0 do
+                        let p = points.[index]
+                        if core.Length - p >= hyphenation.RightMin
+                           && measureRange displayRunText displayRunStyle consumed (lead + p) <= room then
+                            chosen <- lead + p
+                        index <- index - 1
+                    if chosen > 0 then struct (chosen, hyphenWidth) else struct (0, 0.0)
+        | _ -> struct (0, 0.0)
+
     for runIndex in 0 .. runs.Length - 1 do
         let run = runs.[runIndex]
         match run with
@@ -3550,6 +3662,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                 Height = settings.LineHeight
                                 StartOffset = breakOffset
                                 EndOffset = breakOffset
+                                Hyphenated = false
                             } :: lines
                             flushedLineCount <- flushedLineCount + 1
                             y <- y + settings.LineHeight
@@ -3608,7 +3721,21 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                             // full - or at the run's start when not a character more fits.)
                             let mutable broke = false
                             let mutable wholeLineWord = false
-                            if overflows && currentHasFlowContent then
+                            let struct (hyphenTake, hyphenWidth) =
+                                if overflows && not hasTab && remainingStart = 0 && displayRunText.Length = runText.Length then
+                                    hyphenationBreak runIndex runText displayRunText displayRunStyle consumed tokenOffset remainingLength fullFitSafety
+                                else struct (0, 0.0)
+                            if hyphenTake > 0 then
+                                let segmentWidth = measureRange displayRunText displayRunStyle consumed hyphenTake
+                                addTextSegment (sliceText runText tokenOffset hyphenTake) textRun.Style currentX segmentWidth (textRun.Start + consumed)
+                                currentX <- currentX + segmentWidth + hyphenWidth
+                                currentHyphenWidth <- hyphenWidth
+                                consumed <- consumed + hyphenTake
+                                remainingStart <- remainingStart + hyphenTake
+                                remainingLength <- remainingLength - hyphenTake
+                                flushLine ()
+                                broke <- true
+                            elif overflows && currentHasFlowContent then
                                 if breakBeforeWord (tokenOffset = 0 && runText.Length > 0 && not (isWhitespaceChar runText.[0])) then broke <- true
                                 else wholeLineWord <- true
                             if broke then ()
@@ -3681,6 +3808,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             Height = settings.LineHeight
             StartOffset = trailingBreakOffset
             EndOffset = trailingBreakOffset
+            Hyphenated = false
         } :: lines
     List.rev lines, floatObstacles, placedBoxes
 
@@ -3735,6 +3863,7 @@ let private trySingleLineStyledNoObstacles (settings: LayoutSettings) (measureRa
                         Height = lineHeight
                         StartOffset = textRun.Start
                         EndOffset = textRun.Start + rawText.Length
+                        Hyphenated = false
                     }]
         | _ -> None
 

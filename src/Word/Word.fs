@@ -570,8 +570,20 @@ module API =
         let known = weakGet embeddedLoads editor
         if not (isNull known) && obj.ReferenceEquals(known?package, preserved) then unbox known?pending
         else
+            // (A document that hyphenates: the patterns - imported on use, not at start-up - first, then
+            // the whole layout again.)
+            let hyphenation : JS.Promise<unit> =
+                if Rbt.Word.Layout.wantsHyphenation doc && not (Rbt.Word.Hyphenation.isLoaded ()) then
+                    EmbeddedFontFaces.andThen (Rbt.Word.Hyphenation.load ()) (fun installed ->
+                        if installed then
+                            let ctx = editor.Handler.RenderContext
+                            Ren.setTextMeasurers ctx ctx.TextMeasurer ctx.TextRangeMeasurer
+                            Ren.render ctx editor.Doc
+                            continueLayout editor
+                            notifyLayoutProgress editor)
+                else JS.Constructors.Promise.resolve ()
             let pending =
-                EmbeddedFontFaces.andThen (EmbeddedFontFaces.load doc) (fun families ->
+                EmbeddedFontFaces.andThen (EmbeddedFontFaces.andThen hyphenation (fun () -> EmbeddedFontFaces.load doc) |> unbox<JS.Promise<string array>>) (fun families ->
                     // (Text in their families was set in another font until now: laid out again.)
                     if families.Length > 0 && obj.ReferenceEquals(box editor.Whole.Package.Preserved, preserved) then
                         let ctx = editor.Handler.RenderContext

@@ -170,8 +170,16 @@ module Viewer =
             match embeddedLoad with
             | Some (package, pending) when obj.ReferenceEquals(package, box doc.Package.Preserved) -> pending
             | _ ->
+                // (A document that hyphenates: the patterns first - imported on use - and its layout again.)
+                let hyphenation : JS.Promise<unit> =
+                    if Rbt.Word.Layout.wantsHyphenation doc && not (Rbt.Word.Hyphenation.isLoaded ()) then
+                        EmbeddedFontFaces.andThen (Rbt.Word.Hyphenation.load ()) (fun installed ->
+                            if installed then
+                                Ren.setTextMeasurers ctx ctx.TextMeasurer ctx.TextRangeMeasurer
+                                tellProgress (Ren.layoutIsComplete ctx))
+                    else JS.Constructors.Promise.resolve ()
                 let pending =
-                    EmbeddedFontFaces.andThen (EmbeddedFontFaces.load doc) (fun families ->
+                    EmbeddedFontFaces.andThen (EmbeddedFontFaces.andThen hyphenation (fun () -> EmbeddedFontFaces.load doc) |> unbox<JS.Promise<string array>>) (fun families ->
                         if families.Length > 0 && obj.ReferenceEquals((current ()).Package.Preserved, doc.Package.Preserved) then
                             if Ren.setTextMeasurersForFamilies ctx ctx.TextMeasurer ctx.TextRangeMeasurer families > 0 then
                                 tellProgress (Ren.layoutIsComplete ctx))

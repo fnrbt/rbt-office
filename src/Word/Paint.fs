@@ -1163,12 +1163,24 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
     for line in layout.Lines do
         let baseline = paragraphLineBaseline baselineOffset settings.FontSize layout.Metadata line
         let lineAlignmentOffset = alignmentOffset layout line
+        // (A line that ends in a hyphenated word: the hyphen after its last text, in its style.)
+        let hyphenAfter =
+            if not line.Hyphenated then -1
+            else line.Segments |> List.tryFindIndexBack (function TextSegment _ -> true | _ -> false) |> Option.defaultValue -1
 
-        for segment in line.Segments do
+        for segmentIndex, segment in List.indexed line.Segments do
             match segment with
             | TextSegment (text, style, x, width, _) ->
                 let paintStyle = styleFromTextStyle style
                 let textX = settings.PaddingLeft + x + lineAlignmentOffset
+                if segmentIndex = hyphenAfter then
+                    let textBaseline =
+                        (match paintStyle.VertAlign with
+                         | Some "superscript" -> baseline - paintStyle.FontSize * 0.5
+                         | Some "subscript" -> baseline + paintStyle.FontSize * 0.25
+                         | _ -> baseline) - style.Position * 96.0 / 72.0
+                    let displayStyle = WordLayout.Text.displayStyle style
+                    commands.Add(DrawText ("-", paintStyle, textX + width, textBaseline, measureRange "-" displayStyle 0 1))
                 match paintStyle.Highlight with
                 | Some color -> commands.Add(FillRect (color, textX, line.Y, width, line.Height))
                 | None -> ()

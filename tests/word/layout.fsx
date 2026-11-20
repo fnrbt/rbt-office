@@ -232,7 +232,8 @@ let hitLine =
       Width = 42.0
       Height = 24.0
       StartOffset = 0
-      EndOffset = 6 }
+      EndOffset = 6
+      Hyphenated = false }
 let hitLayouts =
     [ blockLayout "h1" 0.0 hitLine
       blockLayout "h2" 24.0 hitLine
