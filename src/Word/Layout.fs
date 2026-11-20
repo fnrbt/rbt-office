@@ -7890,11 +7890,11 @@ let private sectionEndTakesNoRoom (para: ParagraphBlock) =
     && para.Metadata.ListStyle = NoList
     && para.Metadata.DropCap.IsNone
 
-let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
+let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialCounters: Map<string * int, int>) (initialFootnotes: Map<int, (string * string) list>) (initialHintOffset: int option) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
     let initialState = {
-        CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = Map.empty; CheckFootnotes = initialFootnotes; CheckNoteBreaks = Map.empty
+        CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = initialCounters; CheckFootnotes = initialFootnotes; CheckNoteBreaks = Map.empty
         CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes None startPage)
         CheckPrevious = initialPrevious; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
         CheckHintOffset = initialHintOffset
@@ -7962,7 +7962,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let mutable page = startPage
     let mutable y = startY
     let mutable hintOffset = initialHintOffset
-    let mutable counters : Map<string * int, int> = Map.empty
+    let mutable counters : Map<string * int, int> = initialCounters
     // Footnotes referenced so far, by page. Their block sits at the bottom of
     // the page, so each page's columns end above it.
     let mutable footnotesByPage = initialFootnotes
@@ -8609,7 +8609,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         record, page, y, footnotesByPage
 
 let private flowColumns (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (initialFootnotes: Map<int, (string * string) list>) =
-    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced false None initialFootnotes (Some 0)
+    let record, page, y, footnotes = flowColumnsKept "" memo settings measureText measureRange doc columns pageTopOf nonUniform startPage startY balanced false None Map.empty initialFootnotes (Some 0)
     List.ofArray record.PassResults, page, y, footnotes
 
 /// Absolute geometry of one rendered page. For single-section documents every
@@ -8859,6 +8859,9 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     // paragraph of a section that goes on on the same page (adjoining spacing collapses to the
     // larger of the two, as between paragraphs of a section).
     let mutable previousAtEnd : (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option = None
+    // The list counters at the end of the last section: a list goes on from section to section (the
+    // showcase handbook's numbered steps 10, 11, 12 after a landscape section, as in Word; were 1, 2, 3).
+    let mutable countersAtEnd : Map<string * int, int> = Map.empty
     sections
     |> List.iteri (fun i (blocks, columns, geometry, breakType, isFinal) ->
         shownHeader <- inheritSectionReferences shownHeader (if i < headerReferences.Length then headerReferences.[i] else [])
@@ -8929,7 +8932,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             match Map.tryFind sectionBase footnotesByPage with
             | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
             | _ -> Map.empty
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd ownFootnotes (if i = 0 then Some 0 else None)
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes (if i = 0 then Some 0 else None)
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage
@@ -8999,7 +9002,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
         currentYInPage <- ownEndY - ownTopOf ownEndPage
-        previousAtEnd <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckPrevious)
+        previousAtEnd <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckPrevious
+        countersAtEnd <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckCounters)
     let maxPage = pageTops.Count - 1
     let bodyLayouts = results.ToArray()
     blockStarts.Add bodyLayouts.Length
