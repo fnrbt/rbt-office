@@ -62,3 +62,9 @@ docstring has the regenerate / ask Word / extract-labels steps, and
 borders take vertically); `para-border.py --positions <dir>` reads where Word put
 every line from its PDFs into `<dir>/word/positions.tsv`, and
 `tests/word/border-space.fsx` checks our gaps between lines against it.
+`fixtures/long-word.py` (where lines break round a word longer than the line, in fields' results,
+at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into `<dir>/word/lines.tsv`,
+`tests/word/long-word.fsx`), `fixtures/kerning.py` (the width Word gives a word, kerned or not;
+`--widths <dir>`, `tests/word/kerning.fsx`) and `fixtures/line-fit.py` (how many characters Word
+puts on a line; read with `long-word.py --lines`). A REF field is updated by Word's PDF export: its
+line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.
