@@ -1905,6 +1905,85 @@ let private createRangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : Te
 let rangeMeasurerFromTextMeasurer (measureText: TextMeasurer) : TextRangeMeasurer =
     createRangeMeasurerFromTextMeasurer measureText
 
+/// What a line in a table cell keeps free of its text (canvas pixels).
+let private tableCellLineFitSafety = 0.25
+
+/// A cell's content as an autofit table's widths need it: its longest word (with its
+/// paragraph's indents) and its widest paragraph set on one line; a nested table counts as
+/// its own columns' widths.
+let rec private tableCellContentWidths (measureText: TextMeasurer) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (cell: TableCell) : struct (float * float) =
+    let mutable longest = 0.0
+    let mutable widest = 0.0
+    for para in cell.Content do
+        let paragraphStyle = paragraphStyleForParagraph para
+        let metadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
+        let indents = WordLayout.Paragraph.leftIndent metadata + WordLayout.Paragraph.rightIndent metadata
+        let firstLine = max 0.0 (WordLayout.Paragraph.firstLineIndent metadata)
+        let buffer = effectiveBufferForParagraph paragraphStyle para.Buffer
+        let mutable word = 0.0
+        let mutable paraLongest = 0.0
+        let mutable line = 0.0
+        for run in buffer.Runs do
+            match run with
+            | TextBuffer.Text textRun when not textRun.Style.Hidden && textRun.Length > 0 ->
+                let raw = TextBuffer.slice textRun.Start textRun.Length buffer
+                let text = WordLayout.Text.displayText textRun.Style raw
+                let style = WordLayout.Text.displayStyle textRun.Style
+                let mutable start = 0
+                for i in 0 .. text.Length do
+                    // (A line breaks at a space and after a hyphen.)
+                    if i = text.Length || text.[i] = ' ' || text.[i] = '\t' || text.[i] = '-' then
+                        let stop = if i < text.Length && text.[i] = '-' then i + 1 else i
+                        if stop > start then word <- word + measureText (text.Substring(start, stop - start)) style
+                        if i < text.Length then
+                            paraLongest <- max paraLongest word
+                            word <- 0.0
+                        start <- i + 1
+                line <- line + measureText text style
+            | _ -> ()
+        paraLongest <- max paraLongest word
+        longest <- max longest (paraLongest + indents)
+        widest <- max widest (line + indents + firstLine)
+    for nested in cell.NestedTables do
+        let widths = WordLayout.Table.tableColumnWidthsWith WordLayout.canvasScale None (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) nested
+        widest <- max widest (List.sum widths)
+    // (Room for the longest word as a cell's line fits it.)
+    struct (longest + tableCellLineFitSafety, max (longest + tableCellLineFitSafety) widest)
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newNestedWidthMap () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.get($1)")>]
+let private nestedWidthMapGet (map: obj) (key: TableBlock) : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private nestedWidthMapSet (map: obj) (key: TableBlock) (value: obj) : unit = Fable.Core.Util.jsNative
+let private nestedTableWidths = newNestedWidthMap ()
+/// The room a nested table was last laid out in (its cell's text width), for painting its borders.
+let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) = nestedWidthMapSet nestedTableWidths table (box maxWidth)
+let lastNestedTableMaxWidth (table: TableBlock) : float option =
+    let entry = nestedWidthMapGet nestedTableWidths table
+    if isNull entry then None else Some (unbox<float> entry)
+#else
+let private nestedTableWidths = System.Runtime.CompilerServices.ConditionalWeakTable<TableBlock, obj>()
+/// The room a nested table was last laid out in (its cell's text width), for painting its borders.
+let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) =
+    lock nestedTableWidths (fun () ->
+        nestedTableWidths.Remove table |> ignore
+        nestedTableWidths.Add(table, box maxWidth))
+let lastNestedTableMaxWidth (table: TableBlock) : float option =
+    match nestedTableWidths.TryGetValue table with
+    | true, entry -> Some (unbox<float> entry)
+    | false, _ -> None
+#endif
+
+/// The widths of a table's columns in `maxWidth` (WordLayout.Table.tableColumnWidthsWith), an
+/// autofit table's measured from its cells' content.
+let tableColumnWidthsMeasured (measureText: TextMeasurer) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (maxWidth: float) (tableBlock: TableBlock) =
+    WordLayout.Table.tableColumnWidthsWith WordLayout.canvasScale (Some maxWidth) (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) tableBlock
+
+let tableColumnWidthsInContext (measureText: TextMeasurer) (context: DocumentStyleContext) (maxWidth: float) (tableBlock: TableBlock) =
+    tableColumnWidthsMeasured measureText (forTableCellParagraphInContext context) (effectiveBufferInContext context) maxWidth tableBlock
+
 let tableColumnWidths (maxWidth: float) (tableBlock: TableBlock) =
     WordLayout.Table.tableColumnWidths WordLayout.canvasScale (Some maxWidth) tableBlock
 
@@ -2685,7 +2764,6 @@ let private isWhitespaceChar (ch: char) =
 
 let private shortTrailingSpaceFitSafety = 0.25
 let private lineFitSafety = 0.25
-let private tableCellLineFitSafety = 2.0
 let private mixedMetricsLineFitSafety = 0.75
 
 /// What a line must leave free at its end for a word to fit (px). With the fonts' own advances (a host's
@@ -4700,10 +4778,13 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
             if nestedTableLayoutDepth >= maxNestedTableLayoutDepth then
                 [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
             else
-                let nestedOuterLeft, nestedOuterRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode nestedTable
+                // (A nested table starts at its cell's text in every compatibility mode: fixtures
+                // table-width nest-*-c14.)
+                let nestedOuterLeft = 0.0
                 let nestedAvailableWidth = max 0.0 (cellMaxWidth - WordLayout.Table.tableIndent nestedTable)
-                let nestedTableMaxWidth = nestedAvailableWidth + nestedOuterLeft + nestedOuterRight
-                let nestedColumnWidths = tableColumnWidths nestedTableMaxWidth nestedTable
+                let nestedTableMaxWidth = nestedAvailableWidth
+                let nestedColumnWidths = tableColumnWidthsMeasured measureText paragraphStyleForParagraph effectiveBufferForParagraph nestedTableMaxWidth nestedTable
+                rememberNestedTableWidths nestedTable nestedTableMaxWidth
                 if List.isEmpty nestedColumnWidths then
                     [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
                 else
@@ -5680,7 +5761,7 @@ let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (i
     let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
     let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
     let tableMaxWidth = maxWidth + outerLeft + outerRight
-    let columnWidths = tableColumnWidths tableMaxWidth tableBlock
+    let columnWidths = tableColumnWidthsInContext measureText (styleContextForLayout memo doc) tableMaxWidth tableBlock
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
     let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
     buildTableLayoutPlanWithMemo memo initialCounters settings measureText measureRange doc tableBlock tableMaxWidth columnWidths outerLeft tableHorizontalOffset tableY
@@ -6362,7 +6443,7 @@ let private layoutDocumentPassKept
                 let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
                 let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
                 let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
-                let columnWidths = tableColumnWidths tableMaxWidth tableBlock
+                let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
                 let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
                 let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
                 let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment tableAvailableWidth tableWidth

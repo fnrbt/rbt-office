@@ -1539,82 +1539,139 @@ module Table =
         | Some width -> preferredWidthFromDocument width |> resolvePreferredWidth scale availableWidth
         | None -> cell.Width |> Option.bind (preferredWidthFromLegacyValue >> resolvePreferredWidth scale availableWidth)
 
-    let private explicitColumnWidths scale maxWidth columnCount table =
-        let widths: float option array = Array.create columnCount None
+    /// The widths of a table's columns, as Word works them out (fixtures table-width,
+    /// tools/word-parity/fixtures/table-width.py; docs/layout-parity-flow.md). `maxWidth` is the
+    /// room the table has (the text's or the column's or the cell's width, less the indent; in
+    /// compatibility mode 14 and older with the outer cells' margins it reaches past the text by);
+    /// `content` gives a cell's content in an autofit table: its longest word and its width set on
+    /// one line (cell margins not included).
+    /// - Each column is as wide as the widest of its cells' widths (w:tcW), a cell that spans
+    ///   columns giving the last of them what they lack of it; the continuation of a vertical
+    ///   merge counts for nothing. The grid (w:tblGrid) stands in only where a cell has no width,
+    ///   in a fixed table; an autofit table takes such a cell's content on one line instead.
+    /// - The table is as wide as its w:tblW (a percentage of `maxWidth` and the indent); with none (auto) a fixed
+    ///   table is as wide as its columns, even past the margin, and an autofit one too as far as
+    ///   `maxWidth`.
+    /// - Between the two widths the columns give way past their least widths in proportion to what
+    ///   they have above them, and grow in proportion to their widths. The least width of an autofit
+    ///   column is its cells' longest word and margins (a column is never narrower), of a fixed
+    ///   one its margins and one pixel.
+    /// A table with no widths at all (one the editor has just made) fills `maxWidth` evenly.
+    let tableColumnWidthsWith scale (maxWidth: float option) (content: (TableCell -> struct (float * float)) option) (table: TableBlock) =
+        let columns = columnCount table
+        if columns = 0 then [] else
+        let fixedLayout = table.LayoutMode = Some FixedTableLayout
+        // (A percentage is of the whole width the table could have, its indent included:
+        // docx4j-getting-started's 78.76% table, indented 745 twips, is its grid's 7291.)
+        let tableWidth =
+            match table.PreferredWidth |> Option.map preferredWidthFromDocument with
+            | None | Some AutoWidth -> None
+            | Some width -> resolvePreferredWidth scale (maxWidth |> Option.map (fun room -> room + tableIndent table)) width
+        let grid = table.GridColumns |> List.map (preferredWidthFromDocument >> resolvePreferredWidth scale (tableWidth |> Option.orElse maxWidth)) |> List.toArray
+        let gridAt column = if column < grid.Length then grid.[column] else None
+        let measured = Dictionary<TableCell, struct (float * float)>(HashIdentity.Reference)
+        let measure (cell: TableCell) =
+            match content with
+            | Some measure when not fixedLayout ->
+                match measured.TryGetValue cell with
+                | true, value -> value
+                | _ ->
+                    let value = measure cell
+                    measured.[cell] <- value
+                    value
+            | _ -> struct (0.0, 0.0)
+        let cellLeast row (cell: TableCell) =
+            let padding = cellPaddingForRow scale table row cell
+            let struct (longestWord, _) = measure cell
+            if fixedLayout then padding.Left + padding.Right + 1.0 else longestWord + padding.Left + padding.Right
+        // Percentages of a table of no width of its own (auto) are of the narrowest table that
+        // gives each such cell its least width (fixtures tcwpct-*), as far as `maxWidth`.
+        let percentBase =
+            match tableWidth with
+            | Some width -> Some width
+            | None ->
+                let mutable narrowest = 0.0
+                for row in table.Rows do
+                    for cell in row.Cells do
+                        match cell.PreferredWidth with
+                        | Some { Kind = Rbt.Word.Document.PercentWidth; Value = Some percent } when percent > 0.0 && cell.VerticalMerge <> Some ContinueMerge ->
+                            narrowest <- max narrowest (cellLeast row cell * 100.0 / percent)
+                        | _ -> ()
+                if narrowest > 0.0 then Some (match maxWidth with Some room -> min room narrowest | None -> narrowest)
+                else maxWidth
+        let hasCellWidths =
+            table.Rows |> List.exists (fun row -> row.Cells |> List.exists (fun cell -> (cellPreferredWidth scale percentBase cell).IsSome))
+        if table.PreferredWidth.IsNone && table.GridColumns.IsEmpty && not hasCellWidths then
+            List.replicate columns ((maxWidth |> Option.map (fun width -> width / float columns)) |> Option.defaultValue scale.DefaultColumnWidth)
+        else
+        let preferred: float option array = Array.create columns None
+        let least = Array.create columns 0.0
+        let widen (slot: float option array) column value =
+            slot.[column] <- Some (match slot.[column] with Some current -> max current value | None -> value)
+        let spanning = ResizeArray<int * int * float option * float>()
         for row in table.Rows do
-            let mutable currentColumn = max 0 row.GridBefore
+            let mutable column = max 0 row.GridBefore
             for cell in row.Cells do
                 let span = cellSpan cell
-                match cellPreferredWidth scale maxWidth cell with
-                | Some width ->
-                    let perColumnWidth = width / float span
-                    let lastColumn = min columnCount (currentColumn + span)
-                    let mutable columnIndex = max 0 currentColumn
-                    while columnIndex < lastColumn do
-                        if widths.[columnIndex].IsNone then
-                            widths.[columnIndex] <- Some perColumnWidth
-                        columnIndex <- columnIndex + 1
-                | None -> ()
-                currentColumn <- currentColumn + span
-        arrayToList widths
-
-    let tableColumnWidths scale maxWidth table =
-        let columns = columnCount table
-
-        if columns = 0 then
-            []
-        else
-            let targetWidth =
-                match table.PreferredWidth |> Option.map preferredWidthFromDocument with
-                | Some AutoWidth -> None
-                | Some width -> resolvePreferredWidth scale maxWidth width
-                | None -> maxWidth
-                |> Option.map (fun width ->
-                    match maxWidth with
-                    | Some maxWidth -> min maxWidth width
-                    | None -> width)
-            let gridWidths =
-                table.GridColumns
-                |> List.choose (preferredWidthFromDocument >> resolvePreferredWidth scale maxWidth)
-            let explicitWidths =
-                if gridWidths.Length >= columns then
-                    gridWidths |> List.truncate columns |> List.map Some
-                else
-                    explicitColumnWidths scale maxWidth columns table
-            let explicitWidthArray = explicitWidths |> List.toArray
-            let mutable explicitTotal = 0.0
-            let mutable missingCount = 0
-            for width in explicitWidthArray do
-                match width with
-                | Some value -> explicitTotal <- explicitTotal + value
-                | None -> missingCount <- missingCount + 1
-
-            if explicitTotal <= 0.0 then
-                match targetWidth with
-                | Some width -> List.replicate columns (width / float columns)
-                | None -> List.replicate columns scale.DefaultColumnWidth
-            else
-                let missingWidth =
-                    if missingCount = 0 then 0.0
+                if cell.VerticalMerge <> Some ContinueMerge && column < columns then
+                    let padding = cellPaddingForRow scale table row cell
+                    let margins = padding.Left + padding.Right
+                    let struct (_, oneLine) = measure cell
+                    let cellLeast = cellLeast row cell
+                    let width =
+                        match cellPreferredWidth scale percentBase cell with
+                        | Some width -> Some width
+                        | None when fixedLayout || content.IsNone -> None
+                        | None -> Some (oneLine + margins)
+                    if span = 1 then
+                        least.[column] <- max least.[column] cellLeast
+                        match width |> Option.orElse (gridAt column) with
+                        | Some width -> widen preferred column width
+                        | None -> ()
                     else
-                        match targetWidth with
-                        | Some width -> max 24.0 ((width - explicitTotal) / float missingCount)
-                        | None -> scale.DefaultColumnWidth
+                        spanning.Add((column, min columns (column + span) - 1, width, cellLeast))
+                column <- column + span
+        for first, last, width, cellLeast in spanning do
+            let mutable known = 0.0
+            let mutable unknown = 0
+            let mutable leastSum = 0.0
+            for column in first .. last do
+                leastSum <- leastSum + least.[column]
+                match preferred.[column] with
+                | Some value -> known <- known + value
+                | None -> unknown <- unknown + 1
+            if leastSum < cellLeast then
+                least.[last] <- least.[last] + cellLeast - leastSum
+            match width with
+            | Some width when unknown > 0 ->
+                let share = max 0.0 (width - known) / float unknown
+                for column in first .. last do
+                    if preferred.[column].IsNone then preferred.[column] <- Some share
+            | Some width when known < width -> preferred.[last] <- Some (preferred.[last].Value + width - known)
+            | _ -> ()
+        let widths =
+            Array.init columns (fun column ->
+                let value = preferred.[column] |> Option.orElse (gridAt column) |> Option.defaultValue least.[column]
+                if fixedLayout then value else max value least.[column])
+        let total = Array.sum widths
+        let leastTotal = Array.sum least
+        let target =
+            match tableWidth with
+            | Some width -> if fixedLayout then width else max width leastTotal
+            | None when fixedLayout -> total
+            | None ->
+                match maxWidth with
+                | Some room -> max leastTotal (min total room)
+                | None -> total
+        if abs (target - total) <= 0.01 || total <= 0.0 then
+            arrayToList widths
+        elif target < total && target > leastTotal && total - leastTotal > 0.0 then
+            let factor = (target - leastTotal) / (total - leastTotal)
+            widths |> Array.mapi (fun column width -> least.[column] + (width - least.[column]) * factor) |> arrayToList
+        else
+            widths |> Array.map (fun width -> width * target / total) |> arrayToList
 
-                let widths = ResizeArray<float>(columns)
-                let mutable total = 0.0
-                for width in explicitWidthArray do
-                    let resolved = defaultArg width missingWidth
-                    widths.Add resolved
-                    total <- total + resolved
-                match targetWidth with
-                | Some width ->
-                    if total > 0.0 && abs (total - width) > 0.01 then
-                        let scaleFactor = width / total
-                        for i = 0 to widths.Count - 1 do
-                            widths.[i] <- widths.[i] * scaleFactor
-                    resizeArrayToList widths
-                | None -> resizeArrayToList widths
+    let tableColumnWidths scale maxWidth table = tableColumnWidthsWith scale maxWidth None table
 
     let spannedWidth (columnWidths: float list) start span fallback =
         let mutable total = 0.0

@@ -76,3 +76,9 @@ puts on a line; read with `long-word.py --lines`) and `fixtures/hang-punct.py` (
 hangs past a line's end under East Asian layout, by setting and language; read with `long-word.py --lines`,
 `tests/word/hang-punct.fsx`). A REF field is updated by Word's PDF export: its
 line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.
+
+`fixtures/table-width.py` writes `tests/word/fixtures/table-width/` (how wide Word makes a table's
+columns: grid, cell and table widths, fixed and autofit, content, indents, columns, nesting, spans,
+compatibility mode 14); `table-width.py --edges <pdfs>` reads where each cell's left-aligned label
+starts and its right-aligned one ends from Word's PDFs into `word/edges.tsv`, which
+`tests/word/table-width.fsx` checks ours against (the same `--edges` reads tools/pdf-runner's PDFs).

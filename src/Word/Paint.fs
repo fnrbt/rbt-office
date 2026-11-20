@@ -1389,7 +1389,7 @@ let markupMarkerCommands (members: Dictionary<BlockId, HashSet<string>>) (settin
 
 let private maxNestedTablePaintDepth = 512
 
-let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) (availableWidth: float) (baseHorizontalOffset: float) (rowTops: float array option) =
+let rec private tableBorderCommandsCoreAt isNestedBorderPass nestedTablePaintDepth (styleContext: DocumentStyleContext option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (tableBlock: TableBlock) (y: float) (availableWidth: float) (baseHorizontalOffset: float) (rowTops: float array option) =
     // `rowTops`: where the layout put each body row (None: rows follow each
     // other from `y`, moved to the next page when they do not fit). A nested
     // table is drawn from its rows' own layouts: the row of the outer table
@@ -1405,11 +1405,19 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
     elif numColumns = 0 then
         ([], currentY + WordLayout.Table.emptyTableAdvance settings.LineHeight)
     else
-        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+        // (A nested table starts at its cell's text in every compatibility mode, and is as wide
+        // as its layout made it.)
+        let nestedMaxWidth = if nestedTablePaintDepth > 0 || isNestedBorderPass then lastNestedTableMaxWidth tableBlock else None
+        let outerLeft, outerRight =
+            if nestedTablePaintDepth > 0 || isNestedBorderPass then 0.0, 0.0
+            else WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableAvailableWidth = max 0.0 (availableWidth - WordLayout.Table.tableIndent tableBlock)
-        let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
+        let tableMaxWidth = nestedMaxWidth |> Option.defaultValue (tableAvailableWidth + outerLeft + outerRight)
         let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
-        let columnWidths = resolvedTable.ColumnWidths
+        let columnWidths =
+            match styleContext with
+            | Some context -> tableColumnWidthsInContext measureText context tableMaxWidth tableBlock
+            | None -> tableColumnWidthsMeasured measureText (fun _ -> normal) effectiveBuffer tableMaxWidth tableBlock
         let columnWidthPrefix = columnWidthPrefix columnWidths
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let fallbackColumnWidth = tableMaxWidth / float numColumns
@@ -1594,7 +1602,7 @@ let rec private tableBorderCommandsCoreAt nestedTablePaintDepth (styleContext: D
                     let nestedCellY = currentY + cellSpacing + WordLayout.Table.spacedCellTextTopOffset cellSpacing textPadding.Top
                     let mutable nestedY = WordLayout.Table.cellContentStartY nestedCellY textPadding
                     for nestedTable in cell.NestedTables do
-                        let nestedCommands, nextNestedY = tableBorderCommandsCoreAt (nestedTablePaintDepth + 1) styleContext settings measureText measureRange nestedTable nestedY nestedAvailableWidth nestedX None
+                        let nestedCommands, nextNestedY = tableBorderCommandsCoreAt false (nestedTablePaintDepth + 1) styleContext settings measureText measureRange nestedTable nestedY nestedAvailableWidth nestedX None
                         commands.AddRange nestedCommands
                         nestedY <- nextNestedY
                 cellBuffer.Add({
@@ -1724,7 +1732,7 @@ let private tableBorderCommandsCore (styleContext: DocumentStyleContext option) 
     let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
     let tableLeftOffset = tableLeftOffsetForStyleContext styleContext
     let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
-    tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset None
+    tableBorderCommandsCoreAt false 0 styleContext settings measureText measureRange tableBlock y tableAvailableWidth tableLeftOffset None
 
 let tableBorderCommandsForDocumentWithRange (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (tableBlock: TableBlock) (y: float) =
     tableBorderCommandsCore (Some (WordStyles.styleContext doc)) settings measureText measureRange tableBlock y
@@ -2922,7 +2930,7 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableMaxWidth = maxWidth + outerLeft + outerRight
-        let columnWidths = tableColumnWidths tableMaxWidth tableBlock
+        let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
         let tableHorizontalOffset = tableLeftOffset + tableAlignmentOffset tableBlock.Alignment maxWidth tableWidth
@@ -3314,7 +3322,7 @@ let private addNestedTableBorders (styleContext: DocumentStyleContext option) (s
                 // (Header rows repeat on their own; the given tops are those of the body rows.)
                 let bodyTops = if nestedTable.Rows |> List.exists (fun row -> row.IsHeader) then None else Some rowTops
                 let topY = match bodyTops with Some tops when tops.Length > 0 && not (System.Double.IsNaN tops.[0]) && tops.[0] > topY + 0.5 -> tops.[0] | _ -> topY
-                let cmds, _ = tableBorderCommandsCoreAt 0 styleContext settings measureText measureRange nestedTable topY availableWidth baseHorizontalOffset bodyTops
+                let cmds, _ = tableBorderCommandsCoreAt true 0 styleContext settings measureText measureRange nestedTable topY availableWidth baseHorizontalOffset bodyTops
                 commands.AddRange cmds
             | _ -> ()
             frames.Push(ScanNestedTable nestedTable)
