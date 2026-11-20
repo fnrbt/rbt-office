@@ -2406,6 +2406,10 @@ let private anchoredShapeBox (settings: LayoutSettings) measureText measureRange
 let private textBoxPlace (settings: LayoutSettings) measureText measureRange (styleContext: DocumentStyleContext) (pages: PageInfo array) (anchorTop: float option) (shift: float) (textBox: TextBoxBlock) : struct (float * float * float) =
     match anchorTop with
     | Some top when pages.Length > 0 ->
+        // (In a section with columns: where the column flow placed it, from its column - Layout.columnShapePlace.)
+        match columnShapePlace textBox top with
+        | Some (x, y) -> struct (x, y + shift, textBoxFrameHeight settings measureText measureRange styleContext textBox)
+        | None ->
         let struct (box, marginLeft, height) = anchoredShapeBox settings measureText measureRange styleContext pages top textBox
         struct (marginLeft + box.X, box.Y + shift, height)
     | _ ->

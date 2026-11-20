@@ -7629,6 +7629,42 @@ let tableColumnStripSettings (settings: LayoutSettings) (doc: Document) (tableBl
     tableColumnSection settings doc tableBlock
     |> Option.map (fun (sectionSettings, columns) -> columnStripSettings sectionSettings (sectionColumnWidth sectionSettings columns))
 
+/// Where the column flow placed a shape (see flowColumnsKept's placeShapesOf): its left edge and top
+/// on the canvas, with the top of the first layout of the block it is anchored in at the time.
+type private ColumnShapePlace = { PlaceAnchorTop: float; PlaceX: float; PlaceY: float }
+
+#if FABLE_COMPILER
+[<Fable.Core.Emit("new WeakMap()")>]
+let private newColumnShapeMap () : obj = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.get($1)")>]
+let private columnShapeMapGet (map: obj) (key: TextBoxBlock) : ColumnShapePlace = Fable.Core.Util.jsNative
+[<Fable.Core.Emit("$0.set($1, $2)")>]
+let private columnShapeMapSet (map: obj) (key: TextBoxBlock) (value: ColumnShapePlace) : unit = Fable.Core.Util.jsNative
+let private columnShapePlaces = newColumnShapeMap ()
+let private tryColumnShape (textBox: TextBoxBlock) : ColumnShapePlace option =
+    let entry = columnShapeMapGet columnShapePlaces textBox
+    if isNull (box entry) then None else Some entry
+let private rememberColumnShape (textBox: TextBoxBlock) (place: ColumnShapePlace) = columnShapeMapSet columnShapePlaces textBox place
+#else
+let private columnShapePlaces = System.Runtime.CompilerServices.ConditionalWeakTable<TextBoxBlock, ColumnShapePlace>()
+let private tryColumnShape (textBox: TextBoxBlock) : ColumnShapePlace option =
+    match columnShapePlaces.TryGetValue textBox with
+    | true, entry -> Some entry
+    | false, _ -> None
+let private rememberColumnShape (textBox: TextBoxBlock) (place: ColumnShapePlace) =
+    lock columnShapePlaces (fun () ->
+        columnShapePlaces.Remove textBox |> ignore
+        columnShapePlaces.Add(textBox, place))
+#endif
+
+/// Where a shape anchored in a section with columns stands (its left edge and top on the canvas), as
+/// the layout placed it - None for one it did not place, or when the block it is anchored in no longer
+/// starts at `anchorTop` (the top of its first layout): it is then where its anchor puts it.
+let columnShapePlace (textBox: TextBoxBlock) (anchorTop: float) : (float * float) option =
+    match tryColumnShape textBox with
+    | Some place when abs (place.PlaceAnchorTop - anchorTop) < 0.01 -> Some (place.PlaceX, place.PlaceY)
+    | _ -> None
+
 /// The paragraph that holds a section break takes no room when nothing is in it, as in
 /// Word 2019 (compatibility modes 14 and 15): before a continuous break the next section
 /// starts where the text above the paragraph ends, whatever spacing before or after, line
@@ -7749,6 +7785,47 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     // A drop cap (w:framePr w:dropCap) waiting for the paragraph after it, as in the
     // single-column pass (see layoutDocumentPassKept).
     let mutable pendingDropCap: (ParagraphBlock * ParagraphStyle) option = None
+    // The shapes that text goes around (wrapping, not behind the text), by the block they are anchored
+    // in, and those placed so far - each across from the section's left edge, down the canvas.
+    let anchoredShapes =
+        let found = Dictionary<BlockId, TextBoxBlock list>()
+        for block in blocks do
+            match block, wrappingAnchorOf block with
+            | TextBox textBox, Some anchorId ->
+                found.[anchorId] <- (match Portable.Dict.tryFind anchorId found with ValueSome boxes -> boxes @ [ textBox ] | ValueNone -> [ textBox ])
+            | _ -> ()
+        found
+    let mutable placedShapes : PlacedFloatingBox list = []
+    let shapeIdOf (box: PlacedFloatingBox) =
+        match box.Kind with
+        | WordLayout.Floating.TextBox textBox -> textBox.Id
+        | _ -> ""
+    // What the shapes placed so far take of a column: the lines of a paragraph laid out in it go
+    // round them (below one that is topped and bottomed).
+    let shapeObstaclesIn col : FloatingObstacle list =
+        if placedShapes.IsEmpty then []
+        else
+            let left = columnDx col
+            let width = columnWidth col
+            [ for box in placedShapes do
+                if WordLayout.Floating.participatesInWrap box && box.X < left + width && box.X + box.Width > left then
+                    let x, top, obstacleWidth, height = WordLayout.Floating.obstacleForBox width { box with X = box.X - left }
+                    if WordLayout.Floating.wrapsTopAndBottom box.Wrap then yield (-width, top, 3.0 * width, height)
+                    else yield (x, top, obstacleWidth, height) ]
+    // The shapes anchored in a paragraph not yet placed, placed from `top` (the paragraph's top) in
+    // the column the flow is in: `column` from that column, `margin` from the page's margins.
+    let placeShapesOf (anchorId: BlockId) (top: float) : PlacedFloatingBox list =
+        match Portable.Dict.tryFind anchorId anchoredShapes with
+        | ValueNone -> []
+        | ValueSome shapes ->
+            let anchorPage : WordLayout.Floating.AnchorPage =
+                { PageWidth = settings.Width; PageHeight = pageHeight settings; MarginLeft = settings.PaddingLeft; MarginRight = settings.MarginRight
+                  MarginTop = settings.PaddingTop; MarginBottom = settings.MarginBottom; ColumnLeft = columnDx col; ColumnWidth = columnWidth col }
+            [ for textBox in shapes do
+                if not (placedShapes |> List.exists (fun box -> shapeIdOf box = textBox.Id)) then
+                    let height = textBoxFrameHeight settings measureText measureRange styleContext textBox
+                    let box = WordLayout.Floating.anchoredTextBoxBox anchorPage (pageTopOf page) top height textBox
+                    yield { box with X = box.X + columnDx col } ]
     let advanceColumn () =
         col <- col + 1
         if col >= n then
@@ -7771,12 +7848,13 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage; CheckNoteBreaks = Map.empty
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage None page)
-        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = pendingDropCap
+        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = placedShapes; CheckDropCap = pendingDropCap
         CheckHintOffset = hintOffset
     }
     let restoreState (state: PassCheckpoint) =
         hintOffset <- state.CheckHintOffset
         pendingDropCap <- state.CheckDropCap
+        placedShapes <- state.CheckPlacedBoxes
         col <- state.CheckCol
         page <- state.CheckPage
         y <- state.CheckY
@@ -7880,6 +7958,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             // paragraph reports offsets in the paragraph's own text.
             let mutable consumedOffset = 0
             let mutable placed = false
+            // The shapes anchored in it placed with it (see shapesHere), and where its layouts start.
+            let mutable ownShapes : PlacedFloatingBox list = []
+            let resultsBefore = results.Count
             // (At the top of a column the paragraph came to by the flow of the text - pushed on, or after a
             // page break above it - its space before is gone: pageTopDropsSpaceBefore.)
             let mutable pushed = false
@@ -7908,17 +7989,66 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     layoutParagraphWithMemoAt dropsHere memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters obstacles []
                 // (The paragraph's first lines go around the drop cap: they stand beside it.)
                 let cap = if isContinuation then None else capLayoutAt layoutY
-                let rawLayout, newCounters, _, _ =
-                    let probe = laidOut []
+                // A line fits when its text ends above the column bottom (lineVisibleFitHeight),
+                // which moves up as the lines placed so far bring footnotes with them. With widow
+                // control (below a column's top) a first line alone at the column's foot goes on with
+                // the rest, and a last line alone in the next column takes the line before it along -
+                // the whole paragraph when that leaves one line (as on a page: breakParagraphLines).
+                let fitOf (layout: BlockLayout) =
+                    let existingNotes = pageFootnotes ()
+                    let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
+                    let mutable fitNotes = existingNotes
+                    let mutable fitCount = 0
+                    let mutable stillFitting = true
+                    for line in layout.Lines do
+                        if stillFitting then
+                            let lineNotes = footnotesInLine line
+                            let candidateNotes = if lineNotes.IsEmpty then fitNotes else appendNewNotes fitNotes lineNotes
+                            let extraReserve =
+                                if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
+                                else footnoteReserveHeight settings candidateNotes - existingReserve
+                            if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
+                                fitCount <- fitCount + 1
+                                fitNotes <- candidateNotes
+                            else
+                                stillFitting <- false
+                    let count = layout.Lines.Length
+                    if fitCount = 0 || fitCount >= count || atColumnTop () || not (WordStyles.widowControl style remaining.Metadata) then fitCount
+                    elif fitCount = 1 then 0
+                    elif fitCount = count - 1 then (if count - 2 >= 2 then count - 2 else 0)
+                    else fitCount
+                // (And round the shapes placed in this column: see placeShapesOf.)
+                let layoutAmong (shapeObstacles: FloatingObstacle list) =
+                    let probe = laidOut shapeObstacles
                     match cap with
                     | Some (capLayout, capWidth, capFrame) when not capFrame.InMargin && capWidth > 0.0 ->
                         let probeLayout, _, _, _ = probe
                         match probeLayout.Lines with
                         | first :: _ ->
                             let frameHeight, _ = dropCapFrame (fst dropCap.Value) (snd dropCap.Value) capLayout first capFrame
-                            laidOut [ (0.0, first.Y, capWidth + capFrame.Distance, frameHeight - 0.5) ]
+                            laidOut ((0.0, first.Y, capWidth + capFrame.Distance, frameHeight - 0.5) :: shapeObstacles)
                         | [] -> probe
                     | _ -> probe
+                let rawLayout, newCounters, _, _ = layoutAmong (shapeObstaclesIn col)
+                // A shape anchored in the paragraph that text goes round is placed from the paragraph's top
+                // in the column where the paragraph starts (the anchor's place in the paragraph is not
+                // read: taken to be in its first part), across from that column, when some of the
+                // paragraph is laid out there; the paragraph is laid out again round it (Word 2010 and
+                // 2019: fixtures float-wrap colq-*, col-tb-low-start).
+                let shapesHere =
+                    if isContinuation then []
+                    else
+                        match placeShapesOf para0.Id layoutY with
+                        | [] -> []
+                        | shapes -> if fitOf rawLayout > 0 then shapes else []
+                let rawLayout, newCounters =
+                    match shapesHere with
+                    | [] -> rawLayout, newCounters
+                    | shapes ->
+                        placedShapes <- shapes @ placedShapes
+                        ownShapes <- shapes @ ownShapes
+                        let layout, counters, _, _ = layoutAmong (shapeObstaclesIn col)
+                        layout, counters
                 // The letter, its baseline on that of the last line it is as high as.
                 let addCap () =
                     match cap, rawLayout.Lines with
@@ -7940,27 +8070,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         // The list marker belongs to the first fragment only.
                         { shiftLayoutOffsets consumedOffset rawLayout with Prefix = ""; PrefixStyle = None }
                     else rawLayout
-                // A line fits when its text ends above the column bottom (lineVisibleFitHeight),
-                // which moves up as the lines placed so far bring footnotes with them.
-                let existingNotes = pageFootnotes ()
-                let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
-                let mutable fitNotes = existingNotes
-                let mutable fitCount = 0
-                let mutable lastFit = None
-                let mutable stillFitting = true
-                for line in layout.Lines do
-                    if stillFitting then
-                        let lineNotes = footnotesInLine line
-                        let candidateNotes = if lineNotes.IsEmpty then fitNotes else appendNewNotes fitNotes lineNotes
-                        let extraReserve =
-                            if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
-                            else footnoteReserveHeight settings candidateNotes - existingReserve
-                        if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
-                            fitCount <- fitCount + 1
-                            lastFit <- Some line
-                            fitNotes <- candidateNotes
-                        else
-                            stillFitting <- false
+                let fitCount = fitOf layout
+                let lastFit = if fitCount > 0 then Some (List.item (fitCount - 1) layout.Lines) else None
                 let placeWhole () =
                     addCap ()
                     results.Add layout
@@ -7969,17 +8080,23 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     y <- layout.Y + layout.Height
                     previousParagraph <- Some (remaining, style, layout.Metadata, WordLayout.Paragraph.spacingAfter style layout.Metadata)
                     placed <- true
-                if moveKeepGroup then
+                // The paragraph goes on to the next column whole: a shape placed from it here goes with it
+                // in Word 2019's layout - placed again from where it starts there -, stays where it was
+                // placed in Word 2010's (fixtures float-wrap colq-k41, -k42, -k43-start).
+                let movesOn () =
+                    if not shapesHere.IsEmpty && settings.CompatibilityMode >= 15 then
+                        let moved = set (shapesHere |> List.map shapeIdOf)
+                        placedShapes <- placedShapes |> List.filter (fun box -> not (moved.Contains (shapeIdOf box)))
+                        ownShapes <- ownShapes |> List.filter (fun box -> not (moved.Contains (shapeIdOf box)))
                     advanceColumn ()
                     pushed <- true
+                if moveKeepGroup then movesOn ()
                 elif fitCount = layout.Lines.Length then placeWhole ()
                 elif fitCount = 0 then
                     // (A section that goes on on a page above it starts low on the page: what does
                     // not fit there goes to the next column - the top of the next page.)
                     if atColumnTop () && not (startsLowOnPage ()) then placeWhole ()
-                    else
-                        advanceColumn ()
-                        pushed <- true
+                    else movesOn ()
                 else
                     let fitLines = takeLines fitCount layout.Lines
                     match lastFit with
@@ -8017,8 +8134,34 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         advanceColumn ()
                     | None ->
                         advanceColumn ()
+            // (Where the painter draws them: from the top of the paragraph's first layout - see columnShapePlace.)
+            if not ownShapes.IsEmpty then
+                let mutable index = resultsBefore
+                while index < results.Count && results.[index].BlockId <> para0.Id do
+                    index <- index + 1
+                if index < results.Count then
+                    for box in ownShapes do
+                        match box.Kind with
+                        | WordLayout.Floating.TextBox textBox ->
+                            rememberColumnShape textBox { PlaceAnchorTop = results.[index].Y; PlaceX = settings.PaddingLeft + box.X; PlaceY = box.Y }
+                        | _ -> ()
             if para0.Metadata.PageBreakAfter then
-                if para0.Metadata.ColumnBreakAfter || n <= 1 || balancedHeight.IsSome then
+                if para0.Metadata.ColumnBreakAfter && n >= 2 then
+                    if not (atColumnTop ()) then advanceColumn ()
+                    // A paragraph that ends in a column break - its text or nothing before it - goes on
+                    // in the next column with its mark: an empty line as high as the mark's font (not the
+                    // break's), its space after below it; Word 2010 and 2019 alike (fixtures float-wrap
+                    // cbr-*: the next paragraph a line down, its space before kept; cbr-two: a second
+                    // such paragraph starts the next page).
+                    let markPara =
+                        { para0 with
+                            Buffer = TextBuffer.delete 0 (TextBuffer.length para0.Buffer) para0.Buffer
+                            Metadata = { para0.Metadata with SpacingBefore = Some 0.0; PageBreakAfter = false; ColumnBreakAfter = false; ListStyle = NoList } }
+                    let markLayout, _, _, _ =
+                        layoutParagraphWithMemo None flowSettings measureText measureRange (columnWidth col) y 0.0 style (effectiveBufferInContext styleContext) markPara counters [] []
+                    y <- markLayout.Y + markLayout.Height
+                    previousParagraph <- Some (para0, style, markLayout.Metadata, WordLayout.Paragraph.spacingAfter style markLayout.Metadata)
+                elif para0.Metadata.ColumnBreakAfter || n <= 1 || balancedHeight.IsSome then
                     if not (atColumnTop ()) then advanceColumn ()
                 elif not (atPageTop ()) then advancePage ()
         | None ->

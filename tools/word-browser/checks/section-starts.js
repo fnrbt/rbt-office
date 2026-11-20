@@ -114,7 +114,9 @@ try {
         check('a page break in two columns: the text after it is on the next page', [pageOf(pageBreak, 'first column'), pageOf(pageBreak, 'after the break'), Word.getPageFrames(pageBreak).length], [0, 1, 2]);
         const columnBreak = await open(await bytesFor(withBreak('column')));
         const first = lineOf(columnBreak, 'first column'), after = lineOf(columnBreak, 'after the break');
-        check('a column break: in the next column of the same page, at its top', [pageOf(columnBreak, 'after the break'), Math.round(after.Y - first.Y), after.X > first.X + 200, Word.getPageFrames(columnBreak).length], [0, 0, true, 1]);
+        // (Below the paragraph mark the break's paragraph leaves at the column's top - an empty line in the
+        // mark's font, and its space after: Word 2010 and 2019, fixtures float-wrap cbr-text, cbr-own-a12.)
+        check('a column break: in the next column of the same page, a line below its top', [pageOf(columnBreak, 'after the break'), after.Y - first.Y > first.Height / 2 && after.Y - first.Y <= first.BlockHeight + 0.5, after.X > first.X + 200, Word.getPageFrames(columnBreak).length], [0, true, true, 1]);
         // Saved: unchanged it is the XML that was read; changed (made bold: written from the model or patched) it is still a column break.
         Word.setSelection(columnBreak, first.BlockId, 0, first.BlockId, 5);
         Word.toggleBold(columnBreak);
