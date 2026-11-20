@@ -86,6 +86,7 @@ let private mergeTextStyle (baseStyle: TextStyle) (overrideStyle: TextStyle) =
             DeletedInsertion = overrideStyle.DeletedInsertion |> Option.orElse baseStyle.DeletedInsertion
             MoveName = overrideStyle.MoveName |> Option.orElse baseStyle.MoveName
             VertAlign = overrideStyle.VertAlign |> Option.orElse baseStyle.VertAlign
+            EastAsiaLanguage = overrideStyle.EastAsiaLanguage |> Option.orElse baseStyle.EastAsiaLanguage
     }
 
 let private mergeNamedTextStyle (baseStyle: TextStyle) (named: NamedStyle) =

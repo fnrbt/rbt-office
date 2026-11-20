@@ -72,5 +72,7 @@ box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against.
 at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into `<dir>/word/lines.tsv`,
 `tests/word/long-word.fsx`), `fixtures/kerning.py` (the width Word gives a word, kerned or not;
 `--widths <dir>`, `tests/word/kerning.fsx`) and `fixtures/line-fit.py` (how many characters Word
-puts on a line; read with `long-word.py --lines`). A REF field is updated by Word's PDF export: its
+puts on a line; read with `long-word.py --lines`) and `fixtures/hang-punct.py` (punctuation that
+hangs past a line's end under East Asian layout, by setting and language; read with `long-word.py --lines`,
+`tests/word/hang-punct.fsx`). A REF field is updated by Word's PDF export: its
 line in the PDF is not Word's layout of it - use a QUOTE field in fixtures.

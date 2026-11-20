@@ -54,6 +54,7 @@ let private defaultPage : PageSetup =
     { PageWidth = 816.0; PageHeight = 1056.0; MarginLeft = 96.0; MarginRight = 96.0
       MarginTop = 96.0; MarginBottom = 96.0; HeaderDistance = 48.0; FooterDistance = 48.0
       DifferentFirstPage = false; EvenAndOddHeaders = false; DefaultTabStop = None; CompatibilityMode = None
+      UseFarEastLayout = None; CharacterSpacingControl = None
       Columns = None; SectionStart = None; HeaderReferences = []; FooterReferences = []
       PageNumberStart = None; PageNumberFormat = None; VerticalAlign = None }
 let pageSetup (value: D.PageSetup) : PageSetup =
@@ -62,7 +63,8 @@ let pageSetup (value: D.PageSetup) : PageSetup =
       MarginTop = defaultArg value.MarginTop defaultPage.MarginTop; MarginBottom = defaultArg value.MarginBottom defaultPage.MarginBottom
       HeaderDistance = defaultArg value.HeaderDistance defaultPage.HeaderDistance; FooterDistance = defaultArg value.FooterDistance defaultPage.FooterDistance
       DifferentFirstPage = on value.DifferentFirstPage; EvenAndOddHeaders = on value.EvenAndOddHeaders
-      DefaultTabStop = value.DefaultTabStop; CompatibilityMode = value.CompatibilityMode; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
+      DefaultTabStop = value.DefaultTabStop; CompatibilityMode = value.CompatibilityMode
+      UseFarEastLayout = value.UseFarEastLayout; CharacterSpacingControl = value.CharacterSpacingControl; Columns = Option.map columns value.Columns; SectionStart = value.SectionStart
       HeaderReferences = references value.HeaderReferences; FooterReferences = references value.FooterReferences
       PageNumberStart = value.PageNumberStart; PageNumberFormat = value.PageNumberFormat; VerticalAlign = value.VerticalAlign }
 let private sectionSetup (value: D.SectionGeometry) : PageSetup =
@@ -104,6 +106,7 @@ let private runFormatting styleMap theme (para: D.ParagraphProperties) (run: D.R
       FontFamily = D.wordFontFamilyToCss theme effective
       FontFamilyInherited = Some (direct.FontFamily.IsNone && direct.ThemeFont.IsNone && mark.FontFamily.IsNone && mark.ThemeFont.IsNone)
       Color = D.wordColorToCss effective.Color; Highlight = effective.Highlight; VertAlign = effective.VertAlign
+      EastAsiaLanguage = effective.EastAsiaLanguage
       HasExplicit = true; ExplicitBold = explicit (fun p -> p.Bold); ExplicitItalic = explicit (fun p -> p.Italic)
       ExplicitUnderline = explicit (fun p -> p.Underline); ExplicitAllCaps = explicit (fun p -> p.AllCaps)
       ExplicitSmallCaps = explicit (fun p -> p.SmallCaps); ExplicitStrike = explicit (fun p -> p.Strike)
@@ -238,6 +241,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
           RightTabPosition = pixels effective.RightTabPosition; RightTabLeader = effective.RightTabLeader
           TabStops = effective.TabStops |> List.choose (fun (position, alignment, leader) -> pixels (Some position) |> Option.map (fun position -> { Position = position; Alignment = alignment; Leader = leader }))
           Rtl = on effective.Rtl; ContextualSpacing = effective.ContextualSpacing
+          OverflowPunctuation = effective.OverflowPunctuation
           KeepNext = direct.KeepNext; KeepLines = direct.KeepLines; WidowControl = effective.WidowControl
           PageBreakBefore = breakAtStart || on effective.PageBreakBefore
           PageBreakBeforeDerived = effective.PageBreakBefore = Some true && (direct.PageBreakBefore <> Some true || direct.PageBreakBeforeDerived)

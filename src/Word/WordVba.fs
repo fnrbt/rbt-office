@@ -429,6 +429,7 @@ module Vba =
         LongTrailingSpaceFitSafety = 0.0
         DefaultTabStop = doc.PageSetup.DefaultTabStop
         CompatibilityMode = doc.PageSetup.CompatibilityMode
+        HangingPunctuation = Layout.documentHangingPunctuation doc.PageSetup
     }
 
     let private measureText (text: string) (style: TextBuf.TextStyle) =

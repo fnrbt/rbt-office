@@ -197,6 +197,7 @@ let private editorRun (run: EditorRun) : WordEditorPackage.EditorRun =
         FontSize = run.FontSize; CharacterSpacing = run.CharacterSpacing
         FontFamily = run.FontFamily; FontFamilyInherited = None
         Color = run.Color; Highlight = run.Highlight; VertAlign = run.VertAlign
+        EastAsiaLanguage = None
         HasExplicit = false; ExplicitBold = None; ExplicitItalic = None
         ExplicitUnderline = None; ExplicitAllCaps = None; ExplicitSmallCaps = None
         ExplicitStrike = None; ExplicitDoubleStrike = None; ExplicitHidden = None
@@ -221,7 +222,7 @@ let private editorParagraph (para: EditorParagraph) : WordEditorPackage.EditorPa
         SpacingBefore = para.SpacingBefore; SpacingAfter = para.SpacingAfter
         LineSpacing = para.LineSpacing; LineSpacingRule = None
         RightTabPosition = para.RightTabPosition; RightTabLeader = para.RightTabLeader
-        TabStops = []; Rtl = false; ContextualSpacing = None
+        TabStops = []; Rtl = false; ContextualSpacing = None; OverflowPunctuation = None
         KeepNext = None; KeepLines = None; WidowControl = None
         PageBreakBefore = false; PageBreakBeforeDerived = false
         PageBreakAtStart = false; PageBreakAfter = false; ColumnBreakAfter = false

@@ -117,6 +117,9 @@ type TextStyle = {
     /// Inline controls enclosing this text, outermost first.
     ContentControls: ContentControlLayer list
     VertAlign: string option
+    /// w:lang@eastAsia in effect: the language Word breaks the run's lines by under East Asian
+    /// layout (which punctuation may hang past the line's end: Layout.hangsPastLineEnd).
+    EastAsiaLanguage: string option
     /// Bit set of ExplicitFormat flags: the on/off properties and the font size
     /// that were set directly on this run. A flagged property overrides the
     /// paragraph / character style even when its value equals the default
@@ -205,6 +208,7 @@ let defaultStyle = {
     Checkbox = None
     ContentControls = []
     VertAlign = None
+    EastAsiaLanguage = None
     Explicit = 0
 }
 
@@ -419,6 +423,7 @@ let sameTextStyle (left: TextStyle) (right: TextStyle) : bool =
         && left.UnderlineStyle = right.UnderlineStyle
         && left.UnderlineColor = right.UnderlineColor
         && left.EmphasisMark = right.EmphasisMark
+        && left.EastAsiaLanguage = right.EastAsiaLanguage
         && left.FontFamily = right.FontFamily
         && left.Color = right.Color
         && left.Highlight = right.Highlight
@@ -814,7 +819,7 @@ let withCharacterFormattingOf (chosen: TextStyle) (typed: TextStyle) : TextStyle
         SmallCaps = chosen.SmallCaps; Strike = chosen.Strike; DoubleStrike = chosen.DoubleStrike; Hidden = chosen.Hidden
         Position = chosen.Position; EmphasisMark = chosen.EmphasisMark; FontSize = chosen.FontSize
         CharacterSpacing = chosen.CharacterSpacing; FontFamily = chosen.FontFamily; Color = chosen.Color
-        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; Explicit = chosen.Explicit
+        Highlight = chosen.Highlight; VertAlign = chosen.VertAlign; EastAsiaLanguage = chosen.EastAsiaLanguage; Explicit = chosen.Explicit
         BookmarkStarts = []; BookmarkEnds = []; RenderedPageBreakBefore = false }
 
 /// Insert text at position

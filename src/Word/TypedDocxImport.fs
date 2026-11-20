@@ -34,6 +34,8 @@ let private pageSetup (value: WordEditorPackage.PageSetup) : PageSetup =
       // (A document without the setting - or without a settings part - is older than Word 2010:
       // Word opens it in compatibility mode.)
       CompatibilityMode = value.CompatibilityMode |> Option.defaultValue 12
+      UseFarEastLayout = value.UseFarEastLayout |> Option.defaultValue false
+      CharacterSpacingControl = value.CharacterSpacingControl
       Columns = value.Columns |> Option.filter (fun x -> x.Count >= 2) |> Option.map columns
       SectionStart = value.SectionStart; HeaderReferences = references value.HeaderReferences
       FooterReferences = references value.FooterReferences; PageNumberStart = value.PageNumberStart
@@ -146,6 +148,7 @@ let private metadata cache (item: WordEditorPackage.EditorParagraph) =
         OutlineLevel = f.OutlineLevel; RenderedPageBreakBefore = f.RenderedPageBreakBefore
         SectionPageSetup = Option.map sectionSetup item.SectionPageSetup
         EffectiveParagraphBorders = Option.map paragraphBorders f.EffectiveBorders
+        OverflowPunctuation = f.OverflowPunctuation
         ListLevelIndents = item.List |> Option.bind (fun x -> x.ListLevelIndents)
         DropCap = f.DropCapKind |> Option.map (fun kind -> { InMargin = kind = "margin"; Lines = max 1 (Option.defaultValue 1 f.DropCapLines); Distance = Option.defaultValue 0.0 f.DropCapDistance })
         SectionColumns = item.SectionColumns |> Option.filter (fun x -> x.Count >= 2) |> Option.map columns
@@ -179,7 +182,7 @@ let private runStyle (run: WordEditorPackage.EditorRun) =
         DoubleStrike = Option.defaultValue f.DoubleStrike f.ExplicitDoubleStrike; Hidden = Option.defaultValue f.Hidden f.ExplicitHidden
         Position = f.Position; EmphasisMark = f.EmphasisMark; FontSize = Option.defaultValue f.FontSize f.ExplicitFontSize
         CharacterSpacing = f.CharacterSpacing; FontFamily = if f.FontFamily = "" then None else Some f.FontFamily
-        Color = f.Color; Highlight = f.Highlight; VertAlign = f.VertAlign; Hyperlink = link; InactiveHyperlink = inactive
+        Color = f.Color; Highlight = f.Highlight; VertAlign = f.VertAlign; EastAsiaLanguage = f.EastAsiaLanguage; Hyperlink = link; InactiveHyperlink = inactive
         CommentId = run.CommentId; CommentText = run.CommentText; CommentAuthor = run.CommentAuthor; CommentDate = run.CommentDate
         NoteId = run.NoteId; NoteType = run.NoteType; NoteText = run.NoteText
         BookmarkStarts = List.map bookmark run.BookmarkStarts
