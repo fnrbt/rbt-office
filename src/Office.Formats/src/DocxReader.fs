@@ -4702,7 +4702,7 @@ type private Stories = {
 /// The main document part is the target of the package's officeDocument
 /// relationship (it need not be word/document.xml), and every other part is
 /// found through the relationships of the part that refers to it.
-let private readMainPart (source: PartSource) : MainPart option =
+let private mainRelationshipOf (source: PartSource) =
     let rootRels = source.Text "_rels/.rels" |> relationshipsOfXml
     let mainRelationship = rootRels |> List.tryFind (fun rel -> ValueText.isRelationshipType "/officeDocument" rel.Type && rel.TargetMode <> Some "External")
     let mainPath =
@@ -4710,6 +4710,31 @@ let private readMainPart (source: PartSource) : MainPart option =
         |> Option.map (fun rel -> ZipInterop.resolveTarget "" rel.Target)
         |> Option.filter (fun path -> (source.Text path).IsSome)
         |> Option.defaultValue "word/document.xml"
+    rootRels, mainRelationship, mainPath
+
+/// The parts as Word shows them: the content controls bound to custom XML hold their nodes' values
+/// (DataBinding), in every part but the custom XML parts themselves.
+let withDataBindings (source: PartSource) : PartSource =
+    let _, _, mainPath = mainRelationshipOf source
+    match DataBinding.storesOf source.Text mainPath with
+    | [] -> source
+    | stores ->
+        let resolved = System.Collections.Generic.Dictionary<string, string option>()
+        { source with
+            Text =
+                fun path ->
+                    match Portable.Dict.tryFind path resolved with
+                    | ValueSome text -> text
+                    | ValueNone ->
+                        let text = source.Text path
+                        let text =
+                            if path.ToLowerInvariant().StartsWith "customxml/" || PartPath.extension path <> "xml" then text
+                            else text |> Option.map (DataBinding.resolvePart stores)
+                        resolved.[path] <- text
+                        text }
+
+let private readMainPart (source: PartSource) : MainPart option =
+    let rootRels, mainRelationship, mainPath = mainRelationshipOf source
     let docDir = parentPath mainPath
     source.Text mainPath
     |> Option.map (fun xml ->
@@ -4965,6 +4990,7 @@ let private assembleDocument (main: MainPart) (stories: Stories) (content: Docum
 
 /// Parse a DOCX package.
 let parseFromSource (source: PartSource) : WordDocument option =
+    let source = withDataBindings source
     readMainPart source
     |> Option.map (fun main ->
         // (The main part of a long document is megabytes of XML: it is scanned
@@ -5251,6 +5277,7 @@ let private wholeReader (doc: WordDocument) : ProgressiveReader =
 /// revisions and every picture are kept for it); without it the blocks belong
 /// to whoever read them. None: not a document.
 let openProgressiveFromSource (keepContent: bool) (source: PartSource) : ProgressiveReader option =
+    let source = withDataBindings source
     match readMainPart source with
     | None -> None
     | Some main ->

@@ -205,6 +205,17 @@ One line per hypothesis, refuted ones too. Status: testing, confirmed (implement
 | A numbered list goes on from section to section | confirmed (layoutSections hands each section the list counters the one before ended with) | fixtures `list-sections` (6, `tools/word-parity/fixtures/list-sections.py`, test `tests/word/list-sections.fsx`): a next-page, a continuous and a landscape break, mode 14 and 15: a01-a03 1-3, b01-b03 4-6, c01 7 (ours restarted at each section: 1-3, 1-3, 1); the handbook's steps 10-18 after its landscape section |
 | A second w:num of the same abstract list (no overrides) goes on with the first | open (ours: a list of its own, from 1) | `list-sections` d01 (numId 2 after numId 1's 7 items): 8 in Word, every variant |
 | A bordered paragraph's shading fills inside its border lines: across from the left line's inner edge to the right one's, down from the top line's to the bottom one's - a group of bordered paragraphs one fill, each paragraph's reaching the next's top | confirmed (Paint.paragraphShadingRect) | Word's PDFs: `para-border` `grp-shade` (the middle of three shaded) 66.62-545.49 x 113.54-133.58, ours now 66.5-545.5 x 113.5-133.5; the handbook's command box (five Consolas paragraphs, 4pt space, 0.75pt lines) 57.0-538.54, fills 12.84pt a line - ours filled each paragraph's whole height (22.3pt) over the line above it, across the text only |
+| A content control bound to custom XML (w:dataBinding) shows its node's value when Word opens the document, not the text document.xml caches; it keeps that text when the XPath matches nothing or an element that holds elements | confirmed (DataBinding.resolvePart, DocxReader.withDataBindings) | fixtures `data-binding` (6 documents, `tools/word-parity/fixtures/data-binding.py`; Word: `content-controls.vbs`, its `word/*.tsv`, `*.saved.docx`, `*.edited.docx`; tests/word/data-binding.fsx): `plain` "bound value A" (cached "cached plain"), `block`, `header` (a header's control), `nocontent` (an empty w:sdtContent) the value; `nomatch` (/root[1]/nothing[1]) and `mixed` (a<b>b</b>c) the cached text, unmapped (XMLMapping.IsMapped false); docx4j-binding-simple p1 "the UPDATED element 1 contents" |
+| The store is the part whose itemProps ds:itemID is the w:storeItemID (any case); with none of that ID (or no storeItemID) the first part the XPath matches in; one of that ID it does not match in is not given up for another | confirmed | `lowerid`, `nostore`, `noid` (Word rewrites the ID to the store's), `noidns` / `nostorens` (the second store, the only one the XPath matches in); `wrongstore` (the ID of a store without the node): cached text |
+| XPath: element steps by namespace URI (w:prefixMappings' prefixes, not the item's own), [n] positions, a final @attribute; an unprefixed step is no namespace | confirmed | `ns` (prefix q: in the item, ns0 in the mapping), `nsdefault` (the item's default namespace), `nopred` (/root/a), `second` (v[2]), `attr` (/@x) |
+| The value as it is: white space kept, a tab a tab, a line break a w:br in a w:text w:multiLine control and dropped in any other, entities decoded | confirmed | `ws` "  padded   value  ", `tab`, `multiline` ("line one" br "line two"), `oneline` "line oneline two", `amp` "x & y <z>" |
+| A date control shows an xsd:date / dateTime value in its w:dateFormat, names in its w:lid's language, the time as written (am/pm as AM / PM); a value that is no date as it is | confirmed (DataBinding.formatDate: d-dddd, M-MMMM, yy / yyyy, h / H, m, s, am/pm, 'text'; month and day names of en, de, fr, es, it, nl) | `date1` / `date2` "5 March 2024", `date3` "not a date", `date4` "Tuesday, 5 Mar 24", `date5` "05/03/2024 14:07", `date6` (en-US) "3/5/2024 2:07 PM", `date7` (de-DE) "März 5, 2024", `date8` "Day 5 of March", `date9` (23:30Z) "5 March 2024" |
+| A drop-down list or combo box shows the w:displayText of the item of the value, else the value; a check box is checked by "true" or "1" (not "yes"), its run keeping its font | confirmed | `dd` / `combo` "Two", `ddx` "unlisted"; `cb1` - `cb4`, `cbx` |
+| The text the same as the cached text: nothing changes; otherwise one run of the value in w:sdtPr/w:rPr's properties (none without one), the cached runs' formatting gone; a placeholder (w:showingPlcHdr) taken off | confirmed | `samefmt` / `samefmt2` / `ddsame` (cached bold / italic, kept), `fmt` (bold and italic runs, w:sdtPr/w:rPr red: red only), `fmt2` (no w:sdtPr/w:rPr: plain), `fmt3` (bold), `plc`; `rich` (a rich text control with w:dataBinding: shown as text, Word makes it w:text) |
+| An empty value shows the placeholder: what the control shows already when it shows its placeholder, else five spaces in w:sdtPr/w:rPr (w:showingPlcHdr put in) | confirmed (best guess for a control with a w:placeholder docPart and no placeholder showing: five spaces too, not looked up) | `emptyplc` (kept "Click here to enter text."), `empty`, `emptyrpr` (bold), `ddempty` |
+| A repeating section (w15:repeatingSection, w15:dataBinding) has an item for each node of its node set - the XPath without a position on its last step; the items there kept, the last copied for more with its controls' XPaths to the n-th node, those past the set's end dropped | confirmed (DataBinding.repeatedSections; a repeating section inside one is left as it is) | `repeat` (/root[1]/items[1]/item, 1 item held, 3 nodes: 3 items, the copies' XPaths item[2], item[3]), `repeat1` (item[1], 2 held: 3), `repeatfewer` (2 nodes, 3 held: 2); docx4j-invoice-2013's lines (table rows) and notes ("note 2" at the foot as Word) |
+| Editing a bound control changes its node in the custom XML part when Word saves (an attribute's value too); a check box "true" / "false"; every control of the node shows it | confirmed (DataBinding.writeBack at the end of the writer's preparePackage) | `*.edited.docx`: each mapped control's Range.Text set in Word: the stores Word saved equal writeBack's of Word's edited document.xml (data-binding.fsx); /root/a's five controls "edit 8" (the last); a date control's text as written ("edit 13"); round trip synthetic/bound-controls (a Q typed into a bound paragraph: "QBea Ray" in customXml/item1.xml) |
+| A picture control bound to base64, a rich text control's w15:dataBinding (flat WordprocessingML) | open (ours: what the control holds) | docx4j-invoice-2013's logo and terms ("John Funky Cool!! Citizen" in Word's PDF) |
 
 ## Queue
 
@@ -243,6 +254,12 @@ column break inside a paragraph's text breaks there; section-top-space: the hand
 after a next-page section break too -, on master 4420c25e: ShaperText 76 of 76 at Word's page count, 71 with every
 page at Word's line (were 75 / 70); canvas 75 / 69 (were 74 / 68): file-sample at Word's 2 pages; nothing else
 changed.)
+(The data-binding round - content controls bound to custom XML showing their nodes' values, repeating sections
+repeated over their node sets, edits written back to the custom XML parts -: ShaperText 75 of 76 at Word's page
+count, 71 with every page at Word's line (were 75 / 70); canvas 74 / 69 (were 74 / 68): docx4j-binding-simple's p1 as
+Word's; docx4j-hyperlink-binding's and docx4j-invoice-2013's last lines now Word's ("second line", "note 2"); nothing
+else changed. docx4j-conventions' p6 and docx4j-repeating-section's p8 are not data binding: neither binds a control
+(conventions is a document about OpenDoPE, its w:dataBinding text; repeating-section has no custom XML) - layout.)
 
 | Documents | Word / ours | First divergence | Round |
 |---|---|---|---|
@@ -253,9 +270,9 @@ changed.)
 | docx4j-legal-contributor | 3 / 4 canvas, 3 / 3 ShaperText | p3 | |
 | file-sample | 2 / 2, all starts | - | done (section-margins / inline-break round): its "Columns" section (continuous, bottom 1440) starts on a page of a section with a 720 bottom - the page's is the first's; and its column break stands inside the paragraph's text |
 | docx-5mb | 4 / 4, all starts | - | done by the row round |
-| docx4j-conventions | 9 / 9, 5 starts | p6 | |
-| docx4j-repeating-section | 8 / 8, 7 starts | p8 | |
-| docx4j-binding-simple | 1 / 1, 0 starts | p1's text: content-control data binding, not layout | |
+| docx4j-conventions | 9 / 9, 5 starts | p6 (layout: no bound control - not the data-binding round's) | |
+| docx4j-repeating-section | 8 / 8, 7 starts | p8 (layout: no custom XML part) | |
+| docx4j-binding-simple | 1 / 1, all starts | - | done: data-binding round (the controls show the custom XML's values) |
 
 ### The showcase library
 

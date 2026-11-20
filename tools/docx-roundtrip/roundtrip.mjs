@@ -130,9 +130,12 @@ const onlyPass = opt('--only-pass');
 // empty paragraph is formatted with it.
 // (And: a paragraph in a block-level content control that is split or joined - docx4j-hyperlink-binding,
 // docx4j-invoice-2013 - where the control's own XML is written anew.)
-const passOthersKnown = ['test-header-footer.docx', 'complex-tables.docx', 'calibre-demo', 'wikipedia-sample.docx', 'microsoft-word-sample.docx', 'sample-formatted.docx', 'docx4j-hyperlink-binding.docx', 'docx4j-invoice-2013.docx'];
+// (And: a control bound to custom XML whose cached text is not its node's value - synthetic/bound-values, the
+// docx4j binding samples -: its paragraph is written with the value, as Word saves it, edited or not.)
+const passOthersKnown = ['test-header-footer.docx', 'complex-tables.docx', 'calibre-demo', 'wikipedia-sample.docx', 'microsoft-word-sample.docx', 'sample-formatted.docx', 'docx4j-hyperlink-binding.docx', 'docx4j-invoice-2013.docx', 'bound-values.docx'];
 const tenthOthersKnown = [
     'test-header-footer.docx', // w:sectPr is the first child of w:body: nothing of this body is written back as it was read (planBody)
+    'bound-values.docx', // its bound controls hold their nodes' values, not the text cached (passOthersKnown)
 ];
 const port = Number(process.env.PORT ?? 16021);
 
@@ -321,7 +324,7 @@ async function main() {
             if (result.partsAsRead?.changed.length) asRead.notes.push(`${name}: ${result.partsAsRead.changed.join(', ')}`);
             compared++;
             // An unedited save writes the parts it read back as they were.
-            if (!expectations.get(name)?.some((e) => e.mutate) && !result.problems.some((p) => p.startsWith('threw'))) {
+            if (!expectations.get(name)?.some((e) => e.mutate || e.bound) && !result.problems.some((p) => p.startsWith('threw'))) {
                 for (const part of result.changedParts ?? []) problems.push(`unedited save: ${part} is not the text that was read`);
             }
             console.log(`${problems.length === 0 ? 'ok  ' : 'FAIL'} ${name}  (${result.stats})`);

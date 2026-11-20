@@ -2672,6 +2672,27 @@ let private preparePackage (ctx: PackageContext) (package: EditorPackage) =
                         | _ -> file
                     else file)
 
+    // A content control bound to custom XML whose text was changed changes its node there too (as
+    // Word does: DataBinding.writeBack); the custom XML part is then written as text.
+    let files, binaryFiles =
+        let textOf (path: string) =
+            match files |> List.tryFind (fun file -> file.Path = path) with
+            | Some file -> Some file.Content
+            | None ->
+                binaryFiles |> List.tryFind (fun (name, _) -> name = path)
+                |> Option.map (fun (_, data) -> System.Text.Encoding.UTF8.GetString data)
+        let stories =
+            files
+            |> List.filter (fun file -> PartPath.directory file.Path = "word" && PartPath.extension file.Path = "xml")
+            |> List.map (fun file -> file.Content)
+        match DataBinding.writeBack textOf "word/document.xml" stories with
+        | [] -> files, binaryFiles
+        | changed ->
+            let paths = changed |> List.map fst |> Set.ofList
+            (files |> List.filter (fun file -> not (Set.contains file.Path paths)))
+            @ (changed |> List.map (fun (path, content) -> { Path = path; Content = content })),
+            binaryFiles |> List.filter (fun (path, _) -> not (Set.contains path paths))
+
     ctx.Model.ReservedRelationshipIds <- Set.empty
     ctx.Model.ReservedPartPaths <- Set.empty
     forgetSourceBody ctx ()

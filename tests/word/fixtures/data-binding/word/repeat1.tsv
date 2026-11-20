@@ -1,0 +1,9 @@
+﻿para	1	1	Before\r
+para	1	2	Item: first item\r
+para	1	3	Item: second item\r
+para	1	4	Item: third item\r
+para	1	5	After\r
+cc	1	1	9	False	True	/root[1]/items[1]/item		0	0	-16777216	Calibri	11	Item: first item\rItem: second item\rItem: third item
+cc	1	2	1	False	True	/root[1]/items[1]/item[1]/name[1]		0	0	-16777216	Calibri	11	first item
+cc	1	3	1	False	True	/root[1]/items[1]/item[2]/name[1]		0	0	-16777216	Calibri	11	second item
+cc	1	4	1	False	True	/root[1]/items[1]/item[3]/name[1]		0	0	-16777216	Calibri	11	third item

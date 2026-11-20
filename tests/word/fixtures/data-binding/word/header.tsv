@@ -1,0 +1,8 @@
+﻿para	1	1	body: bound value A :end\r
+cc	1	1	1	False	True	/root[1]/a[1]		0	0	-16777216	Calibri	11	bound value A
+para	7	1	hdr: header value :end\r
+cc	7	1	1	False	True	/root[1]/hdr[1]		0	0	-16777216	Calibri	11	header value
+para	12	1	\r
+para	13	1	\r
+para	15	1	\r
+para	16	1	\r

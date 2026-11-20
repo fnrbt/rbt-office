@@ -844,6 +844,8 @@ window.editKeptFinish = async (original, expect) => {
         for (const e of expect ?? []) {
             if (e.editKeeps && !new RegExp(e.editKeeps).test(is)) problems.push(`edit: word/document.xml lost /${e.editKeeps}/`);
             if (e.editLacks && new RegExp(e.editLacks).test(is)) problems.push(`edit: word/document.xml still has /${e.editLacks}/`);
+            // {editPart, editHas}: another part of the edited save (a custom XML part a bound control writes to).
+            if (e.editPart && !new RegExp(e.editHas).test(saved[e.editPart] ?? '')) problems.push(`edit: ${e.editPart} has no /${e.editHas}/: ${JSON.stringify((saved[e.editPart] ?? '').slice(0, 300))}`);
         }
         // {boldKeeps}: the first word of the first paragraph made bold as well - a change a paragraph's XML is not
         // patched for when it holds what the patch does not know (a content control): it is spliced from its source.

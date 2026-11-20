@@ -32,7 +32,10 @@ let mainText (bytes: byte[]) =
         read "_rels/.rels"
         |> Option.bind (fun rels -> let m = Regex.Match(rels, "Type=\"[^\"]*/officeDocument\"[^>]*Target=\"/?([^\"]+)\"|Target=\"/?([^\"]+)\"[^>]*Type=\"[^\"]*/officeDocument\"") in if m.Success then Some (if m.Groups.[1].Success then m.Groups.[1].Value else m.Groups.[2].Value) else None)
         |> Option.defaultValue "word/document.xml"
-    read target
+    // (The text the reader reads: its bound content controls showing their custom XML values - DataBinding.)
+    let parts = [ for entry in zip.Entries -> entry.FullName ] |> List.choose (fun name -> read name |> Option.map (fun text -> name, text)) |> Map.ofList
+    let source : DocxReader.PartSource = { Text = (fun path -> Map.tryFind path parts); Bytes = fun _ -> None }
+    (DocxReader.withDataBindings source).Text target
 
 let isTag (local: string) (text: string) (at: int) =
     let m = Regex.Match(text.Substring(at, min 80 (text.Length - at)), "^<([A-Za-z_][\\w.\\-]*:)?" + local + "[\\s/>]")
