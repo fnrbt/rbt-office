@@ -430,6 +430,7 @@ module Vba =
         DefaultTabStop = doc.PageSetup.DefaultTabStop
         CompatibilityMode = doc.PageSetup.CompatibilityMode
         HangingPunctuation = Layout.documentHangingPunctuation doc.PageSetup
+        SpaceShrink = Layout.documentSpaceShrink doc.PageSetup
     }
 
     let private measureText (text: string) (style: TextBuf.TextStyle) =

@@ -96,6 +96,11 @@ move; `--points <dir>` reads Word's break of each from its PDFs, four columns a 
 capitals, digits, languages, page and column feet; read with `long-word.py --lines`, `hyphen-rules.py --table`)
 are checked by `tests/word/hyphenation.fsx`.
 
+`fixtures/justify-squeeze.py` (how far Word narrows a justified line's spaces to fit more text: fonts, sizes,
+space counts, compatibility modes, alignments, last lines, hyphenation, cells, columns; `--table <dir>` reads
+Word's PDFs - or `--pdfs <dir>` another set - into `word/squeeze.tsv`, a row per probe) is checked by
+`tests/word/justify-squeeze.fsx`.
+
 `fixtures/table-width.py` writes `tests/word/fixtures/table-width/` (how wide Word makes a table's
 columns: grid, cell and table widths, fixed and autofit, content, indents, columns, nesting, spans,
 compatibility mode 14); `table-width.py --edges <pdfs>` reads where each cell's left-aligned label

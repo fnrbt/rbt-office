@@ -59,7 +59,7 @@ let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
       MarginBottom = max doc.PageSetup.MarginBottom footerReserve
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging }
+      LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0 }
 
 /// Page count and fingerprint of a document.
 let layoutOf (doc: Doc.Document) =

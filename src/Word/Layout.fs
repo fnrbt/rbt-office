@@ -466,6 +466,10 @@ type LayoutSettings = {
     /// Punctuation that may hang past a line's end (documentHangingPunctuation; a paragraph
     /// with w:overflowPunct off has none).
     HangingPunctuation: HangingPunctuation
+    /// How much of its width each space of a line may give up for more text to fit (0: none). Word
+    /// 2013's layout narrows a justified line's spaces by up to a quarter (documentSpaceShrink); the
+    /// paragraph's own settings have it only when the paragraph is justified (layoutParagraphCore).
+    SpaceShrink: float
 }
 
 /// Word 2019 (fixtures hang-punct): punctuation hangs past a line's end in Word 2010's layout
@@ -479,6 +483,15 @@ let documentHangingPunctuation (setup: PageSetup) =
         match setup.CharacterSpacingControl with
         | Some "compressPunctuation" | Some "compressPunctuationAndJapaneseKana" -> HangingInsideParagraph
         | _ -> HangingEverywhere
+
+/// Word 2019 (fixtures justify-squeeze, Word's lines in tests/word/fixtures/justify-squeeze/word/squeeze.tsv):
+/// in Word 2013's layout (compatibility mode 15) a justified line (both, distribute, thaiDistribute) holds
+/// text wider than itself when each of its spaces gives up no more than a quarter of its width -
+/// Courier New, Calibri, Times New Roman, Arial, 10 and 20pt, 1 to 9 spaces alike: 0.248 of the space
+/// fits, 0.250 and more not -, its last line too, in a table's cell and a column alike, before a word is
+/// hyphenated and for the part a hyphen ends; the spaces are drawn that much narrower, the line ending at
+/// its end. Not in Word 2010's layout and before (14, 12, none), not left, centred or right-aligned.
+let documentSpaceShrink (setup: PageSetup) = if setup.CompatibilityMode >= 15 then 0.25 else 0.0
 
 /// Document geometry is independent of the host viewport. Font defaults and
 /// trailing-space slack are supplied by the measuring backend.
@@ -579,7 +592,8 @@ let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) 
       LongTrailingSpaceFitSafety = trailingSpaceFitSafety
       DefaultTabStop = doc.PageSetup.DefaultTabStop
       CompatibilityMode = doc.PageSetup.CompatibilityMode
-      HangingPunctuation = documentHangingPunctuation doc.PageSetup }
+      HangingPunctuation = documentHangingPunctuation doc.PageSetup
+      SpaceShrink = documentSpaceShrink doc.PageSetup }
 
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
@@ -2404,11 +2418,14 @@ let private repositionRtl (line: MeasuredLine) : MeasuredLine =
 /// stretch: what comes before it stands where its tab stop put it. The
 /// spaces at the line's end do not stretch. `rightEdge` and `origin` (the
 /// paragraph's indent, from which line.Width reaches) are in the frame of the
-/// segments' x. Caller excludes the paragraph's last line (Word never
-/// justifies it).
+/// segments' x. A line wider than its room (its spaces narrowed:
+/// LayoutSettings.SpaceShrink) has its spaces narrowed alike. Caller excludes
+/// the paragraph's last line (Word never justifies it) unless it is too wide.
 let private justifyLineToEdge (measureRange: TextRangeMeasurer) (origin: float) (rightEdge: float) (line: MeasuredLine) : MeasuredLine =
     let extra = rightEdge - (origin + line.Width)
-    if extra <= 0.5 then line
+    // (Less than 0: a line its spaces were narrowed for - LayoutSettings.SpaceShrink -, drawn with them
+    // narrower to end at its end.)
+    if extra <= 0.5 && extra >= -0.01 then line
     else
         // The line's segments, each text segment cut after every run of spaces in it.
         let pieces = ResizeArray<Segment>()
@@ -3005,6 +3022,15 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     // how many lines in a row before it did.)
     let mutable currentHyphenWidth = 0.0
     let mutable hyphenatedRun = 0
+    // (What the spaces on the line so far may give up for more text (settings.SpaceShrink of their
+    // width): the line holds text that far past its end. Spaces before a tab do not count.)
+    let mutable currentSpaceShrink = 0.0
+    // Where text on the line may reach: its end less what fitSafety keeps free - or, when its spaces may
+    // narrow, its end and what they give up, all of it (Word 2019, justify-squeeze fine-*: a quarter of
+    // each space fits, 0.007pt more not - Courier New 10pt, 4 spaces; Calibri's 0.0007pt short of a
+    // quarter fits).
+    let lineLimit (safety: float) =
+        if currentSpaceShrink > 0.0 then currentLineEnd + currentSpaceShrink + 0.004 else currentLineEnd - safety
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
 
@@ -3108,16 +3134,19 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 elif flushedLineCount = 0 && not hanging then s + max 0.0 firstLineStart
                 else s
             currentLineEnd <- e
+            currentSpaceShrink <- 0.0
             pendingIntervals <- rest
         | [] ->
             currentX <- availableWidth
             currentLineEnd <- availableWidth
+            currentSpaceShrink <- 0.0
 
     let moveToWrappableLine () =
         if floatObstacles.IsEmpty then
             pendingIntervals <- []
             currentX <- if flushedLineCount = 0 then firstLineStart else 0.0
             currentLineEnd <- availableWidth
+            currentSpaceShrink <- 0.0
         else
             pendingIntervals <- wrapIntervalsForY y
             private_setIntervalToFirst ()
@@ -3228,6 +3257,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             } :: lines
             hyphenatedRun <- if currentHyphenWidth > 0.0 then hyphenatedRun + 1 else 0
             currentHyphenWidth <- 0.0
+            currentSpaceShrink <- 0.0
             currentSegments.Clear()
             currentHasTextMetric <- false
             currentFirstFontFamily <- None
@@ -3352,10 +3382,19 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         | _ ->
             max 12.0 (min defaultTab currentLineEnd - currentX)
 
-    let addTextSegment text style x width startOffset =
+    let addTextSegment (text: string) style x width startOffset =
         noteTextMetric style
         currentHasFlowContent <- true
         currentSegments.Add(TextSegment (text, style, x, width, startOffset))
+        if settings.SpaceShrink > 0.0 then
+            if text.IndexOf '\t' >= 0 then currentSpaceShrink <- 0.0
+            else
+                let visible = visibleTokenLength text
+                if visible < text.Length then
+                    let displayText = WordLayout.Text.displayText style text
+                    if displayText.Length = text.Length then
+                        let spaces = measureRange displayText (WordLayout.Text.displayStyle style) visible (text.Length - visible)
+                        currentSpaceShrink <- currentSpaceShrink + settings.SpaceShrink * spaces
 
     /// The line is full before a word that goes on from the text before it (its first run starts
     /// where a run of the same word ended: "ch" + "aracter" when every letter has its colour).
@@ -3523,7 +3562,12 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 else
                     let points = Hyphenation.points (core.ToLowerInvariant())
                     let hyphenWidth = measureRange "-" displayRunStyle 0 1
-                    let room = currentLineEnd - fitSafety - currentX - hyphenWidth
+                    // (On a line whose spaces may narrow, the hyphen may take what they give up - the letters
+                    // before it must fit the line as they are: Word 2019, justify-squeeze hyph-part<n>-both -
+                    // "accessibil-" over by 1.5pt with a space, 3 with two, 6 with four or nine - its letters
+                    // 0.0065pt over the line with nine, at Courier New's 1229/2048 em; Word's 6.0pt each).
+                    let letters = if currentSpaceShrink > 0.0 then currentLineEnd + 0.02 else currentLineEnd - fitSafety
+                    let room = min (lineLimit fitSafety - currentX - hyphenWidth) (letters - currentX)
                     let mutable chosen = 0
                     let mutable index = points.Length - 1
                     while chosen = 0 && index >= 0 do
@@ -3585,6 +3629,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 ()
             else
                 currentX <- currentX + imgWidth
+                currentSpaceShrink <- 0.0
             if imgRun.Floating && not alreadyPlaced then
                 placedBoxes <- floatingBox :: placedBoxes
 
@@ -3610,6 +3655,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             | Ok (Some box) when not box.Prims.IsEmpty ->
                 if currentX + box.Width > currentLineEnd && currentSegments.Count > 0 then flushLine ()
                 currentSegments.Add(MathSegment (box.Prims, textRun.Style, currentX, box.Width, box.Ascent, box.Descent, textRun.Start, textRun.Length))
+                currentSpaceShrink <- 0.0
                 currentHasFlowContent <- true
                 currentX <- currentX + box.Width
             | Ok _ | Error _ ->
@@ -3702,12 +3748,12 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                         // Word fits the visible token; a trailing space may cross
                                         // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
-                                        if currentLineEnd - (currentX + visibleWidth) >= trailingSpaceFitSafety settings visibleLength then visibleWidth else width
+                                        if lineLimit (trailingSpaceFitSafety settings visibleLength) - (currentX + visibleWidth) >= 0.0 then visibleWidth else width
                                     else width
 
                             let fullFitSafety = fitSafety settings settings.InTableCell currentHasMixedTextMetrics
 
-                            let overflows = currentX + fitWidth > currentLineEnd - fullFitSafety
+                            let overflows = currentX + fitWidth > lineLimit fullFitSafety
                             // For the strip-skip decision use the visible width (no trailing
                             // whitespace), so a short word like "Float" that fits the strip
                             // but whose trailing space pushes it over still gets placed.
@@ -3715,7 +3761,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                 let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
                                 if visibleLength > 0 && visibleLength < remainingLength && not hasTab then
                                     let vw = measureRange displayRunText displayRunStyle consumed visibleLength - hangWidth
-                                    currentX + vw > currentLineEnd - fullFitSafety
+                                    currentX + vw > lineLimit fullFitSafety
                                 else overflows
                             // (The word on the line alone and longer than it: broken where the line is
                             // full - or at the run's start when not a character more fits.)
@@ -4285,7 +4331,8 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         { settings with FontSize = contentFontSize; LineHeight = paragraphLineHeight
                         HangingPunctuation =
                             if metadata.OverflowPunctuation = Some false || settings.InTableCell then NoHanging
-                            else settings.HangingPunctuation }
+                            else settings.HangingPunctuation
+                        SpaceShrink = if metadata.Alignment = Justify then settings.SpaceShrink else 0.0 }
     // (The column the paragraph is in: where it starts across, and as wide as it is laid out - in a
     // section with columns xOffset is the column's left edge. Not in a table's cell.)
     let column = if settings.InTableCell then (0.0, 0.0) else (xOffset, maxWidth)
@@ -4408,9 +4455,13 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
                         if bottom > obstacleTop && top < obstacleTop + height && x + width > start + 0.5 && x > start + 0.5 then
                             edge <- min edge x
                     xOffset + indent + edge
+            // (The last line is not justified - but one its spaces were narrowed for is drawn with them
+            // narrower: Word 2019, justify-squeeze last-*.)
             let rec justifyNonLast acc = function
                 | [] -> List.rev acc
-                | [last] -> List.rev (last :: acc)
+                | [last] ->
+                    let edge = rightEdgeOf last
+                    List.rev ((if xOffset + indent + last.Width > edge + 0.01 then justifyLineToEdge measureRange (xOffset + indent) edge last else last) :: acc)
                 | line :: rest -> justifyNonLast (justifyLineToEdge measureRange (xOffset + indent) (rightEdgeOf line) line :: acc) rest
             justifyNonLast [] adjustedLines
 
