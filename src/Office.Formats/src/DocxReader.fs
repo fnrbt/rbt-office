@@ -2234,7 +2234,6 @@ module Docx =
 
     let private paragraphWithRenderedBreakCounter (renderedBreakCounter: int ref option) (pNode: XmlNode) : Paragraph =
         let renderedPageBreaks = Ns.descendantsNs "lastRenderedPageBreak" pNode
-        let hasRenderedPageBreak = not renderedPageBreaks.IsEmpty
         let renderedPageBreakBefore =
             match renderedBreakCounter with
             | Some counter ->
@@ -2248,11 +2247,9 @@ module Docx =
         let props =
             // (A column break goes on in the next column; in one column it is a page break.)
             let columnBreak = Ns.descendantsNs "br" pNode |> List.exists (fun node -> attr "type" node = Some "column")
-            let withRenderedBreak = { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore; ColumnBreak = columnBreak }
-            if hasRenderedPageBreak && rawProps.Style = Some "Heading1" then
-                { withRenderedBreak with PageBreakBefore = Some true; PageBreakBeforeDerived = rawProps.PageBreakBefore <> Some true }
-            else
-                withRenderedBreak
+            // (Not a page break: Word does not break the page where it last did - fixtures heading-mark
+            // stale-mark: a Heading 1 that starts with the mark stays in the middle of the page.)
+            { rawProps with RenderedPageBreakBefore = renderedPageBreakBefore; ColumnBreak = columnBreak }
 
         let rec tokensFromNode node =
             Xml.children node
@@ -5747,41 +5744,6 @@ let internal directParagraphFormattingResetsMissingSpacing (props: ParagraphProp
 let internal tableStyleParagraphResetsMissingSpacing (props: ParagraphProperties) =
     props.LineSpacing.IsSome || props.LineRule.IsSome
 
-let private hasDirectParagraphFormatting (props: ParagraphProperties) =
-    props.Style.IsSome
-    || props.Alignment.IsSome
-    || props.IndentLeft.IsSome
-    || props.IndentRight.IsSome
-    || props.FirstLineIndent.IsSome
-    || props.HangingIndent.IsSome
-    || props.RightTabPosition.IsSome
-    || props.RightTabLeader.IsSome
-    || props.SpacingBefore.IsSome
-    || props.SpacingBeforeAuto.IsSome
-    || props.SpacingAfter.IsSome
-    || props.SpacingAfterAuto.IsSome
-    || props.LineSpacing.IsSome
-    || props.LineRule.IsSome
-    || props.OutlineLevel.IsSome
-    || props.KeepNext.IsSome
-    || props.KeepLines.IsSome
-    || props.PageBreakBefore.IsSome
-    || props.WidowControl.IsSome
-    || props.ContextualSpacing.IsSome
-    || props.BackgroundColor.IsSome
-    || props.ParagraphRunProperties.IsSome
-    || props.ParagraphBorders.IsSome
-    || props.ListInfo.IsSome
-    || props.SectionBreak.IsSome
-    || props.SectionPageNumberStart.IsSome
-    || props.SectionPageNumberFormat.IsSome
-    || props.RenderedPageBreakBefore.IsSome
-    || not props.HeaderReferences.IsEmpty
-    || not props.FooterReferences.IsEmpty
-
-let private isPureEmptyParagraph (para: Paragraph) =
-    para.Runs.IsEmpty && not (hasDirectParagraphFormatting para.Properties)
-
 let internal emptyRunProperties = {
     Style = None
     Bold = None
@@ -6242,14 +6204,11 @@ let internal paragraphPropertiesSetSomething (props: ParagraphProperties) =
     props.ParagraphRunProperties |> Option.exists runPropertiesSetSomething
     || { props with ParagraphRunProperties = None } <> Styles.parseParagraphPropsFromStyle XmlDsl.Empty
 
-let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) (para: Paragraph) =
-    let fallbackRunProps =
-        if isPureEmptyParagraph para then
-            let docDefaultRun, _ = resolveStyle styleMap (Some Styles.defaultStyleId)
-            docDefaultRun
-        else
-            resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties
-    wordFontSizeToPoints fallbackRunProps.FontSize
+/// The size of a paragraph's mark: its style's, with the mark's own (w:pPr/w:rPr) over it - an empty
+/// `<w:p/>` too (fixtures empty-mark: under a Normal of 8 or 12pt five bare empty paragraphs are 8 or 12pt
+/// lines in Word 2010 and 2019, after a paragraph or a table, not the document defaults' 11pt).
+let internal paragraphMarkFontSize (styleMap: Map<string, StyleDefinition>) (effectiveParaProps: ParagraphProperties) =
+    wordFontSizeToPoints (resolvedMarkRunProperties styleMap effectiveParaProps emptyRunProperties).FontSize
 
 let internal styleKeepProperties (styleMap: Map<string, StyleDefinition>) (para: Paragraph) (effectiveParaProps: ParagraphProperties) =
     if para.Properties.KeepNext.IsNone && para.Properties.KeepLines.IsNone then effectiveParaProps

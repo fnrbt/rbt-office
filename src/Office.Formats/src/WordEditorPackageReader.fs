@@ -228,7 +228,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
                 | Some tableRun -> D.wordFontSizeToPoints (D.resolvedCellMarkRunProperties styleMap tableRun effective D.emptyRunProperties).FontSize
                 | None -> D.wordFontSizeToPoints (D.resolvedMarkRunProperties styleMap effective D.emptyRunProperties).FontSize
             | sizes -> List.max sizes
-        else List.fold max (D.paragraphMarkFontSize styleMap effective value) fontSizes
+        else List.fold max (D.paragraphMarkFontSize styleMap effective) fontSizes
     let breakAtStart, breakAfter = D.paragraphPageBreaks value
     let breakAtStart = not inCell && breakAtStart
     let breakAfter = if inCell then value.Runs |> List.exists (fun run -> run.Content = D.PageBreak) else breakAfter
