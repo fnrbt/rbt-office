@@ -193,7 +193,16 @@ class Footnotes:
                     etree.tostring(self.root, xml_declaration=True, encoding="UTF-8", standalone=True), self.doc.part.package)
         self.doc.part.relate_to(part, RT.FOOTNOTES)
 
-def save(doc, name):
+def compat_mode(doc, mode):
+    """Word's layout version (w:compatSetting compatibilityMode): 15 is how Word 2013 and later save a
+    document; python-docx's template says 14 (Word 2010)."""
+    for e in doc.settings.element.iter(qn("w:compatSetting")):
+        if e.get(qn("w:name")) == "compatibilityMode":
+            e.set(qn("w:val"), str(mode))
+
+def save(doc, name, mode=15):
+    # (The library is as current Word saves it, but for the handbook: an older document, Word 2010's layout.)
+    compat_mode(doc, mode)
     path = os.path.join(OUT, name)
     doc.save(path)
     print(path)
@@ -819,7 +828,7 @@ def handbook():
             back.orientation = WD_ORIENT.PORTRAIT
             back.page_width, back.page_height = Cm(21.0), Cm(29.7)
     notes.save()
-    save(doc, "handbook.docx")
+    save(doc, "handbook.docx", mode=14)
 
 
 # ---------------------------------------------------------------- embedded fonts (Word's "Embed fonts in the file")

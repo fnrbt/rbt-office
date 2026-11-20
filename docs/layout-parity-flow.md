@@ -221,6 +221,12 @@ mode 14, 11 or state none); the showcase likewise unchanged (diagrams, handbook,
 
 ### The showcase library
 
+The library is saved as current Word saves documents (compatibilityMode 15), but for handbook.docx, which
+stays in Word 2010's layout (14) so both are covered: the corpus's own documents are almost all 14 or older,
+so rules only Word 2013's layout has (a justified line's spaces narrowing, no hyphenation zone, widow
+control in cells ...) show nowhere else. (2026-11-20, mode 15: 9 of 9 at Word's page count, 7 with every
+page starting at Word's line.)
+
 `tests/test-documents-showcase/` (made by `tools/showcase-docs/make.py`; Word's pages in its `word/`): designed
 documents meant to look right, so every difference from Word is in plain view. The goal: each one matches Word
 page for page and on sight (compare `tools/pdf-runner`'s PDF with Word's, page by page). First comparison
