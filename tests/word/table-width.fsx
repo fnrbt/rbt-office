@@ -36,7 +36,10 @@ module Layout = Rbt.Word.Layout
 module Shaper = Rbt.Word.ShaperText
 
 let root = Path.GetFullPath(Path.Combine(__SOURCE_DIRECTORY__, "../.."))
-let folder = Path.Combine(__SOURCE_DIRECTORY__, "fixtures/table-width")
+// (fixtures/nested-width: nested-width.py - a column whose cell holds a nested table gives way no
+// further than the nested table's least width, its columns' least widths and its own cell's margins,
+// or its w:tblW in twips where that is more.)
+let folders = [ "table-width"; "nested-width" ] |> List.map (fun f -> Path.Combine(__SOURCE_DIRECTORY__, "fixtures", f))
 let fontSet =
     Shaper.createFontSet "Arial" [
         { Family = "Arial"; Bold = false; Italic = false; Data = File.ReadAllBytes(Path.Combine(root, "fonts", "LiberationSans-Regular.ttf")) } ]
@@ -45,7 +48,7 @@ let measureRange = Shaper.createRangeMeasurer fontSet
 let pt (px: float) = px * 0.75
 
 // Word's edges: fixture -> (row label, column) -> page, left of "L", right of "R" (None: off the page).
-let word =
+let word folder =
     File.ReadAllLines(Path.Combine(folder, "word/edges.tsv"))
     |> Array.map (fun l -> l.Split '\t')
     |> Array.groupBy (fun c -> c.[0])
@@ -54,7 +57,7 @@ let word =
     |> Map.ofArray
 
 /// Ours: the same labels' left and right edges in points from the page's left.
-let ours name =
+let ours folder name =
     let doc = File.ReadAllBytes(Path.Combine(folder, name + ".docx")) |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
     let settings = Layout.documentSettings 16.0 24.0 0.25 doc
     let layouts, pages = Layout.layoutDocumentPages settings measureText measureRange doc
@@ -75,11 +78,13 @@ let mutable fail = 0
 let open_ = set [ "tcwpct-fixed"; "tcwpct-fixed-c14" ]
 // (0.45pt: two columns at their least widths, each 0.19pt over Word's - see the top.)
 // (tcwpct-auto: a table five times its 20% column's least width, the 0.19pt five times over.)
-let tolerance name = if (name: string).StartsWith "tcwpct-auto" then 1.0 else 0.45
-for KeyValue (name, cells) in word do
+// (nest-both: two columns at their nested tables' least widths, each two columns' 0.19pt over.)
+let tolerance name = if (name: string).StartsWith "tcwpct-auto" || name.StartsWith "nest-both" then 1.0 else 0.45
+for folder in folders do
+  for KeyValue (name, cells) in word folder do
     if not (open_.Contains name) then
         let close (a: float) (b: float) = abs (a - b) <= tolerance name
-        let ourCells = ours name
+        let ourCells = ours folder name
         let mutable same = true
         let report = Text.StringBuilder()
         for KeyValue ((row, column), (page, left, right)) in cells do

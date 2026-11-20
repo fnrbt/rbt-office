@@ -1030,7 +1030,7 @@ let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLay
         resizeArrayToList commands
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
-    let canSplit = row.CanSplit |> Option.defaultValue true
+    let canSplit = WordLayout.Table.rowCanSplit row
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
     let remaining = max 0.0 (contentBottom - y)
@@ -1394,11 +1394,11 @@ let rec private tableBorderCommandsCoreAt isNestedBorderPass nestedTablePaintDep
         // (A nested table starts at its cell's text in every compatibility mode, and is as wide
         // as its layout made it.)
         let nestedMaxWidth = if nestedTablePaintDepth > 0 || isNestedBorderPass then lastNestedTableMaxWidth tableBlock else None
-        let outerLeft, outerRight =
+        let outerLeft, _ =
             if nestedTablePaintDepth > 0 || isNestedBorderPass then 0.0, 0.0
             else WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let tableAvailableWidth = max 0.0 (availableWidth - WordLayout.Table.tableIndent tableBlock)
-        let tableMaxWidth = nestedMaxWidth |> Option.defaultValue (tableAvailableWidth + outerLeft + outerRight)
+        let tableMaxWidth = nestedMaxWidth |> Option.defaultValue (tableAvailableWidth + tableRoomBeyondText settings tableBlock)
         let resolvedTable = WordLayout.Table.resolveTable WordLayout.canvasScale (Some tableMaxWidth) tableBlock
         let columnWidths =
             match styleContext with
@@ -2916,8 +2916,8 @@ let private plannedContentOffsetForBlock (settings: LayoutSettings) measureText 
         let styleContext = WordStyles.styleContext doc
         let tableLeftOffset = WordLayout.Table.tableIndent tableBlock
         let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
-        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
-        let tableMaxWidth = maxWidth + outerLeft + outerRight
+        let outerLeft, _ = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+        let tableMaxWidth = maxWidth + tableRoomBeyondText settings tableBlock
         let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
         let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
         let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)

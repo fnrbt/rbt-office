@@ -1649,17 +1649,28 @@ let private lineFitHeight exactLines (line: MeasuredLine) =
     if exactLines then line.Height else lineVisibleFitHeight line
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
-    let canSplit = row.CanSplit |> Option.defaultValue true
+    let canSplit = WordLayout.Table.rowCanSplit row
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlock settings y rowHeight
 
 let private paginateTableRowWithFootnotes settings footnotesByPage (row: TableRow) y rowHeight =
-    let canSplit = row.CanSplit |> Option.defaultValue true
+    let canSplit = WordLayout.Table.rowCanSplit row
     let contentBottom = contentBottomWithFootnotes settings footnotesByPage y
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
+
+/// A row whose height (w:trHeight, WordLayout.Table.rowHeightToStart) is more than the room left
+/// above `contentBottom` goes to the next page whole, however much of its content would fit (Word
+/// 2019, fixtures row-break height-*; the calibre family's nested-table row, at least 53.95pt on
+/// 27.5pt of room); a row at the top of its page (below `headerHeight` of repeated header rows)
+/// stays where it is.
+let private rowHeightOverRoom settings headerHeight contentBottom rowY (row: TableRow) =
+    let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
+    let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
+    rowY > contentTop + headerHeight + pageFitTolerance
+    && rowY + WordLayout.Table.rowHeightToStart WordLayout.canvasScale settings.LineHeight row > contentBottom + pageFitTolerance
 
 /// Where Word breaks a table row that does not fit (2019; the fixtures of
 /// tools/word-parity/fixtures/row-break.py, tests/word/row-break.fsx): each of
@@ -1982,7 +1993,8 @@ let breaksAfterInWord (c: char) =
 
 /// A cell's content as an autofit table's widths need it: its longest word (with its
 /// paragraph's indents) and its widest paragraph set on one line; a nested table counts as
-/// its own columns' widths.
+/// its own columns' widths, and its least width (its columns' least widths, or its w:tblW in
+/// twips where that is more) as a word (fixtures nested-width: the column gives way no further).
 let rec private tableCellContentWidths (measureText: TextMeasurer) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (cell: TableCell) : struct (float * float) =
     let mutable longest = 0.0
     let mutable widest = 0.0
@@ -2017,7 +2029,9 @@ let rec private tableCellContentWidths (measureText: TextMeasurer) (paragraphSty
         longest <- max longest (paraLongest + indents)
         widest <- max widest (line + indents + firstLine)
     for nested in cell.NestedTables do
-        let widths = WordLayout.Table.tableColumnWidthsWith WordLayout.canvasScale None (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) nested
+        // (In an autofit table a nested fixed one is autofit too: nested-width nest-fixed.)
+        let widths, least = WordLayout.Table.tableColumnWidthsAndLeast WordLayout.canvasScale false None (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) nested
+        longest <- max longest (least - tableCellLineFitSafety)
         widest <- max widest (List.sum widths)
     // (Room for the longest word as a cell's line fits it.)
     struct (longest + tableCellLineFitSafety, max (longest + tableCellLineFitSafety) widest)
@@ -2030,28 +2044,40 @@ let private nestedWidthMapGet (map: obj) (key: TableBlock) : obj = Fable.Core.Ut
 [<Fable.Core.Emit("$0.set($1, $2)")>]
 let private nestedWidthMapSet (map: obj) (key: TableBlock) (value: obj) : unit = Fable.Core.Util.jsNative
 let private nestedTableWidths = newNestedWidthMap ()
-/// The room a nested table was last laid out in (its cell's text width), for painting its borders.
-let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) = nestedWidthMapSet nestedTableWidths table (box maxWidth)
-let lastNestedTableMaxWidth (table: TableBlock) : float option =
+/// The room a nested table was last laid out in (its cell's text width), for painting its borders,
+/// and whether it was laid out fixed (as the table it is in).
+let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) (fixedLayout: bool) = nestedWidthMapSet nestedTableWidths table (box (maxWidth, fixedLayout))
+let private lastNestedTableLayout (table: TableBlock) : (float * bool) option =
     let entry = nestedWidthMapGet nestedTableWidths table
-    if isNull entry then None else Some (unbox<float> entry)
+    if isNull entry then None else Some (unbox<float * bool> entry)
 #else
 let private nestedTableWidths = System.Runtime.CompilerServices.ConditionalWeakTable<TableBlock, obj>()
-/// The room a nested table was last laid out in (its cell's text width), for painting its borders.
-let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) =
+/// The room a nested table was last laid out in (its cell's text width), for painting its borders,
+/// and whether it was laid out fixed (as the table it is in).
+let rememberNestedTableWidths (table: TableBlock) (maxWidth: float) (fixedLayout: bool) =
     lock nestedTableWidths (fun () ->
         nestedTableWidths.Remove table |> ignore
-        nestedTableWidths.Add(table, box maxWidth))
-let lastNestedTableMaxWidth (table: TableBlock) : float option =
+        nestedTableWidths.Add(table, box (maxWidth, fixedLayout)))
+let private lastNestedTableLayout (table: TableBlock) : (float * bool) option =
     match nestedTableWidths.TryGetValue table with
-    | true, entry -> Some (unbox<float> entry)
+    | true, entry -> Some (unbox<float * bool> entry)
     | false, _ -> None
 #endif
+let lastNestedTableMaxWidth (table: TableBlock) : float option = lastNestedTableLayout table |> Option.map fst
+
+/// Whether a table is laid out fixed: its own tblLayout, a nested table the one it was last laid out
+/// in (Word lays a nested table out as the table it is in: fixtures nested-width nest-fixed - fixed in
+/// an autofit table, widened to its longest word - and nest-*-outfixed - autofit in a fixed table, at
+/// its own widths, past the cell).
+let tableLaidOutFixed (table: TableBlock) =
+    match lastNestedTableLayout table with
+    | Some (_, fixedLayout) -> fixedLayout
+    | None -> table.LayoutMode = Some FixedTableLayout
 
 /// The widths of a table's columns in `maxWidth` (WordLayout.Table.tableColumnWidthsWith), an
 /// autofit table's measured from its cells' content.
 let tableColumnWidthsMeasured (measureText: TextMeasurer) (paragraphStyleForParagraph: ParagraphBlock -> ParagraphStyle) (effectiveBufferForParagraph: ParagraphStyle -> TextBuffer -> TextBuffer) (maxWidth: float) (tableBlock: TableBlock) =
-    WordLayout.Table.tableColumnWidthsWith WordLayout.canvasScale (Some maxWidth) (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) tableBlock
+    WordLayout.Table.tableColumnWidthsAndLeast WordLayout.canvasScale (tableLaidOutFixed tableBlock) (Some maxWidth) (Some (tableCellContentWidths measureText paragraphStyleForParagraph effectiveBufferForParagraph)) tableBlock |> fst
 
 let tableColumnWidthsInContext (measureText: TextMeasurer) (context: DocumentStyleContext) (maxWidth: float) (tableBlock: TableBlock) =
     tableColumnWidthsMeasured measureText (forTableCellParagraphInContext context) (effectiveBufferInContext context) maxWidth tableBlock
@@ -4422,6 +4448,11 @@ let private tableAlignmentOffset (alignment: string option) availableWidth table
     elif optionEqualsIgnoreCase "right" alignment || optionEqualsIgnoreCase "end" alignment then max 0.0 (availableWidth - tableWidth)
     else 0.0
 
+/// How much wider than the text a table's room is (WordLayout.Table.outerCellRoom).
+let tableRoomBeyondText (settings: LayoutSettings) (tableBlock: TableBlock) =
+    let left, right = WordLayout.Table.outerCellRoom WordLayout.canvasScale settings.CompatibilityMode tableBlock
+    left + right
+
 /// Where a table stands across: its offset from the text's left edge (`tableLeftOffset` its indent,
 /// `availableWidth` the room it is laid out in; the outer cells' margins it hangs out by in Word
 /// 2010's layout are taken off after it, see outerCellInsets). A floating table (w:tblpPr) stands
@@ -4431,7 +4462,20 @@ let private tableAlignmentOffset (alignment: string option) availableWidth table
 /// xs-*-c14, hmargin-x72-c14).
 let tableHorizontalOffset (settings: LayoutSettings) (tableBlock: TableBlock) (tableLeftOffset: float) (availableWidth: float) (tableWidth: float) =
     match WordLayout.Floating.tablePosition tableBlock with
-    | None -> tableLeftOffset + tableAlignmentOffset tableBlock.Alignment availableWidth tableWidth
+    | None ->
+        // (A centred or right-aligned table stands in its room - in Word 2010's layout the text
+        // widened by the outer cells' margins: fixtures nested-width right-pct50-c14, its right edge
+        // 5.4pt past the text's, center-pct100-c14 and center-long-c14 478.8pt wide about the text's
+        // middle.)
+        let insetLeft, _ = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+        let roomLeft, roomRight =
+            if insetLeft = 0.0 && tableBlock.Alignment.IsSome then WordLayout.Table.outerCellRoom WordLayout.canvasScale settings.CompatibilityMode tableBlock
+            else 0.0, 0.0
+        // (Centred about the text's middle - table-compat's centred table, its margins 400 and 200
+        // twips, stands where mode 15 has it - as far out as the room.)
+        if roomLeft = 0.0 && roomRight = 0.0 then tableLeftOffset + tableAlignmentOffset tableBlock.Alignment availableWidth tableWidth
+        elif optionEqualsIgnoreCase "center" tableBlock.Alignment then tableLeftOffset + max -roomLeft ((availableWidth - tableWidth) / 2.0)
+        else tableLeftOffset + max -roomLeft (availableWidth + roomRight - tableWidth)
     | Some position ->
         let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
         let roomLeft, roomWidth =
@@ -4821,7 +4865,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
     let cellSettings = {
         settings with
             InTableCell = true
-            MarginBottom = if row.CanSplit = Some false && not startsPage then -1000000.0 else settings.MarginBottom
+            MarginBottom = if not (WordLayout.Table.rowCanSplit row) && not startsPage then -1000000.0 else settings.MarginBottom
             TableContinuationHeaderHeight = tableContinuationHeaderHeight
     }
     let numColumns = columnMetrics.Count
@@ -4876,8 +4920,8 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                 let nestedOuterLeft = 0.0
                 let nestedAvailableWidth = max 0.0 (cellMaxWidth - WordLayout.Table.tableIndent nestedTable)
                 let nestedTableMaxWidth = nestedAvailableWidth
+                rememberNestedTableWidths nestedTable nestedTableMaxWidth (tableLaidOutFixed tableBlock)
                 let nestedColumnWidths = tableColumnWidthsMeasured measureText paragraphStyleForParagraph effectiveBufferForParagraph nestedTableMaxWidth nestedTable
-                rememberNestedTableWidths nestedTable nestedTableMaxWidth
                 if List.isEmpty nestedColumnWidths then
                     [], WordLayout.Table.emptyTableAdvance cellSettings.LineHeight
                 else
@@ -4927,7 +4971,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                                 let crosses = nestedY + measurement.Height > contentBottom + pageFitTolerance
                                 let moves =
                                     crosses
-                                    && (if nestedRow.CanSplit = Some false then nestedY > WordLayout.Page.contentTop cellSettings.PaddingTop pageTop + cellSettings.TableContinuationHeaderHeight + pageFitTolerance
+                                    && (if not (WordLayout.Table.rowCanSplit nestedRow) then nestedY > WordLayout.Page.contentTop cellSettings.PaddingTop pageTop + cellSettings.TableContinuationHeaderHeight + pageFitTolerance
                                         else splitRowLeavesCellEmpty cellSettings cellSettings.TableContinuationHeaderHeight nestedY measurement)
                                 if moves then
                                     nestedY <- advanceToNextPage cellSettings nestedY + cellSettings.TableContinuationHeaderHeight
@@ -4984,7 +5028,10 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
         // A merged cell's content belongs to all the rows it spans; what does
         // not fit in them arrives as mergeExtraHeight on the span's last row.
         let spansRows = cellIndex < spanningCells.Length && spanningCells.[cellIndex]
-        if not spansRows then
+        // (A row of an exact height is that high whatever its content: fixtures row-break
+        // height-exact100_f28, the paragraph after the table 100pt below its top, over the cell's
+        // lines past it.)
+        if not spansRows && not (WordLayout.Table.rowHeightIsExact row) then
             rowHeight <- max rowHeight requiredHeight
         let cellLayoutsList = resizeArrayToList cellLayouts
         cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top + borderTop; PaddingBottom = textPadding.Bottom + borderBottom; ContentHeight = contentHeight; RequiredHeight = requiredHeight; Layouts = cellLayoutsList } :: cellGroups
@@ -5057,7 +5104,7 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
     let cellSettings = {
         settings with
             InTableCell = true
-            MarginBottom = if row.CanSplit = Some false then -1000000.0 else settings.MarginBottom
+            MarginBottom = if not (WordLayout.Table.rowCanSplit row) then -1000000.0 else settings.MarginBottom
             TableContinuationHeaderHeight = 0.0
     }
     let numColumns = columnMetrics.Count
@@ -5099,7 +5146,7 @@ let internal tryMeasureTableRowHeightWithMetrics (settings: LayoutSettings) (mea
                             match trySingleLineParagraphHeightNoObstacles cellSettings measureText cellMaxWidth paragraphStyle effectiveTextStyleForParagraph para with
                             | Some height -> contentHeight <- contentHeight + height
                             | None -> failed <- true
-                    if not failed then
+                    if not failed && not (WordLayout.Table.rowHeightIsExact row) then
                         rowHeight <- max rowHeight (contentHeight + textPadding.Top + textPadding.Bottom + verticalMarginExcess + borderTop + borderBottom + rowSpacingAdvance)
                 currentColumn <- currentColumn + span
         if failed then None else Some rowHeight
@@ -5466,7 +5513,7 @@ let internal keepRowWithNextY (settings: LayoutSettings) (headerHeight: float) (
                 else
                     // (Of a row that may break, its first lines are enough.)
                     let needed =
-                        if nextRow.CanSplit = Some false then nextMeasurement.Height
+                        if not (WordLayout.Table.rowCanSplit nextRow) then nextMeasurement.Height
                         else
                             let mutable firstLines = 0.0
                             for group in nextMeasurement.CellGroups do
@@ -5790,9 +5837,9 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
         let splitHere = lazy (measureRow row rowY continuationHeaderHeight)
         let pagedRowY =
             if pagedRowY = rowY
-               && (row.CanSplit |> Option.defaultValue true)
+               && (WordLayout.Table.rowCanSplit row)
                && rowY + rowHeight > contentBottom
-               && splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value then
+               && (rowHeightOverRoom settings continuationHeaderHeight contentBottom rowY row || splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value) then
                 advanceToNextPage settings rowY
             else
                 pagedRowY
@@ -5823,7 +5870,7 @@ and private buildTableLayoutPlanUncached (memo: ParagraphLayoutMemo option) (ini
             RowIndex = rowIndex
             Row = row
             IsHeader = row.IsHeader
-            CanSplit = row.CanSplit |> Option.defaultValue true
+            CanSplit = WordLayout.Table.rowCanSplit row
             Y = plannedY
             Height = rowHeight
             Measurement = plannedMeasurement
@@ -5852,8 +5899,8 @@ let buildTableLayoutPlanForDocument settings measureText measureRange doc tableB
 let private buildTableLayoutPlanAtWithMemo (memo: ParagraphLayoutMemo option) (initialCounters: Map<string * int, int> voption) settings measureText measureRange doc tableBlock tableY =
     let tableLeftOffset = tableLeftOffsetForDocument tableBlock
     let maxWidth = max 0.0 (settings.Width - settings.PaddingLeft - settings.MarginRight - tableLeftOffset)
-    let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
-    let tableMaxWidth = maxWidth + outerLeft + outerRight
+    let outerLeft, _ = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+    let tableMaxWidth = maxWidth + tableRoomBeyondText settings tableBlock
     let columnWidths = tableColumnWidthsInContext measureText (styleContextForLayout memo doc) tableMaxWidth tableBlock
     let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
     let tableHorizontalOffset = tableHorizontalOffset settings tableBlock tableLeftOffset maxWidth tableWidth
@@ -6342,7 +6389,7 @@ let private layoutDocumentPassKept
     let contentBottomWithFootnotes settings footnotesByPage y = contentBottomWithNotes settings footnotesByPage (Some noteBreaks.Value) y
     let paginateBlockWithFootnotes settings footnotesByPage y blockHeight = paginateBlockWithNotes settings footnotesByPage (Some noteBreaks.Value) y blockHeight
     let paginateTableRowWithFootnotes settings footnotesByPage (row: TableRow) y rowHeight =
-        let canSplit = row.CanSplit |> Option.defaultValue true
+        let canSplit = WordLayout.Table.rowCanSplit row
         let contentBottom = contentBottomWithFootnotes settings footnotesByPage y
         let remaining = max 0.0 (contentBottom - y)
         if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlockWithFootnotes settings footnotesByPage y rowHeight
@@ -6534,8 +6581,8 @@ let private layoutDocumentPassKept
             if numColumns > 0 then
                 let tableLeftOffset = tableLeftOffsetForDocument tableBlock
                 let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
-                let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
-                let tableMaxWidth = tableAvailableWidth + outerLeft + outerRight
+                let outerLeft, _ = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+                let tableMaxWidth = tableAvailableWidth + tableRoomBeyondText settings tableBlock
                 let columnWidths = tableColumnWidthsInContext measureText styleContext tableMaxWidth tableBlock
                 let columnMetrics = tableColumnMetrics tableMaxWidth columnWidths
                 let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
@@ -6664,9 +6711,9 @@ let private layoutDocumentPassKept
                     let splitHere = lazy (measureRow row rowY continuationHeaderHeight)
                     let pagedRowY =
                         if pagedRowY = rowY
-                           && (row.CanSplit |> Option.defaultValue true)
+                           && (WordLayout.Table.rowCanSplit row)
                            && rowY + rowHeight > contentBottom
-                           && splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value then
+                           && (rowHeightOverRoom settings continuationHeaderHeight contentBottom rowY row || splitRowLeavesCellEmpty settings continuationHeaderHeight rowY splitHere.Value) then
                             advanceToNextPage settings rowY
                         else
                             pagedRowY
@@ -6705,7 +6752,7 @@ let private layoutDocumentPassKept
                             |> List.tryFind hasNonWhitespace
                             |> Option.map snippet
                             |> Option.defaultValue ""
-                        traceTableLayout (sprintf "row=%d y=%.2f page=%d h=%.2f bottom=%.2f contentBottom=%.2f split=%b header=%b text=%s cells=[%s]" rowIndex rowY (pageNumberForY settings rowY) rowHeight (rowY + rowHeight) contentBottom (row.CanSplit |> Option.defaultValue true) row.IsHeader rowSnippet (String.concat " | " measuredRow.Traces))
+                        traceTableLayout (sprintf "row=%d y=%.2f page=%d h=%.2f bottom=%.2f contentBottom=%.2f split=%b header=%b text=%s cells=[%s]" rowIndex rowY (pageNumberForY settings rowY) rowHeight (rowY + rowHeight) contentBottom (WordLayout.Table.rowCanSplit row) row.IsHeader rowSnippet (String.concat " | " measuredRow.Traces))
                         match tracePlanRows |> Option.bind (Map.tryFind rowIndex) with
                         | Some planRow ->
                             let fragmentPages = planRow.Fragments |> List.map (fun fragment -> string fragment.Page) |> List.distinct |> String.concat ","
