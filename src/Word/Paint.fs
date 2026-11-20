@@ -3465,8 +3465,9 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
     for layout in endnotes do
         addParagraphCommands settings fontFamily measureText measureRange commands layout
     if endnotes.Count > 0 then
-        // Short (~2in) separator above the first endnote; Word draws a full-width
-        // continuation separator on pages the endnotes spill onto.
+        // Short (~2in) separator above the first endnote, its rule in its line (Layout.endnoteSeparatorFor:
+        // the notes start below it); a full-width continuation separator on pages the endnotes spill onto.
+        let separator = Layout.endnoteSeparatorFor settings measureText measureRange doc
         let endnoteTopByPage = Dictionary<int, float>()
         for layout in endnotes do
             let page = pageOfY settings layout.Y
@@ -3480,7 +3481,8 @@ let private addNoteAreaCommands (settings: LayoutSettings) fontFamily measureTex
         for KeyValue(page, topY) in endnoteTopByPage do
             let separatorX = settings.PaddingLeft
             let width = if page = startPage then 192.0 else fullWidth
-            commands.Add(StrokeLine ("#000000", 0.75, 0, 0.0, separatorX, topY - 8.0, separatorX + width, topY - 8.0))
+            let ruleY = topY - separator.SeparatorHeight + separator.RuleCenter
+            commands.Add(StrokeLine ("#000000", separator.RuleThickness, 0, 0.0, separatorX, ruleY, separatorX + width, ruleY))
 
 let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings) fontFamily (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (cachedLayouts: BlockLayout list option) (cachedPages: PageInfo list option) =
     let layouts, pages, layoutCount =

@@ -209,9 +209,9 @@ let listLines =
     let second = layouts |> List.find (fun l -> (textOf l).StartsWith "Item2")
     first.Lines, toPt (second.Lines.Head.Y - first.Lines.Head.Y)
 let listFirst = (fst listLines).Head
-near "a Symbol-bulleted line at 1.15: 16.07pt (Word 16.03)" (toPt listFirst.Height) 16.07
+near "a Symbol-bulleted line at 1.15: 16.03pt as Word (fixtures marker-ascent)" (toPt listFirst.Height) 16.03
 near "the paragraph's second line below it by that" (toPt ((fst listLines).[1].Y - listFirst.Y)) (toPt listFirst.Height)
-near "and the next list paragraph 16.07 + 2 x 15.44pt down" (snd listLines) (toPt listFirst.Height + 2.0 * 15.441)
+near "and the next list paragraph 16.03 + 2 x 15.44pt down" (snd listLines) (toPt listFirst.Height + 2.0 * 15.441)
 
 printfn "line-boxes: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
