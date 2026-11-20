@@ -2367,6 +2367,17 @@ let private startsAtPageContentTop settings y =
 let private pageTopDropsSpaceBefore (settings: LayoutSettings) breakAbove pageBreakBefore =
     breakAbove || (pageBreakBefore && settings.CompatibilityMode >= 15)
 
+/// Where a paragraph keeps its space before at the top of a page (pageTopDropsSpaceBefore), it keeps
+/// only what is more than the space after of the paragraph just above it, at the foot of the page
+/// before - as between them on one page, where the larger of the two stands (collapseParagraphSpacing);
+/// after a table, or with nothing above it, all of it (fixtures page-top-space after*: Word 2010 and
+/// 2019 alike - a 12pt space before under 6pt after 6pt, under 12 or 18 none). How far up the paragraph
+/// is laid out for that: the overlap of the two.
+let private pageTopSpaceBeforeOverlap (aboveSpacingAfter: float option) (style: ParagraphStyle) (metadata: BlockMetadata) =
+    match aboveSpacingAfter with
+    | Some after when after > 0.0 -> min after (WordLayout.Paragraph.spacingBefore style metadata)
+    | _ -> 0.0
+
 /// The borders a paragraph is laid out with: those in effect as read (its style's included), or its own.
 let paragraphBordersOf (metadata: BlockMetadata) =
     metadata.EffectiveParagraphBorders |> Option.orElse metadata.ParagraphBorders
@@ -7241,10 +7252,17 @@ let private layoutDocumentPassKept
                 && (match tryGetParagraph blocks.[index - 1] with
                     | Some previous -> previous.Metadata.PageBreakAfter && not previous.Metadata.ColumnBreakAfter
                     | None -> false)
-            if startsAtPageContentTop settings y
-               && pageTopDropsSpaceBefore settings breakAbove (breakBefore && not breakInText) then
-                dropsSpaceBefore.Value <- true
             let effectiveMetadata = WordStyles.effectiveMetadata paragraphStyle para.Metadata
+            if startsAtPageContentTop settings y then
+                if pageTopDropsSpaceBefore settings breakAbove (breakBefore && not breakInText) then
+                    dropsSpaceBefore.Value <- true
+                elif index > 0 then
+                    let aboveAfter =
+                        tryGetParagraph blocks.[index - 1]
+                        |> Option.map (fun above ->
+                            let aboveStyle = forBlockInContext styleContext blocks.[index - 1]
+                            WordLayout.Paragraph.spacingAfter aboveStyle (WordStyles.effectiveMetadata aboveStyle above.Metadata))
+                    y <- y - pageTopSpaceBeforeOverlap aboveAfter paragraphStyle effectiveMetadata
             let spacingBefore = WordLayout.Paragraph.spacingBefore paragraphStyle effectiveMetadata
             let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
             let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
@@ -8152,6 +8170,14 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | None -> false)
             let dropsAtTop =
                 pageTopDropsSpaceBefore settings breakAbove (pageBreakBefore && not (ParagraphExplicit.has ParagraphExplicit.PageBreakRunBefore para0.Metadata))
+            // The space after of the paragraph just above it (the last of the section before, for the first).
+            let aboveSpacingAfter () =
+                if blockIndex = 0 then initialPrevious |> Option.map (fun (_, _, _, after) -> after)
+                else
+                    tryGetParagraph blocks.[blockIndex - 1]
+                    |> Option.map (fun above ->
+                        let aboveStyle = forBlockInContext styleContext blocks.[blockIndex - 1]
+                        WordLayout.Paragraph.spacingAfter aboveStyle (WordStyles.effectiveMetadata aboveStyle above.Metadata))
             while not placed do
                 let colBottom = columnBottom ()
                 let isContinuation = consumedOffset > 0
@@ -8163,6 +8189,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     // last of the section before it: see initialPrevious.)
                     | Some (previousPara, previousStyle, previousMetadata, previousSpacingAfter) when not isContinuation && (not (atColumnTop ()) || continuesPage ()) ->
                         collapseParagraphSpacing y previousPara previousStyle previousMetadata previousSpacingAfter remaining style (WordStyles.effectiveMetadata style remaining.Metadata)
+                    // (At a page's top, its space before kept, less the space after of the paragraph above:
+                    // pageTopSpaceBeforeOverlap.)
+                    | _ when not isContinuation && atPageTop () && not (continuesPage ()) && not (pushed || dropsAtTop) ->
+                        y - pageTopSpaceBeforeOverlap (aboveSpacingAfter ()) style (WordStyles.effectiveMetadata style remaining.Metadata)
                     | _ -> y
                 let dropsHere = not isContinuation && atColumnTop () && not (continuesPage ()) && (pushed || dropsAtTop)
                 // (Laid out where its column is across: what is anchored in it is placed from the column.)
@@ -8857,7 +8887,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             match Map.tryFind sectionBase footnotesByPage with
             | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
             | _ -> Map.empty
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd (if startedOnNewPage then None else previousAtEnd) ownFootnotes (if i = 0 then Some 0 else None)
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd ownFootnotes (if i = 0 then Some 0 else None)
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage

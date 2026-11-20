@@ -35,6 +35,13 @@ probe "s-sect" after a next-page section break; and in a section of two columns,
 column break in a paragraph of its own (cols-brkpara-c14, -c15) and pushed into the second column by
 the lines of the first (cols-flow-c14, -c15). Also: pages-c14-sup, pages-c15-sup with
 w:suppressSpBfAfterPgBrk (Word's "Suppress Space Before after a hard page break").
+The space after of the paragraph above (after<a>-c14, -c15; the showcase handbook's chapter headings,
+Heading 1 with 14pt before and pageBreakBefore after a Normal paragraph with 6pt after, 8pt below the
+margin in Word 2010's layout, 14 after a table): the paragraphs above the probes have a pt after,
+a = 6, 12 or 18 - pbb (pageBreakBefore, 12pt before), tblpbb (the same after a one-cell table),
+pbb4 (pageBreakBefore, 4pt before), mid (12pt before, mid-page: the control), brkin (12pt before, a
+page break its text starts with), s-sect (12pt before,
+after a next-page section break whose paragraph has the a pt after).
 No dependencies: the package is written as XML.
 """
 import os
@@ -102,8 +109,26 @@ def cols(kind):
     return body + f'<w:sectPr>{PG}{COLS}</w:sectPr>'
 
 
+def after_doc(a):
+    """The probes after paragraphs with a pt after (see the docstring)."""
+    sp = f'<w:spacing w:after="{a * 20}"/>'
+    pbb = '<w:pageBreakBefore/>'
+    tbl = ('<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid><w:gridCol w:w="4000"/></w:tblGrid>'
+           '<w:tr><w:tc><w:tcPr><w:tcW w:w="4000" w:type="dxa"/></w:tcPr>' + p('tbl cell') + '</w:tc></w:tr></w:tbl>')
+    out = p('body one', sp) + probe('pbb', pbb + BEFORE)
+    out += p('body two', sp) + tbl + probe('tblpbb', pbb + BEFORE)
+    out += p('body three', sp) + probe('pbb4', pbb + '<w:spacing w:before="80"/>')
+    out += p('body four', sp) + probe('mid')
+    out += p('body five', sp) + probe('brkin', pre=BRK)
+    out += p('section end', sp + f'<w:sectPr>{PG}</w:sectPr>') + probe('s-sect')
+    return out + f'<w:sectPr>{PG}</w:sectPr>'
+
+
 def docs():
     out = {}
+    for mode in (14, 15):
+        for a in (6, 12, 18):
+            out[f'after{a}-c{mode}'] = (after_doc(a), settings(mode))
     for mode in (14, 15):
         out[f'pages-c{mode}'] = (pages(), settings(mode))
         out[f'pages-c{mode}-sup'] = (pages(), settings(mode, True))
@@ -116,12 +141,10 @@ def docs():
 def write(path, body, settings_xml):
     doc = f'<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document {W}><w:body>{body}</w:body></w:document>'
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
-        z.writestr('[Content_Types].xml', TYPES)
-        z.writestr('_rels/.rels', RELS)
-        z.writestr('word/_rels/document.xml.rels', DOC_RELS)
-        z.writestr('word/document.xml', doc)
-        z.writestr('word/styles.xml', STYLES)
-        z.writestr('word/settings.xml', settings_xml)
+        for name, data in (('[Content_Types].xml', TYPES), ('_rels/.rels', RELS), ('word/_rels/document.xml.rels', DOC_RELS),
+                           ('word/document.xml', doc), ('word/styles.xml', STYLES), ('word/settings.xml', settings_xml)):
+            # (A fixed date: the same fixtures, the same bytes.)
+            z.writestr(zipfile.ZipInfo(name, (2026, 1, 1, 0, 0, 0)), data, zipfile.ZIP_DEFLATED)
 
 
 def tops(folder):
