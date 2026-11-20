@@ -7,6 +7,9 @@ round floating objects (Word's PDFs, or ours from tools/pdf-runner) - see fixtur
 Rows (points from the page's top-left):
   <doc> TAB line TAB <page> TAB <top> TAB <bottom> TAB <left> TAB <right> TAB <first word> TAB <last word>
   <doc> TAB image TAB <page> TAB <left> TAB <top> TAB <width> TAB <height>
+  <doc> TAB path TAB <page> TAB <left> TAB <top> TAB <right> TAB <bottom> TAB <S|f|B> TAB <line width>
+A path row is each path stroked (S) or filled (f) - borders, rules, shading - its box from its points, before
+the line width; with --paths only.
 A line is a run of words pdftotext puts on one baseline with nothing wide between them (a line of
 text on each side of a picture is two rows). Pictures: each image XObject drawn (`cm` ... `Do`), with
 the transformation in force. Needs pdftotext (poppler); no Python packages.
@@ -45,7 +48,7 @@ def objects(data):
     return {int(m.group(1)): m.start() for m in re.finditer(rb'(\d+) 0 obj', data)}
 
 
-def image_rows(pdf):
+def image_rows(pdf, paths=False):
     data = open(pdf, 'rb').read()
     objs = objects(data)
     def body(num):
@@ -93,14 +96,35 @@ def image_rows(pdf):
         content = "\n".join(stream(int(ref)) for ref in re.findall(rb'(\d+) 0 R', m.group(1)))
         ctm = (1.0, 0.0, 0.0, 1.0, 0.0, 0.0)
         stack, operands = [], []
+        lw, points = 1.0, []
+        def at(x, y):
+            a, b, c, d, e, f = ctm
+            return a * x + c * y + e, b * x + d * y + f
         for t in token.findall(content):
             if re.fullmatch(r'[-+]?\d*\.?\d+', t) or t.startswith('/') or t.startswith('[') or t.startswith('(') or t.startswith('<'):
                 operands.append(t)
                 continue
             if t == 'q':
-                stack.append(ctm)
+                stack.append((ctm, lw))
             elif t == 'Q':
-                ctm = stack.pop() if stack else ctm
+                ctm, lw = stack.pop() if stack else (ctm, lw)
+            elif t == 'w' and operands:
+                lw = float(operands[-1])
+            elif t in ('m', 'l') and len(operands) >= 2:
+                points.append(at(*map(float, operands[-2:])))
+            elif t == 'c' and len(operands) >= 6:
+                v = list(map(float, operands[-6:]))
+                points += [at(v[0], v[1]), at(v[2], v[3]), at(v[4], v[5])]
+            elif t == 're' and len(operands) >= 4:
+                x, y, w, h = map(float, operands[-4:])
+                points += [at(x, y), at(x + w, y + h), at(x + w, y), at(x, y + h)]
+            elif t in ('S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n'):
+                if paths and points and t != 'n':
+                    xs = [p[0] for p in points]; ys = [p[1] for p in points]
+                    scale = (abs(ctm[0]) + abs(ctm[3])) / 2
+                    kind = 'S' if t in ('S', 's') else 'f' if t.startswith('f') or t == 'F' else 'B'
+                    yield ('path', page, round(min(xs), 2), round(height - max(ys), 2), round(max(xs), 2), round(height - min(ys), 2), kind, round(lw * scale, 2))
+                points = []
             elif t == 'cm' and len(operands) >= 6:
                 a, b, c, d, e, f = map(float, operands[-6:])
                 A, B, C, D, E, F = ctm
@@ -109,13 +133,14 @@ def image_rows(pdf):
                 a, b, c, d, e, f = ctm
                 xs = [e, e + a, e + c, e + a + c]
                 ys = [f, f + b, f + d, f + b + d]
-                yield page, round(min(xs), 2), round(height - max(ys), 2), round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2)
+                yield 'image', page, round(min(xs), 2), round(height - max(ys), 2), round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2)
             operands = []
 
 
-for pdf in sys.argv[1:]:
+paths = '--paths' in sys.argv
+for pdf in [a for a in sys.argv[1:] if a != '--paths']:
     doc = os.path.splitext(os.path.basename(pdf))[0]
     for page, top, bottom, left, right, first, last in line_rows(pdf):
         print(f'{doc}\tline\t{page}\t{top}\t{bottom}\t{left}\t{right}\t{first}\t{last}')
-    for page, left, top, width, height in image_rows(pdf):
-        print(f'{doc}\timage\t{page}\t{left}\t{top}\t{width}\t{height}')
+    for row in image_rows(pdf, paths):
+        print('\t'.join([doc] + [str(v) for v in row]))

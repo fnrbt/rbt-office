@@ -64,6 +64,12 @@ docstring has the regenerate / ask Word / extract-labels steps, and
 borders take vertically); `para-border.py --positions <dir>` reads where Word put
 every line from its PDFs into `<dir>/word/positions.tsv`, and
 `tests/word/border-space.fsx` checks our gaps between lines against it.
+`para-border.py --across` writes `tests/word/fixtures/para-border-across/` (where the
+borders run across and where their lines are); `pdf-geometry.py --paths` reads the paths Word's
+PDFs stroke and fill (its borders are filled rectangles) into its `word/geometry.tsv`, and
+`tests/word/border-across.fsx` checks Paint's border commands against it. `fixtures/vmerge-content.py`
+(`tests/word/fixtures/vmerge-content/`: what a vertical merge's continuation cells hold and the rows'
+heights) is read with `pdf-geometry.py` for `tests/word/vmerge-content.fsx`.
 
 `fixtures/float-wrap.py` writes `tests/word/fixtures/float-wrap/` (text round
 floating pictures and shapes); where Word's lines and pictures are in its PDFs

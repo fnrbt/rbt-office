@@ -19,7 +19,13 @@
 // - broken at a page's foot as a table in the flow is, its paragraph goes on beside the part of it on
 //   the page it ends on, from the top of that page (pb, pb-big);
 // - the first-line indent of a line beside it starts from the table (fl-b), and a table is not moved
-//   in by Normal's first-line indent (fl-normal, fl-normal-inline).
+//   in by Normal's first-line indent (fl-normal, fl-normal-inline);
+// - a table in the flow that would reach into its box (its distances from text across included) starts
+//   below it: below its bottomFromText in Word 2019's layout (flow-base, -db18, -ind, -left, -near,
+//   -two, -fixed*, -center), below its border in Word 2010's for a fixed-width table (flow-fixed-c14,
+//   -fixed-db18-c14, -fixed-center-c14); one clear of it stays beside it (flow-narrow*). Word 2010's
+//   layout narrows an autofit one to the room beside it instead (flow-base-c14, -db18-c14, -center-c14:
+//   not here - flow-center-c14 is open).
 // The cells' paragraphs of a table with a table style (ts-*): Normal's first-line indent, and its
 // font size, over the table style's (the rule: tests/word/table-style-props.fsx).
 // Text is measured here by its length, so only where lines are and where their pieces start (and end,
@@ -58,7 +64,7 @@ type Row = { Page: int; Top: float; Left: float; Right: float; First: string; La
 let glyphTop (top: float) (bottom: float) = 0.1991 * (bottom - top) / 1.00364
 // The last words of the fixtures' paragraphs: a justified paragraph's last line is not justified.
 let finals = set [ "a40"; "b020"; "b120"; "b200"; "c60"; "i40"; "p10" ]
-let isCell (word: string) = word.Length = 3 && (word.[0] = 't' || word.[0] = 'u' || word.[0] = 'n') && Char.IsDigit word.[1]
+let isCell (word: string) = word.Length = 3 && (word.[0] = 't' || word.[0] = 'u' || word.[0] = 'n' || word.[0] = 'f') && Char.IsDigit word.[1]
 
 /// Word's lines of a fixture, in the PDF's order.
 let wordRows =
@@ -99,10 +105,13 @@ let ours name =
                     yield page, pt (line.Y - pageTop page), pt (settings.PaddingLeft + left + offset), pt (settings.PaddingLeft + right + offset), first, isLast ]
 
 let fixtures = Directory.GetFiles(dir, "*.docx") |> Array.map Path.GetFileNameWithoutExtension |> Array.sort |> Array.toList
-check "the fixtures are all there" fixtures.Length 77
+check "the fixtures are all there" fixtures.Length 96
 check "Word's results for each" (fixtures |> List.filter (fun name -> not (wordRows.ContainsKey name))) []
 
-let open_ = set [ "ov-never"; "cell"; "nested"; "vm-y0"; "ys-top-text"; "ys-center-text"; "ys-bottom-text" ]
+let open_ = set [ "ov-never"; "cell"; "nested"; "vm-y0"; "ys-top-text"; "ys-center-text"; "ys-bottom-text"
+                  // (Word 2010's layout narrows an autofit table in the flow to the room beside a floating
+                  // one, and puts it at the margin: not here.)
+                  "flow-center-c14" ]
 // (Word's table stands half its 1.5pt left border further in than a table in the flow of ours: in
 // Word 2019's layout a table's outer border, not its grid, is at the margin - open; the text round
 // it is compared.)
