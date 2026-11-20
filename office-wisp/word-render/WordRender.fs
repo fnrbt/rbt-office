@@ -18,6 +18,21 @@ let measureTextWithFont font (text: string) (style: Rbt.Word.TextBuffer.TextStyl
     Rbt.Renderer.Text.measureWidth font (pointsToPixels style.FontSize) text + Rbt.Word.TextBuffer.characterSpacingAdvance text style
 let private fontForPaint (style: WordPaint.TextPaintStyle) = Fonts.resolve style.FontFamily style.Bold style.Italic
 
+/// The faces `doc` embeds (Office.Formats' EmbeddedFonts), as Fonts takes them.
+let embeddedFaces (doc: Document) =
+    match doc.Package.Preserved with
+    | Some preserved -> EmbeddedFonts.ofPreserved preserved |> List.map (fun face -> face.Family, face.Bold, face.Italic, face.Data)
+    | None -> []
+
+/// The text measurer of `doc`: measureText's, with the faces it embeds for the families this machine
+/// has no font of (Fonts.resolveWith; as Word).
+let measureTextFor (doc: Document) : WordLayout.TextMeasurer =
+    match embeddedFaces doc with
+    | [] -> measureText
+    | embedded ->
+        fun (text: string) (style: Rbt.Word.TextBuffer.TextStyle) ->
+            Fonts.measureWith embedded text (pointsToPixels style.FontSize) style.FontFamily style.Bold style.Italic + Rbt.Word.TextBuffer.characterSpacingAdvance text style
+
 let private parseHexColor (value: string) =
     let value =
         match value.Trim().ToLowerInvariant() with
@@ -185,6 +200,13 @@ let rec toRendererCommandWith (fontFor: WordPaint.TextPaintStyle -> Rbt.Renderer
         [ Cmd.Group(xform, 1.0, innerCmds) ]
 
 let toRendererCommand resolveImage command = toRendererCommandWith fontForPaint resolveImage command
+
+/// As toRendererCommand, painting text in the faces `doc` embeds as measureTextFor measures it.
+let toRendererCommandFor (doc: Document) resolveImage command =
+    match embeddedFaces doc with
+    | [] -> toRendererCommand resolveImage command
+    | embedded ->
+        toRendererCommandWith (fun style -> Fonts.resolveWith embedded style.FontFamily style.Bold style.Italic) resolveImage command
 
 /// Decode embedded data URLs once; external paths and URLs are not fetched.
 let createImageResolver () =

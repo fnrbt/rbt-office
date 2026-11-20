@@ -32,9 +32,11 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
   with `fetch-windows-fonts.sh`. Text is measured as a host that installs
   ShaperText's measurers measures it (`setTextMeasurers`: the fonts' own
   advances, from the same files); `--measurer canvas` leaves the canvas's
-  `measureText`, which in headless Chromium gives whole pixels. `--embedded-fonts`
-  also registers the fonts a document embeds (canvas measuring only). The lines
-  are `Word.getLayoutLines`' body lines.
+  `measureText`, which in headless Chromium gives whole pixels. The fonts a
+  document embeds are used as the product uses them: the editor makes them
+  canvas fonts itself (`loadEmbeddedFonts`, waited for), and the ShaperText font
+  set gets them for the families it has no face of (`getEmbeddedFonts`,
+  `ShaperText.addEmbeddedFaces`). The lines are `Word.getLayoutLines`' body lines.
 - A table's header row repeated at the top of a later page is not where that
   page starts in the text (Word's side is the character position a page starts
   at): its lines are left out of the comparison.

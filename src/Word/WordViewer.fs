@@ -115,6 +115,8 @@ module Viewer =
     ///                                  the viewer then has that editor's lines and pages
     ///   setTextPathPainter(painterFor) painterFor(context2d) gives the text painter for a canvas
     ///   getRequiredFonts()             [{ family, bold, italic }]: the faces the loaded document is set in
+    ///   getEmbeddedFonts() / loadEmbeddedFonts()   the faces the document embeds, and a promise of their
+    ///                                  being canvas fonts (load does that by itself) - see API.getEmbeddedFonts
     ///   getRenderStats()               { FrameBuilds, LaidOutBlocks, CollectedBlocks, CollectedOnPaint, Blocks,
     ///                                    PainterVersion, MeasurerVersion } - see API.getRenderStats
     ///   render(document)               paint a Document on the viewer's canvas (as before)
@@ -161,6 +163,24 @@ module Viewer =
             | Some importing -> Docx.completeProgressiveImport importing
             | None -> ()
         let mutable loadTold = 0.0
+        // The faces the document embeds, as canvas fonts (EmbeddedFontFaces): once they are loaded, the
+        // paragraphs set in their families are laid out again.
+        let mutable embeddedLoad : (obj * JS.Promise<unit>) option = None
+        let useEmbeddedFonts (doc: Doc.Document) : JS.Promise<unit> =
+            match embeddedLoad with
+            | Some (package, pending) when obj.ReferenceEquals(package, box doc.Package.Preserved) -> pending
+            | _ ->
+                let pending =
+                    EmbeddedFontFaces.andThen (EmbeddedFontFaces.load doc) (fun families ->
+                        if families.Length > 0 && obj.ReferenceEquals((current ()).Package.Preserved, doc.Package.Preserved) then
+                            if Ren.setTextMeasurersForFamilies ctx ctx.TextMeasurer ctx.TextRangeMeasurer families > 0 then
+                                tellProgress (Ren.layoutIsComplete ctx))
+                if doc.Package.Preserved.IsSome then embeddedLoad <- Some (box doc.Package.Preserved, pending)
+                pending
+        // The faces the document embeds: [{ family, bold, italic, subsetted, data }] (see API.getEmbeddedFonts).
+        state?getEmbeddedFonts <- fun () -> EmbeddedFontFaces.toObjects (EmbeddedFontFaces.ofDocument (current ()))
+        // A promise that resolves when the faces the document embeds are canvas fonts (see API.loadEmbeddedFonts).
+        state?loadEmbeddedFonts <- fun () -> useEmbeddedFonts (current ())
         state?load <- fun (package: obj) (options: obj) ->
             let progressive = not (isNull options) && not (isNull (options?progressive)) && unbox<bool> (options?progressive)
             let importing =
@@ -184,6 +204,7 @@ module Viewer =
             fonts.Reset ()
             Ren.clearLayoutCache ctx
             Ren.cancelScheduledLayout ctx
+            useEmbeddedFonts doc |> ignore
             match importing with
             | Some importing ->
                 // More of the document was read: its blocks after the blocks there are,
@@ -197,6 +218,7 @@ module Viewer =
                     let ended = step.Complete || step.Failed.IsSome
                     if step.Failed.IsSome then loadFailure <- step.Failed
                     if ended then endLoading ()
+                    if step.Complete then useEmbeddedFonts (current ()) |> ignore
                     let now = JS.Constructors.Date.now ()
                     if ended || wasWhole || now - loadTold > 150.0 then
                         loadTold <- now

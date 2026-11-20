@@ -20,6 +20,7 @@
     <Compile Include="src/DocxTypes.fs" />
     <Compile Include="src/DocxReader.fs" />
     <Compile Include="src/WordEditorPackage.fs" />
+    <Compile Include="src/EmbeddedFonts.fs" />
     <Compile Include="src/DocumentProcessors.fs" />
     <Compile Include="src/WordEditorPackageReader.fs" />
     <Compile Include="src/WordPackageOpen.fs" />

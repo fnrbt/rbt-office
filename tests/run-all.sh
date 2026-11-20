@@ -64,7 +64,7 @@ word_suites=(
     group-shapes roundtrip-layout table-break-borders sections table-insert
     wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
     column-balance section-end macros outline line-boxes row-break rfonts-precedence footnote-block border-space
-    float-wrap long-word kerning hang-punct table-width
+    float-wrap long-word kerning hang-punct table-width embedded-fonts
 )
 
 # These are required corpus anchors and all drawing fixtures that the formats
@@ -108,7 +108,7 @@ if [ "$profile" = core ]; then
     required+=("${core_fixtures[@]}")
 else
     projects=("${native_projects[@]}")
-    required=(tests/word/native-painter.fsx tests/word/wisp-editorhost.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/native-import.fsx tests/native-pdf.fsx "${native_fixtures[@]}")
+    required=(tests/word/native-painter.fsx tests/word/native-embedded-fonts.fsx tests/word/wisp-editorhost.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/native-import.fsx tests/native-pdf.fsx "${native_fixtures[@]}")
     for tool in pdftotext pdfimages; do
         if ! command -v "$tool" >/dev/null; then
             echo "MISSING NATIVE PDF TOOL: $tool (install Poppler utilities)" >&2
@@ -197,6 +197,7 @@ else
         exit 1
     fi
     run_suite "word-native-painter" "tests/word/native-painter.fsx"
+    run_suite "word-native-embedded-fonts" "tests/word/native-embedded-fonts.fsx"
     run_suite "word-wisp-editorhost" "tests/word/wisp-editorhost.fsx"
     run_suite "spreadsheet-wisp-editorhost" "tests/spreadsheet/wisp-editorhost.fsx"
     run_suite "spreadsheet-native-import" "tests/spreadsheet/native-import.fsx"

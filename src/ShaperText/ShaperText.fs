@@ -52,6 +52,8 @@ type private FontEntry = {
 type FontSet = private {
     DefaultFamily: string
     Fonts: Map<FontKey, FontEntry>
+    /// The families of a document's embedded faces (addEmbeddedFaces): all there is of them.
+    Embedded: Set<string>
 }
 
 let private normalizeFamily (value: string) =
@@ -245,7 +247,7 @@ let addFaces (fontSet: FontSet) (faces: FontFace seq) : FontSet =
 /// array of bytes given again (under another family name, in another set) is
 /// the same font: it is read once.
 let createFontSet defaultFamily (faces: FontFace seq) =
-    addFaces { DefaultFamily = defaultFamily; Fonts = Map.empty } faces
+    addFaces { DefaultFamily = defaultFamily; Fonts = Map.empty; Embedded = Set.empty } faces
 
 /// Read the outlines of one file of the set that has not been drawn from yet
 /// (they are read anyway when its first glyph is drawn: this moves the tens
@@ -278,6 +280,24 @@ let fontFacesFromFamilies (families: FontFamilyData seq) =
 let createFontSetFromFamilies defaultFamily families =
     fontFacesFromFamilies families |> createFontSet defaultFamily
 
+/// Whether the set has a face of `family` (any weight or slant).
+let hasFamily (fontSet: FontSet) (family: string) =
+    let name = normalizeFamily family
+    fontSet.Fonts |> Map.exists (fun (key, _, _) _ -> key = name)
+
+/// A font set with the faces a document embeds (Word's getEmbeddedFonts, Office.Formats'
+/// EmbeddedFonts) of the families `fontSet` has no face of: as Word, which sets text in an embedded
+/// face only when the machine has no font of its family (fixtures embedded-fonts: an embedded
+/// "Calibri" loses to the installed one). Text in a style such a family has no face of is set in one
+/// of its other faces, as Word does (bold-only: regular text in the bold face). The set given is not
+/// changed (see addFaces).
+let addEmbeddedFaces (fontSet: FontSet) (faces: FontFace seq) : FontSet =
+    let added = faces |> Seq.filter (fun face -> not (hasFamily fontSet face.Family)) |> Seq.toList
+    if added.IsEmpty then fontSet
+    else
+        let set = addFaces fontSet added
+        { set with Embedded = added |> List.fold (fun families face -> Set.add (normalizeFamily face.Family) families) set.Embedded }
+
 let private tryFindFont (fontSet: FontSet) family bold italic =
     let requested = family |> Option.defaultValue fontSet.DefaultFamily
     let candidates = [
@@ -285,6 +305,12 @@ let private tryFindFont (fontSet: FontSet) family bold italic =
         fontKey requested bold false
         fontKey requested false italic
         fontKey requested false false
+        // (An embedded family with other faces only sets text in them, as Word does - fixtures
+        // embedded-fonts: regular text of a family that embeds only its bold face is the bold face's.)
+        if not fontSet.Embedded.IsEmpty && fontSet.Embedded.Contains (normalizeFamily requested) then
+            fontKey requested (not bold) italic
+            fontKey requested bold (not italic)
+            fontKey requested (not bold) (not italic)
         fontKey fontSet.DefaultFamily bold italic
         fontKey fontSet.DefaultFamily bold false
         fontKey fontSet.DefaultFamily false italic

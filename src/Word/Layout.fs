@@ -478,7 +478,64 @@ let documentHangingPunctuation (setup: PageSetup) =
 
 /// Document geometry is independent of the host viewport. Font defaults and
 /// trailing-space slack are supplied by the measuring backend.
+/// A font file's single line per unit of size as GDI gives Word it: tmHeight (usWinAscent +
+/// usWinDescent) and tmExternalLeading (the hhea line gap less what the Windows ascent and descent
+/// are beyond hhea's) - Calibri 1.2207, Arial 1.1499, Ubuntu 1.149 (Word 2019: calibre-demo's Ubuntu
+/// 12pt at 1.15, 15.84pt a line). None when the file has not got the tables.
+let fontFileLineFactor (data: byte[]) : float option =
+    let u16 at = (int data.[at] <<< 8) ||| int data.[at + 1]
+    let s16 at = let v = u16 at in if v >= 0x8000 then v - 0x10000 else v
+    let u32 at = (u16 at <<< 16) ||| u16 (at + 2)
+    try
+        if data.Length < 12 then None
+        else
+            let tables = u16 4
+            let table tag =
+                let mutable found = None
+                for i in 0 .. tables - 1 do
+                    let record = 12 + i * 16
+                    if found.IsNone && record + 16 <= data.Length
+                       && System.String(Array.init 4 (fun k -> char data.[record + k])) = tag then
+                        found <- Some (u32 (record + 8))
+                found
+            match table "head", table "hhea", table "OS/2" with
+            | Some head, Some hhea, Some os2 ->
+                let unitsPerEm = float (u16 (head + 18))
+                let ascender, descender, lineGap = float (s16 (hhea + 4)), float (s16 (hhea + 6)), float (s16 (hhea + 8))
+                let winAscent, winDescent = float (u16 (os2 + 74)), float (u16 (os2 + 76))
+                let height = winAscent + winDescent
+                let externalLeading = max 0.0 (lineGap - (height - (ascender - descender)))
+                if unitsPerEm > 0.0 && height > 0.0 then Some ((height + externalLeading) / unitsPerEm) else None
+            | _ -> None
+    with _ -> None
+
+/// The single lines of the families the document being laid out embeds and the table has not
+/// (EmbeddedFonts: Word sets their text in the embedded faces), by lower-case family; set by
+/// documentSettings, of the document it is given.
+let mutable private embeddedLineFactors : Map<string, float> = Map.empty
+let mutable private embeddedLineFactorsOf : obj = null
+let mutable private embeddedLineFactorsVersion = 0
+
+/// Take the single lines of the faces `doc` embeds (see embeddedLineFactors): before it is laid out.
+let private useEmbeddedLineFactors (doc: Document) =
+    let preserved = box doc.Package.Preserved
+    if not (obj.ReferenceEquals(preserved, embeddedLineFactorsOf)) then
+        let factors =
+            match doc.Package.Preserved with
+            | None -> Map.empty
+            | Some package ->
+                EmbeddedFonts.ofPreserved package
+                |> List.groupBy (fun face -> face.Family.Trim().ToLowerInvariant())
+                |> List.choose (fun (family, faces) ->
+                    let face = faces |> List.tryFind (fun face -> not face.Bold && not face.Italic) |> Option.defaultValue faces.Head
+                    fontFileLineFactor face.Data |> Option.map (fun factor -> family, factor))
+                |> Map.ofList
+        embeddedLineFactors <- factors
+        embeddedLineFactorsOf <- preserved
+        embeddedLineFactorsVersion <- embeddedLineFactorsVersion + 1
+
 let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) : LayoutSettings =
+    useEmbeddedLineFactors doc
     let footerReserve =
         if not doc.Footers.IsEmpty || not doc.FooterParts.IsEmpty then
             doc.PageSetup.FooterDistance + lineHeight * 1.5
@@ -1525,15 +1582,21 @@ let private wordFontLineFactors =
        "Trebuchet MS", 1.1611; "Segoe UI", 1.3301; "Comic Sans MS", 1.3936; "Consolas", 1.1709 |]
 let private wordFontLineFactor (family: string) =
     let mutable factor = calibriLineFactor
+    let mutable found = false
     let mutable index = 0
     while index < wordFontLineFactors.Length do
         let entry = wordFontLineFactors.[index]
         if trimmedEqualsIgnoreCase family (fst entry) then
             factor <- snd entry
+            found <- true
             index <- wordFontLineFactors.Length
         else
             index <- index + 1
-    factor
+    if found || embeddedLineFactors.IsEmpty then factor
+    else
+        match Map.tryFind (family.Trim().ToLowerInvariant()) embeddedLineFactors with
+        | Some embedded -> embedded
+        | None -> factor
 
 let private singleLineFactorOfFamily (family: string option) =
     match family with
@@ -2040,15 +2103,15 @@ let private spacedSpannedWidthFromPrefix prefix spacing start span fallback =
 /// How much taller (or lower) a line in this text's font is than in Calibri.
 // (The family last asked for and its ratio: asked for every line, nearly always of one family. One
 // reference, swapped whole, so that layouts on other threads read a family with its own ratio.)
-let mutable private lastFontLineRatio : System.Tuple<string, float> = System.Tuple<string, float>("Calibri", 1.0)
+let mutable private lastFontLineRatio : System.Tuple<string, float, int> = System.Tuple<string, float, int>("Calibri", 1.0, 0)
 let private fontLineRatio (style: TextBuffer.TextStyle) =
     match style.FontFamily with
     | Some family ->
         let last = lastFontLineRatio
-        if obj.ReferenceEquals(last.Item1, family) || last.Item1 = family then last.Item2
+        if (obj.ReferenceEquals(last.Item1, family) || last.Item1 = family) && last.Item3 = embeddedLineFactorsVersion then last.Item2
         else
             let ratio = wordFontLineFactor family / calibriLineFactor
-            lastFontLineRatio <- System.Tuple<string, float>(family, ratio)
+            lastFontLineRatio <- System.Tuple<string, float, int>(family, ratio, embeddedLineFactorsVersion)
             ratio
     | None -> 1.0
 let private usesDefaultParagraphSpacing (metadata: BlockMetadata) =

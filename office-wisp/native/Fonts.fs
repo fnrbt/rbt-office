@@ -51,27 +51,27 @@ let private fontDirs () =
             dirs.Add dir
     resizeArrayToList dirs
 
-/// Map an XLSX font `name val="..."` to a normalized family key. Anything we
-/// don't have a TTF for falls back to "calibri" — the renderer keeps working
-/// even when we encounter Asian/script fonts we can't substitute properly.
-let private familyKey (name: string option) =
+/// Map an XLSX font `name val="..."` to a normalized family key: None for a
+/// family we have no TTF set for (see familyKey).
+let private knownFamilyKey (name: string option) =
     match name with
-    | None -> "calibri"
+    | None -> Some "calibri"
     | Some n ->
         let start, length = trimBounds n
-        if length = 0 then "calibri"
-        elif startsWithAtIgnoreCase n start length "arial" then "arial"
-        elif startsWithAtIgnoreCase n start length "calibri light" then "calibri-light"
-        elif startsWithAtIgnoreCase n start length "calibri" then "calibri"
-        elif startsWithAtIgnoreCase n start length "cambria" then "cambria"
-        elif startsWithAtIgnoreCase n start length "times" then "times"
-        elif startsWithAtIgnoreCase n start length "verdana" then "verdana"
-        elif startsWithAtIgnoreCase n start length "garamond" then "garamond"
-        elif startsWithAtIgnoreCase n start length "segoe" then "segoeui"
-        elif startsWithAtIgnoreCase n start length "helvetica" then "arial"
-        elif startsWithAtIgnoreCase n start length "georgia" then "times"
-        elif startsWithAtIgnoreCase n start length "consolas" then "consolas"
-        elif startsWithAtIgnoreCase n start length "courier" then "courier"
+        let known key = Some key
+        if length = 0 then known "calibri"
+        elif startsWithAtIgnoreCase n start length "arial" then known "arial"
+        elif startsWithAtIgnoreCase n start length "calibri light" then known "calibri-light"
+        elif startsWithAtIgnoreCase n start length "calibri" then known "calibri"
+        elif startsWithAtIgnoreCase n start length "cambria" then known "cambria"
+        elif startsWithAtIgnoreCase n start length "times" then known "times"
+        elif startsWithAtIgnoreCase n start length "verdana" then known "verdana"
+        elif startsWithAtIgnoreCase n start length "garamond" then known "garamond"
+        elif startsWithAtIgnoreCase n start length "segoe" then known "segoeui"
+        elif startsWithAtIgnoreCase n start length "helvetica" then known "arial"
+        elif startsWithAtIgnoreCase n start length "georgia" then known "times"
+        elif startsWithAtIgnoreCase n start length "consolas" then known "consolas"
+        elif startsWithAtIgnoreCase n start length "courier" then known "courier"
         // Localized "Body Text Font" names from non-English Excel installs.
         // OOXML stores the localized display name verbatim; Windows resolves
         // it through the OS locale. For our purposes Arial is the closest
@@ -79,15 +79,21 @@ let private familyKey (name: string option) =
         // font (verified against pandas-testdateoverflow's Polish
         // "Czcionka tekstu podstawowego" — column widths and row heights
         // match Excel's reported values with Arial metrics, not Calibri's).
-        elif equalsAtIgnoreCase n start length "czcionka tekstu podstawowego" then "arial"     // Polish
-        elif equalsAtIgnoreCase n start length "schrift des textkörpers" then "arial"          // German
-        elif equalsAtIgnoreCase n start length "police du corps" then "arial"                  // French
-        elif equalsAtIgnoreCase n start length "carattere del corpo" then "arial"              // Italian
-        elif equalsAtIgnoreCase n start length "fuente del cuerpo" then "arial"                // Spanish
-        elif equalsAtIgnoreCase n start length "本文のフォント" then "arial"                    // Japanese
-        elif equalsAtIgnoreCase n start length "正文字体" then "arial"                          // Chinese (Simplified)
-        elif equalsAtIgnoreCase n start length "본문 글꼴" then "arial"                         // Korean
-        else "calibri"
+        elif equalsAtIgnoreCase n start length "czcionka tekstu podstawowego" then known "arial"     // Polish
+        elif equalsAtIgnoreCase n start length "schrift des textkörpers" then known "arial"          // German
+        elif equalsAtIgnoreCase n start length "police du corps" then known "arial"                  // French
+        elif equalsAtIgnoreCase n start length "carattere del corpo" then known "arial"              // Italian
+        elif equalsAtIgnoreCase n start length "fuente del cuerpo" then known "arial"                // Spanish
+        elif equalsAtIgnoreCase n start length "本文のフォント" then known "arial"                    // Japanese
+        elif equalsAtIgnoreCase n start length "正文字体" then known "arial"                          // Chinese (Simplified)
+        elif equalsAtIgnoreCase n start length "본문 글꼴" then known "arial"                         // Korean
+        else None
+
+/// Anything we don't have a TTF for falls back to "calibri" — the renderer
+/// keeps working even when we encounter Asian/script fonts we can't
+/// substitute properly.
+let private familyKey (name: string option) =
+    knownFamilyKey name |> Option.defaultValue "calibri"
 
 let private fontFiles family bold italic =
     match family with
@@ -196,6 +202,40 @@ let resolve (fontName: string option) (bold: bool) (italic: bool) =
             |> Option.defaultWith fallbackDefaultFont
     font
 
+/// Whether a family is one this machine sets text in its own font of (a family of the known sets
+/// whose files - or their Liberation stand-ins - are here); text in another family falls back.
+let hasFamily (fontName: string) =
+    match knownFamilyKey (Some fontName) with
+    | Some family -> (loadVariant family false false).IsSome
+    | None -> false
+
+// The fonts of a document's embedded faces, by the face's bytes (read once).
+let private embeddedFonts = System.Runtime.CompilerServices.ConditionalWeakTable<byte[], Rbt.Renderer.Text.FontData option>()
+
+let private embeddedFont (data: byte[]) =
+    lock embeddedFonts (fun () ->
+        match embeddedFonts.TryGetValue data with
+        | true, font -> font
+        | _ ->
+            let font = try Some (Rbt.Renderer.Text.loadFont data) with _ -> None
+            embeddedFonts.Add(data, font)
+            font)
+
+/// As `resolve`, with the faces a document embeds ((family, bold, italic, font file) - the document's
+/// EmbeddedFonts): text in a family this machine has no font of (hasFamily) is set in an embedded face
+/// of it - the face of its style, else another of the family's (as Word: fixtures embedded-fonts) -
+/// and text in any other family as `resolve` sets it.
+let resolveWith (embedded: (string * bool * bool * byte[]) list) (fontName: string option) (bold: bool) (italic: bool) =
+    let norm (name: string) = name.Trim().ToLowerInvariant()
+    match fontName with
+    | Some name when not embedded.IsEmpty && not (hasFamily name) ->
+        let faces = embedded |> List.filter (fun (family, _, _, _) -> norm family = norm name)
+        [ bold, italic; bold, false; false, italic; false, false; not bold, italic; bold, not italic; not bold, not italic ]
+        |> List.tryPick (fun (b, i) ->
+            faces |> List.tryPick (fun (_, faceBold, faceItalic, data) -> if faceBold = b && faceItalic = i then embeddedFont data else None))
+        |> Option.defaultWith (fun () -> resolve fontName bold italic)
+    | _ -> resolve fontName bold italic
+
 /// Load a CJK fallback by file name. Mirrors loadVariant's caching and
 /// fontDirs lookup. Returns None when the file is absent (older Windows
 /// images don't ship every face).
@@ -276,6 +316,14 @@ let segmentByFontCoverage
     | ValueSome f when buf.Length > 0 -> result.Add(f, buf.ToString())
     | _ -> ()
     result
+
+/// As `measure`, with a document's embedded faces (see resolveWith).
+let measureWith (embedded: (string * bool * bool * byte[]) list) (text: string) (sizePx: float) (family: string option) (bold: bool) (italic: bool) =
+    let font = resolveWith embedded family bold italic
+    let mutable width = 0.0
+    for face, run in segmentByFontCoverage font bold text do
+        width <- width + Rbt.Renderer.Text.measureWidth face sizePx run
+    width
 
 /// Measure with the same primary and fallback faces used for drawing; size is pixels.
 let measure (text: string) (sizePx: float) (family: string option) (bold: bool) (italic: bool) =

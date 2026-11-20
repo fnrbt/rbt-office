@@ -96,6 +96,27 @@ type RenderOptions = {
     Images: ImageResource list
 }
 
+// The name of a face withEmbeddedFonts adds starts so (the font set takes it as a document's embedded face).
+let private embeddedFacePrefix = "Embedded-"
+
+/// `options` with the faces `doc` embeds (EmbeddedFonts) of the families its fonts have no face of:
+/// Word sets text in an embedded face when the machine has no font of the family, and the PDF holds
+/// the face it set the text in. Given again, it adds nothing more.
+let withEmbeddedFonts (doc: Document) (options: RenderOptions) : RenderOptions =
+    match doc.Package.Preserved with
+    | None -> options
+    | Some preserved ->
+        let has = options.Fonts |> List.map (fun face -> face.Family.Trim().ToLowerInvariant()) |> Set.ofList
+        let added =
+            EmbeddedFonts.ofPreserved preserved
+            |> List.filter (fun face -> not (has.Contains (face.Family.Trim().ToLowerInvariant())))
+            |> List.map (fun face ->
+                { FaceName =
+                    embeddedFacePrefix + face.Family.Replace(" ", "")
+                    + (if face.Bold && face.Italic then "-BoldItalic" elif face.Bold then "-Bold" elif face.Italic then "-Italic" else "")
+                  Family = face.Family; Bold = face.Bold; Italic = face.Italic; Data = face.Data })
+        if added.IsEmpty then options else { options with Fonts = options.Fonts @ added }
+
 type PaintPlan = {
     Settings: WordCanvasLayout.LayoutSettings
     Commands: WordPaint.PaintCommand list
@@ -207,13 +228,11 @@ let private paintStyleToTextStyle (style: WordPaint.TextPaintStyle) : TextStyle 
         VertAlign = style.VertAlign }
 
 let private createTextContext (options: RenderOptions) =
-    let shaperFaces =
-        options.Fonts
-        |> List.map (fun face ->
-            ({ Family = face.Family
-               Bold = face.Bold
-               Italic = face.Italic
-               Data = face.Data }: Rbt.Word.ShaperText.FontFace))
+    let shaperFace (face: FontFace) : Rbt.Word.ShaperText.FontFace =
+        { Family = face.Family; Bold = face.Bold; Italic = face.Italic; Data = face.Data }
+    // (A document's embedded faces as such: a style their family has no face of is set in another of
+    // its faces, as Word does - see ShaperText.addEmbeddedFaces.)
+    let embedded, given = options.Fonts |> List.partition (fun face -> face.FaceName.StartsWith embeddedFacePrefix)
     let fontBytes = options.Fonts |> List.map (fun face -> face.FaceName, face.Data) |> Map.ofList
     let bytesComparer =
         { new System.Collections.Generic.IEqualityComparer<byte[]> with
@@ -223,7 +242,10 @@ let private createTextContext (options: RenderOptions) =
     for KeyValue(name, bytes) in fontBytes do
         if not (fontNamesByBytes.ContainsKey bytes) then fontNamesByBytes.[bytes] <- name
     {
-        FontSet = Rbt.Word.ShaperText.createFontSet options.DefaultFontFamily shaperFaces
+        FontSet =
+            Rbt.Word.ShaperText.addEmbeddedFaces
+                (Rbt.Word.ShaperText.createFontSet options.DefaultFontFamily (given |> List.map shaperFace))
+                (embedded |> List.map shaperFace)
         FontBytes = fontBytes
         FontNamesByBytes = fontNamesByBytes
         PdfFontCache = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
@@ -1001,6 +1023,7 @@ let private usedImagesForPlan (usedSources: System.Collections.Generic.HashSet<s
     kept
 
 let private collectPaintPlanWithCachedLayouts (cachedLayouts: WordCanvasLayout.BlockLayout list option) (options: RenderOptions) (doc: Document) =
+    let options = withEmbeddedFonts doc options
     let measureText, measureRange =
         match options.MeasureText with
         | Some measureText ->
@@ -1111,6 +1134,7 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     bytes
 
 let private toBytesWithCachedLayouts (cachedLayouts: WordCanvasLayout.BlockLayout list option) (options: RenderOptions) (doc: Document) =
+    let options = withEmbeddedFonts doc options
     trace "toBytes:createPaintPlan:start"
     let plan = collectPaintPlanWithCachedLayouts cachedLayouts options doc
     trace (sprintf "toBytes:createPaintPlan:done commands=%d pages=%d" plan.Commands.Length plan.Pages.Length)

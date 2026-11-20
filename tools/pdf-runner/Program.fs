@@ -16,15 +16,16 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-/// The families a document is set in (Paint.requiredFontFaces), and Word's usual ones: the PDF writer
-/// embeds each face it is given, and sets text of a family it was not given in the default family.
+/// The families a document is set in (Paint.requiredFontFaces) that this machine has fonts of, and
+/// Word's usual ones: the PDF writer embeds each face it is given, sets text of a family it was not
+/// given in a face the document embeds of it (Pdf.withEmbeddedFonts), else in the default family.
 let private documentFamilies (doc: Rbt.Word.Document.Document) =
     let measure (text: string) (style: Rbt.Word.TextBuffer.TextStyle) = float text.Length * style.FontSize * 0.5
     let used =
         Rbt.Word.Paint.requiredFontFaces (Rbt.Word.Layout.documentSettings 16.0 24.0 3.5 doc) "Calibri" measure
             (Rbt.Word.Layout.rangeMeasurerFromTextMeasurer measure) doc None
         |> List.map (fun (family, _, _) -> family)
-    [ "Calibri"; "Calibri Light"; "Cambria"; "Arial"; "Times New Roman" ] @ used |> List.distinct
+    [ "Calibri"; "Calibri Light"; "Cambria"; "Arial"; "Times New Roman" ] @ (used |> List.filter Rbt.OfficeNative.Fonts.hasFamily) |> List.distinct
 
 let private pdfOptions (families: string list) : Rbt.Word.Pdf.RenderOptions =
     let faces : Rbt.Word.Pdf.FontFace list =

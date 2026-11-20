@@ -95,10 +95,13 @@ let private withDefaultFonts (document: Rbt.Word.Document.Document) (hostFaces: 
     }
 
 /// A captured immutable whole-document snapshot, not the editor's later state. `fonts` are the host's
-/// faces (none is fine: the package's own set the text then).
+/// faces (none is fine: the document's embedded faces and the package's own set the text then).
 let exportPdf (document: Rbt.Word.Document.Document) (fonts: obj array) (allowLinkedImages: bool) : JS.Promise<obj> =
     async {
         let hostFaces = if isNull fonts then [] else fonts |> Array.map face |> Array.toList
+        // (The document's embedded faces of families the host has not got before the package's own:
+        // Word sets text in them.)
+        let hostFaces = (Pdf.withEmbeddedFonts document { DefaultFontFamily = "Calibri"; Fonts = hostFaces; MeasureText = None; ShapeText = None; Images = [] }).Fonts
         let! faces = withDefaultFonts document hostFaces
         let options: Pdf.RenderOptions = {
             DefaultFontFamily = "Calibri"

@@ -819,6 +819,8 @@ subject to the editor's allow-linked-images policy and browser CORS.
 | `setTextPathPainter(editor, paintText: (text, style, x, baseline, width) => boolean)` | Paint text with `paintText(text, style, x, baseline, width)` - a plain JavaScript function returning true when it painted the text - instead of canvas text, on the editor's own canvas. |
 | `clearTextPathPainter(editor)` | Remove the text path painter: text is painted as canvas text again. |
 | `clearTextMeasurer(editor)` | Remove the text measurers: text is measured with the canvas again (the layout is made again). |
+| `getEmbeddedFonts(target: object): object[]` | The fonts the document embeds (word/fonts/*.odttf, de-obfuscated): [{ family, bold, italic, subsetted, data }], `data` the font file (Uint8Array), `family` the font table's name text is set in it by. `target`: an editor (its document; [] while it is still being read) or an editor package. Faces whose licence allows restricted embedding only are left out, as Word leaves them out. Word sets text in an embedded face only when the machine has no font of its family; a host that measures with its own measurers adds them to its font set for the families it has no face of (`ShaperText.addEmbeddedFaces`) before installing them. Saving writes them back as they were. |
+| `loadEmbeddedFonts(editor): Promise<object[]>` | Started by every load: the embedded faces of the families the page has no font of (installed, or a FontFace in `document.fonts`) are added to `document.fonts`, and the paragraphs in those families are laid out again (`LayoutChanged`). Resolves to `getEmbeddedFonts(editor)` once that is done: a host that wants the final layout at once (a page count) waits for it. |
 | `getRequiredFonts(target: object): object[]` | The font faces a document's text is set in: [{ family, bold, italic }], after style resolution, with the faces the engine itself introduces (a list marker in Symbol, Wingdings or Courier New; note text; headers and footers). |
 | `setFontFamilies(editor, families: string[])` | Tell the editor which font families the host's text stack can draw (getFontFamilies then offers them). |
 | `getFontFamilies(editor): string[]` | The font families to offer in a font box: the ones the text stack installed (setFontFamilies) and the ones the document uses (its text and its styles), sorted, each once. |
@@ -1159,6 +1161,7 @@ object with these methods; `canvas` is used to measure text.
 | `setTextMeasurers(measureText, measureRange)`, `setTextMeasurersForFaces(...)`, `setTextMeasurer`, `setTextRangeMeasurer`, `clearTextMeasurer()` | Measure text as an editor with the same measurers does. |
 | `setTextPathPainter(painterFor)` | `painterFor(context2d)` gives the text painter for a canvas. |
 | `setFontAvailability(isAvailable)`, `getPendingFonts()`, `getRequiredFonts()` | The faces the document is set in, and those the host has not got. |
+| `getEmbeddedFonts()`, `loadEmbeddedFonts()` | The fonts the document embeds, and a promise of their being canvas fonts (`load` starts it): as the editor's. |
 | `getRenderStats()` | Counters for hosts and tests (frames built, blocks laid out). |
 | `render(document)`, `dispose()` | Paint a document of the model on the viewer's canvas; end the viewer. |
 

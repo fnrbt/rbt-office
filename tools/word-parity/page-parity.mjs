@@ -5,7 +5,6 @@
 //   node tools/word-parity/page-parity.mjs --dist dist [--refresh-word] [--json out.json] [--detail] [name-filter ...]
 //   node tools/word-parity/page-parity.mjs --dist dist --dir <folder> [--refresh-word]   (the .docx of a folder, Word's TSVs in <folder>/word)
 //   node tools/word-parity/page-parity.mjs --dist dist --measurer canvas ...   (the canvas's measureText instead of ShaperText's)
-//   node tools/word-parity/page-parity.mjs --dist dist --embedded-fonts ...   (also the fonts a document embeds, as a host that loads them would)
 //   node tools/word-parity/page-parity.mjs --dist dist --lines <name>   (our lines of one document: page, y on the page in px, height, block, text)
 //
 // Word's side is tests/word/word-pages/<dir>__<name>.tsv (committed), written by
@@ -23,7 +22,9 @@
 // tools/word-parity/fetch-windows-fonts.sh and the README), each under the family
 // and style its name table gives. Lines are Word.getLayoutLines' body lines (not
 // headers, footers or notes), in document order, per page; the first and last
-// with a letter or number are compared.
+// with a letter or number are compared. The fonts a document embeds are used as the product uses them
+// (Word.loadEmbeddedFonts, getEmbeddedFonts and ShaperText.addEmbeddedFaces: for the families there is
+// no face of).
 //
 // A page "matches" when its first line is Word's first line of that page (the
 // texts compared with case, spaces and punctuation taken out, on the shorter's
@@ -47,7 +48,6 @@ const refresh = flag('--refresh-word');
 const detail = flag('--detail');
 const linesFor = opt('--lines');
 const docDir = opt('--dir');
-const embedFonts = flag('--embedded-fonts');
 const measurer = opt('--measurer') ?? 'shaper';
 const filters = args;
 const port = Number(process.env.PORT ?? 16031);
@@ -150,9 +150,9 @@ for (const f of ${JSON.stringify(faces)}) {
 const Word = (await import('/word/Word.js')).default;
 // The measurers a host installs (setTextMeasurers): ShaperText's, from the fonts' own advances - as
 // Word measures - or (--measurer canvas) none, the canvas's measureText (whole pixels in Chromium here).
-let measureText = null, measureRange = null;
+let fontSet = null, Shaper = null;
 if (${JSON.stringify(measurer)} === 'shaper') {
-    const Shaper = await import('/shaper-text/ShaperText.js');
+    Shaper = await import('/shaper-text/ShaperText.js');
     // (Its Unicode data, as the Word PDF export loads it: word-pdf/ucd.dat beside Browser.js.)
     const Ucd = await import(${JSON.stringify(ucdModule)});
     Ucd.loadData(new Uint8Array(await (await fetch('/word-pdf/ucd.dat')).arrayBuffer()));
@@ -162,48 +162,30 @@ if (${JSON.stringify(measurer)} === 'shaper') {
         const data = new Uint8Array(await (await fetch(f.url)).arrayBuffer());
         shaperFaces.push(new Shaper.FontFace(f.family, f.weight === 'bold', f.style === 'italic', data));
     }
-    const fontSet = Shaper.createFontSet('Calibri', shaperFaces);
-    measureText = (text, style) => Shaper.measureText(fontSet, text, style);
-    measureRange = (text, style, start, length) => Shaper.createRangeMeasurer(fontSet, text, style, start, length);
+    fontSet = Shaper.createFontSet('Calibri', shaperFaces);
 }
 const main = await import('/office-formats/src/Main.js');
 const OF = typeof main.default === 'function' ? main.default() : main.default;
-// The fonts a document embeds (word/fonts/*.odttf, obfuscated with the key fontTable.xml gives), as web fonts.
-const embedded = async (bytes) => {
-    if (!window.embedFonts) return [];
-    const zip = await window.JSZip.loadAsync(bytes);
-    const table = await zip.file('word/fontTable.xml')?.async('string');
-    const rels = await zip.file('word/_rels/fontTable.xml.rels')?.async('string');
-    if (!table || !rels) return [];
-    const targets = {};
-    for (const m of rels.matchAll(/<Relationship [^>]*>/g)) { const id = /Id="([^"]+)"/.exec(m[0])?.[1], t = /Target="([^"]+)"/.exec(m[0])?.[1]; if (id && t) targets[id] = t; }
-    const added = [];
-    for (const font of table.matchAll(/<w:font w:name="([^"]+)"[^>]*>([\\s\\S]*?)<\\/w:font>/g)) {
-        for (const e of font[2].matchAll(/<w:embed(Regular|Bold|Italic|BoldItalic) r:id="([^"]+)" w:fontKey="\\{([^}]+)\\}"/g)) {
-            const file = zip.file('word/' + targets[e[2]]);
-            if (!file) continue;
-            const data = new Uint8Array(await file.async('uint8array'));
-            const hex = e[3].replace(/-/g, '');
-            const key = []; for (let i = 0; i < 32; i += 2) key.push(parseInt(hex.slice(i, i + 2), 16));
-            key.reverse();
-            for (let i = 0; i < 32; i++) data[i] ^= key[i % 16];
-            const face = new FontFace(font[1], data, { weight: e[1].startsWith('Bold') ? 'bold' : 'normal', style: e[1].endsWith('Italic') ? 'italic' : 'normal' });
-            try { await face.load(); document.fonts.add(face); added.push(face); } catch { }
-        }
-    }
-    return added;
-};
+// The fonts a document embeds (word/fonts/*.odttf), as the product uses them: the editor makes them
+// canvas fonts by itself for the families the page has no font of (loadEmbeddedFonts: waited for, so the
+// layout is the final one), and a host that measures with ShaperText adds them to its font set for the
+// families it has no face of (getEmbeddedFonts, ShaperText.addEmbeddedFaces).
 const editorOf = async (url) => {
     const bytes = new Uint8Array(await (await fetch(url)).arrayBuffer());
-    const added = await embedded(bytes);
+    const pkg = await OF.processors.forEditorPackage(bytes);
     const editor = Word.initializeCanvas(document.createElement('canvas'));
-    if (measureText) Word.setTextMeasurers(editor, measureText, measureRange);
-    Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes));
+    if (fontSet) {
+        const embedded = Word.getEmbeddedFonts(pkg).map((f) => new Shaper.FontFace(f.family, f.bold, f.italic, f.data));
+        const set = embedded.length ? Shaper.addEmbeddedFaces(fontSet, embedded) : fontSet;
+        Word.setTextMeasurers(editor, (text, style) => Shaper.measureText(set, text, style), (text, style, start, length) => Shaper.createRangeMeasurer(set, text, style, start, length));
+    }
+    Word.importFromDocxPackage(editor, pkg);
+    await Word.loadEmbeddedFonts(editor);
     Word.completeLayout(editor);
-    return { editor, done: () => { for (const f of added) document.fonts.delete(f); } };
+    return { editor };
 };
 window.layoutOf = async (url) => {
-    const { editor, done } = await editorOf(url);
+    const { editor } = await editorOf(url);
     const count = Word.getPageCount(editor);
     const pages = [];
     // (A table's header row repeated on a later page is the same lines again: not where that page starts in
@@ -220,14 +202,12 @@ window.layoutOf = async (url) => {
         if (p.first === '') p.first = line.Text;
         p.last = line.Text;
     }
-    done();
     return { count, pages: Array.from({ length: Math.max(count, pages.length) }, (_, i) => pages[i] ?? { lines: 0, first: '', last: '' }) };
 };
 window.linesOf = async (url) => {
     const { editor } = await editorOf(url);
     return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.PageY * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId + "@" + Math.round(l.BlockHeight * 75) / 100, l.Text, (l.Segments ?? []).map((s) => s.Text + "=" + Math.round(s.Width * 75) / 100).join(" ").slice(0, 120)]);
 };
-window.embedFonts = ${embedFonts};
 window.ready = true;
 
 </script>`;

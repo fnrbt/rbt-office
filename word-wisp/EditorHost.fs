@@ -121,7 +121,7 @@ let private cachedLayouts (st: EditorState) doc =
             settings, layouts
         | _ ->
             let settings = WR.layoutSettings doc
-            let layouts = WordLayout.layoutDocument settings WR.measureText doc
+            let layouts = WordLayout.layoutDocument settings (WR.measureTextFor doc) doc
             cache.Doc <- Some doc
             cache.LayoutDoc <- Some layoutDoc
             cache.Settings <- Some settings
@@ -131,7 +131,7 @@ let private cachedLayouts (st: EditorState) doc =
 
 let private hitTest st width doc x y =
     let settings, layouts = cachedLayouts st doc
-    WordLayout.hitTestLayouts WR.measureText settings.PaddingLeft layouts x y
+    WordLayout.hitTestLayouts (WR.measureTextFor doc) settings.PaddingLeft layouts x y
 
 /// Caret position in document space (x, top-y, height) for a collapsed selection.
 let private caretGeom st width doc : (float * float * float) option =
@@ -141,7 +141,7 @@ let private caretGeom st width doc : (float * float * float) option =
         match layouts |> List.tryFind (fun l -> l.BlockId = sel.Focus.BlockId) with
         | Some layout ->
             let line = WordLayout.lineForOffset layout sel.Focus.Offset
-            let x = WordLayout.xForOffset WR.measureText line sel.Focus.Offset
+            let x = WordLayout.xForOffset (WR.measureTextFor doc) line sel.Focus.Offset
             Some (settings.PaddingLeft + x + WordLayout.alignmentOffset layout line, line.Y, line.Height)
         | None -> None
     | None -> None
@@ -330,12 +330,12 @@ let documentHeight (st: EditorState) (width: float) (doc: Document) : float =
 let renderDoc (st: EditorState) (width: float) (doc: Document) : Cmd list =
     let settings, cached = cachedLayouts st doc
     let layouts, content, _ =
-        WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" WR.measureText (WordLayout.rangeMeasurerFromTextMeasurer WR.measureText) doc (Some cached)
+        WordPaint.collectDocumentCommandsWithLayouts settings "Calibri" (WR.measureTextFor doc) (WordLayout.rangeMeasurerFromTextMeasurer (WR.measureTextFor doc)) doc (Some cached)
     let body = ResizeArray<Cmd>()
     for paintCommand in content do
-        body.AddRange(WR.toRendererCommand st.ResolveImage paintCommand)
-    for paintCommand in WordPaint.selectionCommands settings WR.measureText doc layouts do
-        body.AddRange(WR.toRendererCommand st.ResolveImage paintCommand)
+        body.AddRange(WR.toRendererCommandFor doc st.ResolveImage paintCommand)
+    for paintCommand in WordPaint.selectionCommands settings (WR.measureTextFor doc) doc layouts do
+        body.AddRange(WR.toRendererCommandFor doc st.ResolveImage paintCommand)
     let caret =
         match doc.Selection with
         | Some s when s.IsCollapsed ->

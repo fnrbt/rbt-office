@@ -22,13 +22,13 @@ let private renderDocx (inputPath: string) (outputPath: string) (width: int) (he
 
     let wordDoc = { Rbt.Word.Import.importDoc doc with Selection = None }
     let settings = Rbt.WordNative.Render.layoutSettings wordDoc
-    let measure = Rbt.WordNative.Render.measureText
+    let measure = Rbt.WordNative.Render.measureTextFor wordDoc
     let _, paint, _ =
         Rbt.Word.Paint.collectDocumentCommands settings "Calibri" measure (Rbt.Word.Layout.rangeMeasurerFromTextMeasurer measure) wordDoc
     let resolve = Rbt.WordNative.Render.createImageResolver ()
     let commands =
         paint
-        |> List.collect (Rbt.WordNative.Render.toRendererCommand resolve)
+        |> List.collect (Rbt.WordNative.Render.toRendererCommandFor wordDoc resolve)
         |> Rbt.WordNative.Render.viewTransform (float width) wordDoc
     let framebuffer = Scene.render (Raster.create()) width height (Clear Color.white :: commands)
     let png = PngEncode.encode framebuffer

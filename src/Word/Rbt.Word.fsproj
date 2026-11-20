@@ -28,6 +28,7 @@
     <Compile Include="WordMacroHost.fs" />
     <Compile Include="WordMacroProject.fs" />
     <Compile Include="Renderer.fs" />
+    <Compile Include="EmbeddedFontFaces.fs" />
     <Compile Include="WordViewer.fs" />
     <Compile Include="Input.fs" />
     <Compile Include="Word.fs" />

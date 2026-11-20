@@ -243,6 +243,9 @@ module API =
     /// What follows a step of a package that is being read (set further down).
     let private loadStep : (Editor -> Docx.ImportStep -> unit) ref = ref (fun _ _ -> ())
 
+    /// Makes the faces the document on display embeds canvas fonts (set further down: see loadEmbeddedFonts).
+    let private useEmbeddedFonts : (Editor -> JS.Promise<obj array>) ref = ref (fun _ -> JS.Constructors.Promise.resolve [||])
+
     /// `loading`: the package the document is of, when it is still being read.
     let private loadDocumentOf (editor: Editor) (newDoc: Doc.Document) (loading: Docx.ProgressiveImport option) =
         // (Held before the document that was on display is let go of: it may be of the same package.)
@@ -272,6 +275,8 @@ module API =
         editor.Macros.Reset()
         editor.Macros.Origin <- box newDoc
         // Input.loadDocument replaced the session and its saved baseline.
+        // (The fonts it embeds are read now, and set its text once the browser has them.)
+        useEmbeddedFonts.Value editor |> ignore
 
     let private loadDocument (editor: Editor) newDoc = loadDocumentOf editor newDoc None
 
@@ -547,6 +552,36 @@ module API =
         if ended then
             // (The page count is known when the rest is laid out: in slices, from here on.)
             continueLayout editor
+        // (The package's parts - the fonts it embeds among them - come with its end.)
+        if step.Complete then useEmbeddedFonts.Value editor |> ignore
+
+    [<Emit("new WeakMap()")>]
+    let private newWeakMap () : obj = jsNative
+    [<Emit("$0.get($1)")>]
+    let private weakGet (_map: obj) (_key: obj) : obj = jsNative
+    [<Emit("$0.set($1, $2)")>]
+    let private weakSet (_map: obj) (_key: obj) (_value: obj) : unit = jsNative
+    // By editor: the package whose embedded faces were made canvas fonts, and the promise of that.
+    let private embeddedLoads = newWeakMap ()
+
+    useEmbeddedFonts.Value <- fun (editor: Editor) ->
+        let doc = editor.Whole
+        let preserved = box doc.Package.Preserved
+        let known = weakGet embeddedLoads editor
+        if not (isNull known) && obj.ReferenceEquals(known?package, preserved) then unbox known?pending
+        else
+            let pending =
+                EmbeddedFontFaces.andThen (EmbeddedFontFaces.load doc) (fun families ->
+                    // (Text in their families was set in another font until now: laid out again.)
+                    if families.Length > 0 && obj.ReferenceEquals(box editor.Whole.Package.Preserved, preserved) then
+                        let ctx = editor.Handler.RenderContext
+                        if Ren.setTextMeasurersForFamilies ctx ctx.TextMeasurer ctx.TextRangeMeasurer families > 0 then
+                            Ren.render ctx editor.Doc
+                            continueLayout editor
+                            notifyLayoutProgress editor
+                    EmbeddedFontFaces.toObjects (EmbeddedFontFaces.ofDocument doc))
+            if doc.Package.Preserved.IsSome then weakSet embeddedLoads editor (createObj [ "package" ==> preserved; "pending" ==> pending ])
+            pending
 
     /// Whether the document on display is all there. A package opened front
     /// first (Office.Formats `word.openProgressive`) is shown as soon as its
@@ -1127,6 +1162,40 @@ module API =
             Ren.requiredFonts editor.Handler.RenderContext editor.Doc
         else
             Ren.requiredFontsOfDocument (Docx.importFromEditorPackage target)
+
+    /// The fonts the document embeds (word/fonts/*.odttf, de-obfuscated):
+    /// [{ family, bold, italic, subsetted, data }], `data` the font file (a
+    /// Uint8Array), `family` the name the document sets text in it by.
+    /// `target` is an editor (its document; [] while it is still being read -
+    /// the package's parts come with its end) or an editor package (Office.Formats
+    /// `forEditorPackage`). Faces whose licence allows restricted embedding
+    /// only are left out, as Word leaves them out. Word sets text in an
+    /// embedded face only when the machine has no font of its family: a host
+    /// that measures with its own measurers adds them to its font set for the
+    /// families it has no face of (ShaperText.addEmbeddedFaces) before it
+    /// installs them. For canvas text the editor does that itself (see
+    /// loadEmbeddedFonts). Saving writes them back as they were.
+    let getEmbeddedFonts (target: obj) : obj array =
+        if isNull target then [||]
+        elif not (isNull (target?Handler)) then
+            EmbeddedFontFaces.toObjects (EmbeddedFontFaces.ofDocument (unbox<Editor> target).Whole)
+        else
+            let raw: obj = target?Preserved
+            if isNullOrUndefined raw then [||]
+            else
+                match WordEditorPackage.preservedOfEditorObject raw with
+                | Some preserved -> EmbeddedFontFaces.toObjects (EmbeddedFonts.ofPreserved preserved)
+                | None -> [||]
+
+    /// A promise of the faces the document on display embeds (as
+    /// getEmbeddedFonts) once those of the families the page has no font of
+    /// - installed, or a FontFace the host added to document.fonts - are in
+    /// document.fonts, and the paragraphs set in them are laid out again
+    /// (LayoutChanged). Loading a document starts this by itself; a host that
+    /// wants the final layout of a document with embedded fonts at once (a
+    /// page count) waits for it.
+    let loadEmbeddedFonts (editor: Editor) : JS.Promise<obj array> =
+        useEmbeddedFonts.Value editor
 
     /// The faces a package that is still being read turns out to need as it
     /// is read on: see Viewer.onFontsDiscovered - the callback is called
@@ -4574,6 +4643,8 @@ module API =
             "clearTextMeasurer" ==> clearTextMeasurer
             "getRenderStats" ==> getRenderStats
             "getRequiredFonts" ==> getRequiredFonts
+            "getEmbeddedFonts" ==> getEmbeddedFonts
+            "loadEmbeddedFonts" ==> loadEmbeddedFonts
             "getCaretContext" ==> getCaretContext
             "enterHeaderFooter" ==> enterHeaderFooter
             "exitHeaderFooter" ==> exitHeaderFooter
