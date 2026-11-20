@@ -185,7 +185,10 @@ do
     let firstPage, secondPage, _, pageCount = place { Doc.defaultMetadata with PageBreakAfter = true }
     check "a page break in two columns: the text after it is on the next page" (firstPage, secondPage, pageCount) (0, 1, 2)
     let firstPage, secondPage, down, pageCount = place { Doc.defaultMetadata with PageBreakAfter = true; ColumnBreakAfter = true }
-    check "a column break: the text after it is in the next column of the same page, at the column's top" (firstPage, secondPage, down, pageCount) (0, 0, 0.0, 1)
+    // (Below the mark the break's paragraph leaves at the column's top: one empty line in the mark's font and its
+    // space after, no more than "first column"'s own - Word 2010 and 2019, fixtures float-wrap cbr-text.)
+    let firstLine = (let found, _ = Layout.layoutDocumentPages (settingsOf (withBreak { Doc.defaultMetadata with PageBreakAfter = true; ColumnBreakAfter = true })) measureText measureRange (withBreak { Doc.defaultMetadata with PageBreakAfter = true; ColumnBreakAfter = true }) in found |> List.find (fun layout -> layout.BlockId = "c1"))
+    check "a column break: the text after it is in the next column of the same page, a line below its top" (firstPage, secondPage, down > firstLine.Lines.Head.Height / 2.0 && down <= firstLine.Height + 0.01, pageCount) (0, 0, true, 1)
     let document = withBreak Doc.defaultMetadata
     let before = { document with Blocks = document.Blocks |> List.map (function Doc.Paragraph p when p.Id = "c2" -> Doc.Paragraph { p with Metadata = { p.Metadata with PageBreakBefore = true } } | block -> block) }
     let found, foundPages = Layout.layoutDocumentPages (settingsOf before) measureText measureRange before
