@@ -143,6 +143,29 @@ let private parallelogram w h : PathSeg list =
 let private trapezoid w h : PathSeg list =
     let off = w * 0.25
     poly [ off, 0.0; w - off, 0.0; w, h; 0.0, h ]
+/// A rectangle with a wedge-shaped tail out to a point (wedgeRectCallout, as
+/// presetShapeDefinitions.xml draws it): the point is `adj1` / `adj2` of the
+/// box's width / height (in 100000ths) from its centre - Word's defaults
+/// -20833 and 62500, below the box, left of its middle -, the tail on the edge
+/// the point is furthest beyond, between 2/12 and 5/12 of it (7/12 and 10/12
+/// when the point is past the centre).
+let wedgeRectCallout (adj1: float) (adj2: float) w h : PathSeg list =
+    let dxPos = w * adj1 / 100000.0
+    let dyPos = h * adj2 / 100000.0
+    let xPos = w / 2.0 + dxPos
+    let yPos = h / 2.0 + dyPos
+    let dx = dxPos * h / w
+    let horizontal = abs dx - abs dyPos > 0.0
+    let x1 = w * (if dxPos > 0.0 then 7.0 else 2.0) / 12.0
+    let x2 = w * (if dxPos > 0.0 then 10.0 else 5.0) / 12.0
+    let y1 = h * (if dyPos > 0.0 then 7.0 else 2.0) / 12.0
+    let y2 = h * (if dyPos > 0.0 then 10.0 else 5.0) / 12.0
+    let xt, yt = if horizontal || dyPos > 0.0 then x1, 0.0 else xPos, yPos
+    let xb, yb = if horizontal || dyPos <= 0.0 then x1, h else xPos, yPos
+    let xl, yl = if horizontal && dxPos <= 0.0 then xPos, yPos else 0.0, y1
+    let xr, yr = if horizontal && dxPos > 0.0 then xPos, yPos else w, y1
+    poly [ 0.0, 0.0; x1, 0.0; xt, yt; x2, 0.0; w, 0.0; w, y1; xr, yr; w, y2
+           w, h; x2, h; xb, yb; x1, h; 0.0, h; 0.0, y2; xl, yl; 0.0, y1 ]
 let private bevelPath w h : PathSeg list =
     // outer rectangle (the inner highlight is a renderer detail we skip)
     rectPath w h
@@ -159,7 +182,8 @@ let knownPresets =
           "heptagon"; "octagon"; "decagon"; "dodecagon"
           "star4"; "star5"; "star6"; "star7"; "star8"; "star10"; "star12"; "star16"; "star24"; "star32"
           "rightArrow"; "flowChartArrow"; "leftArrow"; "upArrow"; "downArrow"; "leftRightArrow"; "upDownArrow"
-          "chevron"; "homePlate"; "plus"; "mathPlus"; "bevel"; "frame"; "flowChartTerminator"; "round"; "pie" ]
+          "chevron"; "homePlate"; "plus"; "mathPlus"; "bevel"; "frame"; "flowChartTerminator"; "round"; "pie"
+          "wedgeRectCallout" ]
 
 let isKnownPreset (preset: string) : bool = knownPresets.Contains preset
 
@@ -209,6 +233,8 @@ let presetPath (preset: string) (w: float) (h: float) : PathSeg list =
     | "flowChartTerminator" -> roundRectPath w h (h / 2.0)            // stadium
     | "flowChartDocument" -> rectPath w h
     | "round" | "pie" -> ellipsePath w h
+    // (Its adjustments as Word's defaults: the document's a:avLst is not read.)
+    | "wedgeRectCallout" -> wedgeRectCallout -20833.0 62500.0 w h
     // A line: from one corner of its box to the other (it was drawn as the box).
     | "line" | "straightConnector1" -> [ PMove (0.0, 0.0); PLine (w, h) ]
     | _ -> rectPath w h
