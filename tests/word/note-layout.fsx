@@ -39,7 +39,7 @@ let settings : LayoutSettings =
       MarginBottom = 40.0
       InTableCell = false
       TableContinuationHeaderHeight = 0.0
-      LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0 }
+      LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0; FirstPageExtraRoom = 0.0 }
 let stride = settings.PageHeight + pageGap
 let pageOf (y: float) = int (floor (y / stride))
 let contentTopOf page = float page * stride + settings.PaddingTop

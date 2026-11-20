@@ -71,6 +71,13 @@ PDFs stroke and fill (its borders are filled rectangles) into its `word/geometry
 (`tests/word/fixtures/vmerge-content/`: what a vertical merge's continuation cells hold and the rows'
 heights) is read with `pdf-geometry.py` for `tests/word/vmerge-content.fsx`.
 
+`fixtures/section-margins.py` (which section's bottom margin a page takes when a continuous break starts a
+section part-way down it), `fixtures/inline-break.py` (a page or column break inside a paragraph's text) and
+`fixtures/section-top-space.py` (the space before of a next-page section's first paragraph) write
+`tests/word/fixtures/section-margins/`, `inline-break/` and `section-top-space/`, checked by
+`tests/word/section-margins.fsx` (Word's pages' first lines), `tests/word/inline-break.fsx` and
+`tests/word/section-top-space.fsx` (Word's lines from `pdf-geometry.py`).
+
 `fixtures/float-wrap.py` writes `tests/word/fixtures/float-wrap/` (text round
 floating pictures and shapes); where Word's lines and pictures are in its PDFs
 comes from `pdf-geometry.py` (each line's pieces across and down, each picture's

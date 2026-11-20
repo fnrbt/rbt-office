@@ -92,7 +92,7 @@ let ours name =
     // (Not the narrowing of a justified line's spaces - Layout's SpaceShrink, tests/word/justify-squeeze.fsx:
     // this measurer's spaces are half an em, Calibri's 0.226 of one, and a quarter of them takes some words
     // more onto a line than Word's does.)
-    let settings = { Layout.documentSettings 16.0 24.0 3.5 doc with SpaceShrink = 0.0 }
+    let settings = { Layout.documentSettings 16.0 24.0 3.5 doc with SpaceShrink = 0.0; FirstPageExtraRoom = 0.0 }
     let layouts, pages = Layout.layoutDocumentPages settings measureText measureRange doc
     let pageOf (y: float) = pages |> List.filter (fun p -> p.Top <= y + 0.01) |> List.length
     let pageTop (page: int) = (List.item (page - 1) pages).Top

@@ -289,6 +289,12 @@ type OpaqueObject = {
 /// Src of an opaque object without a picture: "opaque:<kind>".
 let opaqueSourcePrefix = "opaque:"
 
+/// A page or column break inside a paragraph's text (w:br, with text before and after it - DocxReader's
+/// placeInlineBreaks): an object of no size that ends its line; the line after it starts the next page,
+/// or in a section with columns, for a column break, the next column (Layout).
+let isInlineBreakSource (src: string) = src = opaqueSourcePrefix + "break-page" || src = opaqueSourcePrefix + "break-column"
+let isInlineColumnBreakSource (src: string) = src = opaqueSourcePrefix + "break-column"
+
 /// Image data for inline images
 type ImageRun = {
     Start: int           // Character offset (position in text)

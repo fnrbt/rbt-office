@@ -431,6 +431,7 @@ module Vba =
         CompatibilityMode = doc.PageSetup.CompatibilityMode
         HangingPunctuation = Layout.documentHangingPunctuation doc.PageSetup
         SpaceShrink = Layout.documentSpaceShrink doc.PageSetup
+        FirstPageExtraRoom = 0.0
     }
 
     let private measureText (text: string) (style: TextBuf.TextStyle) =

@@ -473,6 +473,10 @@ type LayoutSettings = {
     /// 2013's layout narrows a justified line's spaces by up to a quarter (documentSpaceShrink); the
     /// paragraph's own settings have it only when the paragraph is justified (layoutParagraphCore).
     SpaceShrink: float
+    /// How much further down the body of the flow's first page (its page at y 0) reaches than MarginBottom
+    /// gives (less, when negative): a section that starts part-way down a page (a continuous break) ends that
+    /// page at the bottom of the section the page started in, its own from the next page on (layoutSections).
+    FirstPageExtraRoom: float
 }
 
 /// Word 2019 (fixtures hang-punct): punctuation hangs past a line's end in Word 2010's layout
@@ -600,10 +604,17 @@ let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) 
       DefaultTabStop = doc.PageSetup.DefaultTabStop
       CompatibilityMode = doc.PageSetup.CompatibilityMode
       HangingPunctuation = documentHangingPunctuation doc.PageSetup
-      SpaceShrink = documentSpaceShrink doc.PageSetup }
+      SpaceShrink = documentSpaceShrink doc.PageSetup
+      FirstPageExtraRoom = 0.0 }
 
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
+
+/// Where the body of the page at `pageTop` ends (pageTop as the flow counts it: its first page at 0 -
+/// see FirstPageExtraRoom).
+let private flowBodyBottom (settings: LayoutSettings) (pageTop: float) =
+    let extra = if pageTop < 0.5 then settings.FirstPageExtraRoom else 0.0
+    WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop + extra
 
 let private pageNumberForY (settings: LayoutSettings) y =
     int (floor (max 0.0 y / (pageHeight settings + pageGap))) + 1
@@ -689,12 +700,12 @@ let private dropCapFrame (capPara: ParagraphBlock) (capStyle: ParagraphStyle) (c
 let private paginateBlock settings y blockHeight =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-    let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    let contentBottom = flowBodyBottom settings pageTop
     if y > contentTop && y + blockHeight > contentBottom + pageFitTolerance then advanceToNextPage settings y else y
 
 let private availableContentHeight settings y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
-    let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    let contentBottom = flowBodyBottom settings pageTop
     max 0.0 (contentBottom - y)
 
 let private pageIndexForY settings y =
@@ -1506,7 +1517,7 @@ type NoteBreaks = Map<int, float>
 
 let private uniformPageContent settings (pageIndex: int) =
     let pageTop = float pageIndex * (pageHeight settings + pageGap)
-    WordLayout.Page.contentTop settings.PaddingTop pageTop, WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    WordLayout.Page.contentTop settings.PaddingTop pageTop, flowBodyBottom settings pageTop
 
 /// The last carry computed, by page: kept while the pass's notes and breaks are those it was computed from.
 let mutable private noteCarryCache : (obj * obj * obj * float * Dictionary<int, NotePiece list>) option = None
@@ -1601,7 +1612,7 @@ let private addLayoutFootnotes settings (footnotesByPage: Map<int, (string * str
 let private contentBottomWithNotes settings footnotesByPage (breaks: NoteBreaks option) y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
     let pageIndex = pageIndexForY settings y
-    WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    flowBodyBottom settings pageTop
     - footnoteReserveOnPage settings footnotesByPage breaks pageIndex
 
 let private contentBottomWithFootnotes settings footnotesByPage y = contentBottomWithNotes settings footnotesByPage None y
@@ -1744,7 +1755,7 @@ let private lineFitHeight exactLines (line: MeasuredLine) =
 let private paginateTableRow settings (row: TableRow) y rowHeight =
     let canSplit = WordLayout.Table.rowCanSplit row
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
-    let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    let contentBottom = flowBodyBottom settings pageTop
     let remaining = max 0.0 (contentBottom - y)
     if canSplit && y < contentBottom && rowHeight > remaining then y else paginateBlock settings y rowHeight
 
@@ -1805,7 +1816,7 @@ let private breakParagraphLines settings widowControl keepLines exactLines (line
         let lineArray = List.toArray lines
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) first.Y
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-        let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+        let contentBottom = flowBodyBottom settings pageTop
         let lineFits (line: MeasuredLine) = line.Y + lineFitHeight exactLines line <= contentBottom + pageFitTolerance
         let mutable fitCount = 0
         while fitCount < lineArray.Length && lineFits lineArray.[fitCount] do
@@ -1825,6 +1836,16 @@ let private breakParagraphLines settings widowControl keepLines exactLines (line
             let delta = nextY - lineArray.[keep].Y
             lineArray |> Array.mapi (fun index line -> if index < keep then line else { line with Y = line.Y + delta }) |> Array.toList
     | _ -> lines
+
+/// The page or column break inside a paragraph's text that ends the line, if one does (its source:
+/// TextBuffer.isInlineBreakSource): the paragraph's next line starts the next page - in a section with
+/// columns, after a column break, the next column (flowColumns) -, at its top, as a line of the paragraph
+/// (Word 2019: fixtures page-top-space brkmid, inline-break).
+let private lineEndsInBreak (line: MeasuredLine) =
+    line.Segments
+    |> List.tryPick (function
+        | ImageSegment (src, _, _, _, _, _, false, _, _, _, _, _, _, _) when TextBuffer.isInlineBreakSource src -> Some src
+        | _ -> None)
 
 let private lineHasRenderedPageBreakBefore (line: MeasuredLine) =
     let rec loop segments =
@@ -1929,12 +1950,14 @@ let private paginateLinesWithNotes settings widowControl exactLines (renderedBre
         | Some record -> notePieces "" id record
         | None -> []
     let pagedLines = ResizeArray<MeasuredLine>()
+    let mutable afterBreak = false
     for line in lines do
         lineIndex <- lineIndex + 1
         let shiftedY = line.Y + delta
         let fitHeight = lineFitHeight exactLines line
         let notes = appendNewNotes [] (footnotesInLine line)
-        let mutable leaveFirst = lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
+        let mutable leaveFirst = afterBreak || (lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY)
+        afterBreak <- (lineEndsInBreak line).IsSome
         let mutable y = shiftedY
         let mutable settled = false
         let mutable guard = 0
@@ -1943,7 +1966,7 @@ let private paginateLinesWithNotes settings widowControl exactLines (renderedBre
             enterPage page
             let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
             let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-            let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            let contentBottom = flowBodyBottom settings pageTop
             let fresh = notes |> List.filter (fun (id, _) -> not (List.contains id seen))
             let baseTaken = if taken = 0.0 && not fresh.IsEmpty then separatorHeight else taken
             let fits reserve = y + fitHeight <= contentBottom - reserve + lineFitTolerance
@@ -2012,7 +2035,7 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
         let pageExistingFootnotes = footnotesByPage |> Map.tryFind pageIndex |> Option.defaultValue []
         let pageFootnotes = appendNewNotes pageExistingFootnotes lineFootnotes
         let contentBottom =
-            WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+            flowBodyBottom settings pageTop
             - footnoteReserveHeight settings pageFootnotes
         // A lastRenderedPageBreak hint only means something on a real page.
         // Table rows are first measured on a 1,000,000px "page" to get their
@@ -2020,6 +2043,8 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
         // million pixels down and report that as the row height.
         let renderedBreakBefore =
             not unpagedMeasurement && lineHasRenderedPageBreakBefore line && renderedBreakStartsPage settings renderedBreakPage line shiftedY
+        let breakBefore =
+            not unpagedMeasurement && not settings.InTableCell && lineIndex > 0 && (lineEndsInBreak lineArray.[lineIndex - 1]).IsSome
         // (Word 2013's layout does not end a page with a hyphenated word: the line goes on to the next
         // page - fixtures hyphen-rules bottom-m15-last, colbottom-m15; Word 2010's keeps it, bottom-m14-last.)
         let hyphenEndsPage () =
@@ -2027,7 +2052,7 @@ let private paginateLinesPlain settings exactLines (renderedBreakPage: int optio
             && lineIndex + 1 < lineArray.Length
             && (let next = lineArray.[lineIndex + 1]
                 next.Y + delta + lineFitHeight exactLines next > contentBottom + lineFitTolerance)
-        if shiftedY > contentTop && (renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance || hyphenEndsPage ()) then
+        if shiftedY > contentTop && (breakBefore || renderedBreakBefore || shiftedY + lineFitHeight exactLines line > contentBottom + lineFitTolerance || hyphenEndsPage ()) then
             let nextY = WordLayout.Page.contentTop settings.PaddingTop (pageTop + pageHeight settings + pageGap) + settings.TableContinuationHeaderHeight
             delta <- delta + (nextY - shiftedY)
             let nextPageIndex = pageIndexForY settings nextY
@@ -3306,7 +3331,8 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                     isFirstSegment <- false
                 endOffset <- segmentEnd segment
                 match segment with
-                | ImageSegment (_, _, _, _, _, _, floating, _, _, _, _, _, _, _) when not floating ->
+                // (A break in the text is no picture: it adds nothing below the line.)
+                | ImageSegment (src, _, _, _, _, _, floating, _, _, _, _, _, _, _) when not floating && not (TextBuffer.isInlineBreakSource src) ->
                     hasInlineImage <- true
                 | _ -> ()
                 match segment with
@@ -3726,6 +3752,9 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 currentSpaceShrink <- 0.0
             if imgRun.Floating && not alreadyPlaced then
                 placedBoxes <- floatingBox :: placedBoxes
+            // (A page or column break in the text ends its line: see lineEndsInBreak.)
+            if not imgRun.Floating && TextBuffer.isInlineBreakSource imgRun.Src then
+                flushLine ()
 
         | TextBuffer.Text textRun when textRun.Style.Hidden ->
             // w:vanish — hidden text is not laid out and takes no space.
@@ -5027,7 +5056,7 @@ let internal pageStretches (settings: LayoutSettings) (continuationHeaderHeight:
     while pageTop < bottom && guard < 10000 do
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop + (if pageTop > firstPageTop then continuationHeaderHeight else 0.0)
         let stretchTop = max top contentTop
-        let stretchBottom = min bottom (WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+        let stretchBottom = min bottom (flowBodyBottom settings pageTop)
         if stretchBottom > stretchTop + 0.01 then stretches.Add((stretchTop, stretchBottom))
         pageTop <- pageTop + stride
         guard <- guard + 1
@@ -5243,7 +5272,7 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
                             if cellSettings.PageHeight >= unpagedMeasurementPageHeight then measurement
                             else
                                 let pageTop = WordLayout.Page.pageTopForY (pageHeight cellSettings) nestedY
-                                let contentBottom = WordLayout.Page.contentBottom (pageHeight cellSettings) cellSettings.MarginBottom pageTop
+                                let contentBottom = flowBodyBottom cellSettings pageTop
                                 let crosses = nestedY + measurement.Height > contentBottom + pageFitTolerance
                                 let moves =
                                     crosses
@@ -5807,7 +5836,7 @@ let internal keepRowWithNextY (settings: LayoutSettings) (headerHeight: float) (
                             if firstLines <= 0.0 then nextMeasurement.Height else min nextMeasurement.Height firstLines
                     total <- total + needed
                     more <- false
-            let pageRoom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop - pageContentTop - headerHeight
+            let pageRoom = flowBodyBottom settings pageTop - pageContentTop - headerHeight
             if rowY + total > contentBottom + pageFitTolerance && total <= pageRoom then advanceToNextPage settings rowY
             else pagedRowY
     else pagedRowY
@@ -5824,7 +5853,7 @@ let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHead
     let rowBottom = rowY + rowHeight
     let mutable pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
     let pageContentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-    let pageContentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    let pageContentBottom = flowBodyBottom settings pageTop
     if rowY >= pageContentTop && rowBottom <= pageContentBottom then
         let lineCount, contentTop, contentBottom, blockIds = tableRowMeasurementLineSummary measurement
         let page = pageNumberForY settings rowY
@@ -5850,7 +5879,7 @@ let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHead
         let mutable consumedLineStart = 0
         while pageTop < rowBottom do
             let fragmentTop = max rowY (WordLayout.Page.contentTop settings.PaddingTop pageTop)
-            let fragmentBottom = min rowBottom (WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+            let fragmentBottom = min rowBottom (flowBodyBottom settings pageTop)
             if fragmentBottom > fragmentTop then
                 let blockIds = ResizeArray<BlockId>()
                 let seenBlockIds = System.Collections.Generic.HashSet<BlockId>()
@@ -5876,7 +5905,7 @@ let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHead
                     RowContentY = rowY
                     Y = fragmentTop
                     Height = fragmentBottom - fragmentTop
-                    AvailableHeight = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop - fragmentTop
+                    AvailableHeight = flowBodyBottom settings pageTop - fragmentTop
                     RepeatedHeaderHeight = repeatedHeaderHeight
                     ContentTop = contentTop
                     ContentBottom = contentBottom
@@ -5892,7 +5921,7 @@ let planTableRowFragments (settings: LayoutSettings) firstTablePage repeatedHead
 
 let private contentBottomForY settings y =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
-    WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+    flowBodyBottom settings pageTop
 
 let private nextPageContentY settings y repeatedHeaderHeight =
     let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) y
@@ -6783,7 +6812,7 @@ let private layoutDocumentPassKeptAt
     let shouldMoveKeepGroup currentY groupHeight =
         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) currentY
         let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-        let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+        let contentBottom = flowBodyBottom settings pageTop
         let pageContentHeight = contentBottom - contentTop
         currentY > contentTop && groupHeight <= pageContentHeight && currentY + groupHeight > contentBottom
 
@@ -7034,7 +7063,7 @@ let private layoutDocumentPassKeptAt
 
                     if traceRows then
                         let pageTop = WordLayout.Page.pageTopForY (pageHeight settings) rowY
-                        let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+                        let contentBottom = flowBodyBottom settings pageTop
                         let rowSnippet =
                             row.Cells
                             |> List.collect (fun cell -> cell.Content)
@@ -7151,7 +7180,7 @@ let private layoutDocumentPassKeptAt
                         | _ -> None)
                 let pageTop = if settings.PageHeight < 50000.0 then WordLayout.Page.pageTopForY settings.PageHeight tableY else 0.0
                 let contentTop = WordLayout.Page.contentTop settings.PaddingTop pageTop
-                let contentBottom = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop
+                let contentBottom = flowBodyBottom settings pageTop
                 let top =
                     match placedBefore with
                     | Some top -> top
@@ -7565,7 +7594,7 @@ let private layoutDocumentPassKeptAt
             if pageIndex < 0 || (not (footnotesByPage.ContainsKey pageIndex) && pageIndex > lastPage.Value) then None
             else
                 let pageTop = float pageIndex * footnoteStride
-                Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+                Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, flowBodyBottom settings pageTop)
         let body = Seq.init bodyCount (fun index -> layouts.[index])
         let areas = footnoteAreas slot memo (Some noteBreaks.Value) [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms body (pageIndexForY settings))
         for _, area in areas do
@@ -7586,7 +7615,7 @@ let private layoutDocumentPassKeptAt
             let pageIndex = int (floor (noteY / stride))
             let pageTop = float pageIndex * stride
             struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
-                    WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
+                    flowBodyBottom settings pageTop,
                     WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
         layouts.AddRange(endnoteLayoutsAfterBody settings bodyLayouts bodyBottom pageAt)
 
@@ -7927,7 +7956,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let contentTopAt page = WordLayout.Page.contentTop settings.PaddingTop (pageTopOf page)
     // (The section's pages as the single-column pass has them: one height, from 0.)
     let uniformPages = pageTopOf 0 = 0.0 && abs (pageTopOf 1 - (pageHeight settings + pageGap)) < 0.01
-    let contentBottomAt page = WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom (pageTopOf page)
+    let contentBottomAt page = flowBodyBottom settings (pageTopOf page)
     // When pages are non-uniform (multi-section), lay each paragraph out without
     // the engine's own (uniform-stride) pagination — flowColumns controls
     // placement itself, and internal pagination would mis-position content whose
@@ -8220,12 +8249,15 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 // control (below a column's top) a first line alone at the column's foot goes on with
                 // the rest, and a last line alone in the next column takes the line before it along -
                 // the whole paragraph when that leaves one line (as on a page: breakParagraphLines).
+                let mutable breakEndsPage = false
                 let fitOf (layout: BlockLayout) =
+                    breakEndsPage <- false
                     let existingNotes = pageFootnotes ()
                     let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
                     let mutable fitNotes = existingNotes
                     let mutable fitCount = 0
                     let mutable stillFitting = true
+                    let mutable broken = false
                     for line in layout.Lines do
                         if stillFitting then
                             let lineNotes = footnotesInLine line
@@ -8236,10 +8268,17 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                             if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
                                 fitCount <- fitCount + 1
                                 fitNotes <- candidateNotes
+                                // (The line a break ends is the column's last: see lineEndsInBreak.)
+                                match lineEndsInBreak line with
+                                | Some src when fitCount < layout.Lines.Length ->
+                                    stillFitting <- false
+                                    broken <- true
+                                    breakEndsPage <- not (TextBuffer.isInlineColumnBreakSource src)
+                                | _ -> ()
                             else
                                 stillFitting <- false
                     let count = layout.Lines.Length
-                    if fitCount = 0 || fitCount >= count || atColumnTop () || not (WordStyles.widowControl style remaining.Metadata) then fitCount
+                    if broken || fitCount = 0 || fitCount >= count || atColumnTop () || not (WordStyles.widowControl style remaining.Metadata) then fitCount
                     elif fitCount = 1 then 0
                     elif fitCount = count - 1 then (if count - 2 >= 2 then count - 2 else 0)
                     else fitCount
@@ -8357,7 +8396,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                                     memo.MemoContinuations.[key] <- (remaining.Buffer, cut, rest)
                                     rest
                         consumedOffset <- lastFit.EndOffset
-                        advanceColumn ()
+                        if breakEndsPage then advancePage () else advanceColumn ()
                     | None ->
                         advanceColumn ()
             // (Where the painter draws them: from the top of the paragraph's first layout - see columnShapePlace.)
@@ -8932,7 +8971,15 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             match Map.tryFind sectionBase footnotesByPage with
             | Some notes when not notes.IsEmpty -> Map.empty |> Map.add 0 notes
             | _ -> Map.empty
-        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo secSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes (if i = 0 then Some 0 else None)
+        // Word 2019 (fixtures section-margins): a page's bottom margin is that of the section the page
+        // starts in - a section that starts part-way down a page takes its own from the next page on
+        // (its left and right margins and columns at once); the top's is the page's anyway.
+        let flowSettings =
+            if startedOnNewPage then secSettings
+            else
+                let pageOwner = pageSettings.[currentPage]
+                { secSettings with FirstPageExtraRoom = secSettings.MarginBottom - pageOwner.MarginBottom }
+        let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo flowSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes (if i = 0 then Some 0 else None)
         for KeyValue (ownPage, notes) in secFootnotes do
             footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
         let endPage = sectionBase + ownEndPage
@@ -8999,7 +9046,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         if record.PassHasEndnotes then hasEndnoteRefs <- true
         results.AddRange placed
         // Record the geometry of every page this section used.
-        for p in sectionBase .. endPage do recordPage p secSettings (pageTopOf p)
+        // (The page it starts on stays its first section's: see flowSettings.)
+        for p in (if startedOnNewPage then sectionBase else sectionBase + 1) .. endPage do recordPage p secSettings (pageTopOf p)
         currentPage <- endPage
         currentYInPage <- ownEndY - ownTopOf ownEndPage
         previousAtEnd <- record.PassCheckpoints.[record.PassCheckpoints.Length - 1].CheckPrevious
@@ -9144,7 +9192,7 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
                     if pageIndex < 0 || pageIndex > lastPage then None
                     else
                         let pageTop = float pageIndex * stride
-                        Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop)
+                        Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, flowBodyBottom settings pageTop)
                 let footnotes =
                     footnoteAreas "" None None [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms r (pageIndexForY settings))
                     |> List.collect snd
@@ -9152,7 +9200,7 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
                     let pageIndex = int (floor (noteY / stride))
                     let pageTop = float pageIndex * stride
                     struct (WordLayout.Page.contentTop settings.PaddingTop pageTop,
-                            WordLayout.Page.contentBottom (pageHeight settings) settings.MarginBottom pageTop,
+                            flowBodyBottom settings pageTop,
                             WordLayout.Page.contentTop settings.PaddingTop (float (pageIndex + 1) * stride))
                 r @ footnotes @ endnoteLayoutsAfterBody settings r bodyBottom pageAt
             | _ ->

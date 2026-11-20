@@ -21,7 +21,7 @@ let check label got expected =
 
 let settings : LayoutSettings =
     { Width = 600.0; PageHeight = 1000.0; FontSize = 16.0; LineHeight = 24.0; PaddingLeft = 0.0; PaddingTop = 0.0
-      MarginRight = 0.0; MarginBottom = 0.0; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0 }
+      MarginRight = 0.0; MarginBottom = 0.0; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 0.25; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0; FirstPageExtraRoom = 0.0 }
 // Every character is 7 px wide.
 let measureText (text: string) (_style: TextStyle) = float text.Length * 7.0
 let measureRange = rangeMeasurerFromTextMeasurer measureText

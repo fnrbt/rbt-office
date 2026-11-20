@@ -64,7 +64,7 @@ let measureRange = Layout.rangeMeasurerFromTextMeasurer measureText
 let settingsOf (doc: Doc.Document) : Layout.LayoutSettings =
     let s = doc.PageSetup
     { Width = s.PageWidth; PageHeight = s.PageHeight; FontSize = 16.0; LineHeight = 24.0; PaddingLeft = s.MarginLeft; PaddingTop = s.MarginTop
-      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0 }
+      MarginRight = s.MarginRight; MarginBottom = s.MarginBottom; InTableCell = false; TableContinuationHeaderHeight = 0.0; LongTrailingSpaceFitSafety = 3.5; DefaultTabStop = 48.0; CompatibilityMode = 12; HangingPunctuation = Rbt.Word.Layout.NoHanging; SpaceShrink = 0.0; FirstPageExtraRoom = 0.0 }
 let paragraphs (doc: Doc.Document) = doc.Blocks |> List.choose Doc.tryGetParagraph
 let layoutsOf (doc: Doc.Document) = Layout.layoutDocumentPages (settingsOf doc) measureText measureRange doc |> fst
 let prefixes (doc: Doc.Document) = layoutsOf doc |> List.map (fun layout -> layout.Prefix)

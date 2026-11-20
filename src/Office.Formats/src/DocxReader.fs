@@ -1539,6 +1539,10 @@ module Docx =
     let private isGraphicAlternateContent (node: XmlNode) =
         Ns.childNs "Choice" node |> Option.exists hasGraphics
 
+    /// The opaque kind of a page or column break inside a paragraph's text (placeInlineBreaks).
+    let inlineBreakKind (kind: string) = "break-" + kind
+    let isInlineBreakKind (kind: string) = kind = "break-page" || kind = "break-column"
+
     let private blankImageData (relationshipId: string) : ImageData =
         { RelationshipId = relationshipId; Linked = false; Name = None; Title = None; Width = None; Height = None; Description = None
           Floating = false; Wrap = None; PositionX = None; PositionY = None; PositionHRelativeFrom = None; PositionVRelativeFrom = None
@@ -1950,6 +1954,37 @@ module Docx =
 
         output |> Seq.toList
 
+    /// A page or column break (w:br w:type="page" / "column") with text, a picture or a field of the
+    /// paragraph before it and after it breaks the page (the column) there: the text after it starts
+    /// the next page (column) as a line of the same paragraph (Word 2019: fixtures page-top-space
+    /// brkmid, inline-break). It stays an object of no size in the paragraph's text,
+    /// written back as it was read; the others are the paragraph's breaks as the model has them
+    /// (paragraphPageBreaks: before its text, or after it).
+    let private placeInlineBreaks (runs: Run list) =
+        let isBreak (run: Run) =
+            match run.Content with
+            | PageBreak -> true
+            | Image image -> image.Opaque |> Option.exists (fun opaque -> isInlineBreakKind opaque.Kind)
+            | _ -> false
+        let isContent (run: Run) =
+            not (isBreak run)
+            && (match run.Content with
+                | BookmarkStart _ | BookmarkEnd _ | RenderedPageBreak | FieldBoundary _ | Text "" -> false
+                | _ -> true)
+        if not (runs |> List.exists (fun run -> match run.Content with Image _ -> isBreak run | _ -> false)) then runs
+        else
+            let items = List.toArray runs
+            let mutable contentBefore = false
+            [ for index in 0 .. items.Length - 1 do
+                let run = items.[index]
+                match run.Content with
+                | Image _ when isBreak run ->
+                    let contentAfter = items |> Array.skip (index + 1) |> Array.exists isContent
+                    if contentBefore && contentAfter then yield run else yield { run with Content = PageBreak }
+                | _ ->
+                    if isContent run then contentBefore <- true
+                    yield run ]
+
     let private clearTocHyperlinkStyle (run: Run) =
         let props =
             match run.Properties.Style with
@@ -2028,7 +2063,12 @@ module Docx =
                         // column; in a multi-column section the layout's page-break
                         // (chunk) boundary is remapped to the next column, and in a
                         // single-column section it behaves as a page break (as Word).
-                        | Some "page" | Some "column" -> Some (makeRun PageBreak |> RunToken)
+                        // (As an object of no size for now: one with text on both sides of it in its
+                        // paragraph stays one, the others are made the paragraph's breaks - placeInlineBreaks.)
+                        | Some ("page" | "column" as kind) ->
+                            Some (makeRun (Image { blankImageData "" with
+                                                    Width = Some 0.0; Height = Some 0.0
+                                                    Opaque = Some { Xml = xmlToString child; Kind = inlineBreakKind kind; ParagraphLevel = false; ShapeCandidate = false } }) |> RunToken)
                         | _ -> Some (makeRun (Text "\n") |> RunToken)
                     | "lastRenderedPageBreak" -> Some (makeRun RenderedPageBreak |> RunToken)
                     | "drawing"
@@ -2311,7 +2351,7 @@ module Docx =
                 | _ -> [])
 
         // Extract runs and hyperlinks
-        let runs = tokensFromNode pNode |> runsFromTokens |> attachRunMarkers |> normalizeTocRuns props
+        let runs = tokensFromNode pNode |> runsFromTokens |> attachRunMarkers |> placeInlineBreaks |> normalizeTocRuns props
 
         // A tracked paragraph mark: w:ins / w:del among the mark's run properties.
         let markRevision =
