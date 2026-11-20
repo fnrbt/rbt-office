@@ -2238,14 +2238,14 @@ let private pageTopDropsSpaceBefore (settings: LayoutSettings) breakAbove pageBr
     breakAbove || (pageBreakBefore && settings.CompatibilityMode >= 15)
 
 /// The borders a paragraph is laid out with: those in effect as read (its style's included), or its own.
-let private paragraphBordersOf (metadata: BlockMetadata) =
+let paragraphBordersOf (metadata: BlockMetadata) =
     metadata.EffectiveParagraphBorders |> Option.orElse metadata.ParagraphBorders
 
-let private visibleParagraphBorder (border: ParagraphBorder option) =
+let visibleParagraphBorder (border: ParagraphBorder option) =
     border |> Option.filter (fun value -> not (optionEqualsIgnoreCase "none" value.Style || optionEqualsIgnoreCase "nil" value.Style))
 
 /// A border's space from the text (w:space, points), in pixels.
-let private paragraphBorderSpace (border: ParagraphBorder option) =
+let paragraphBorderSpace (border: ParagraphBorder option) =
     match visibleParagraphBorder border with
     | Some value -> (value.Space |> Option.defaultValue 0.0) * 96.0 / 72.0
     | None -> 0.0
@@ -2254,7 +2254,7 @@ let private paragraphBorderSpace (border: ParagraphBorder option) =
 /// dotted or dashed, three widths for double, five for triple, the thick-thin pairs their width and
 /// Word's fixed thin line and gap (fixtures para-border, top-*, bottom-*, line-*; the wave and 3D lines
 /// are not measured yet and take their width).
-let private paragraphBorderAdvance (border: ParagraphBorder option) =
+let paragraphBorderAdvance (border: ParagraphBorder option) =
     match visibleParagraphBorder border with
     | Some value ->
         let width = value.Width |> Option.defaultValue (0.5 * 96.0 / 72.0) |> max 0.25
@@ -2285,7 +2285,7 @@ let private paragraphBorderRightAdvance metadata =
 /// bottom below the last - when their borders (every side but between) are the same and so are the
 /// left edge of their text (the left indent, or the first line's where that is further left) and the
 /// right indent; their styles, shading and between borders do not matter (fixtures para-border, grp-*).
-let private sameParagraphBorderGroup (previous: BlockMetadata) (current: BlockMetadata) =
+let sameParagraphBorderGroup (previous: BlockMetadata) (current: BlockMetadata) =
     match paragraphBordersOf previous, paragraphBordersOf current with
     | Some before, Some after ->
         let sides (b: ParagraphBorders) = [ b.Top; b.Left; b.Bottom; b.Right ] |> List.map visibleParagraphBorder
@@ -4984,7 +4984,15 @@ let rec private measureTableRowWithStyleAtDepth nestedTableLayoutDepth (memo: Pa
         // A merged cell's content belongs to all the rows it spans; what does
         // not fit in them arrives as mergeExtraHeight on the span's last row.
         let spansRows = cellIndex < spanningCells.Length && spanningCells.[cellIndex]
-        if not spansRows then
+        // A cell a vertical merge goes on in takes no room: Word lays out the merged cell's content
+        // (its restart cell's) over the rows it spans, and an empty paragraph of the continuation
+        // cell's own - with Normal's spacing, say - makes its row no taller (fixtures vmerge-content
+        // empty*, none-spacing, restart-tall-empty, two-merged; Word does not show or make room for
+        // text there either - text, tall: open here).
+        let emptyContinuation =
+            cell.VerticalMerge = Some ContinueMerge && cell.NestedTables.IsEmpty
+            && cell.Content |> List.forall (fun para -> TextBuffer.isWhiteSpace para.Buffer)
+        if not spansRows && not emptyContinuation then
             rowHeight <- max rowHeight requiredHeight
         let cellLayoutsList = resizeArrayToList cellLayouts
         cellGroups <- { VerticalAlignment = cell.VerticalAlignment; PaddingTop = textPadding.Top + borderTop; PaddingBottom = textPadding.Bottom + borderBottom; ContentHeight = contentHeight; RequiredHeight = requiredHeight; Layouts = cellLayoutsList } :: cellGroups
@@ -6766,7 +6774,37 @@ let private layoutDocumentPassKept
             let blockStart = timingStart ()
             match WordLayout.Floating.tablePosition tableBlock with
             | None ->
-                let nextY, _ = layoutTableAt tableBlock tableY
+                // A table in the flow does not go beside a floating table: one that would reach into a
+                // floating table's box beside it (its distances from text across included) starts
+                // below it - below its distance from text under it in Word 2019's layout, below its
+                // border in Word 2010's, where a fixed-width table does so and an autofit one is
+                // narrowed to the room beside it instead (fixtures float-table flow-*; that narrowing
+                // not here).
+                let movedY =
+                    let floats =
+                        placedFloatingBoxes |> List.filter (fun box -> match box.Kind with WordLayout.Floating.TableBox _ -> true | _ -> false)
+                    let fixedLayout = tableBlock.LayoutMode = Some FixedTableLayout
+                    if floats.IsEmpty || WordLayout.Table.columnCount tableBlock = 0 || (settings.CompatibilityMode < 15 && not fixedLayout) then tableY
+                    else
+                        let tableLeftOffset = tableLeftOffsetForDocument memo doc tableBlock
+                        let tableAvailableWidth = max 0.0 (maxWidth - tableLeftOffset)
+                        let outerLeft, outerRight = WordLayout.Table.outerCellInsets WordLayout.canvasScale settings.CompatibilityMode tableBlock
+                        let columnWidths = tableColumnWidthsInContext measureText styleContext (tableAvailableWidth + outerLeft + outerRight) tableBlock
+                        let tableWidth = WordLayout.Table.tableWidthWithSpacing columnWidths (WordLayout.Table.cellSpacing WordLayout.canvasScale tableBlock)
+                        let left = tableHorizontalOffset settings tableBlock tableLeftOffset tableAvailableWidth tableWidth - outerLeft
+                        let right = left + tableWidth
+                        let mutable at = tableY
+                        let mutable moved = true
+                        while moved do
+                            moved <- false
+                            for box in floats do
+                                let below = box.Y + box.Height + (if settings.CompatibilityMode >= 15 then box.DistanceBottom else 0.0)
+                                if at >= box.Y - box.DistanceTop - 0.01 && at < below - 0.01
+                                   && left < box.X + box.Width + box.DistanceRight && right > box.X - box.DistanceLeft then
+                                    at <- below
+                                    moved <- true
+                        at
+                let nextY, _ = layoutTableAt tableBlock movedY
                 y <- nextY
             | Some position ->
                 // A floating table (w:tblpPr) is placed from the paragraph after it - its top,

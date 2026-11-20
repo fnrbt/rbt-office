@@ -65,7 +65,7 @@ word_suites=(
     wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
     column-balance section-end macros outline line-boxes row-break rfonts-precedence footnote-block border-space
     float-wrap long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
-    table-style-props
+    table-style-props border-across vmerge-content
     hyphen-break
 )
 

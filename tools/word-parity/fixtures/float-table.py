@@ -58,6 +58,15 @@ w:tblpPr has only what the name says (vertAnchor text, tblpY 0 unless it says):
                                 first-line indent, space after, line spacing or font size against TS's
   ts-fl-float                   ts-fl's table floating
   va-none-y100                  no vertAnchor, tblpY 100pt
+  flow-<base|db18|narrow>[-c14] a 6-row floating table at the right (tblpXSpec right), B 20 words, then a table
+                                in the flow ("f11" ...: 3 rows of 3 x 2in / narrow: 2 x 1in), C; db18:
+                                bottomFromText 18pt
+  flow-near, flow-ind, flow-left, flow-two   the flow table 6pt short of the floating one's left border
+                                (leftFromText 18) / indented under it / the floating table at the left / a
+                                paragraph between
+  flow-fixed[-db18|-center][-c14], flow-center[-c14], flow-db18-c14-wide   fixed-width (tblLayout fixed) and
+                                centred flow tables; bottomFromText 18pt (but flow-fixed[-c14])
+(ONLY=<prefix> writes only the fixtures whose name starts with it.)
 No dependencies: the package is written as XML.
 """
 import os, sys, zipfile
@@ -91,7 +100,7 @@ def borders(sz=4):
                                        for s in ("top", "left", "bottom", "right", "insideH", "insideV")) + '</w:tblBorders>')
 
 
-def table(pp=None, rows=4, cols=2, width=IN, prefix="t", overlap=None, cell=None, sz=4, style=None):
+def table(pp=None, rows=4, cols=2, width=IN, prefix="t", overlap=None, cell=None, sz=4, style=None, ind=None, fixed=False, jc=None):
     """pp: the w:tblpPr's attributes (None: not floating); cell(r, c): a cell's content."""
     tblpp = ("<w:tblpPr " + " ".join(f'w:{k}="{v}"' for k, v in pp.items()) + "/>") if pp is not None else ""
     ov = f'<w:tblOverlap w:val="{overlap}"/>' if overlap else ""
@@ -104,7 +113,10 @@ def table(pp=None, rows=4, cols=2, width=IN, prefix="t", overlap=None, cell=None
             body += f'<w:tc><w:tcPr><w:tcW w:w="{tw(width)}" w:type="dxa"/></w:tcPr>{content}</w:tc>'
         body += "</w:tr>"
     ts = f'<w:tblStyle w:val="{style}"/>' if style else ""
-    return (f'<w:tbl><w:tblPr>{ts}{tblpp}{ov}<w:tblW w:w="0" w:type="auto"/>{borders(sz)}<w:tblLook w:val="0000"/></w:tblPr>'
+    ind_xml = f'<w:tblInd w:w="{tw(ind)}" w:type="dxa"/>' if ind is not None else ""
+    ind_xml += f'<w:jc w:val="{jc}"/>' if jc else ""
+    ind_xml += '<w:tblLayout w:type="fixed"/>' if fixed else ""
+    return (f'<w:tbl><w:tblPr>{ts}{tblpp}{ov}<w:tblW w:w="0" w:type="auto"/>{ind_xml}{borders(sz)}<w:tblLook w:val="0000"/></w:tblPr>'
             f'<w:tblGrid>{grid}</w:tblGrid>{body}</w:tbl>')
 
 
@@ -157,7 +169,12 @@ STYLES = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmln
           '<w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style></w:styles>')
 
 
+ONLY = os.environ.get("ONLY", "")
+
+
 def write(name, body, compat=15, style_xml=None):
+    if not name.startswith(ONLY):
+        return
     ct = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
           '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
           '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>'
@@ -269,4 +286,31 @@ write("ts-font", A + TS_TABLE + B + C, style_xml=styles(normal_rpr='<w:sz w:val=
 write("ts-font-only", A + TS_TABLE + B + C, style_xml=styles(normal_rpr='<w:sz w:val="32"/>', ts_ppr=""))
 write("ts-fl-float", A + table({"vertAnchor": "text", "tblpY": "0"}, style="TS") + B + C, style_xml=styles(FL, ts_ppr=SP()))
 write("va-none-y100", A + table({"tblpY": tw(100)}) + B + C)
+# Batch 4. A table in the flow after a floating table's paragraph, where the floating table still is
+# (annual-results' data table under its sidebar): beside it, over it, or below it - and below its box
+# with bottomFromText or its border? A 6-row floating table at the right (2in, tblpXSpec right), B short
+# (20 words: two lines beside it), then a table in the flow ("f11" ...: 3 rows) and C.
+BS = para(run(words("b", 20, 3)))
+RIGHT = dict(rows=6, horzAnchor="margin", tblpXSpec="right")
+flow = lambda **kw: table(None, rows=3, prefix="f", **kw)
+for compat in (15, 14):
+    sfx = "" if compat == 15 else f"-c{compat}"
+    write("flow-base" + sfx, A + ft(**RIGHT) + BS + flow(cols=3, width=2 * IN) + C, compat)
+    write("flow-db18" + sfx, A + ft(**RIGHT, bottomFromText=18) + BS + flow(cols=3, width=2 * IN) + C, compat)
+    write("flow-narrow" + sfx, A + ft(**RIGHT) + BS + flow() + C, compat)
+# Its right edge 6pt short of the floating table's left border, which keeps 18pt free on its left.
+write("flow-near", A + ft(**RIGHT, leftFromText=18) + BS + flow(cols=2, width=1.5 * IN, ind=102) + C)
+write("flow-ind", A + ft(**RIGHT) + BS + flow(ind=4 * IN - 72) + C)
+write("flow-left", A + ft(rows=6, horzAnchor="margin", tblpX=0) + BS + flow(cols=3, width=2 * IN) + C)
+# Two paragraphs between: the table in the flow starts lower but still beside the floating one.
+write("flow-two", A + ft(**RIGHT) + BS + para(run(words("p", 8, 2))) + flow(cols=3, width=2 * IN) + C)
+# Batch 5. Word 2010's layout narrows an autofit table to the band beside (flow-base-c14); a fixed one
+# (annual-results' data table: fixed, centred, under a sidebar with bottomFromText 11.3pt)?
+for compat in (15, 14):
+    sfx = "" if compat == 15 else f"-c{compat}"
+    write("flow-fixed" + sfx, A + ft(**RIGHT) + BS + flow(cols=3, width=2 * IN, fixed=True) + C, compat)
+    write("flow-fixed-db18" + sfx, A + ft(**RIGHT, bottomFromText=18) + BS + flow(cols=3, width=2 * IN, fixed=True) + C, compat)
+    write("flow-fixed-center" + sfx, A + ft(**RIGHT, bottomFromText=18) + BS + flow(cols=3, width=2 * IN, fixed=True, jc="center") + C, compat)
+    write("flow-center" + sfx, A + ft(**RIGHT, bottomFromText=18) + BS + flow(cols=3, width=2 * IN, jc="center") + C, compat)
+write("flow-db18-c14-wide", A + ft(**RIGHT, bottomFromText=18) + BS + flow(cols=3, width=2.3 * IN) + C, 14)
 print(out)

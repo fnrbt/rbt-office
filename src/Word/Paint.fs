@@ -330,15 +330,6 @@ let private minResizeArray (values: ResizeArray<float>) =
             if values.[i] < minimum then minimum <- values.[i]
         Some minimum
 
-let private lineVerticalBounds defaultTop defaultBottom (lines: MeasuredLine list) =
-    match lines with
-    | [] -> defaultTop, defaultBottom
-    | first :: rest ->
-        let mutable bottom = first.Y + first.Height
-        for line in rest do
-            bottom <- line.Y + line.Height
-        first.Y, bottom
-
 /// The colour of a w:highlight name as Word paints it. (The names are not CSS colours: Word's "green" is
 /// #00FF00 where CSS's is #008000, and "darkYellow" is no CSS colour at all.)
 let highlightColor (name: string) =
@@ -990,43 +981,114 @@ let tableFragmentPaintCommands (plan: TableLayoutPlan) =
 
     resizeArrayToList commands
 
-let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLayout) =
-    let borderLine (border: ParagraphBorder option) x1 y1 x2 y2 =
-        border
-        |> Option.bind (fun value ->
-            if optionEqualsIgnoreCase "none" value.Style || optionEqualsIgnoreCase "nil" value.Style then None
-            else
-                let color = value.Color |> Option.filter (fun color -> color <> "" && color <> "auto") |> Option.defaultValue "#000000"
-                let width = value.Width |> Option.defaultValue 0.5 |> max 0.25
-                Some (StrokeLine (color, width, borderDashStyle value.Style, 0.0, x1, y1, x2, y2)))
+/// How a bordered paragraph meets its neighbours in the flow: whether the one before is of its group
+/// (Layout.sameParagraphBorderGroup: one box, no top border here), and where the next one of its group
+/// starts its text (NaN: none - the bottom border is drawn here). Set while a document's commands are
+/// collected (borderLinksFor); a paragraph not in it is a box of its own.
+let mutable private borderLinks : Dictionary<BlockLayout, struct (bool * float)> = null
 
-    match layout.Metadata.ParagraphBorders with
+/// The links of the bordered paragraphs of a document's layouts (in document order): two that follow
+/// each other in the list are one box when Layout groups them - their borders alike, the same left
+/// edge and right indent - and they are on one page, at one place across (not two cells side by side),
+/// the second not below the first's end (not a cell of the row below).
+let private borderLinksFor (settings: LayoutSettings) (layouts: BlockLayout seq) =
+    let links = Dictionary<BlockLayout, struct (bool * float)>(HashIdentity.Reference)
+    let mutable previous : BlockLayout option = None
+    for layout in layouts do
+        match paragraphBordersOf layout.Metadata with
+        | None -> previous <- None
+        | Some _ ->
+            match previous with
+            | Some before when not layout.Lines.IsEmpty && not before.Lines.IsEmpty ->
+                let lastBefore = List.last before.Lines
+                let top = layout.Lines.Head.Y
+                if sameParagraphBorderGroup before.Metadata layout.Metadata
+                   && abs (before.Indent - layout.Indent) < 0.01
+                   && abs (before.AvailableWidth - layout.AvailableWidth) < 0.01
+                   && top >= lastBefore.Y + lastBefore.Height - 0.01
+                   && layout.Y <= before.Y + before.Height + 0.01
+                   && pageOfY settings lastBefore.Y = pageOfY settings top then
+                    let struct (linked, _) = match links.TryGetValue before with | true, link -> link | _ -> struct (false, nan)
+                    links.[before] <- struct (linked, top)
+                    links.[layout] <- struct (true, nan)
+            | _ -> ()
+            previous <- Some layout
+    links
+
+/// `collect ()` with these links in force (borderLinks).
+let private withBorderLinks (links: Dictionary<BlockLayout, struct (bool * float)>) (collect: unit -> 'T) : 'T =
+    let outer = borderLinks
+    borderLinks <- links
+    try collect ()
+    finally borderLinks <- outer
+
+let private borderLinkOf (layout: BlockLayout) =
+    if isNull borderLinks then struct (false, nan)
+    else
+        match borderLinks.TryGetValue layout with
+        | true, link -> link
+        | _ -> struct (false, nan)
+
+/// A paragraph's borders as Word draws them (fixtures para-border-across): the top border above its
+/// text (above its space before the text), the bottom one below, each its line (two of a double one);
+/// across from the left edge of its text (the left indent, or the first line's where further left) to
+/// its right indent, each widened by 1.5pt, and by a side border's space and line where there is one -
+/// whatever the text, in a table's cell and a column alike. The side borders run from the top border's
+/// outer edge to the bottom one's. Adjoining paragraphs of a group are one box (borderLinks).
+let private paragraphBorderCommands (settings: LayoutSettings) (layout: BlockLayout) =
+    match paragraphBordersOf layout.Metadata with
     | None -> []
     | Some borders ->
-        let visualInset = 5.0
-        let borderSpace border = border |> Option.bind (fun value -> value.Space) |> Option.defaultValue 0.0
-        let leftSpace = borderSpace borders.Left + visualInset
-        let rightSpace = borderSpace borders.Right + visualInset
-        let topSpace = borderSpace borders.Top + visualInset
-        let bottomSpace = borderSpace borders.Bottom + visualInset
-        let left = settings.PaddingLeft + layout.Indent - leftSpace
-        let right = settings.PaddingLeft + layout.Indent + max 1.0 layout.AvailableWidth + rightSpace
-        let contentTop, contentBottom = lineVerticalBounds layout.Y (layout.Y + layout.Height) layout.Lines
-        let top = contentTop - topSpace
-        let bottom = contentBottom + bottomSpace
+        let struct (beforeLinked, nextTop) = borderLinkOf layout
+        let linkedToNext = not (System.Double.IsNaN nextTop)
+        let pt = 96.0 / 72.0
+        let thickness border = paragraphBorderAdvance border - paragraphBorderSpace border
+        let visible border = (visibleParagraphBorder border).IsSome
         let commands = ResizeArray<PaintCommand>()
-        match borderLine borders.Top left top right top with
-        | Some command -> commands.Add command
-        | None -> ()
-        match borderLine borders.Right right top right bottom with
-        | Some command -> commands.Add command
-        | None -> ()
-        match borderLine borders.Bottom left bottom right bottom with
-        | Some command -> commands.Add command
-        | None -> ()
-        match borderLine borders.Left left top left bottom with
-        | Some command -> commands.Add command
-        | None -> ()
+        let stroke (border: ParagraphBorder option) (horizontal: bool) (fixedAt: float) (fromAt: float) (toAt: float) =
+            match visibleParagraphBorder border with
+            | None -> ()
+            | Some value ->
+                let color = value.Color |> Option.filter (fun color -> color <> "" && color <> "auto") |> Option.defaultValue "#000000"
+                let width = value.Width |> Option.defaultValue (0.5 * pt) |> max 0.25
+                let total = thickness border
+                // (fixedAt: where the border's line starts, its first line's edge; the lines go on from
+                // there downwards / rightwards.)
+                let lines =
+                    match value.Style |> Option.map (fun style -> style.ToLowerInvariant()) with
+                    | Some "double" -> [ 0.0, width; 2.0 * width, width ]
+                    | _ -> [ 0.0, total ]
+                for offset, w in lines do
+                    let at = fixedAt + offset + w / 2.0
+                    let dash = borderDashStyle value.Style
+                    if horizontal then commands.Add(StrokeLine (color, w, dash, 0.0, fromAt, at, toAt, at))
+                    else commands.Add(StrokeLine (color, w, dash, 0.0, at, fromAt, at, toAt))
+        let lines = layout.Lines
+        // (An empty paragraph has no lines: its mark's line is between its spacing and borders.)
+        let spacing (value: float option) = value |> Option.map (fun points -> points * pt) |> Option.defaultValue 0.0
+        let contentTop =
+            match lines with
+            | first :: _ -> first.Y
+            | [] -> layout.Y + spacing layout.Metadata.SpacingBefore + paragraphBorderAdvance borders.Top
+        let contentBottom =
+            match List.tryLast lines with
+            | Some last -> last.Y + last.Height
+            | None -> layout.Y + layout.Height - spacing layout.Metadata.SpacingAfter - paragraphBorderAdvance borders.Bottom
+        let firstLineIndent = WordLayout.Paragraph.firstLineIndent layout.Metadata
+        let textLeft = settings.PaddingLeft + layout.Indent + min 0.0 firstLineIndent
+        let textRight = settings.PaddingLeft + layout.Indent + layout.AvailableWidth + paragraphBorderAdvance borders.Right
+        let reach = 1.5 * pt
+        let leftOuter = textLeft - reach - (if visible borders.Left then paragraphBorderAdvance borders.Left else 0.0)
+        let rightOuter = textRight + reach + (if visible borders.Right then paragraphBorderAdvance borders.Right else 0.0)
+        let top = if beforeLinked then contentTop else contentTop - paragraphBorderAdvance borders.Top
+        let bottom = if linkedToNext then nextTop else contentBottom + paragraphBorderAdvance borders.Bottom
+        if not beforeLinked then stroke borders.Top true top leftOuter rightOuter
+        if linkedToNext then
+            // (The between border: below this paragraph, its space from the text.)
+            stroke borders.Between true (contentBottom + paragraphBorderSpace borders.Between) leftOuter rightOuter
+        else stroke borders.Bottom true (contentBottom + paragraphBorderSpace borders.Bottom) leftOuter rightOuter
+        stroke borders.Left false leftOuter top bottom
+        stroke borders.Right false (textRight + reach + paragraphBorderSpace borders.Right) top bottom
         resizeArrayToList commands
 
 let private paginateTableRow settings (row: TableRow) y rowHeight =
@@ -1055,9 +1117,7 @@ let private addParagraphCommandsWithBaselineOffset baselineOffset (settings: Lay
         |> Option.map (fun pattern -> { Pattern = Some pattern; ForegroundColor = layout.Metadata.ParagraphShadingForeground; BackgroundColor = layout.Metadata.BackgroundColor })
     commands.AddRange(tableFillCommands layout.Metadata.BackgroundColor shading blockX layout.Y blockWidth layout.Height)
 
-    match layout.Metadata.ParagraphBorders with
-    | Some _ -> commands.AddRange(paragraphBorderCommands settings layout)
-    | None -> ()
+    commands.AddRange(paragraphBorderCommands settings layout)
 
     // (A content control's frame is not part of the page: see markupMarkerCommands.)
 
@@ -1276,6 +1336,9 @@ type private ParagraphCommandsEntry = {
     Commands: PaintCommand array
     /// The paragraph's anchored drawings (not among Commands).
     Drawings: Drawing array
+    /// Its borders' links to its neighbours when collected (borderLinks).
+    BorderLinked: bool
+    BorderNextTop: float
 }
 
 #if FABLE_COMPILER
@@ -1308,12 +1371,15 @@ let private rememberParagraphCommands (layout: BlockLayout) (entry: ParagraphCom
 let private addParagraphCommandsKept (settings: LayoutSettings) (fontFamily: string) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (commands: ResizeArray<PaintCommand>) (layout: BlockLayout) =
     let entry =
         match tryKnownParagraphCommands layout with
-        | Some entry when entry.FontFamily = fontFamily && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings) -> entry
+        | Some entry when entry.FontFamily = fontFamily && (obj.ReferenceEquals(entry.Settings, settings) || entry.Settings = settings)
+                          && (let struct (linked, nextTop) = borderLinkOf layout
+                              entry.BorderLinked = linked && (entry.BorderNextTop = nextTop || (System.Double.IsNaN entry.BorderNextTop && System.Double.IsNaN nextTop))) -> entry
         | _ ->
             let own = ResizeArray<PaintCommand>()
             let drawings = ResizeArray<Drawing>()
             withDrawingSink drawings (fun () -> addParagraphCommands settings fontFamily measureText measureRange own layout)
-            let entry = { Settings = settings; FontFamily = fontFamily; Commands = own.ToArray(); Drawings = drawings.ToArray() }
+            let struct (linked, nextTop) = borderLinkOf layout
+            let entry = { Settings = settings; FontFamily = fontFamily; Commands = own.ToArray(); Drawings = drawings.ToArray(); BorderLinked = linked; BorderNextTop = nextTop }
             rememberParagraphCommands layout entry
             entry
     commands.AddRange entry.Commands
@@ -3447,6 +3513,8 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
     let shifts = lazy (overlapShifts settings measureText measureRange styleContext pageArray.Value anchorTopOf (doc.Blocks |> Seq.choose (function TextBox textBox -> Some textBox | _ -> None)))
     let outerSink = drawingSink
     drawingSink <- drawings
+    let outerLinks = borderLinks
+    borderLinks <- borderLinksFor settings layouts
 
     try
      for block in doc.Blocks do
@@ -3479,7 +3547,9 @@ let private collectDocumentCommandsWithLayoutsUncached (settings: LayoutSettings
                         currentY <- WordLayout.Page.advanceToNextPage settings.PageHeight settings.PaddingTop currentY
 
      addNoteAreaCommands settings fontFamily measureText measureRange doc commands index.Footnotes index.Endnotes
-    finally drawingSink <- outerSink
+    finally
+        drawingSink <- outerSink
+        borderLinks <- outerLinks
 
     // Column separator rules (w:sep): a vertical line centred in each gap,
     // spanning the body content on each page.
@@ -3869,6 +3939,7 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
             cache.CacheMultiColumn <- hasMultiColumnLayout
         let blocks = slices.SliceBlocks
         let layouts = slices.SliceLayouts
+        let links = borderLinksFor settings layouts
         let struct (prefix, suffix) = commonBlockEnds cache.CacheBlocks blocks
         let shift = cache.CacheBlocks.Length - blocks.Length
         // (Which blocks end a section, as known for the blocks of the paint before.)
@@ -4041,9 +4112,9 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                         let reach = max settings.PageHeight 400.0 + tallest * 2.0 + 64.0
                         let bandTop = top - reach
                         let bandBottom = bottom + reach
-                        deferred <- Some (deferredChunk bandTop bandBottom (fun () -> withTablePlanScope scope (fun () -> (let struct (own, _, _) = collectTable () in own.ToArray()))))
+                        deferred <- Some (deferredChunk bandTop bandBottom (fun () -> withBorderLinks links (fun () -> withTablePlanScope scope (fun () -> (let struct (own, _, _) = collectTable () in own.ToArray())))))
                     else
-                        let struct (own, nextY, drawnAt) = withDrawingSink drawings collectTable
+                        let struct (own, nextY, drawnAt) = withBorderLinks links (fun () -> withDrawingSink drawings collectTable)
                         commands <- own
                         yIn <- drawnAt
                         if not tableBlock.Floating then yOut <- nextY
@@ -4062,14 +4133,15 @@ let collectDocumentChunksWith (deferCollection: bool) (cache: PaintCache) (setti
                                 deferred <-
                                     Some (deferredChunk (top - margin) (bottom + margin) (fun () ->
                                         let own = ResizeArray<PaintCommand>()
-                                        for offset in 0 .. count - 1 do
-                                            addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset]
+                                        withBorderLinks links (fun () ->
+                                            for offset in 0 .. count - 1 do
+                                                addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset])
                                         own.ToArray()))
                             else
                                 let own = ResizeArray<PaintCommand>()
-                                withDrawingSink drawings (fun () ->
+                                withBorderLinks links (fun () -> withDrawingSink drawings (fun () ->
                                     for offset in 0 .. count - 1 do
-                                        addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset])
+                                        addParagraphCommandsKept settings fontFamily measureText measureRange own layouts.[start + offset]))
                                 commands <- own
                 let chunk =
                     match deferred with
