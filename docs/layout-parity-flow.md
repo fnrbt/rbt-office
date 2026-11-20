@@ -21,6 +21,19 @@ One loop, run again and again; never a fix for one document.
 7. **Check the corpus.** Rerun all of it: a document that gets worse needs a Word-backed explanation or a
    new hypothesis (back to 2). Record the outcome in the ledger.
 
+## Known approximations
+
+Where Word's behaviour rests on data or code it does not publish, the loop settles the rules that can be
+pinned down and makes a best guess for the rest, instead of chasing every case with fixtures.
+
+- **Hyphenation.** Word's hyphenation points come from its own per-language proofing data (a new engine
+  since Word 2013; the classic hyphenation zone applies only in compatibility mode 14 and below). Ours is a
+  chosen algorithm, picked on a modest sample by balancing speed, output quality and agreement with Word
+  (see the ledger's hyphenation rows for the measured agreement). Expect hyphenation differences in new
+  documents. When one turns up, add the words to the sample and re-weigh: if the new data changes the
+  balance between the candidates, change the algorithm; otherwise record the difference as residual. Do
+  not grow word-by-word exception lists.
+
 ## Ledger
 
 One line per hypothesis, refuted ones too. Status: testing, confirmed (implemented), refuted, open.
