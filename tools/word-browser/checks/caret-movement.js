@@ -25,9 +25,13 @@ try {
         snaps[name] = { anchor: [ids.indexOf(selection.AnchorBlockId), selection.AnchorOffset], focus: [ids.indexOf(selection.FocusBlockId), selection.FocusOffset], x: caret.X, y: caret.Y };
     };
     const box = canvas.getBoundingClientRect();
-    // A point 200 px into the second visual line of the first paragraph, and a word in it.
+    // A point some 200 px into the second visual line of the first paragraph, inside a word (a letter
+    // on either side of the position under it: what lies at 200 px depends on the font's advances).
     const second = first[1], third = first[2];
-    const clickX = box.left + second.X + 200, clickY = box.top + second.Y + second.Height / 2;
+    const inWord = (dx) => { const hit = Word.hitTestViewport(editor, second.X + dx, second.Y + second.Height / 2); return hit && /\w\w/.test(text.slice(hit.Offset - 1, hit.Offset + 1)); };
+    let wordDx = 200;
+    while (wordDx < 260 && !inWord(wordDx)) wordDx += 2;
+    const clickX = box.left + second.X + wordDx, clickY = box.top + second.Y + second.Height / 2;
     window.finish = () => {
         try {
             const s = snaps;

@@ -5,6 +5,7 @@
 //   node tools/word-parity/page-parity.mjs --dist dist [--refresh-word] [--json out.json] [--detail] [name-filter ...]
 //   node tools/word-parity/page-parity.mjs --dist dist --dir <folder> [--refresh-word]   (the .docx of a folder, Word's TSVs in <folder>/word)
 //   node tools/word-parity/page-parity.mjs --dist dist --measurer canvas ...   (the canvas's measureText instead of ShaperText's)
+//   node tools/word-parity/page-parity.mjs --dist dist --browser firefox ...   (Playwright's firefox or webkit instead of Chromium)
 //   node tools/word-parity/page-parity.mjs --dist dist --lines <name>   (our lines of one document: page, y on the page in px, height, block, text)
 //
 // Word's side is tests/word/word-pages/<dir>__<name>.tsv (committed), written by
@@ -49,6 +50,7 @@ const detail = flag('--detail');
 const linesFor = opt('--lines');
 const docDir = opt('--dir');
 const measurer = opt('--measurer') ?? 'shaper';
+const browserName = opt('--browser') ?? 'chromium';
 const filters = args;
 const port = Number(process.env.PORT ?? 16031);
 const refDir = docDir ? path.join(path.resolve(docDir), 'word') : path.join(repo, 'tests/word/word-pages');
@@ -149,7 +151,8 @@ for (const f of ${JSON.stringify(faces)}) {
 }
 const Word = (await import('/word/Word.js')).default;
 // The measurers a host installs (setTextMeasurers): ShaperText's, from the fonts' own advances - as
-// Word measures - or (--measurer canvas) none, the canvas's measureText (whole pixels in Chromium here).
+// Word measures - or (--measurer canvas) none, the canvas's measureText (Renderer.measureTextStyled: at a
+// reference size and scaled, unkerned, a character's advance at a time - whole pixels in Chromium at the size asked).
 let fontSet = null, Shaper = null;
 if (${JSON.stringify(measurer)} === 'shaper') {
     Shaper = await import('/shaper-text/ShaperText.js');
@@ -238,7 +241,7 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((resolve) => server.listen(port, '127.0.0.1', resolve));
 const playwright = await import(process.env.PLAYWRIGHT ? pathToFileURL(process.env.PLAYWRIGHT).href : 'playwright');
-const browser = await (playwright.chromium ?? playwright.default.chromium).launch();
+const browser = await (playwright[browserName] ?? playwright.default[browserName]).launch();
 
 const norm = (s) => String(s ?? '').toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}]/gu, '');
 const same = (a, b) => { const x = norm(a), y = norm(b); const n = Math.min(40, x.length, y.length); return n === 0 ? x.length === y.length : x.slice(0, n) === y.slice(0, n); };
@@ -251,7 +254,7 @@ try {
     await tab.goto(`http://127.0.0.1:${port}/`);
     await tab.waitForFunction('window.ready === true', null, { timeout: 120000 });
     if (linesFor) {
-        const d = corpus.find((c) => c.key.includes(linesFor));
+        const d = corpus.find((c) => c.key === linesFor) ?? corpus.find((c) => c.key.includes(linesFor));
         for (const l of await tab.evaluate((u) => window.linesOf(u), '/doc?i=' + corpus.indexOf(d))) console.log(l.join('\t'));
         process.exit(0);
     }

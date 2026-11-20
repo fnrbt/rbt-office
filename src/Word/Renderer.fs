@@ -359,22 +359,25 @@ let private cssFontFamily (family: string) =
     // (Quoted: an unquoted name with a digit up front, or a slash, makes the whole font string invalid.)
     "\"" + family.Replace("\"", "").Replace("\\", "") + "\", " + genericFamily family
 
-let private browserMetricScale (family: string) (style: TextBuffer.TextStyle) =
-    // Chromium canvas metrics for loaded Windows faces diverge from Word/PDF
-    // shaping enough to change centering and wrap decisions in real DOCX bodies.
-    match family.Trim().ToLowerInvariant() with
-    | "cambria" when not style.Bold && not style.Italic -> 0.982
-    | "times new roman" when style.Bold && style.Italic -> 0.945
-    | "times new roman" when not style.Bold && not style.Italic -> 1.0185
-    | _ -> 1.0
-
 /// Get image from cache (JS Map.get())
 [<Emit("$0.get($1)")>]
 let private mapGet (map: obj) (key: string) : obj = jsNative
 
-/// The canvas font of a text style and the scale its measured widths are
-/// corrected by: made once per style object (a run's style is asked for with
-/// every word of the run).
+// ---- the canvas's own measuring --------------------------------------------------------------
+//
+// Without a host's measurers (setTextMeasurers) text is measured with the canvas's measureText, as
+// Word measures it: each character its font's own advance, unkerned and without ligatures (the
+// ledger: Word kerns only under w:kern, forms ligatures only under w14:ligatures). measureText
+// gives Chromium's hinted advances, whole pixels at the size asked ("Independence" in Times New
+// Roman 11pt 88px where the font's advances make 81.43), so text is measured at a reference size
+// and scaled: 2048px, where Chromium's whole pixels are a 2048-unit font's own units; 1024px where
+// the canvas clamps its font size below 2048 (Firefox: 2000px). Kerning is off (fontKerning), and
+// Latin, Greek, Cyrillic and symbol text without combining marks is the sum of its characters'
+// advances - no ligature, and no kerning in WebKit, whose canvas kerns whatever fontKerning says.
+// Other text (complex scripts, marks, surrogates) is measured whole, shaped by the browser.
+
+/// The canvas font of a text style at the reference size, and the scale from it to the style's
+/// size: made once per style object (a run's style is asked for with every word of the run).
 type private MeasureFont = { Font: string; Scale: float }
 
 [<Emit("new WeakMap()")>]
@@ -385,9 +388,9 @@ let private styleMapGet (_map: obj) (_style: TextBuffer.TextStyle) : MeasureFont
 let private styleMapSet (_map: obj) (_style: TextBuffer.TextStyle) (_font: MeasureFont) : unit = jsNative
 let private measureFonts = newStyleMap ()
 
-/// Widths the canvas gave, by font and text. A document's words repeat, and
-/// measuring every word of every run was most of the time of a first layout.
-/// (A width depends on the font string and the text alone.)
+/// Widths the canvas gave at the reference size, by font and text. A document's words repeat, and
+/// measuring every word of every run was most of the time of a first layout. (A width depends on
+/// the font string and the text alone; a face's widths serve every size of it.)
 let private measuredWidths = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, float>>()
 let mutable private measuredWidthCount = 0
 
@@ -402,8 +405,57 @@ let private onFontsLoaded (_callback: obj -> unit) : unit = jsNative
 // that stood in for it.
 onFontsLoaded (fun _ -> clearMeasuredWidths ())
 
+/// A 2D context of its own for measuring (its font and fontKerning are the measurer's, not the
+/// painter's), or none where the page can make no canvas.
+[<Emit("(() => { try { const c = (typeof document !== 'undefined') ? document.createElement('canvas').getContext('2d') : (typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1).getContext('2d') : null); if (c && 'fontKerning' in c) c.fontKerning = 'none'; return c; } catch (e) { return null; } })()")>]
+let private createMeasureContext () : CanvasRenderingContext2D = jsNative
+
+let mutable private measureContext : CanvasRenderingContext2D option = None
+let mutable private referenceSize = 0.0
+
+let private measureContextFor (ctx: RenderContext) =
+    match measureContext with
+    | Some context -> context
+    | None ->
+        let made = createMeasureContext ()
+        let context = if isNull (box made) then ctx.Ctx else made
+        measureContext <- Some context
+        context
+
+/// 2048px, or 1024 where the canvas gives a 2048px font less than twice a 1024px one's width.
+let private measureReferenceSize (context: CanvasRenderingContext2D) =
+    if referenceSize = 0.0 then
+        context.font <- "1024px sans-serif"
+        let half = context.measureText("MMMMMMMMMM").width
+        context.font <- "2048px sans-serif"
+        let full = context.measureText("MMMMMMMMMM").width
+        referenceSize <- if half > 0.0 && full < 1.99 * half then 1024.0 else 2048.0
+    referenceSize
+
+/// Whether `text` is the sum of its characters' advances (no ligature or kerning being Word's):
+/// Latin, Greek, Cyrillic and the general punctuation and symbol blocks, without combining marks.
+let private isPerCharacterText (text: string) =
+    let mutable simple = true
+    let mutable i = 0
+    while simple && i < text.Length do
+        let code = int text.[i]
+        simple <- (code < 0x0300 || (code >= 0x0370 && code < 0x0483) || (code >= 0x048A && code < 0x0590)
+                   || (code >= 0x2000 && code < 0x20D0) || (code >= 0x2100 && code < 0x2C00))
+        i <- i + 1
+    simple
+
+let mutable private measuringFont = ""
+
+let private measuredCanvasWidth (ctx: RenderContext) (context: CanvasRenderingContext2D) (font: string) (text: string) =
+    // (The painter sets the font of its own context: the measuring one keeps the last font set.)
+    if measuringFont <> font || obj.ReferenceEquals(context, ctx.Ctx) then
+        context.font <- font
+        measuringFont <- font
+    context.measureText(text).width
+
 /// Measure text width with style
 let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.TextStyle) =
+    let context = measureContextFor ctx
     let font =
         let known = styleMapGet measureFonts style
         if not (isNull (box known)) && (style.FontFamily.IsSome || known.Font.EndsWith (cssFontFamily ctx.FontFamily)) then known
@@ -414,7 +466,8 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
                             else ""
             let fontFamily = style.FontFamily |> Option.defaultValue ctx.FontFamily
             let fontSize = if style.VertAlign.IsSome then style.FontSize * 0.7 else style.FontSize
-            let made = { Font = fontStyle + " " + Portable.Num.toFixed 6 fontSize + "px " + cssFontFamily fontFamily; Scale = browserMetricScale fontFamily style }
+            let reference = measureReferenceSize context
+            let made = { Font = fontStyle + " " + string (int reference) + "px " + cssFontFamily fontFamily; Scale = fontSize / reference }
             styleMapSet measureFonts style made
             made
     let widths =
@@ -424,30 +477,43 @@ let measureTextStyled (ctx: RenderContext) (text: string) (style: TextBuffer.Tex
             let widths = System.Collections.Generic.Dictionary<string, float>()
             measuredWidths.[font.Font] <- widths
             widths
+    let remember (text: string) width =
+        // (Bounded: long texts are measured as they come, and the lot is dropped when it grows large.)
+        if text.Length <= 48 then
+            if measuredWidthCount > 200000 then
+                measuredWidths.Clear()
+                measuredWidthCount <- 0
+                measuredWidths.[font.Font] <- widths
+                widths.Clear()
+            widths.[text] <- width
+            measuredWidthCount <- measuredWidthCount + 1
     let width =
         match Portable.Dict.tryFind text widths with
         | ValueSome width -> width
         | ValueNone ->
-            ctx.Ctx.font <- font.Font
-            let width = ctx.Ctx.measureText(text).width
-            // (Bounded: long texts are measured as they come, and the lot is dropped when it grows large.)
-            if text.Length <= 48 then
-                if measuredWidthCount > 200000 then
-                    measuredWidths.Clear()
-                    measuredWidthCount <- 0
-                    measuredWidths.[font.Font] <- widths
-                    widths.Clear()
-                widths.[text] <- width
-                measuredWidthCount <- measuredWidthCount + 1
+            let width =
+                if text.Length > 1 && isPerCharacterText text then
+                    let mutable sum = 0.0
+                    for i in 0 .. text.Length - 1 do
+                        let ch = text.Substring(i, 1)
+                        sum <- sum +
+                               (match Portable.Dict.tryFind ch widths with
+                                | ValueSome w -> w
+                                | ValueNone ->
+                                    let w = measuredCanvasWidth ctx context font.Font ch
+                                    remember ch w
+                                    w)
+                    sum
+                else measuredCanvasWidth ctx context font.Font text
+            remember text width
             width
     (width * font.Scale) + TextBuffer.characterSpacingAdvance text style
 
 /// How far a word's trailing space may stand past the margin before the word goes to the
-/// next line is the PDF export's (0.25px) when the host measures text with the fonts' own
-/// advances (a text measurer), as Word does: a line Word fills to within a pixel of the margin
-/// then fits here too. The canvas's own measuring is rougher; its lines keep 3.5px.
-let private trailingSpaceFitSafety (ctx: RenderContext) =
-    if ctx.TextMeasurer.IsSome then 0.25 else 3.5
+/// next line is the PDF export's (0.25px): text is measured with the fonts' own advances, by a
+/// host's text measurer or the canvas's (see measureTextStyled), as Word does - a line Word fills
+/// to within a pixel of the margin then fits here too.
+let private trailingSpaceFitSafety (_ctx: RenderContext) = 0.25
 
 let layoutSettings (ctx: RenderContext) (doc: Document) =
     documentSettings ctx.FontSize ctx.LineHeight (trailingSpaceFitSafety ctx) doc
