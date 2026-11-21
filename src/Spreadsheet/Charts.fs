@@ -2352,15 +2352,15 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         |> Option.filter (fun spec -> not (Set.contains index spec.Deleted))
         |> Option.map (fun spec -> Map.tryFind index spec.Points |> Option.defaultValue spec)
         |> Option.filter (fun spec -> spec.ShowValue || spec.ShowPercent || spec.ShowCategory || spec.ShowSeries)
-    /// A label's lines: its parts, each broken at its spaces and slashes to the width Excel gives a label, a fifth
-    /// of the chart's (checked: synthetic-chart-parity "PieLabels": "Two / BR/One / BA / 14%" in a chart of 225 pt).
+    /// A label's lines: its parts, each broken at its spaces to the width Excel gives a label, a fifth of the
+    /// chart's (checked: synthetic-chart-parity "PieLabels": "Two / BR/One / BA / 14%" in a chart of 225 pt).
     let wrapLabel (style: TextStyle) (size: float) (bold: bool) (text: string) : string list =
         let room = width / 5.0 - px 6.0
         [ for part in text.Split('\n') do
             let words = ResizeArray<string>()
             let mutable start = 0
             for at in 0 .. part.Length - 1 do
-                if part.[at] = ' ' || (part.[at] = '/' && at + 1 < part.Length) then
+                if part.[at] = ' ' then
                     words.Add (part.Substring(start, at - start + 1))
                     start <- at + 1
             if start < part.Length then words.Add (part.Substring start)
@@ -2444,12 +2444,15 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                             let fitsInside =
                                 let at = outer * 0.6
                                 sweep * at >= min boxWidth boxHeight + px 2.0 && at + reach <= outer && (sweep >= Math.PI || 2.0 * at * Math.Sin (sweep / 2.0) >= max boxWidth boxHeight * 0.8)
-                            let outsideLabel = spec.Position = Some "outEnd" || (spec.Position = Some "bestFit" && not fitsInside)
+                            // (A label moved by hand is moved from where the series' labels stand: A.CRE's "Occupied
+                            // Units" of best fit, moved a little, is outside its 75 % slice as the others are.)
+                            let position = if spec.Offset.IsSome then (labelStyleOf item |> Option.bind (fun series -> series.Position) |> Option.orElse spec.Position) else spec.Position
+                            let outsideLabel = position = Some "outEnd" || (position = Some "bestFit" && not fitsInside)
                             let at =
                                 if outsideLabel then outer + px 2.0 + reach
                                 elif inner > 0.0 then (inner + outer) / 2.0
-                                elif spec.Position = Some "inEnd" then outer - reach - px 2.0
-                                elif spec.Position = Some "ctr" then outer * 0.5
+                                elif position = Some "inEnd" then outer - reach - px 2.0
+                                elif position = Some "ctr" then outer * 0.5
                                 else outer * 0.6
                             let x, y = point at middle
                             let x, y = (match spec.Offset with Some (dx, dy) -> x + dx * width, y + dy * height | None -> x, y)

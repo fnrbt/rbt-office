@@ -126,6 +126,8 @@ type CellStyle = {
     BorderDiagonal: CellBorderSide option
     DiagonalUp: bool
     DiagonalDown: bool
+    /// `<protection locked="0"/>`: the cell is not locked (it may be changed on a protected sheet).
+    Unlocked: bool
 }
 
 type MergeCell = {
@@ -1128,6 +1130,8 @@ type SheetExtras = {
     /// The background error checks the sheet turns off for some cells (`<ignoredErrors>`): the cells
     /// (`sqref`) and the checks (`numberStoredAsText`, `formula`, `formulaRange`, `evalError`, ...).
     IgnoredErrors: (string * string list) list
+    /// The sheet is protected (`<sheetProtection sheet="1"/>`).
+    Protected: bool
     /// `<ext>` elements of the sheet's `<extLst>` that name cells of the
     /// sheet (sparkline groups, x14 conditional formats). They are written
     /// back while the sheet's rows and columns are where the file had them.
@@ -1197,7 +1201,7 @@ type SheetExtras = {
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
-      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []; IgnoredErrors = []
+      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []; IgnoredErrors = []; Protected = false
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
       SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None }
 
@@ -4384,6 +4388,7 @@ module Xlsx =
             BorderDiagonal = border.Diagonal
             DiagonalUp = border.DiagonalUp
             DiagonalDown = border.DiagonalDown
+            Unlocked = (sElem "protection" xfNode |> Option.bind (Xml.attr "locked") |> Option.map (fun v -> v = "0" || v = "false")) = Some true
         }
 
     /// The first font of styles.xml: Excel's Normal font (`Workbook.DefaultFont`).
@@ -6367,6 +6372,9 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         KeptCellExtensions = cellExtensions
                         AutoFilter = (try outline |> Option.bind sheetAutoFilterOf with _ -> None)
                         IgnoredErrors = (try outline |> Option.map ignoredErrorsOf |> Option.defaultValue [] with _ -> [])
+                        Protected =
+                            (try outline |> Option.bind (fun sheet -> Xml.descendants "sheetProtection" sheet.Node |> List.tryHead) |> Option.bind (Xml.attr "sheet") with _ -> None)
+                            |> Option.exists (fun value -> value = "1" || value = "true")
                         PrinterSettingsRelId = outline |> Option.bind pageSetupRelId |> Option.filter (fun id -> Set.contains id keptIds)
                         PivotLocations = pivotLocations
                         SourcePart = Some (sheetPath, sheetRelType)

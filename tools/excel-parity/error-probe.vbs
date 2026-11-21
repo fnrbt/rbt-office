@@ -28,7 +28,7 @@ For Each ws In wb.Worksheets
     For Each c In used.Cells
       For n = 1 To 9
         Err.Clear
-        If c.Errors(n).Value Then
+        If c.Errors(n).Value And Not c.Errors(n).Ignore Then
           If Err.Number = 0 Then f.WriteLine ws.Name & vbTab & c.Address(False, False) & vbTab & n
         End If
       Next

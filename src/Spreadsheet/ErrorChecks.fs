@@ -6,9 +6,11 @@
 /// - a text date of a two-digit year ("1/1/99", "Jan-99");
 /// - a formula whose value is an error, but #N/A (=1/0 is marked, =NA() is not, a typed #REF! is not);
 /// - a formula unlike the formulas on both sides of it in its row, or above and below it in its column, which are
-///   alike (as R1C1 formulas): =F9*5 between =E9+1 and =G9+1;
-/// - a formula whose range of a row or a column stops just short of a number (=SUM(B1:B3) over B4; not when that
-///   cell holds a formula).
+///   alike (as R1C1 formulas): =F9*5 between =E9+1 and =G9+1 - the column first; neither it nor they reading
+///   another sheet;
+/// - a formula under (beside) its range of a column (row) that stops a cell short of it, at a number (=SUM(B1:B3)
+///   in B5 over B4; not when that cell holds a formula);
+/// - a formula in an unlocked cell (`<protection locked="0"/>`: A.CRE's input sheets), not on a protected sheet.
 /// The cells of `<ignoredErrors>` are not marked for the checks it names.
 module Rbt.Spreadsheet.ErrorChecks
 
@@ -77,7 +79,7 @@ let private textCheck (text: string) : string option =
         | _ -> None
 
 /// The cells of a sheet Excel marks, and which check marks each.
-let markedCells (cells: Map<CellAddress, CellData>) (ignored: (string * string list) list) : Map<CellAddress, string> =
+let markedCells (cells: Map<CellAddress, CellData>) (ignored: (string * string list) list) (protectedSheet: bool) : Map<CellAddress, string> =
     let ignoredAreas = ignored |> List.map (fun (sqref, checks) -> areasOf sqref, Set.ofList checks)
     let isIgnored (at: CellAddress) (check: string) =
         ignoredAreas |> List.exists (fun (areas, checks) ->
@@ -104,13 +106,27 @@ let markedCells (cells: Map<CellAddress, CellData>) (ignored: (string * string l
              | _ -> ())
             if not (Map.containsKey at marked) then
                 let mine = formOf at
-                let alike (a: CellAddress) (b: CellAddress) =
-                    match formOf a, formOf b with
-                    | Some x, Some y -> x = y && Some x <> mine
-                    | _ -> false
-                let left, right = { at with Col = at.Col - 1 }, { at with Col = at.Col + 1 }
-                let above, below = { at with Row = at.Row - 1 }, { at with Row = at.Row + 1 }
-                if (at.Col > 0 && alike left right) || (at.Row > 0 && alike above below) then mark at "formula"
+                /// The formula two cells either side have, when they have the same one.
+                let pair (a: CellAddress) (b: CellAddress) =
+                    if a.Row < 0 || a.Col < 0 then None
+                    else
+                        match formOf a, formOf b with
+                        | Some x, Some y when x = y && not (x.Contains "!") -> Some x
+                        | _ -> None
+                // (The column first: a formula is inconsistent when it is unlike the alike formulas above and below it,
+                // whatever its row - A.CRE's =SUM(I7:I8) under =H8*4 and over =H10*4 is marked, =E9/4 under =E8/4 and
+                // between two SUMs is not -; else the row. One that reads another sheet is not marked: A.CRE's
+                // =Assumptions!D45*Assumptions!D22 under =Assumptions!D44*$E$4.)
+                let inconsistent =
+                    match pair { at with Row = at.Row - 1 } { at with Row = at.Row + 1 } with
+                    | Some form -> Some form <> mine
+                    | None ->
+                        match pair { at with Col = at.Col - 1 } { at with Col = at.Col + 1 } with
+                        | Some form -> Some form <> mine
+                        | None -> false
+                if inconsistent && not (text.Contains "!") then mark at "formula"
+            // (On a protected sheet an unlocked formula is meant: the investment-property calculator's, house-flipping's.)
+            if not (Map.containsKey at marked) && cell.Format.Unlocked && not protectedSheet then mark at "unlockedFormula"
             if not (Map.containsKey at marked) then
                 let omits =
                     outsideStrings text
@@ -123,9 +139,11 @@ let markedCells (cells: Map<CellAddress, CellData>) (ignored: (string * string l
                             let c0, r0 = columnOf m.Groups.[1].Value - 1, int m.Groups.[2].Value - 1
                             let c1, r1 = columnOf m.Groups.[3].Value - 1, int m.Groups.[4].Value - 1
                             let r0, r1, c0, c1 = min r0 r1, max r0 r1, min c0 c1, max c0 c1
+                            // (The formula in line with its range, one cell after the cell it leaves out: a total under
+                            // or beside its column or row. Oyabayo's =SUM(N11:BV11) in C11 leaves nothing out.)
                             let next =
-                                if c0 = c1 && r1 > r0 then Some { Row = r1 + 1; Col = c0 }
-                                elif r0 = r1 && c1 > c0 then Some { Row = r0; Col = c1 + 1 }
+                                if c0 = c1 && r1 > r0 && at.Col = c0 && at.Row = r1 + 2 then Some { Row = r1 + 1; Col = c0 }
+                                elif r0 = r1 && c1 > c0 && at.Row = r0 && at.Col = c1 + 2 then Some { Row = r0; Col = c1 + 1 }
                                 else None
                             match next with
                             | Some cell when cell <> at -> isNumberConstant (Map.tryFind cell cells)

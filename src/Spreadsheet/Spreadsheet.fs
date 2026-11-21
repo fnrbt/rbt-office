@@ -4233,7 +4233,7 @@ type Spreadsheet(container: Element) as this =
             match errorMarks with
             | Some (cells, ignored, marks) when obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(ignored, model.IgnoredErrors) -> marks
             | _ ->
-                let marks = Rbt.Spreadsheet.ErrorChecks.markedCells model.Cells model.IgnoredErrors
+                let marks = Rbt.Spreadsheet.ErrorChecks.markedCells model.Cells model.IgnoredErrors model.SheetProtected
                 errorMarks <- Some (box model.Cells, box model.IgnoredErrors, marks)
                 marks
         (match Map.tryFind addr marks with
