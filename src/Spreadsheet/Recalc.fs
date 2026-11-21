@@ -36,7 +36,7 @@ open Rbt.Spreadsheet.Formula
 //
 // A circular reference the edit makes or reaches is found among the formulas
 // the pass has to calculate (their strongly connected components): its
-// formulas show the cycle error, or - in a workbook with iterative
+// formulas keep their values (Excel does not calculate them), or - in a workbook with iterative
 // calculation - are calculated in sweeps, in reading order. Volatile
 // functions (NOW, RAND ...) are evaluated again at every edit, with what
 // reads them. A 3-D reference reads its range on every sheet of its span.
@@ -54,7 +54,7 @@ open Rbt.Spreadsheet.Formula
 // Formula.recalculateWorkbook runs) is a pass of the same graph over every
 // formula: one dependency order for the whole workbook, so one run reaches
 // the values however they travel between sheets, and the formulas on a
-// circular reference - also one that crosses sheets - show the cycle error.
+// circular reference - also one that crosses sheets - keep their values.
 
 /// A range some formulas read, with those formulas.
 type RangeGroup(sheet: SheetState, r0: int, c0: int, r1: int, c1: int, key: string) =
@@ -120,6 +120,16 @@ and Node(sheet: SheetState, row: int, col: int) =
     member val SelfPass = 0 with get, set
     /// The first round of the full pass that found the formula on a circular reference.
     member val CyclicPass = 0 with get, set
+    /// Without iterative calculation: the pass that found the formula on a circular reference or
+    /// reading one - it is not calculated, and keeps the value it has (as in Excel).
+    member val KeptPass = 0 with get, set
+    /// With iterative calculation: the pass that calculates the formula in the sweeps of a circular
+    /// reference - one on it, or one that reads one.
+    member val RegionPass = 0 with get, set
+    /// Without iterative calculation: the formula kept its value when it was last reached - it is on a
+    /// circular reference or reads one - and so does what reads it, whatever else that reads changed
+    /// (Excel 2019: `=A1+C1` reading a cycle stays at 0 when C1 is typed again; `=C1*2` beside it follows).
+    member val Held = false with get, set
     // State of the pass in hand.
     member val Pass = 0 with get, set
     member val Pending = 0 with get, set
@@ -203,6 +213,8 @@ type Engine = {
     mutable Cyclic: ResizeArray<Node>
     /// Every circular reference of the graph is in `Cyclic` (a pass over all of it has looked).
     mutable CyclesKnown: bool
+    /// Formulas that keep their values (`Node.Held`; entries whose flag is down are stale).
+    mutable Held: ResizeArray<Node>
 }
 
 let private keyOf (row: int) (col: int) : float = float row * 16384.0 + float col
@@ -385,6 +397,7 @@ let private unwire (engine: Engine) (node: Node) =
     node.Traits <- 0
     node.OnCycle <- false
     node.Unsettled <- true
+    node.Held <- false
     if node.Dependents.Count = 0 then
         node.Sheet.Nodes.Remove (keyOf node.Row node.Col) |> ignore
 
@@ -504,6 +517,7 @@ let private buildGraph (unloadedToo: bool) (workbook: Workbook) : Engine =
         GraphVersion = 0
         Cyclic = ResizeArray<Node>()
         CyclesKnown = false
+        Held = ResizeArray<Node>()
     }
     for KeyValue (sheetId, sheet) in workbook.Sheets do
         let state = sheetState engine sheetId
@@ -540,7 +554,7 @@ let formulaCount (engine: Engine) = engine.Formulas
 let isUnsupported (engine: Engine) = ignore engine; false
 
 /// Number of formulas the last full pass (`recalculateAll`) found on a circular
-/// reference: they show the cycle error, or - in a workbook with iterative
+/// reference: they keep their values, or - in a workbook with iterative
 /// calculation - were calculated until they settled.
 let cyclicCount (engine: Engine) = engine.LastCyclic
 
@@ -1928,10 +1942,43 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     if full && not (isNull (box state.Model)) then
                         for KeyValue (_, anchor) in loadedSpill state.Model do seedAnchor state anchor
 
-            /// Formulas found on a circular reference show the cycle error, or - with
-            /// iterative calculation - are calculated in sweeps.
+            /// Formulas found on a circular reference, and those that read one, keep their values
+            /// (`keptOf`), or - with iterative calculation - are calculated in sweeps.
             let iteration = edited.Iteration
-            let isCyclic (node: Node) = iteration.IsNone && node.CyclicPass >= firstPass
+            if engine.Held.Count > 0 then
+                let seen = HashSet<Node>(HashIdentity.Reference)
+                engine.Held <- ResizeArray(engine.Held |> Seq.filter (fun node -> node.Held && seen.Add node))
+            /// A formula reads one that keeps its value: a cell of its own or one in a range it reads.
+            let readsHeld (node: Node) =
+                engine.Held.Count > 0
+                && (node.Precedents |> Array.exists (fun precedent -> precedent.Held && precedent.IsFormula && not (obj.ReferenceEquals(precedent, node)))
+                    || (node.Ranges.Length > 0
+                        && engine.Held |> Seq.exists (fun held ->
+                            held.Held && held.IsFormula && not (obj.ReferenceEquals(held, node))
+                            && node.Ranges |> Array.exists (fun group -> obj.ReferenceEquals(group.Sheet, held.Sheet) && held.Row >= group.R0 && held.Row <= group.R1 && held.Col >= group.C0 && held.Col <= group.C1))))
+            let isCyclic (node: Node) = iteration.IsNone && (node.CyclicPass >= firstPass || node.KeptPass = pass || readsHeld node)
+            /// A formula keeps its value / is calculated.
+            let hold (node: Node) (held: bool) =
+                if held && not node.Held then engine.Held.Add node
+                node.Held <- held
+            /// What a formula holds now.
+            let currentOf (node: Node) =
+                match getCellAt node.Row node.Col (modelOf node.Sheet) with
+                | Some cell -> (match cell.Value with CellValue.Formula (_, cached) -> unwrapValue cached | other -> other)
+                | None -> CellValue.Empty
+            /// What a formula on a circular reference, or one reading one, shows without iterative
+            /// calculation: it is not calculated, and keeps its value (one that has none, 0). Excel 2019,
+            /// a full calculation: `=A1+C1` / `=B1*0.5` that the file has at 100 and 50 keep 100 and 50,
+            /// and so do what reads them (`=D1*2` keeps 4, `=ISNUMBER(B1)` 0); a formula beside them is calculated.
+            let keptOf (node: Node) =
+                match currentOf node with
+                | CellValue.Empty -> CellValue.Number 0.0
+                | CellValue.Error e when e = Err.cycle -> CellValue.Number 0.0
+                | value -> value
+            /// A formula that keeps its value: so does what reads it.
+            let keepReaders (node: Node) =
+                for reader in node.Outs do
+                    if reader.Pass = pass then reader.KeptPass <- pass
             if mode = 0 && iteration.IsSome then
                 // Excel calculates every circular reference at every calculation: one
                 // that does not settle moves on by the workbook's number of iterations.
@@ -1942,11 +1989,10 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                     if node.OnCycle && node.IsFormula && node.EdgeMark <> mark then
                         node.EdgeMark <- mark
                         live.Add node
-                        // (One that had settled gives what it has when nothing it reads changed:
-                        // the sweep over it would be dropped. It is not calculated for nothing.)
-                        if node.Unsettled then
-                            reach node
-                            node.NeedsEval <- true
+                        // (One that had settled too: Excel 2019 sweeps it once more at every edit -
+                        // =A6/2+1 is 2 - 2^-10 when typed, 2 - 2^-15 after five more edits.)
+                        reach node
+                        node.NeedsEval <- true
                 engine.Cyclic <- live
             /// The place of a sheet among the tabs: the formulas of a circular reference are calculated in reading order.
             let sheetPlaces = Dictionary<SheetId, int>()
@@ -1969,11 +2015,21 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
             let mutable reachedTotal = 0
             let mutable evaluated = 0
             let mutable evaluations = 0
-            let mutable failure : string = null
+            // (A sort moves formulas without calculating them: one that keeps its value - on a circular
+            // reference or reading one - would lose what says so. The full pass finds them again.)
+            let mutable failure : string =
+                if mode = 0 && sorts.Count > 0 && iteration.IsNone
+                   && (let moved (node: Node) =
+                           match Portable.Dict.tryFind node.Sheet.Id sorts with
+                           | ValueSome _ -> true
+                           | ValueNone -> false
+                       engine.Held |> Seq.exists (fun node -> node.Held && moved node) || engine.Cyclic |> Seq.exists (fun node -> node.OnCycle && moved node)) then
+                    "a sort where formulas keep their values (circular references)"
+                else null
             let mutable rounds = 0
             let mutable nextEval = ResizeArray<Node>()
             let mutable nextSpill = ResizeArray<Node>()
-            let mutable running = true
+            let mutable running = isNull failure
             while running do
                 rounds <- rounds + 1
                 // Everything that reads what was reached - a cell itself or, of a
@@ -2076,7 +2132,23 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                 if order.Count < reached.Count then
                     failure <- "the formulas to evaluate could not be put in order"
                     running <- false
-                elif scan then running <- false
+                elif mode = 0 && sorts.Count > 0 && iteration.IsNone && blocks.Count > 0 then
+                    failure <- "a sort where formulas keep their values (circular references)"
+                    running <- false
+                elif scan then
+                    // (Without iterative calculation the formulas of the circular references, and what
+                    // reads them, keep their values: an engine that only looked for them knows which.)
+                    if iteration.IsNone then
+                        let pendingHeld = Stack<Node>()
+                        for node in order do
+                            if node.OnCycle && node.IsFormula then pendingHeld.Push node
+                        while pendingHeld.Count > 0 do
+                            let node = pendingHeld.Pop()
+                            if not node.Held then
+                                hold node true
+                                for reader in node.Outs do
+                                    if reader.IsFormula && not reader.Held then pendingHeld.Push reader
+                    running <- false
                 else
                     nextEval <- ResizeArray<Node>()
                     nextSpill <- ResizeArray<Node>()
@@ -2209,20 +2281,74 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                         if layoutChanged then
                             for reader in node.Dependents do evalLater reader
                         blocked
+                    /// With iterative calculation: the formulas of the round's circular references and what
+                    /// reads them, calculated at its end - after everything else they read.
+                    let region = ResizeArray<Node>()
+                    /// Excel's iterative calculation (Excel 2019, workbooks opened and calculated): sweeps over
+                    /// the formulas of the circular references and those that read them, in reading order -
+                    /// sheet by sheet, row by row, one that reads a cycle from above it with the value of the
+                    /// sweep before - each formula calculated from the values the others have then, from those
+                    /// it has (the file's). The sweeps stop when no formula of them changed by the workbook's
+                    /// maximum change (what reads the cycle counts too: `=A6*3` beside `=A6/2+1` takes 13 sweeps
+                    /// at 0.001, not 11), or after its number of iterations; the last sweep is kept.
+                    let sweepRegion () =
+                        match iteration with
+                        | Some setting when region.Count > 0 ->
+                            // (Formulas with no value yet - a workbook calculated from nothing - in the order of
+                            // what they read instead: one that reads a cycle from above it would start from
+                            // nothing, and an error it gave would go round the cycle for good.)
+                            let fresh = region |> Seq.exists (fun node -> node.IsFormula && currentOf node = CellValue.Empty)
+                            let members =
+                                if fresh then region |> Seq.sortBy (fun node -> node.Order) |> Seq.toArray
+                                else region |> Seq.sortBy (fun node -> sheetPlace node.Sheet.Id, node.Row, node.Col) |> Seq.toArray
+                            let before = members |> Array.map currentOf
+                            let mutable sweeps = 0
+                            let mutable going = true
+                            while going && sweeps < max 1 setting.MaxIterations do
+                                sweeps <- sweeps + 1
+                                let mutable change = 0.0
+                                for node in members do
+                                    if node.IsFormula then
+                                        // (A formula counts once; every sweep is an evaluation of it.)
+                                        if sweeps = 1 then evaluated <- evaluated + 1
+                                        evaluations <- evaluations + 1
+                                        let previous = currentOf node
+                                        let blocked = if node.Spills then layOut node else false
+                                        let forced = if blocked then spillError else Unchecked.defaultof<CellValue>
+                                        let updated = evaluateNode node (modelOf node.Sheet) workbook forced Unchecked.defaultof<CellValue>
+                                        if not (isNull (box updated)) then
+                                            setModel node.Sheet updated
+                                            change <-
+                                                match previous, currentOf node with
+                                                | CellValue.Number a, CellValue.Number b -> max change (abs (a - b))
+                                                | a, b when a = b -> change
+                                                | _ -> System.Double.PositiveInfinity
+                                if change < setting.MaxChange || change = 0.0 then going <- false
+                            members |> Array.iteri (fun at node ->
+                                node.NeedsEval <- false
+                                if node.OnCycle then node.Unsettled <- going
+                                if node.Dynamic then dynamicSeen <- true
+                                // (What reads a formula the edit changed was calculated with the value it had before.)
+                                let was = if node.BaselinePass = pass && pass = firstPass && not (isNull (box node.Baseline)) then unwrapValue node.Baseline else before.[at]
+                                if currentOf node <> was then
+                                    valueChanged ()
+                                    for reader in node.Outs do
+                                        if reader.RegionPass <> pass then evalLater reader)
+                            region.Clear()
+                        | _ -> ()
                     while index < order.Count do
                         // A circular reference of a workbook with iterative calculation.
                         (match iteration with
-                         | Some setting when blocks.ContainsKey index ->
+                         | Some _ when blocks.ContainsKey index ->
+                            // (Calculated in the sweeps at the end of the round, with what reads them: `sweepRegion`.)
                             let last = blocks.[index]
-                            let cachedOf (node: Node) =
-                                match Map.tryFind { Row = node.Row; Col = node.Col } (modelOf node.Sheet).Cells with
-                                | Some cell -> (match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other)
-                                | None -> CellValue.Empty
-                            let before = [| for at in index .. last -> cachedOf order.[at] |]
-                            // (A formula that showed the cycle error - iteration was off - starts from nothing, as in Excel.)
                             for at in index .. last do
                                 let node = order.[at]
-                                if node.IsFormula && before.[at - index] = CellValue.Error Err.cycle then
+                                if node.RegionPass <> pass then
+                                    node.RegionPass <- pass
+                                    region.Add node
+                                // (A formula that showed the cycle error starts from nothing, as in Excel.)
+                                if node.IsFormula && currentOf node = CellValue.Error Err.cycle then
                                     let model = modelOf node.Sheet
                                     let addr = { Row = node.Row; Col = node.Col }
                                     match Map.tryFind addr model.Cells with
@@ -2230,62 +2356,12 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, CellValue.Empty) } model.Cells }
                                         setModel node.Sheet updated
                                     | None -> ()
-                            let mutable sweeps = 0
-                            let mutable going = true
-                            while going && sweeps < max 1 setting.MaxIterations do
-                                sweeps <- sweeps + 1
-                                let heldWorkbook = workbook
-                                let heldModels = [| for KeyValue (sheetId, held) in models -> sheetId, held |]
-                                let mutable change = 0.0
-                                for at in index .. last do
-                                    let node = order.[at]
-                                    if node.IsFormula then
-                                        // (A formula of the cycle counts once; every sweep is an evaluation of it.)
-                                        if sweeps = 1 then evaluated <- evaluated + 1
-                                        evaluations <- evaluations + 1
-                                        let state = node.Sheet
-                                        let model = modelOf state
-                                        let addr = { Row = node.Row; Col = node.Col }
-                                        match Map.tryFind addr model.Cells with
-                                        | Some cell ->
-                                            let previous = match cell.Value with CellValue.Formula (_, cached) -> cached | other -> other
-                                            let result =
-                                                match node.Expr with
-                                                | Some expr -> evalFormulaCell expr { Model = model; Workbook = Some workbook; Sheet = Some state.Id; CurrentCell = Some addr } previous
-                                                | None -> CellValue.Error Err.syntax
-                                            if previous <> result then
-                                                change <-
-                                                    match previous, result with
-                                                    | CellValue.Number a, CellValue.Number b -> max change (abs (a - b))
-                                                    | _ -> System.Double.PositiveInfinity
-                                                let updated = { model with Cells = Map.add addr { cell with Value = CellValue.Formula (node.Formula, result) } model.Cells }
-                                                setModel state updated
-                                        | None -> ()
-                                if change < setting.MaxChange || change = 0.0 then
-                                    // Settled: the sweep's last small steps are not kept.
-                                    going <- false
-                                    if change > 0.0 then
-                                        workbook <- heldWorkbook
-                                        models.Clear()
-                                        for sheetId, held in heldModels do models.[sheetId] <- held
-                                        heldState <- Unchecked.defaultof<SheetState>
-                            for at in index .. last do
-                                let node = order.[at]
-                                node.NeedsEval <- false
-                                node.Unsettled <- going
-                                if node.Dynamic then dynamicSeen <- true
-                                // (What reads a formula the edit changed was calculated with the value it had before.)
-                                let was = if node.BaselinePass = pass && pass = firstPass then node.Baseline else before.[at - index]
-                                if cachedOf node <> was then
-                                    valueChanged ()
-                                    for reader in node.Outs do
-                                        if reader.Order > last then reader.NeedsEval <- true
                          | None when blocks.ContainsKey index ->
                             // A circular reference of the references written is one of those read only
                             // when Excel's calculation follows them: the branch of an IF the values do
                             // not take is not read (`liveReferences`). The formulas are calculated in
                             // the order of what they read, that order found again from their new values
-                            // until it stays; those still on a cycle of it show the cycle error.
+                            // until it stays; those still on a cycle of it keep their values, and what reads them.
                             let last = blocks.[index]
                             let members = [| for at in index .. last -> order.[at] |]
                             if members |> Array.forall (fun node -> not node.Spills) then
@@ -2314,6 +2390,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         Seq.toArray deps |> Array.sort
                                     | _ -> [||]
                                 let onCycle = Array.create n false
+                                // (On a cycle, or reading one: not calculated - the values the formulas have.)
+                                let kept = Array.create n false
+                                let held = members |> Array.map keptOf
                                 let mutable graph = Array.init n liveDeps
                                 let mutable sweeps = 0
                                 let mutable going = true
@@ -2321,6 +2400,9 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                     sweeps <- sweeps + 1
                                     let calculation, cycleNow = liveCycleOrder graph
                                     Array.blit cycleNow 0 onCycle 0 n
+                                    Array.blit cycleNow 0 kept 0 n
+                                    for i in calculation do
+                                        if graph.[i] |> Array.exists (fun j -> kept.[j]) then kept.[i] <- true
                                     let evaluate (i: int) (forced: CellValue) =
                                         let node = members.[i]
                                         if node.IsFormula then
@@ -2331,9 +2413,8 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                             if not (isNull (box updated)) then
                                                 valueChanged ()
                                                 setModel node.Sheet updated
-                                    // (Those on a cycle first: what reads one, and catches its error, has it to read.)
-                                    for i in 0 .. n - 1 do if onCycle.[i] then evaluate i (CellValue.Error Err.cycle)
-                                    for i in calculation do evaluate i Unchecked.defaultof<CellValue>
+                                    for i in 0 .. n - 1 do if onCycle.[i] then evaluate i held.[i]
+                                    for i in calculation do evaluate i (if kept.[i] then held.[i] else Unchecked.defaultof<CellValue>)
                                     let next = Array.init n liveDeps
                                     if next = graph || sweeps >= 8 then going <- false
                                     else graph <- next
@@ -2341,6 +2422,10 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                     let node = members.[i]
                                     node.NeedsEval <- false
                                     if node.Dynamic then dynamicSeen <- true
+                                    hold node kept.[i]
+                                    if kept.[i] then
+                                        node.KeptPass <- pass
+                                        keepReaders node
                                     if not onCycle.[i] then
                                         node.OnCycle <- false
                                         if node.CyclicPass >= firstPass then
@@ -2348,14 +2433,30 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                             cyclicCount <- cyclicCount - 1
                          | _ -> ())
                         let node = order.[index]
-                        let lays = node.NeedsSpill || (node.NeedsEval && node.IsFormula && node.Spills)
+                        let swept = iteration.IsSome && node.RegionPass = pass
+                        if swept then
+                            // (What reads it is calculated in the sweeps with it.)
+                            for reader in node.Outs do
+                                if reader.Pass = pass && reader.RegionPass <> pass then
+                                    reader.RegionPass <- pass
+                                    region.Add reader
+                        let lays = not swept && (node.NeedsSpill || (node.NeedsEval && node.IsFormula && node.Spills))
                         let blocked = if lays then layOut node else false
-                        if (node.NeedsEval || lays) && node.IsFormula then
+                        // (One not to be calculated now: whether it keeps its value follows what it reads -
+                        // one that kept it and reads no such formula any more is calculated.)
+                        if iteration.IsNone && not swept && node.IsFormula && not node.NeedsEval && not lays then
+                            let keep = isCyclic node
+                            if node.Held && not keep then node.NeedsEval <- true
+                            elif keep && not node.Held then
+                                hold node true
+                                keepReaders node
+                        if not swept && (node.NeedsEval || lays) && node.IsFormula then
                             evaluated <- evaluated + 1
                             evaluations <- evaluations + 1
                             let state = node.Sheet
+                            let kept = isCyclic node
                             let forced =
-                                if isCyclic node then CellValue.Error Err.cycle
+                                if kept then keptOf node
                                 elif blocked then spillError
                                 else Unchecked.defaultof<CellValue>
                             let baseline = if node.BaselinePass = pass && pass = firstPass then node.Baseline else Unchecked.defaultof<CellValue>
@@ -2363,8 +2464,11 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                             if not (isNull (box updated)) then
                                 valueChanged ()
                                 setModel state updated
+                            if kept then keepReaders node
+                            if iteration.IsNone then hold node kept
                             if node.Dynamic then dynamicSeen <- true
                         index <- index + 1
+                    sweepRegion ()
                     if nextEval.Count = 0 && nextSpill.Count = 0 && not dynamicStale then running <- false
                     elif rounds >= 200 then
                         // The full pass has no one to hand the workbook to: it stops with what it has.

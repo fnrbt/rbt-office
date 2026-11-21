@@ -3466,8 +3466,9 @@ checks['api-recalc-more'] = async () => {
         both((grid) => { grid.SelectRange(20, 0, 20, 0); });
         for (const grid of grids) { await grid.Copy(); grid.SelectCell(21, 0); await grid.Paste(); }
         now = stepIs('a pasted formula that closes a circular reference: by the engine', 'Sheet1!A21:B22');
-        const cycleText = now.rows[0][0];
-        check('... both formulas show the cycle, and what reads them', [/CYCLE/.test(cycleText), now.rows[1][0], now.rows[0][1], incremental.grid.GetCell(21, 0).formula], [true, cycleText, cycleText, '=$A$22*2+1']);
+        // (Excel without iterative calculation: the formulas of the cycle and what reads it are not calculated -
+        // they keep their values, the new one 0.)
+        check('... the formulas keep their values, the pasted one 0', [now.rows[0][0], now.rows[1][0], now.rows[0][1], incremental.grid.GetCell(21, 0).formula], ['1', '0', '2', '=$A$22*2+1']);
         both((grid) => grid.EnterText(30, 3, '5'));
         stepIs('an edit beside the cycle: incremental', 'Sheet1!A21:B22');
         both((grid) => grid.Undo()); both((grid) => grid.Undo());
@@ -3484,7 +3485,8 @@ checks['api-recalc-more'] = async () => {
         check('... settled again', Math.abs(Number(now.rows[0][1].replace(/,/g, '')) - 2222.22) < 0.01, true);
         both((grid) => grid.EnterText(40, 3, '9'));
         now = stepIs('iterating: an edit elsewhere', 'Sheet1!A25:C25');
-        check('... leaves the settled cycle alone (nothing evaluated)', now.evaluated, 0);
+        // (Excel sweeps a circular reference once more at every calculation: it moves by less than the maximum change.)
+        check('... sweeps the settled cycle once more', [now.evaluated > 0, Math.abs(Number(now.rows[0][1].replace(/,/g, '')) - 2222.22) < 0.01], [true, true]);
 
         // The real case: milk-street-office.xlsx, Annual!C21:N40 pasted at C101 closes a circular reference across sheets.
         const real = mountGrid(), reference = mountGrid();
@@ -3544,11 +3546,10 @@ checks['api-recalc-order'] = async () => {
         // A circular reference across two sheets.
         both((grid) => { grid.EnterText(0, 3, '=Two!D1+1'); grid.EnterText(1, 3, '=D1*2'); grid.EnterText(2, 3, '=1+1'); grid.SwitchSheet(1); grid.EnterText(0, 3, '=Sheet1!D1+1'); grid.SwitchSheet(0); });
         now = shown('Sheet1!D1:D3');
-        const cycleText = now.rows[0][0];
-        check('a formula that reads itself through another sheet: both show the cycle error, what reads them too, others are calculated',
-            [now.kind, now.same, /CYCLE/.test(cycleText), now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], ['incremental', true, true, [cycleText, cycleText, '2'], cycleText]);
+        check('a formula that reads itself through another sheet: not calculated, the values they had (the new one 0), what reads them too, others calculated',
+            [now.kind, now.same, now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], ['incremental', true, ['1', '2', '2'], '0']);
         both((grid) => grid.EnterText(5, 0, '7'));
-        check('an edit beside the cycle is incremental', [shown('Sheet1!A6:A6').kind, texts(incremental.grid, 'Sheet1!D1')[0][0]], ['incremental', cycleText]);
+        check('an edit beside the cycle is incremental', [shown('Sheet1!A6:A6').kind, texts(incremental.grid, 'Sheet1!D1')[0][0]], ['incremental', '1']);
         both((grid) => { grid.SwitchSheet(1); grid.EnterText(0, 3, '4'); grid.SwitchSheet(0); });
         now = shown('Sheet1!D1:D3');
         check('the cycle broken: the values are there', [now.same, now.rows.map((row) => row[0])], [true, ['5', '10', '2']]);
@@ -3557,7 +3558,7 @@ checks['api-recalc-order'] = async () => {
         const grid = incremental.grid;
         check('iterative calculation is off in a new workbook', grid.GetIterativeCalculation(), { enabled: false, maxIterations: 100, maxChange: 0.001 });
         grid.EnterText(0, 5, '1000'); grid.EnterText(0, 6, '=F1+Two!F1'); grid.SwitchSheet(1); grid.EnterText(0, 5, '=Sheet1!G1*0.1'); grid.SwitchSheet(0);
-        check('a loan and its interest without it: the cycle error', [texts(grid, 'Sheet1!G1')[0][0], texts(grid, 'Two!F1')[0][0]], [cycleText, cycleText]);
+        check('a loan and its interest without it: not calculated (the total as it was, the interest 0)', [grid.GetCell(0, 6).value, grid.GetRange('Two!F1')[0][0].value], [1000, 0]);
         const revision = grid.GetRevision();
         let changes = 0;
         const off = grid.OnChange(() => changes++);
@@ -3578,7 +3579,7 @@ checks['api-recalc-order'] = async () => {
         grid.SetIterativeCalculation(true, 5, 0.5);
         check('other numbers', grid.GetIterativeCalculation(), { enabled: true, maxIterations: 5, maxChange: 0.5 });
         grid.Undo(); grid.Undo();
-        check('the setting undone: off, the cycle error again', [grid.GetIterativeCalculation().enabled, texts(grid, 'Sheet1!G1')[0][0], grid.GetRevision() === revision], [false, cycleText, true]);
+        check('the setting undone: off, the values as they were before it', [grid.GetIterativeCalculation().enabled, grid.GetCell(0, 6).value, grid.GetRevision() === revision], [false, 1000, true]);
         grid.Redo();
         check('... redone', [grid.GetIterativeCalculation().enabled, near(grid.GetCell(0, 6).value, 1111.111)], [true, true]);
         off();
