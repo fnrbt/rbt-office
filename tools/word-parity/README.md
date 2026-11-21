@@ -122,7 +122,9 @@ are checked by `tests/word/hyphenation.fsx`.
 
 `fixtures/justify-squeeze.py` (how far Word narrows a justified line's spaces to fit more text: fonts, sizes,
 space counts, compatibility modes, alignments, last lines, hyphenation, cells, columns; `--table <dir>` reads
-Word's PDFs - or `--pdfs <dir>` another set - into `word/squeeze.tsv`, a row per probe) is checked by
+Word's PDFs - or `--pdfs <dir>` another set - into `word/squeeze.tsv`, a row per probe) and
+`fixtures/justify-squeeze-word.py` (when the line's last word stays on by that narrowing: the word's length,
+the number of spaces, fonts; its `word/squeeze.tsv` by justify-squeeze.py's `--table`) are checked by
 `tests/word/justify-squeeze.fsx`.
 
 `fixtures/table-width.py` writes `tests/word/fixtures/table-width/` (how wide Word makes a table's

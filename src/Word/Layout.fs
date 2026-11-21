@@ -3161,6 +3161,36 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     // quarter fits).
     let lineLimit (safety: float) =
         if currentSpaceShrink > 0.0 then currentLineEnd + currentSpaceShrink + 0.004 else currentLineEnd - safety
+    // Text ending this far past the line's end fits by narrowing its spaces only when they would narrow
+    // by no more than half what they would widen were the last word to go on to the next line: its
+    // overflow over the spaces' width no more than half the room it would leave over the spaces before
+    // it (Word 2019, justify-squeeze-word: n spaces, the last word and its space w + s, the word stays
+    // up to an overflow of n (w + s) / (3n - 2) - fine-cour10 n 5 ... 20, fine-geo10, fine-cal11 within
+    // 0.005 of it; no spaces before it: a quarter of each, as justify-squeeze n1). Text within the line
+    // always fits; lineLimit's quarter still bounds the rest.
+    let squeezeAllowed (textEnd: float) =
+        let over = textEnd - currentLineEnd
+        if over <= 0.0 || currentSpaceShrink <= 0.0 || settings.SpaceShrink <= 0.0 then true
+        else
+            // (The spaces ending the line so far - before the last word: what it leaves were it to go.)
+            let struct (trailingWidth, trailingShrink) =
+                if currentSegments.Count = 0 then struct (0.0, 0.0)
+                else
+                    match currentSegments.[currentSegments.Count - 1] with
+                    | TextSegment (text, style, _, _, _) when text.IndexOf '\t' < 0 ->
+                        let visible = visibleTokenLength text
+                        let displayText = WordLayout.Text.displayText style text
+                        if visible < text.Length && displayText.Length = text.Length then
+                            let spaces = measureRange displayText (WordLayout.Text.displayStyle style) visible (text.Length - visible)
+                            struct (spaces, settings.SpaceShrink * spaces)
+                        else struct (0.0, 0.0)
+                    | _ -> struct (0.0, 0.0)
+            let restShrink = currentSpaceShrink - trailingShrink
+            if restShrink <= 1e-6 then true
+            else
+                let room = currentLineEnd - (currentX - trailingWidth)
+                // (0.005pt: fine-geo10-n9-k2 fits 0.0013pt short of it, fine-geo10-n20-k2 goes 0.014pt past.)
+                over <= 0.5 * room * currentSpaceShrink / restShrink + 0.005
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
 
@@ -3887,12 +3917,13 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                         // Word fits the visible token; a trailing space may cross
                                         // the text boundary without forcing the word to the next line.
                                         let visibleWidth = measureRange displayRunText displayRunStyle consumed visibleLength
-                                        if lineLimit (trailingSpaceFitSafety settings visibleLength) - (currentX + visibleWidth) >= 0.0 then visibleWidth else width
+                                        if lineLimit (trailingSpaceFitSafety settings visibleLength) - (currentX + visibleWidth) >= 0.0
+                                           && squeezeAllowed (currentX + visibleWidth) then visibleWidth else width
                                     else width
 
                             let fullFitSafety = fitSafety settings settings.InTableCell currentHasMixedTextMetrics
 
-                            let overflows = currentX + fitWidth > lineLimit fullFitSafety
+                            let overflows = currentX + fitWidth > lineLimit fullFitSafety || not (squeezeAllowed (currentX + fitWidth))
                             // For the strip-skip decision use the visible width (no trailing
                             // whitespace), so a short word like "Float" that fits the strip
                             // but whose trailing space pushes it over still gets placed.
@@ -3900,7 +3931,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                                 let visibleLength = visibleTokenLengthRange runText tokenOffset remainingLength
                                 if visibleLength > 0 && visibleLength < remainingLength && not hasTab then
                                     let vw = measureRange displayRunText displayRunStyle consumed visibleLength - hangWidth
-                                    currentX + vw > lineLimit fullFitSafety
+                                    currentX + vw > lineLimit fullFitSafety || not (squeezeAllowed (currentX + vw))
                                 else overflows
                             // (The word on the line alone and longer than it: broken where the line is
                             // full - or at the run's start when not a character more fits.)
