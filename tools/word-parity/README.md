@@ -134,3 +134,9 @@ starts and its right-aligned one ends from Word's PDFs into `word/edges.tsv`, wh
 (how far a column whose cell holds a nested table gives way; how a nested table is laid out in a
 fixed or an autofit table; aligned tables' room in compatibility mode 14), read with
 `table-width.py --edges` and checked by the same `table-width.fsx`.
+
+`fixtures/footnote-columns.py` writes `tests/word/fixtures/footnote-columns/` (the footnotes of a section with
+columns: which column a note goes under, the separator, how far each column runs down, references near a
+column's foot, balanced sections, unequal and three or four columns, compatibility mode 14); its docstring has
+the steps (a `WORD_VM_DIR` of its own keeps another run's staging folder apart); `pdf-geometry.py --paths` reads
+Word's lines and rules into `word/geometry.tsv`, which `tests/word/footnote-columns.fsx` checks ours against.
