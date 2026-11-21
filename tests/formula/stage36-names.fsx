@@ -44,7 +44,7 @@ let other = sheetOf [ at 0 0, fml "=SUM(Totals)"; at 1 0, fml "=Rate*100"; at 0 
 let wb0 : Wb.Workbook =
     { Sheets = Map.ofList [ "sheet1", ({ Id = "sheet1"; Name = "Data"; Model = data; Visible = true } : Wb.Sheet)
                             "sheet2", ({ Id = "sheet2"; Name = "Other"; Model = other; Visible = true } : Wb.Sheet) ]
-      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
 let valueOf sheet row col (wb: Wb.Workbook) = getCellValue (at row col) wb.Sheets.[sheet].Model |> unwrapFormulaValue
 let calc = recalculateWorkbook
 

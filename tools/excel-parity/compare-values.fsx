@@ -2,7 +2,13 @@
 // (tools/excel-parity/dump-values.vbs: values.tsv). Each workbook is imported, every formula's
 // cached result is thrown away, and the workbook is recalculated from nothing.
 //
-//   dotnet fsi tools/excel-parity/compare-values.fsx VALUES.tsv DOCS_DIR [--list N]
+//   dotnet fsi tools/excel-parity/compare-values.fsx VALUES.tsv DOCS_DIR [--list N] [--cached | --cached-new]
+//
+// --cached: every workbook is compared against the values its file keeps (what the Excel that saved it
+// computed: Excel 365 for most), not against VALUES.tsv - every formula cell and every cell a dynamic
+// array spilled into. --cached-new: so are the workbooks Excel 2019 cannot calculate - those whose
+// formulas call a function it does not have (`newFunctions`: dynamic arrays, `@`, LET ...) or that keep
+// dynamic arrays (xl/metadata.xml); the others against VALUES.tsv.
 //
 // Cells are left out where Excel cannot say: #NAME? (a function this Excel does not have: the VM's
 // is 2019's engine) and the volatile functions (RAND, NOW, TODAY ...). Numbers agree to 1e-9 relative;
@@ -21,6 +27,8 @@ module Wb = Rbt.Spreadsheet.Workbook
 let args = fsi.CommandLineArgs |> Array.skip 1
 let valuesPath, docsDir = args.[0], args.[1]
 let listCount = match Array.tryFindIndex ((=) "--list") args with Some i -> int args.[i + 1] | None -> 5
+let cachedAll = Array.contains "--cached" args
+let cachedNew = Array.contains "--cached-new" args
 
 type Expected = { Sheet: string; Address: string; Kind: string; Text: string }
 let expected =
@@ -31,6 +39,15 @@ let expected =
         | _ -> None)
     |> Array.groupBy fst
     |> Array.map (fun (book, rows) -> book, rows |> Array.map snd)
+
+/// Functions Excel 2019 does not have (its #NAME?, or its implicit intersection where 365 spills).
+let newFunctions =
+    Text.RegularExpressions.Regex(
+        "\\b(SINGLE|ANCHORARRAY|SEQUENCE|FILTER|SORT|SORTBY|UNIQUE|XLOOKUP|XMATCH|LET|LAMBDA|RANDARRAY|MAP|REDUCE|SCAN|BYROW|BYCOL|MAKEARRAY|ISOMITTED|TEXTBEFORE|TEXTAFTER|TEXTSPLIT|VSTACK|HSTACK|TOROW|TOCOL|WRAPROWS|WRAPCOLS|TAKE|DROP|CHOOSEROWS|CHOOSECOLS|EXPAND|GROUPBY|PIVOTBY|PERCENTOF|ARRAYTOTEXT|VALUETOTEXT|TRIMRANGE|REGEXTEST|REGEXEXTRACT|REGEXREPLACE|IMAGE)\\s*\\(",
+        Text.RegularExpressions.RegexOptions.IgnoreCase)
+let keepsDynamicArrays (path: string) =
+    use zip = IO.Compression.ZipFile.OpenRead path
+    zip.Entries |> Seq.exists (fun entry -> entry.FullName = "xl/metadata.xml")
 
 let volatile = Text.RegularExpressions.Regex("\\b(RAND|RANDBETWEEN|RANDARRAY|NOW|TODAY|INFO|CELL|OFFSET|INDIRECT)\\s*\\(", Text.RegularExpressions.RegexOptions.IgnoreCase)
 
@@ -74,12 +91,40 @@ let mutable totalAgreed = 0
 let mutable totalSkipped = 0
 let mutable totalNear = 0
 let lines = ResizeArray<string>()
+let colName c = let rec go c = if c < 26 then string (char (65 + c)) else go (c / 26 - 1) + string (char (65 + c % 26)) in go c
+let kindOf (value: CellValue) =
+    match value with
+    | Number n -> "n", n.ToString("0.00000000000000E+00", Globalization.CultureInfo.InvariantCulture)
+    | String s -> "s", s.Replace('\t', ' ').Replace('\r', ' ').Replace('\n', ' ')
+    | Boolean b -> "b", (if b then "True" else "False")
+    | Error e -> "e", (if e.StartsWith "#" then e else "#" + e)
+    | _ -> "x", ""
 for book, cells in expected |> Array.sortBy fst do
     let path = Path.Combine(docsDir, book)
     if File.Exists path then
         try
             let imported = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes path) |> Option.get)
             let context = imported.Context
+            let models = context.Sheets |> Map.toList |> List.map (fun (_, sheet) -> sheet.Name, resolveSheet sheet.Model)
+            let usesNew =
+                models |> List.exists (fun (_, model) -> model.Cells |> Map.exists (fun _ cell -> match cell.Value with Formula (text, _) -> newFunctions.IsMatch text | _ -> false))
+            let fromFile = cachedAll || (cachedNew && (usesNew || keepsDynamicArrays path))
+            // (Against the file: every formula cell and every spilled cell, with the value the file keeps.)
+            let cells =
+                if not fromFile then cells
+                else
+                    [| for name, model in models do
+                        for KeyValue (at, cell) in model.Cells do
+                            let kept =
+                                match cell.Value with
+                                | Formula (_, cached) -> Some (unwrapFormulaValue cached)
+                                | value when Map.containsKey at model.Spill -> Some value
+                                | _ -> None
+                            match kept with
+                            | Some value when value <> Empty ->
+                                let kind, text = kindOf value
+                                yield { Sheet = name; Address = sprintf "%s%d" (colName at.Col) (at.Row + 1); Kind = kind; Text = text }
+                            | _ -> () |]
             // (Every result thrown away: the engine computes each from nothing.)
             let cleared =
                 { context with
@@ -101,7 +146,7 @@ for book, cells in expected |> Array.sortBy fst do
                     let at = addressOf want.Address
                     let cell = getCell at model
                     let formula = match cell |> Option.map (fun c -> c.Value) with Some (Formula (text, _)) -> text | _ -> ""
-                    if want.Text = "#NAME?" || volatile.IsMatch formula then skipped <- skipped + 1
+                    if (want.Text = "#NAME?" && not fromFile) || volatile.IsMatch formula then skipped <- skipped + 1
                     else
                         compared <- compared + 1
                         let got = getCellValue at model |> unwrapFormulaValue
@@ -113,7 +158,7 @@ for book, cells in expected |> Array.sortBy fst do
             totalAgreed <- totalAgreed + agreed
             totalSkipped <- totalSkipped + skipped
             totalNear <- totalNear + nearly
-            lines.Add (sprintf "%s %s: %d of %d agree%s (%d left out)" (if agreed + nearly = compared then "ok  " else "DIFF") book agreed compared (if nearly > 0 then sprintf ", %d near" nearly else "") skipped)
+            lines.Add (sprintf "%s %s: %d of %d agree%s (%d left out)%s" (if agreed + nearly = compared then "ok  " else "DIFF") book agreed compared (if nearly > 0 then sprintf ", %d near" nearly else "") skipped (if fromFile then " [against the file's values]" else ""))
             lines.AddRange differences
         with error -> lines.Add (sprintf "FAIL %s: %s" book (error.Message.Split('\n').[0]))
 for line in lines do printfn "%s" line

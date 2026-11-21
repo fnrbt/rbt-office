@@ -230,7 +230,7 @@ let buildWorkbookContext (models: SpreadsheetModel array) (names: string array) 
       Tables = Map.ofList tables
       Names = definedNames
       NameInfo = Map.empty
-      Iteration = None }
+      Iteration = None; External = Map.empty }
 
 /// Pixels at 100% per EMU (the unit drawing anchors use in the file).
 let private emuPerPixel = 9525.0
@@ -1209,6 +1209,68 @@ module Import =
     let private iterationOf (wb: XlsxReader.Workbook) : Wb.IterativeCalculation option =
         wb.Preserved.CalcIteration |> Option.map (fun (count, delta) -> { Wb.IterativeCalculation.MaxIterations = count; MaxChange = delta })
 
+    /// What the file keeps of the workbooks its formulas refer to (`Workbook.External`): each
+    /// `<externalReference>` of workbook.xml in order is `[1]`, `[2]` ...; its externalLink part's
+    /// `<sheetNames>` and `<sheetDataSet>` the sheets and the values Excel last read of them. A
+    /// sheet whose values could not be read (`refreshError`) is left out: what reads it is #REF!.
+    let externalBooksOf (wb: XlsxReader.Workbook) : Map<string, SpreadsheetModel> =
+        let preserved = wb.Preserved
+        if String.IsNullOrEmpty preserved.ExternalReferencesXml then Map.empty
+        else
+            let kids node = match node with XmlDsl.Element (_, _, children, _) -> children | _ -> []
+            let local (name: string) = match name.IndexOf ':' with -1 -> name | at -> name.Substring(at + 1)
+            let nameOf node = match node with XmlDsl.Element (name, _, _, _) -> local name | _ -> ""
+            let attr (name: string) node =
+                match node with
+                | XmlDsl.Element (_, attrs, _, _) -> attrs |> Map.tryPick (fun key value -> if key = name || local key = name then Some value else None)
+                | _ -> None
+            let childrenNamed name node = kids node |> List.filter (fun c -> nameOf c = name)
+            let textOf node = kids node |> List.choose (function XmlDsl.Text s -> Some s | _ -> None) |> String.concat ""
+            let partBytes (target: string) =
+                let target = target.TrimStart '/'
+                preserved.Parts |> List.tryPick (fun (path, data) -> if path.TrimStart '/' = target then Some data else None)
+            try
+                let references = XmlDsl.parse preserved.ExternalReferencesXml
+                let ids = (if nameOf references = "externalReference" then [ references ] else childrenNamed "externalReference" references) |> List.choose (attr "id")
+                [ for index, id in List.indexed ids do
+                    let target = preserved.WorkbookRelationships |> List.tryPick (fun (rid, _, target, _) -> if rid = id then Some target else None)
+                    match target |> Option.bind partBytes with
+                    | Some data ->
+                        let link = XmlDsl.parse (Text.Encoding.UTF8.GetString data)
+                        for book in childrenNamed "externalBook" link do
+                            let sheetNames =
+                                childrenNamed "sheetNames" book |> List.collect (childrenNamed "sheetName") |> List.map (fun n -> attr "val" n |> Option.defaultValue "") |> List.toArray
+                            for data in childrenNamed "sheetDataSet" book |> List.collect (childrenNamed "sheetData") do
+                                let sheetIndex = attr "sheetId" data |> Option.bind (fun t -> match Int32.TryParse t with true, v -> Some v | _ -> None)
+                                match sheetIndex with
+                                | Some i when i >= 0 && i < sheetNames.Length && attr "refreshError" data <> Some "1" && attr "refreshError" data <> Some "true" ->
+                                    let cells =
+                                        [ for row in childrenNamed "row" data do
+                                            for cell in childrenNamed "cell" row do
+                                                match attr "r" cell |> Option.bind CellRef.parse with
+                                                | Some (r, c) ->
+                                                    let text = childrenNamed "v" cell |> List.tryHead |> Option.map textOf
+                                                    let value =
+                                                        match attr "t" cell, text with
+                                                        | _, None -> CellValue.Empty
+                                                        | Some ("str" | "s" | "inlineStr"), Some t -> CellValue.String t
+                                                        | Some "b", Some t -> CellValue.Boolean (t = "1" || t = "true")
+                                                        | Some "e", Some t -> CellValue.Error (t.TrimStart '#')
+                                                        | _, Some t ->
+                                                            match Double.TryParse(t, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+                                                            | true, v -> CellValue.Number v
+                                                            | _ -> CellValue.String t
+                                                    if value <> CellValue.Empty then
+                                                        yield { Row = r; Col = c }, { Value = value; Format = defaultFormat; Comment = None }
+                                                | None -> () ]
+                                    let rows = cells |> List.fold (fun m (a, _) -> max m (a.Row + 1)) 1
+                                    let cols = cells |> List.fold (fun m (a, _) -> max m (a.Col + 1)) 1
+                                    yield (sprintf "[%d]%s" (index + 1) sheetNames.[i]).ToUpperInvariant(), { createEmpty rows cols with Cells = Map.ofList cells }
+                                | _ -> ()
+                    | None -> () ]
+                |> Map.ofList
+            with _ -> Map.empty
+
     let private definedNameInfo (wb: XlsxReader.Workbook) : Map<Wb.SheetId option * string, Wb.DefinedNameInfo> =
         wb.NamedRanges
         |> List.map (fun entry ->
@@ -1244,7 +1306,7 @@ module Import =
             imports |> Array.fold (fun acc import -> Map.fold (fun m k v -> Map.add k v m) acc import.TableColumns) Map.empty
         let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
         let context =
-            { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb }
+            { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb; External = externalBooksOf wb }
             |> computeUncachedFormulas
         let finalModels =
             Array.init names.Length (fun index ->
@@ -1357,7 +1419,7 @@ module Import =
             let visible = readerSheets |> Array.map (fun sheet -> sheetStateText sheet.State = "visible")
             let firstVisible = visible |> Array.tryFindIndex id |> Option.defaultValue 0
             let models = standIns |> Array.mapi (fun index standIn -> if convertNow index then convert index else standIn)
-            let context = { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb }
+            let context = { buildWorkbookContext models names visible tableColumns names' firstVisible with NameInfo = definedNameInfo wb; Iteration = iterationOf wb; External = externalBooksOf wb }
             { Sheets =
                 names
                 |> Array.mapi (fun index name ->

@@ -1594,7 +1594,8 @@ type Spreadsheet(container: Element) as this =
               Tables = Map.empty
               Names = Map.empty
               NameInfo = Map.empty
-              Iteration = None }
+              Iteration = None
+              External = Map.empty }
 
     let installWorkbookSnapshot (wb: Workbook) =
         for i in 0 .. sheets.Length - 1 do

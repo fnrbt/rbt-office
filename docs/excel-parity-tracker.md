@@ -1,6 +1,6 @@
 # Excel Parity Tracker
 
-Last updated: 2026-11-10 UTC.
+Last updated: 2026-11-21 UTC.
 
 This tracker is for deciding what to fix next and recording which parity
 surfaces have actually been checked. It complements
@@ -51,6 +51,39 @@ surfaces have actually been checked. It complements
 - [x] Browser/Fable screenshot pass for imported XLSX fixtures: 85/85
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
+
+## Formula oracle on real-world models, 2026-11-21
+
+Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel
+2019's full recalculation (`dump-values.vbs`, `compare-values.fsx`), and - for the two that need Excel
+365 (`@`, SEQUENCE, XMATCH, dynamic arrays) - against the values the file keeps (`--cached-new`).
+Before: 86,045 of 97,011 cells agreed. After: every cell agrees (99,977 of 100,235 at 1e-9, the 258
+others within 1e-6: XIRR within Excel's own accuracy, and a model with iterative calculation, which
+stops within its 0.001). The corpus oracle is unchanged: 50,480 of 50,496 (the same 16 XIRR).
+Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-vm.sh`):
+
+- A formula whose value is an empty cell (`=B9`, `=IF(c,"",B9)`) is 0: `=A1=""` reads FALSE,
+  `CONCATENATE(blank," ",x)` gives "0" for it. So is an empty cell of a dynamic array. No negative zero.
+- A circular reference only through the branch of an IF / IFS / IFERROR / IFNA / CHOOSE the values do
+  not take is none: `=IF(B1="",5,A2)` in A1 with `=A1` in A2 gives 5 and 5 (`Formula.liveReferences`,
+  in both passes). With the branch taken Excel reports it and shows 0; ours shows the cycle error.
+- Cancellation to 0 at the end of a formula's addition: a result under 8 units in the last place of
+  the larger operand (7 are 0, 8 are not, for any mantissa), was 2^-48 of it. SUM's last addition
+  the same, inside any expression (`=1*SUM(..)` too; `=SUM(a,-b,0)` not). Not SUMPRODUCT, not an
+  operation inside a function. `=(a-b)` in parentheses is not 0 in Excel; ours is (no parentheses
+  in the tree): left.
+- SUMIF / SUMIFS: an error among the cells added is the result.
+- Another workbook's cells (`[1]Sheet!A1`, `'[1]My sheet'!A1`) are what xl/externalLinks keeps of
+  them (`Workbook.External`); a sheet with `refreshError` is #REF!. `'Sheet'!#REF!` is #REF!.
+- IRR with an error among its cash flows is #VALUE! (NPV, XIRR, MIRR: the error). An error in an
+  optional argument of PMT, FV, PV, NPER, RATE, IPMT, PPMT, IRR, XIRR is the result (was the default).
+- XIRR finds a rate just above -1 (a large outlay, little back soon) down to ~1e-9 above it, as Excel.
+- PMT: (1 + r)^n as exp(n ln(1 + r)) with ln(1 + r) from r - the power of 1 + r rounded was off by
+  up to n/2 units in the last place, and an amortization schedule ended on another 1e-7 residual.
+  Excel's PMT is within a unit of the exact value, not always the same unit.
+- SEQUENCE / RANDARRAY with an argument left empty (`SEQUENCE(20,,0)`) take its default.
+
+Left: Excel's IRR / RATE / XIRR stop short of the root (~1e-12); ours is the root.
 
 ## Excel 2019 checks of 2026-11-10 (0.1.29, branch `sheet/excel-checks`)
 

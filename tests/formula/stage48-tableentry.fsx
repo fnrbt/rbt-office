@@ -40,7 +40,7 @@ let other = sheetOf [ at 0 0, fml "=SUM(Sales[Qty])"; at 1 0, fml "=SUM(Sales[Am
 let sheetEntry id name model : Wb.SheetId * Wb.Sheet = id, { Id = id; Name = name; Model = model; Visible = true }
 let bare : Wb.Workbook =
     { Sheets = Map.ofList [ sheetEntry "sheet1" "Data" data; sheetEntry "sheet2" "Other" other ]
-      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      SheetOrder = [ "sheet1"; "sheet2" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
 let style = Some (Ops.tableStyleNamed Ops.defaultTableStyleName)
 let wb0 =
     let named = bare |> Wb.setDefinedName None "BigOnes" "Sales[Amount]" None

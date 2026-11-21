@@ -72,6 +72,11 @@ type Workbook = {
     /// the values they have, until none changes by `MaxChange` or more, or
     /// `MaxIterations` times. None (the default): they show the cycle error.
     Iteration: IterativeCalculation option
+    /// What the workbook last read of the workbooks its formulas refer to (`[1]Sheet!A1`,
+    /// `'[1]My sheet'!A1`): the values the file keeps of them (`xl/externalLinks`), by
+    /// "[n]SHEET NAME" upper-cased, n the external reference's number (1 the first).
+    /// A recalculation reads these, as Excel's does without the other workbook open.
+    External: Map<string, SpreadsheetModel>
 }
 
 /// Create empty workbook with one sheet
@@ -91,6 +96,7 @@ let createWorkbook (): Workbook =
         Names = Map.empty
         NameInfo = Map.empty
         Iteration = None
+        External = Map.empty
     }
 
 /// The workbook is in the 1904 date system: its sheets say so

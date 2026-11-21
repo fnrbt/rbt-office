@@ -385,7 +385,7 @@ let main argv =
             let wb : Rbt.Spreadsheet.Workbook.Workbook =
                 { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=withDemo; Visible=true }: Rbt.Spreadsheet.Workbook.Sheet) ]
                   SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"
-                  Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+                  Tables = Map.ofList [ mt.Name, wtable ]; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
             let recomputed = Rbt.Spreadsheet.Formula.recalculateAllFormulas (Some wb) (Some "sheet1") withDemo
             let w, h = 360, 260
             File.WriteAllBytes(fullPath output, renderGridPng w h recomputed [])
