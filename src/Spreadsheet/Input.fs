@@ -88,7 +88,8 @@ let private tryUnsignedNumber (text: string) : (float * bool * int) option =
     else
         let literal = digits.ToString()
         let literal = if literal.StartsWith "." then "0" + literal else literal
-        match Double.TryParse(literal, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        // A number typed in keeps its first 15 significant digits, the rest cut (Excel 2019).
+        match Double.TryParse(NumberText.cutToSignificantDigits literal, NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, value when not (Double.IsInfinity value || Double.IsNaN value) -> Some (value, grouped, decimals)
         | _ -> None
 

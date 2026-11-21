@@ -342,3 +342,43 @@ let numberToString (format: string) (x: float) : string =
 #else
     x.ToString(format, inv)
 #endif
+
+/// Whether x and y are the same number to `precision` significant digits, each rounded from its
+/// exact binary value, a half away from zero - Excel's comparison of numbers (`=`, `<`, ...,
+/// COUNTIF's criteria) at 15 digits: 1+22 ulp is 1.00000000000000 and 1+23 ulp 1.00000000000001;
+/// 1E15+5 is 1.00000000000001E15, 1E14+2.5 is 100000000000003 (checked in Excel 2019).
+let sameToSignificantDigits (precision: int) (x: float) (y: float) : bool =
+    if x = y then true
+    elif (x < 0.0) <> (y < 0.0) || x = 0.0 || y = 0.0 then false
+    else
+        let a = roundDigits false (exactDigits x) precision
+        let b = roundDigits false (exactDigits y) precision
+        a.Text = b.Text && a.Scale = b.Scale
+
+/// A number's text as Excel reads it - typed into a cell, written in a formula, or text turned into
+/// a number (VALUE, `"1.5"*1`, a criteria's number): its first 15 significant digits, the rest cut,
+/// not rounded (`1.0000000000000099` is 1, `123456789012345.6` is 123456789012345; checked in
+/// Excel 2019). The text as it is when it has no more digits than that.
+let cutToSignificantDigits (text: string) : string =
+    let mutable digits = 0
+    let mutable significant = 0
+    let mutable i = 0
+    while i < text.Length && text.[i] <> 'e' && text.[i] <> 'E' do
+        let c = text.[i]
+        if c >= '0' && c <= '9' then
+            digits <- digits + 1
+            if c <> '0' || significant > 0 then significant <- significant + 1
+        i <- i + 1
+    if digits <= 15 || significant <= 15 then text
+    else
+        let chars = text.ToCharArray()
+        let mutable seen = 0
+        let mutable j = 0
+        while j < chars.Length && chars.[j] <> 'e' && chars.[j] <> 'E' do
+            let c = chars.[j]
+            if c >= '0' && c <= '9' then
+                if c <> '0' || seen > 0 then
+                    seen <- seen + 1
+                    if seen > 15 then chars.[j] <- '0'
+            j <- j + 1
+        String(chars)

@@ -530,7 +530,8 @@ let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collecti
                     // 'E' not followed by an exponent — not part of the number.
                     i <- save
             let text = input.Substring(start, i - start)
-            tokens.Add(TNumber (Double.Parse(text, CultureInfo.InvariantCulture)))
+            // A number written in a formula keeps its first 15 significant digits, the rest cut.
+            tokens.Add(TNumber (Double.Parse(NumberText.cutToSignificantDigits text, CultureInfo.InvariantCulture)))
         elif c = '"' then
             // String literal. "" is an escaped quote.
             i <- i + 1
@@ -1365,7 +1366,7 @@ let coerceNumber (value: CellValue) : Result<float, string> =
     | CellValue.Error e -> Result.Error e
     | CellValue.String s ->
         let t = s.Trim()
-        match Double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        match Double.TryParse(NumberText.cutToSignificantDigits t, NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, n -> Ok n
         | _ ->
             // Text a number would be typed as (a date "3/1/2026" or "March 2026", a time, "50%",
@@ -1383,7 +1384,7 @@ let inline private tryAggregateNumber (value: CellValue) : float voption =
     | CellValue.Empty -> ValueSome 0.0
     | CellValue.String s ->
         let struct (start, length) = trimBounds s
-        match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, n -> ValueSome n
         | _ -> ValueNone
     | _ -> ValueNone
@@ -1412,7 +1413,7 @@ let coerceBool (value: CellValue) : Result<bool, string> =
         elif sliceEqualsOrdinalIgnoreCase s start length "TRUE" then Ok true
         elif sliceEqualsOrdinalIgnoreCase s start length "FALSE" then Ok false
         else
-            match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+            match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
             | true, n -> Ok (n <> 0.0)
             | _ -> Result.Error Err.value
     | CellValue.Formula _ -> Result.Error Err.value
@@ -2839,6 +2840,33 @@ let private trimExcelText (text: string) =
                     previousWasSpace <- false
             sb.ToString()
 
+let inline private compareFloats (x: float) (y: float) =
+    if x < y then -1
+    elif x > y then 1
+    elif x = y then 0
+    else
+        let xIsNaN = x <> x
+        let yIsNaN = y <> y
+        if xIsNaN && yIsNaN then 0
+        elif xIsNaN then -1
+        elif yIsNaN then 1
+        else 0
+
+/// Excel's comparison of two numbers - the operators `=` `<>` `<` `>` `<=` `>=` (in a formula, an
+/// array, FILTER's condition), the criteria of COUNTIF / SUMIF(S) / AVERAGEIF(S) / MAXIFS / MINIFS /
+/// the database functions, SWITCH: numbers that agree to 15 significant digits are equal (each
+/// rounded a half away from zero: `=0.1+0.2=0.3` is TRUE, 1+22 ulp = 1 but 1+23 ulp > 1; no
+/// absolute tolerance: 1E-16 > 0). MATCH, the LOOKUPs, RANK, MODE, FREQUENCY, DELTA, GESTEP and
+/// sorting compare the binary values (`compareFloats`). Checked in Excel 2019.
+let private compareNumbers (x: float) (y: float) =
+    if x = y then 0
+    else
+        let c = compareFloats x y
+        // Numbers further apart than 2e-14 of the larger round to different 15-digit numbers.
+        if c <> 0 && abs (x - y) <= 2e-14 * max (abs x) (abs y)
+           && NumberText.sameToSignificantDigits 15 x y then 0
+        else c
+
 // --- Criteria parsing (SUMIF / COUNTIF / …) ---------------------------------
 let private appendRegexLiteralChar (sb: Text.StringBuilder) (ch: char) =
     match ch with
@@ -2946,7 +2974,7 @@ let private tryCriteriaNumber value =
     | CellValue.Empty -> ValueSome 0.0
     | CellValue.String s ->
         let struct (start, length) = trimBounds s
-        match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, n -> ValueSome n
         | _ -> ValueNone
     | _ -> ValueNone
@@ -2962,7 +2990,7 @@ let private tryCriteriaBool value =
         elif sliceEqualsOrdinalIgnoreCase s start length "TRUE" then ValueSome true
         elif sliceEqualsOrdinalIgnoreCase s start length "FALSE" then ValueSome false
         else
-            match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+            match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
             | true, n -> ValueSome (n <> 0.0)
             | _ -> ValueNone
     | _ -> ValueNone
@@ -2983,11 +3011,11 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
     // test also accepts text that reads as that number (`"2"` equals 2).
     let equalsNumber (num: float) (v: CellValue) =
         match unwrapValue v with
-        | CellValue.Number x -> x = num
+        | CellValue.Number x -> compareNumbers x num = 0
         | CellValue.String s ->
             let struct (start, length) = trimBounds s
-            (match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
-             | true, x -> x = num
+            (match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
+             | true, x -> compareNumbers x num = 0
              | _ -> false)
         | _ -> false
     match unwrapValue criteria with
@@ -2997,7 +3025,7 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
     | CellValue.String raw ->
         let op, restStart = parseCriteriaOperator raw
         let rest = if restStart = 0 then raw else raw.Substring(restStart)
-        match Double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        match Double.TryParse(NumberText.cutToSignificantDigits rest, NumberStyles.Float, CultureInfo.InvariantCulture) with
         | true, num ->
             match op with
             | CriteriaEq -> equalsNumber num
@@ -3006,11 +3034,12 @@ let private compileCriteria (criteria: CellValue) : CellValue -> bool =
                 fun v ->
                     match unwrapValue v with
                     | CellValue.Number x ->
+                        let c = compareNumbers x num
                         match op with
-                        | CriteriaGe -> x >= num
-                        | CriteriaLe -> x <= num
-                        | CriteriaGt -> x > num
-                        | _ -> x < num
+                        | CriteriaGe -> c >= 0
+                        | CriteriaLe -> c <= 0
+                        | CriteriaGt -> c > 0
+                        | _ -> c < 0
                     | _ -> false
         | _ ->
             match op with
@@ -3086,18 +3115,6 @@ let private formulaTextMayUseSubtotal (formula: string) =
     indexOfOrdinalIgnoreCase "SUBTOTAL" formula 0 >= 0
     || indexOfOrdinalIgnoreCase "AGGREGATE" formula 0 >= 0
 
-let inline private compareFloats (x: float) (y: float) =
-    if x < y then -1
-    elif x > y then 1
-    elif x = y then 0
-    else
-        let xIsNaN = x <> x
-        let yIsNaN = y <> y
-        if xIsNaN && yIsNaN then 0
-        elif xIsNaN then -1
-        elif yIsNaN then 1
-        else 0
-
 let inline private compareInts (x: int) (y: int) =
     if x < y then -1
     elif x > y then 1
@@ -3116,7 +3133,7 @@ let private cellValueRank v =
     | CellValue.Empty -> 0  // blank behaves as 0 / "" depending on the other side
     | _ -> 3
 
-let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
+let inline private compareValuesNoErrorBy ([<InlineIfLambda>] numbers: float -> float -> int) (l: CellValue) (r: CellValue) : int voption =
     let left = unwrapValue l
     match left with
     | CellValue.Error _ -> ValueNone
@@ -3124,8 +3141,8 @@ let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
         let right = unwrapValue r
         match right with
         | CellValue.Error _ -> ValueNone
-        | CellValue.Number y -> ValueSome (compareFloats x y)
-        | CellValue.Empty -> ValueSome (compareFloats x 0.0)
+        | CellValue.Number y -> ValueSome (numbers x y)
+        | CellValue.Empty -> ValueSome (numbers x 0.0)
         | _ -> ValueSome (compareInts (cellValueRank left) (cellValueRank right))
     | CellValue.String x ->
         let right = unwrapValue r
@@ -3148,7 +3165,7 @@ let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
         | CellValue.Error _ -> ValueNone
         | CellValue.Empty -> ValueSome 0
         | CellValue.Boolean y -> ValueSome (compareBools false y)
-        | CellValue.Number y -> ValueSome (compareFloats 0.0 y)
+        | CellValue.Number y -> ValueSome (numbers 0.0 y)
         | CellValue.String y -> ValueSome (String.Compare("", y, StringComparison.OrdinalIgnoreCase))
         | _ -> ValueSome (compareInts (cellValueRank left) (cellValueRank right))
     | _ ->
@@ -3156,6 +3173,15 @@ let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
         match right with
         | CellValue.Error _ -> ValueNone
         | _ -> ValueSome (compareInts (cellValueRank left) (cellValueRank right))
+
+/// Two values compared as MATCH and the LOOKUPs compare them: numbers by their binary values.
+let private compareValuesNoError (l: CellValue) (r: CellValue) : int voption =
+    compareValuesNoErrorBy compareFloats l r
+
+/// Two values compared as the comparison operators compare them: numbers to 15 significant
+/// digits (`compareNumbers`).
+let private compareOperandsNoError (l: CellValue) (r: CellValue) : int voption =
+    compareValuesNoErrorBy compareNumbers l r
 
 let private compareValuesForSort (l: CellValue) (r: CellValue) =
     let left = unwrapValue l
@@ -3201,11 +3227,21 @@ let private valuesEqualNoError (l: CellValue) (r: CellValue) =
         | CellValue.Error _ -> false
         | _ -> compareValuesForSort left right = 0
 
-/// Compare two scalar values for the comparison operators. Excel orders
-/// number < text < FALSE < TRUE; numbers compare numerically, text
+/// Compare two scalar values as MATCH and the LOOKUPs do. Excel orders
+/// number < text < FALSE < TRUE; numbers compare by their binary values, text
 /// case-insensitively. Returns -1 / 0 / 1, or an Error value to propagate.
 let private compareValues (l: CellValue) (r: CellValue) : Result<int, string> =
     match compareValuesNoError l r with
+    | ValueSome result -> Ok result
+    | ValueNone ->
+        match unwrapValue l, unwrapValue r with
+        | CellValue.Error e, _ -> Result.Error e
+        | _, CellValue.Error e -> Result.Error e
+        | _ -> Result.Error Err.value
+
+/// `compareValues` with numbers equal to 15 significant digits (`compareNumbers`): the operators', SWITCH's.
+let private compareOperands (l: CellValue) (r: CellValue) : Result<int, string> =
+    match compareOperandsNoError l r with
     | ValueSome result -> Ok result
     | ValueNone ->
         match unwrapValue l, unwrapValue r with
@@ -3866,7 +3902,7 @@ let private directNumericArgument (v: CellValue) : CellValue =
     | CellValue.Boolean flag -> CellValue.Number (if flag then 1.0 else 0.0)
     | CellValue.String text ->
         let struct (start, length) = trimBounds text
-        (match Double.TryParse(trimmedNumberText text start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+        (match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText text start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
          | true, n when length > 0 -> CellValue.Number n
          | _ -> CellValue.Error Err.value)
     | _ -> v
@@ -4045,12 +4081,12 @@ let rankFold (target: float) (descending: bool) : Fold<CellValue, struct (string
               match unwrapValue value with
               | CellValue.Error e -> struct (ValueSome e, found, rank)
               | CellValue.Number n ->
-                  let found = found || abs (n - target) < 1e-12
+                  let found = found || n = target
                   let rank = if (if descending then n > target else n < target) then rank + 1 else rank
                   struct (ValueNone, found, rank)
               | CellValue.Boolean b ->
                   let n = if b then 1.0 else 0.0
-                  let found = found || abs (n - target) < 1e-12
+                  let found = found || n = target
                   let rank = if (if descending then n > target else n < target) then rank + 1 else rank
                   struct (ValueNone, found, rank)
               | _ -> struct (ValueNone, found, rank)
@@ -4582,7 +4618,7 @@ let private applyBinGeneral (op: string) (lv: CellValue) (rv: CellValue) : CellV
              | Ok a, Ok b -> CellValue.String (a + b)
              | Result.Error e, _ | _, Result.Error e -> err e)
         | "=" | "<>" | "<" | ">" | "<=" | ">=" ->
-            (match compareValues lv rv with
+            (match compareOperands lv rv with
              | Result.Error e -> err e
              | Ok cmp ->
                 CellValue.Boolean
@@ -4618,12 +4654,12 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
             | "-" -> (let x = a - b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
             | "*" -> (let x = a * b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
             | "/" -> if b = 0.0 then err Err.div0 else (let x = a / b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
-            | "=" -> CellValue.Boolean (compareFloats a b = 0)
-            | "<>" -> CellValue.Boolean (compareFloats a b <> 0)
-            | "<" -> CellValue.Boolean (compareFloats a b < 0)
-            | ">" -> CellValue.Boolean (compareFloats a b > 0)
-            | "<=" -> CellValue.Boolean (compareFloats a b <= 0)
-            | ">=" -> CellValue.Boolean (compareFloats a b >= 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b = 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b <> 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b < 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b > 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b <= 0)
+            | "{o}" -> CellValue.Boolean (compareNumbers a b >= 0)
             | _ -> applyBinGeneral op lv rv
         | _ -> applyBinGeneral op lv rv
     | _ -> applyBinGeneral op lv rv
@@ -5927,7 +5963,7 @@ and tryEvalArrayTopLeft (name: string) (args: Expr list) (ctx: EvalContext) : Ce
                 | Ok true -> true
                 | _ -> false
             let comparisonPredicate op left right =
-                match compareValuesNoError left right with
+                match compareOperandsNoError left right with
                 | ValueSome c ->
                     match op with
                     | "=" -> c = 0
@@ -6557,7 +6593,7 @@ and evalArrayFunction (name: string) (args: Expr list) (ctx: EvalContext) : ArrV
                 | Ok true -> true
                 | _ -> false
             let comparisonPredicate op left right =
-                match compareValuesNoError left right with
+                match compareOperandsNoError left right with
                 | ValueSome c ->
                     match op with
                     | "=" -> c = 0
@@ -7979,7 +8015,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         let mutable rank = 1
         for i = 0 to count - 1 do
             let value = values.[i]
-            found <- found || abs (value - target) < 1e-12
+            found <- found || value = target
             if (if descending then value > target else value < target) then
                 rank <- rank + 1
         if found then CellValue.Number (float rank) else err Err.na
@@ -8144,7 +8180,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         let mutable found = false
         let mutable rank = 1L
         for struct (value, repeats, _) in values do
-            found <- found || abs (value - target) < 1e-12
+            found <- found || value = target
             if (if descending then value > target else value < target) then
                 rank <- rank + repeats
         if found then CellValue.Number (float rank) else err Err.na
@@ -8620,7 +8656,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | CellValue.Error e -> numberError e
                         | CellValue.String s ->
                             let struct (start, length) = trimBounds s
-                            match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+                            match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
                             | true, n -> numberOk n
                             | _ -> numberUnsupported
                         | _ -> numberUnsupported
@@ -8678,7 +8714,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | ErrorLit e -> results.Add(numberError e)
                                 | Str s ->
                                     let struct (start, length) = trimBounds s
-                                    match Double.TryParse(trimmedNumberText s start length, NumberStyles.Float, CultureInfo.InvariantCulture) with
+                                    match Double.TryParse(NumberText.cutToSignificantDigits (trimmedNumberText s start length), NumberStyles.Float, CultureInfo.InvariantCulture) with
                                     | true, n -> results.Add(numberOk n)
                                     | _ -> results.Add numberUnsupported
                                 | NameRef name when equalsOrdinalIgnoreCase name paramName -> results.Add(numberOfMapValue value)
@@ -8704,7 +8740,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                             elif rightKind = 1 then ValueSome (struct (1, false, rightError))
                             elif leftKind <> 0 || rightKind <> 0 then ValueNone
                             else
-                                let c = compareFloats leftNumber rightNumber
+                                let c = compareNumbers leftNumber rightNumber
                                 let matched =
                                     match op with
                                     | "=" -> c = 0
@@ -8887,7 +8923,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | "/" -> results.Add(numericOk (leftValue / rightValue))
                         | "^" -> results.Add(numericOk (Math.Pow(leftValue, rightValue)))
                         | "=" | "<>" | "<" | ">" | "<=" | ">=" ->
-                            let c = compareFloats leftValue rightValue
+                            let c = compareNumbers leftValue rightValue
                             let matched =
                                 match op with
                                 | "=" -> c = 0
@@ -8944,8 +8980,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 match expr with
                 | BinOp (left, op, right) when op = "=" || op = "<>" || op = "<" || op = ">" || op = "<=" || op = ">=" ->
                     match tryAffine rowName colName left, tryAffine rowName colName right with
-                    | ValueSome (Ok (struct (lr, lc, lk))), ValueSome (Ok (struct (rr, rc, rk))) when lr = rr && lc = rc ->
-                        ValueSome (Ok (comparisonValue op (compareFloats lk rk)))
+                    // Equal terms are equal; terms a constant apart need not differ at 15 digits.
+                    | ValueSome (Ok (struct (lr, lc, lk))), ValueSome (Ok (struct (rr, rc, rk))) when lr = rr && lc = rc && lk = rk ->
+                        ValueSome (Ok (comparisonValue op 0))
                     | ValueSome (Result.Error e), _ | _, ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                     | _ -> ValueNone
                 | _ -> ValueNone
@@ -9071,8 +9108,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 | BinOp (left, op, right) when op = "=" || op = "<>" || op = "<" || op = ">" || op = "<=" || op = ">=" ->
                     match tryBilinear rowName colName left, tryBilinear rowName colName right with
                     | ValueSome (Ok (struct (lrc, lr, lc, lk))), ValueSome (Ok (struct (rrc, rr, rc, rk)))
-                        when lrc = rrc && lr = rr && lc = rc ->
-                        ValueSome (Ok (comparisonValue op (compareFloats lk rk)))
+                        when lrc = rrc && lr = rr && lc = rc && lk = rk ->
+                        ValueSome (Ok (comparisonValue op 0))
                     | ValueSome (Result.Error e), _ | _, ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                     | _ -> ValueNone
                 | _ -> ValueNone
@@ -9456,7 +9493,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | Ok scalar ->
                                     let mapped () =
                                         match nextNumber () with
-                                        | Ok n -> Ok (comparisonValue (compare n scalar))
+                                        | Ok n -> Ok (comparisonValue (compareNumbers n scalar))
                                         | Result.Error e -> Result.Error e
                                     ValueSome (Ok (count, mapped, false))
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
@@ -9468,7 +9505,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok scalar ->
                                         let mapped () =
                                             match nextNumber () with
-                                            | Ok n -> Ok (comparisonValue (compare scalar n))
+                                            | Ok n -> Ok (comparisonValue (compareNumbers scalar n))
                                             | Result.Error e -> Result.Error e
                                         ValueSome (Ok (count, mapped, false))
                                 | other -> other
@@ -9839,14 +9876,18 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let v4 = valueAt rows cols
             struct (min (min v1 v2) (min v3 v4), max (max v1 v2) (max v3 v4))
         let comparisonConstantValue op minValue maxValue scalar =
+            // As the operators compare (15 digits; rounding keeps the order, so what holds of
+            // the least and the greatest holds of every value between).
+            let lo = compareNumbers minValue scalar
+            let hi = compareNumbers maxValue scalar
             let allTrue, allFalse =
                 match op with
-                | "=" -> minValue = maxValue && minValue = scalar, scalar < minValue || scalar > maxValue
-                | "<>" -> scalar < minValue || scalar > maxValue, minValue = maxValue && minValue = scalar
-                | "<" -> maxValue < scalar, minValue >= scalar
-                | ">" -> minValue > scalar, maxValue <= scalar
-                | "<=" -> maxValue <= scalar, minValue > scalar
-                | _ -> minValue >= scalar, maxValue < scalar
+                | "=" -> lo = 0 && hi = 0, lo > 0 || hi < 0
+                | "<>" -> lo > 0 || hi < 0, lo = 0 && hi = 0
+                | "<" -> hi < 0, lo >= 0
+                | ">" -> lo > 0, hi <= 0
+                | "<=" -> hi <= 0, lo > 0
+                | _ -> lo >= 0, hi < 0
             if allTrue then ValueSome 1.0
             elif allFalse then ValueSome 0.0
             else ValueNone
@@ -9910,14 +9951,14 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 | ValueSome (Ok (rows, cols, value)) when not (isArrayExpr right) ->
                     match coerceNumber (eval right ctx) with
                     | Result.Error e -> ValueSome (Result.Error e)
-                    | Ok scalar -> ValueSome (makeStream rows cols value scalar compare)
+                    | Ok scalar -> ValueSome (makeStream rows cols value scalar compareNumbers)
                 | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                 | _ ->
                     match tryBilinearMakeArrayExpr right with
                     | ValueSome (Ok (rows, cols, value)) when not (isArrayExpr left) ->
                         match coerceNumber (eval left ctx) with
                         | Result.Error e -> ValueSome (Result.Error e)
-                        | Ok scalar -> ValueSome (makeStream rows cols value scalar (fun value scalar -> compare scalar value))
+                        | Ok scalar -> ValueSome (makeStream rows cols value scalar (fun value scalar -> compareNumbers scalar value))
                     | ValueSome (Ok _) -> ValueNone
                     | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                     | ValueNone -> ValueNone
@@ -10365,7 +10406,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 match coerceNumber (eval right ctx) with
                                 | Result.Error e -> ValueSome (Result.Error e)
                                 | Ok scalar ->
-                                    ValueSome (Ok (count, (fun () -> comparisonValue (compare (nextNumber ()) scalar)), false))
+                                    ValueSome (Ok (count, (fun () -> comparisonValue (compareNumbers (nextNumber ()) scalar)), false))
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                             | _ ->
                                 match sequenceStreamOfExpr right with
@@ -10373,7 +10414,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match coerceNumber (eval left ctx) with
                                     | Result.Error e -> ValueSome (Result.Error e)
                                     | Ok scalar ->
-                                        ValueSome (Ok (count, (fun () -> comparisonValue (compare scalar (nextNumber ()))), false))
+                                        ValueSome (Ok (count, (fun () -> comparisonValue (compareNumbers scalar (nextNumber ()))), false))
                                 | other -> other
                         | _ -> ValueNone
         match args with
@@ -10675,7 +10716,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 match coerceNumber (eval right ctx) with
                                 | Result.Error e -> ValueSome (Result.Error e)
                                 | Ok scalar ->
-                                    ValueSome (Ok (count, (fun () -> comparisonValue (compare (nextNumber ()) scalar)), false))
+                                    ValueSome (Ok (count, (fun () -> comparisonValue (compareNumbers (nextNumber ()) scalar)), false))
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                             | _ ->
                                 match randStreamOfExpr right with
@@ -10683,7 +10724,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match coerceNumber (eval left ctx) with
                                     | Result.Error e -> ValueSome (Result.Error e)
                                     | Ok scalar ->
-                                        ValueSome (Ok (count, (fun () -> comparisonValue (compare scalar (nextNumber ()))), false))
+                                        ValueSome (Ok (count, (fun () -> comparisonValue (compareNumbers scalar (nextNumber ()))), false))
                                 | other -> other
                         | _ -> ValueNone
         match args with
@@ -10784,7 +10825,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 | Ok true -> true
                 | _ -> false
             let comparisonPredicate op left right =
-                match compareValuesNoError left right with
+                match compareOperandsNoError left right with
                 | ValueSome c ->
                     match op with
                     | "=" -> c = 0
@@ -12647,11 +12688,11 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e -> err e
         | Ok s ->
             let t = s.Trim()
-            match Double.TryParse(t, NumberStyles.Any, CultureInfo.InvariantCulture) with
+            match Double.TryParse(NumberText.cutToSignificantDigits t, NumberStyles.Any, CultureInfo.InvariantCulture) with
             | true, n -> CellValue.Number n
             | _ ->
                 if t.EndsWith "%" then
-                    match Double.TryParse(t.TrimEnd('%'), NumberStyles.Any, CultureInfo.InvariantCulture) with
+                    match Double.TryParse(NumberText.cutToSignificantDigits (t.TrimEnd('%')), NumberStyles.Any, CultureInfo.InvariantCulture) with
                     | true, n -> CellValue.Number (n / 100.0)
                     | _ -> err Err.value
                 else
@@ -12668,7 +12709,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             let grp = if nargs >= 3 then (match argText 2 with Ok g when g.Length > 0 -> g.[0] | _ -> ',') else ','
             let cleaned = (s.Replace(string grp, "").Replace(dec, '.')).Replace(" ", "")
             let isPct = cleaned.EndsWith "%"
-            match Double.TryParse(cleaned.TrimEnd('%'), NumberStyles.Any, CultureInfo.InvariantCulture) with
+            match Double.TryParse(NumberText.cutToSignificantDigits (cleaned.TrimEnd('%')), NumberStyles.Any, CultureInfo.InvariantCulture) with
             | true, n -> CellValue.Number (if isPct then n / 100.0 else n)
             | _ -> err Err.value
     | "EXACT" ->
@@ -13162,7 +13203,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 // odd trailing arg = default
                 if i < nargs then argRaw i else err Err.na
             else
-                match compareValues target (argRaw i) with
+                match compareOperands target (argRaw i) with
                 | Ok 0 -> argRaw (i + 1)
                 | _ -> loop (i + 2)
         loop 1

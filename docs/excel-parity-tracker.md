@@ -139,14 +139,29 @@ calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#N
 - Not reproduced: a formula with no value in the file (`<f>` without `<v>`) is "" in Excel (so `100+0.1*B1`
   on a cycle is #VALUE!); ours starts it from 0.
 
-### Comparisons (found, not changed)
+### Comparisons at 15 significant digits, 2026-11-21
 
-`=`, `<`, `>`, `<>`, `<=`, `>=`, COUNTIF, SUMIF compare numbers rounded to 15 significant digits
-(1+22u vs 1+23u - 1.0000000000000049 / 1.0000000000000051 - differ; 1+23u vs 1+66u are equal;
-`=0.1+0.2=0.3` TRUE); MATCH / VLOOKUP exact compare the binary values (#N/A). A number typed into a
-formula keeps 15 significant digits, cut, not rounded (`=123456789012345.6` is 123456789012345). Ours
-compares the binary values everywhere: the operators have a dozen fast paths (SUMPRODUCT, FILTER,
-streams) that would all have to change together.
+Cells typed into Excel 2019 (`eval-cells-on-vm.sh`, values exact) and a generated workbook opened in it
+(`eval-file-on-vm.sh`). Regression tests: `tests/formula/stage22-semantics.fsx` (`cmp-*`, `literal-*`,
+the functions over `cmpModel`).
+
+| Rule (Excel 2019) | Evidence | Where |
+| --- | --- | --- |
+| `=` `<>` `<` `>` `<=` `>=` compare two numbers rounded to 15 significant digits: equal there is equal (`<` FALSE, `<=` TRUE), otherwise the binary order | `=0.1+0.2=0.3` TRUE, `>` FALSE, `<=` TRUE; 1+22 ulp = 1, 1+23 ulp <> 1 and = 1+45 ulp; 1+22 ulp <> 1+23 ulp (one ulp apart, either side of 1.000000000000005) | `Formula.compareNumbers`: the general operator, `applyBin`, FILTER's conditions (three), the array streams of SEQUENCE / MAKEARRAY / SUMPRODUCT (`--(a=b)`), the constant-term and min / max shortcuts (a comparison of terms a constant apart is no longer taken for the constants' order) |
+| The rounding is of the exact binary value, a half away from zero (not to even) | 1E15+5 = 1E15+10, <> 1E15; 1E15+25 = 1E15+30, <> 1E15+20; 1E14+2.5 = 1E14+3; -(1E15+5) = -(1E15+10); 1E15+4 <> 1E15+6; 10-2x2^-49 = 10, 10-3x2^-49 <> 10 | `NumberText.sameToSignificantDigits` (exact digits, rounded half up), only for numbers within 2e-14 of each other |
+| Relative only: no absolute tolerance near 0 | `=1E-16=0` FALSE, `1E-16>0` TRUE; `=1*(0.1+0.2-0.3)=0` FALSE (5.55e-17); 1E-300 x (1+22 ulp) = 1E-300, x (1+23 ulp) not; `EXP(-740)=0` FALSE, `=EXP(-740)=EXP(-741)` FALSE (subnormal) | `compareNumbers` |
+| The criteria of COUNTIF, COUNTIFS, SUMIF, SUMIFS, AVERAGEIF, AVERAGEIFS, MAXIFS, MINIFS, DSUM / DCOUNT compare the same way, a number criterion or one in text (`"=0.3"`, `"0.3"`, `"<=0.3"`, `">"&A1`) | over 0.1, 0.1+0.2, 0.5: COUNTIF 0.3 / "=0.3" / "0.3" 1, "<=0.3" 2, ">0.3" 1, "<>0.3" 2, "<0.3" 1, ">=0.3" 2; SUMIF 2, SUMIFS ">0.3" 3, MAXIFS 2, MINIFS ">0.3" 3, DSUM 2; COUNTIF(1E15..1E15+30, 1E15+10) 2 | `compileCriteria` |
+| SWITCH compares like `=` | `=SWITCH(0.1+0.2,0.3,1,0)` 1 | `SWITCH` (`compareOperands`) |
+| MATCH (0, 1, -1), VLOOKUP / HLOOKUP (exact and approximate), LOOKUP compare the binary values | `MATCH(0.3,{0.1;0.1+0.2;0.5},0)` #N/A, `,1)` 1; `MATCH(0.1+0.2,{0.5;0.3;0.1},-1)` 1; VLOOKUP FALSE #N/A, TRUE 1; HLOOKUP the same; LOOKUP 1 | unchanged (`compareValuesNoError`) |
+| So do RANK (#N/A for a number not in the list), MODE, FREQUENCY's bins, DELTA, GESTEP; EXACT compares the texts (TRUE) | `RANK(0.3,{0.1;0.1+0.2;0.5})` #N/A (was 3: ours took a number within 1e-12 as in the list), `MODE(0.1+0.2,0.3)` #N/A, `INDEX(FREQUENCY(..,0.3),1)` 1, `DELTA(0.1+0.2,0.3)` 0, `GESTEP(0.3,0.1+0.2)` 0, `EXACT` TRUE | RANK / RANK.EQ: equal binary values (`rankFold`, `rankSelected`, `rankCompressed`) |
+| A number written in a formula, typed into a cell, or text read as a number (VALUE, NUMBERVALUE, `--"..."`, `"..."*1`, a criteria's number) keeps its first 15 significant digits, the rest cut, not rounded; so does a formula in a file (`<f>`), not a value (`<v>0.30000000000000004</v>` is kept) | `=1.0000000000000099` 1, `=123456789012345.6` 123456789012345, `=0.1234567890123456789` 0.123456789012345, `=1000000000000005` 1E15, `=9.9999999999999999` 9.99999999999999, typed the same; `VALUE("1.0000000000000099")` 1; `COUNTIF({1+45 ulp;1},"<1.0000000000000099")` 0; `<f>(0.30000000000000004-0.3)*1</f>` 0, `<v>` kept: `(A1-A2)*1` 5.55e-17 | `NumberText.cutToSignificantDigits`: the formula tokenizer (array constants too), `Input` (cell entry), `coerceNumber` and the other text-to-number reads of `Formula`, VALUE, NUMBERVALUE, criteria |
+
+Not probed (Excel 2019 has none of them): XLOOKUP, XMATCH - taken to compare as MATCH does (binary);
+SORT / SORTBY / UNIQUE - left binary. FILTER's condition is an operator and rounds.
+
+Found, not matched: Excel keeps no subnormal number from `*`, `/` and `^` (`=2^-1074`, `=1E-307/1E10`,
+`=1E-200*1E-120`, `=(2^-1022/4)*4` are 0) nor from a file (`<v>4.9E-324</v>` = 0 TRUE); `+`, `-`, SUM, EXP
+and negation do keep one (`=2^-1022*1.5-2^-1022` is 2^-1023, `EXP(-740)` 4.2e-322). Ours keeps them all.
 
 ### IRR / RATE / XIRR (found, not matched)
 

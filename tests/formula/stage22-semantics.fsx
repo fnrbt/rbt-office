@@ -315,6 +315,103 @@ ok "sumifs-error-added"     (sumif "=SUMIFS(A2:C2,A1:C1,2)" = e "DIV/0!" && sumi
 check "sheet-ref-error"     "='Other Sheet'!#REF!"            (e "REF!")
 check "sheet-ref-error-sum" "=SUM(Other!#REF!)"               (e "REF!")
 
+// Comparisons (Excel 2019, eval-cells.vbs): the operators, SWITCH and the criteria of COUNTIF and
+// its family compare numbers rounded to 15 significant digits (a half away from zero, from the exact
+// binary value; no absolute tolerance); MATCH, the LOOKUPs, RANK, MODE, FREQUENCY, DELTA and GESTEP
+// compare the binary values. A number written in a formula or typed, and text read as a number, keeps
+// its first 15 significant digits, the rest cut.
+check "cmp-0.1+0.2"         "=0.1+0.2=0.3"                     (b true)
+check "cmp-0.1+0.2-gt"      "=0.1+0.2>0.3"                     (b false)
+check "cmp-0.1+0.2-le"      "=0.1+0.2<=0.3"                    (b true)
+check "cmp-0.1+0.2-ne"      "=0.3<>0.1+0.2"                    (b false)
+check "cmp-22-ulps"         "=(1+22*2^-52)=1"                  (b true)
+check "cmp-23-ulps"         "=(1+23*2^-52)=1"                  (b false)
+check "cmp-23-ulps-gt"      "=(1+23*2^-52)>1"                  (b true)
+check "cmp-one-ulp-apart"   "=(1+22*2^-52)=(1+23*2^-52)"       (b false)
+check "cmp-23-45-ulps"      "=(1+23*2^-52)=(1+45*2^-52)"       (b true)
+check "cmp-tie-up"          "=(1E15+5)=(1E15+10)"              (b true)
+check "cmp-tie-not-even"    "=(1E15+25)=(1E15+30)"             (b true)
+check "cmp-tie-not-down"    "=(1E15+25)=(1E15+20)"             (b false)
+check "cmp-tie-half"        "=(1E14+2.5)=(1E14+3)"             (b true)
+check "cmp-tie-negative"    "=-(1E15+5)=-(1E15+10)"            (b true)
+check "cmp-straddle"        "=(1E15+4)=(1E15+6)"               (b false)
+check "cmp-to-10"           "=(10-2*2^-49)=10"                 (b true)
+check "cmp-not-10"          "=(10-3*2^-49)=10"                 (b false)
+check "cmp-1e-16"           "=1E-16=0"                         (b false)
+check "cmp-1e-16-gt"        "=1E-16>0"                         (b true)
+check "cmp-residue"         "=1*(0.1+0.2-0.3)=0"               (b false)
+check "cmp-tiny"            "=1E-300*(1+22*2^-52)=1E-300"      (b true)
+check "cmp-tiny-23"         "=1E-300*(1+23*2^-52)=1E-300"      (b false)
+check "cmp-if"              "=IF(0.1+0.2=0.3,1,0)"             (n 1.0)
+check "cmp-switch"          "=SWITCH(0.1+0.2,0.3,1,0)"         (n 1.0)
+check "literal-cut"         "=1.0000000000000099"              (n 1.0)
+check "literal-cut-int"     "=123456789012345.6"               (n 123456789012345.0)
+check "literal-cut-small"   "=0.1234567890123456789"           (n 0.123456789012345)
+check "literal-cut-16"      "=1000000000000005"                (n 1e15)
+check "literal-cut-20"      "=12345678901234567890"            (n 1.23456789012345e19)
+check "literal-cut-9s"      "=9.9999999999999999"              (n 9.99999999999999)
+check "literal-exp"         "=1.234567890123459E+300"          (n 1.23456789012345e300)
+check "value-cut"           "=VALUE(\"1.0000000000000099\")"   (n 1.0)
+check "coerce-cut"          "=--\"1000000000000005\""          (n 1e15)
+check "numbervalue-cut"     "=NUMBERVALUE(\"1.0000000000000099\")" (n 1.0)
+check "array-constant-cut"  "=MATCH(0.3,{0.1,0.30000000000000004,0.5},0)" (n 2.0)
+//   D1:D3 = 0.1, 0.1+0.2, 0.5   E1:E3 = 1, 2, 3   H1:H3 = 0.1, 0.3, 0.5   J1:J2 = 1+45 ulp, 1
+//   G1:G2 = "k", 0.3 (a database criteria range over K1:L4 = k/v, D, E)
+let cmpModel =
+    let col c values = values |> List.mapi (fun r v -> at r c, cell v)
+    { createEmpty 100 26 with
+        Cells =
+            col 3 [ n 0.1; n (0.1 + 0.2); n 0.5 ] @ col 4 [ n 1.0; n 2.0; n 3.0 ] @ col 7 [ n 0.1; n 0.3; n 0.5 ]
+            @ col 9 [ n (1.0 + 45.0 * 2.0 ** -52.0); n 1.0 ] @ col 6 [ s "k"; n 0.3 ]
+            @ col 10 [ s "k"; n 0.1; n (0.1 + 0.2); n 0.5 ] @ col 11 [ s "v"; n 1.0; n 2.0; n 3.0 ]
+            |> Map.ofList }
+let checkCmp label formula (expected: CellValue) =
+    let got = evaluateFormula formula cmpModel None
+    if got = expected then pass <- pass + 1
+    else
+        fail <- fail + 1
+        printfn "FAIL %-24s  %-40s  expected %A  got %A" label formula expected got
+checkCmp "match-exact-binary"  "=MATCH(0.3,D1:D3,0)"           (e "N/A")
+checkCmp "match-approx-binary" "=MATCH(0.3,D1:D3,1)"           (n 1.0)
+checkCmp "match-desc-binary"   "=MATCH(D2,{0.5;0.3;0.1},-1)"   (n 1.0)
+checkCmp "vlookup-exact"       "=VLOOKUP(0.3,D1:E3,2,FALSE)"   (e "N/A")
+checkCmp "vlookup-approx"      "=VLOOKUP(0.3,D1:E3,2,TRUE)"    (n 1.0)
+checkCmp "lookup-binary"       "=LOOKUP(0.3,D1:D3,E1:E3)"      (n 1.0)
+checkCmp "countif-number"      "=COUNTIF(D1:D3,0.3)"           (n 1.0)
+checkCmp "countif-eq-text"     "=COUNTIF(D1:D3,\"=0.3\")"      (n 1.0)
+checkCmp "countif-text"        "=COUNTIF(D1:D3,\"0.3\")"       (n 1.0)
+checkCmp "countif-le"          "=COUNTIF(D1:D3,\"<=0.3\")"     (n 2.0)
+checkCmp "countif-gt"          "=COUNTIF(D1:D3,\">0.3\")"      (n 1.0)
+checkCmp "countif-ne"          "=COUNTIF(D1:D3,\"<>0.3\")"     (n 2.0)
+checkCmp "countif-lt"          "=COUNTIF(D1:D3,\"<0.3\")"      (n 1.0)
+checkCmp "countif-ge"          "=COUNTIF(D1:D3,\">=0.3\")"     (n 2.0)
+checkCmp "countif-cell"        "=COUNTIF(H1:H3,D2)"            (n 1.0)
+checkCmp "countif-cut"         "=COUNTIF(J1:J2,\"<1.0000000000000099\")" (n 0.0)
+checkCmp "sumif"               "=SUMIF(D1:D3,0.3,E1:E3)"       (n 2.0)
+checkCmp "sumifs-gt"           "=SUMIFS(E1:E3,D1:D3,\">0.3\")" (n 3.0)
+checkCmp "countifs-le"         "=COUNTIFS(D1:D3,\"<=0.3\")"    (n 2.0)
+checkCmp "averageif"           "=AVERAGEIF(D1:D3,0.3,E1:E3)"   (n 2.0)
+checkCmp "maxifs"              "=MAXIFS(E1:E3,D1:D3,0.3)"      (n 2.0)
+checkCmp "minifs-gt"           "=MINIFS(E1:E3,D1:D3,\">0.3\")" (n 3.0)
+checkCmp "dsum"                "=DSUM(K1:L4,\"v\",G1:G2)"      (n 2.0)
+checkCmp "sumproduct-eq"       "=SUMPRODUCT(--(D1:D3=0.3))"    (n 1.0)
+checkCmp "sumproduct-ranges"   "=SUMPRODUCT(--(D1:D3=H1:H3))"  (n 3.0)
+checkCmp "sumproduct-gt"       "=SUMPRODUCT((D1:D3>0.3)*1)"    (n 1.0)
+checkCmp "sum-if-array"        "=SUM(IF(D1:D3=H1:H3,1,0))"     (n 3.0)
+checkCmp "filter-eq"           "=ROWS(FILTER(D1:D3,D1:D3=0.3))" (n 1.0)
+checkCmp "filter-sum"          "=SUM(FILTER(E1:E3,D1:D3<=0.3))" (n 3.0)
+checkCmp "sequence-eq"         "=SUM(--(SEQUENCE(3)*0.1=0.3))"  (n 1.0)
+checkCmp "sequence-sumproduct" "=SUMPRODUCT(--(SEQUENCE(3)*0.1=0.3))" (n 1.0)
+checkCmp "makearray-eq"        "=SUM(MAKEARRAY(3,1,LAMBDA(r,c,--(r*0.1=0.3))))" (n 1.0)
+checkCmp "makearray-le"        "=SUM(--(MAKEARRAY(3,1,LAMBDA(r,c,r*0.1))<=0.3))" (n 3.0)
+checkCmp "makearray-gt"        "=SUM(--(MAKEARRAY(3,1,LAMBDA(r,c,r*0.1))>0.3))" (n 0.0)
+checkCmp "exact-text"          "=EXACT(D2,0.3)"                (b true)
+checkCmp "delta-binary"        "=DELTA(D2,0.3)"                (n 0.0)
+checkCmp "gestep-binary"       "=GESTEP(0.3,D2)"               (n 0.0)
+checkCmp "rank-binary"         "=RANK(0.3,D1:D3)"              (e "N/A")
+checkCmp "mode-binary"         "=MODE(D2,0.3)"                 (e "N/A")
+checkCmp "frequency-binary"    "=INDEX(FREQUENCY(D1:D3,0.3),1)" (n 1.0)
+
 printfn ""
 printfn "Stage 22 semantics tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
