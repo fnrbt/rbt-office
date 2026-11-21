@@ -1624,6 +1624,7 @@ let private sheetFormatXml (sheet: XlsxSheetOut) =
             match format.DefaultColWidth with Some width -> yield sprintf "defaultColWidth=\"%s\"" (invariant width) | None -> ()
             yield sprintf "defaultRowHeight=\"%s\"" (invariant (format.DefaultRowHeight |> Option.defaultValue 15.0))
             if format.CustomDefaultHeight then yield "customHeight=\"1\""
+            if format.ZeroHeight then yield "zeroHeight=\"1\""
             yield! outline
         ]
         sprintf "<sheetFormatPr %s/>" (String.concat " " attrs)

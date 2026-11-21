@@ -1063,7 +1063,8 @@ module Import =
             else
                 { HiddenRowSizes = hiddenRowSizes; HiddenColSizes = hiddenColSizes; RowLevels = rowLevels; ColLevels = colLevels
                   CollapsedRows = collapsedRows; CollapsedCols = collapsedCols
-                  SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight; ShowSymbols = sheet.View.ShowOutlineSymbols }
+                  SummaryBelow = sheet.View.SummaryBelow; SummaryRight = sheet.View.SummaryRight; ShowSymbols = sheet.View.ShowOutlineSymbols
+                  DefaultRowShownHeight = 0.0 }
 
         let merged =
             sheet.MergedCells
@@ -1244,6 +1245,20 @@ module Import =
                     if height <> model.DefaultRowHeight then heights <- Map.add row height heights
                     else heights <- Map.remove row heights
                 { model with RowHeights = heights }
+        // A sheet of `zeroHeight` hides every row it does not list (Excel 2019: between its rows and past them):
+        // the default is 0, the rows it lists have their heights, the others are shown at the default again.
+        let model =
+            if not sheet.Format.ZeroHeight then model
+            else
+                let shown = model.DefaultRowHeight
+                let mutable heights = model.RowHeights
+                for row in sheet.Rows do
+                    let index = row.Index - 1
+                    if index >= 0 && index < rowCount && not (Map.containsKey index heights) then heights <- Map.add index shown heights
+                { model with
+                    RowHeights = heights
+                    DefaultRowHeight = 0.0
+                    Axes = { model.Axes with DefaultRowShownHeight = shown } }
         { Model = model
           TableColumns = tableColumns
           State = sheetStateText sheet.State }

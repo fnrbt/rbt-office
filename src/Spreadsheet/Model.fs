@@ -1346,11 +1346,15 @@ type SheetAxes = {
     /// False: the sheet does not show its outline's brackets and buttons
     /// (the sheet view's `showOutlineSymbols`), grouped or not.
     ShowSymbols: bool
+    /// A sheet that hides the rows it has no height for (`sheetFormatPr zeroHeight`): its
+    /// `DefaultRowHeight` is 0 and this is the height such a row is shown at again; 0 on any other sheet.
+    DefaultRowShownHeight: float
 }
 
 let emptySheetAxes : SheetAxes =
     { HiddenRowSizes = Map.empty; HiddenColSizes = Map.empty; RowLevels = Map.empty; ColLevels = Map.empty
-      CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true; ShowSymbols = true }
+      CollapsedRows = Set.empty; CollapsedCols = Set.empty; SummaryBelow = true; SummaryRight = true; ShowSymbols = true
+      DefaultRowShownHeight = 0.0 }
 
 /// Whether two maps hold the same entries. `=` on a map is one call deep per
 /// entry in JavaScript: a map of a row per row of a long sheet overflows the stack.
@@ -1364,7 +1368,8 @@ let sameAxes (a: SheetAxes) (b: SheetAxes) =
     || (sameMap a.HiddenRowSizes b.HiddenRowSizes && sameMap a.HiddenColSizes b.HiddenColSizes
         && sameMap a.RowLevels b.RowLevels && sameMap a.ColLevels b.ColLevels
         && a.CollapsedRows = b.CollapsedRows && a.CollapsedCols = b.CollapsedCols
-        && a.SummaryBelow = b.SummaryBelow && a.SummaryRight = b.SummaryRight && a.ShowSymbols = b.ShowSymbols)
+        && a.SummaryBelow = b.SummaryBelow && a.SummaryRight = b.SummaryRight && a.ShowSymbols = b.ShowSymbols
+        && a.DefaultRowShownHeight = b.DefaultRowShownHeight)
 
 /// A row / column insertion or deletion as a recalculation needs to know it:
 /// rows (or columns) from `At` on moved by `Count` (down / right when

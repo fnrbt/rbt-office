@@ -1354,7 +1354,11 @@ let isAxisHidden (rows: bool) (index: int) (model: SpreadsheetModel) : bool =
 let shownAxisSize (rows: bool) (index: int) (model: SpreadsheetModel) : float =
     let size = axisSize rows index model
     if size > 0.0 then size
-    else Map.tryFind index (keptSizes rows model) |> Option.defaultValue (axisDefault rows model)
+    else
+        match Map.tryFind index (keptSizes rows model) with
+        | Some kept -> kept
+        | None when rows && axisDefault rows model <= 0.0 && model.Axes.DefaultRowShownHeight > 0.0 -> model.Axes.DefaultRowShownHeight
+        | None -> axisDefault rows model
 
 /// The rows / columns `first..last` clipped to the sheet (None when none is on it).
 let clipAxisSpan (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) : (int * int) option =
@@ -1408,8 +1412,14 @@ let unhideAxis (rows: bool) (first: int) (last: int) (model: SpreadsheetModel) :
         if index >= first && index <= last && size <= 0.0 then
             match Map.tryFind index kept with
             | Some previous when previous > 0.0 && previous <> axisDefault rows model -> sizes <- Map.add index previous sizes
+            | _ when rows && model.Axes.DefaultRowShownHeight > 0.0 -> sizes <- Map.add index model.Axes.DefaultRowShownHeight sizes
             | _ -> sizes <- Map.remove index sizes
             if Map.containsKey index kept then kept <- Map.remove index kept
+    // (A sheet that hides the rows of no height of their own, zeroHeight: those of the span on the sheet are
+    // shown at the sheet's height.)
+    if rows && model.Axes.DefaultRowShownHeight > 0.0 && model.DefaultRowHeight <= 0.0 then
+        for index in max 0 first .. min (model.RowCount - 1) last do
+            if not (Map.containsKey index sizes) then sizes <- Map.add index model.Axes.DefaultRowShownHeight sizes
     withAxis rows sizes kept model
 
 /// The hidden rows / columns of a sheet as runs (first, last), in order.

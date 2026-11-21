@@ -561,6 +561,9 @@ type SheetFormat = {
     /// 15.75 pt regardless of the Arial 10 cells inside it) drift below
     /// Excel's grid.
     CustomDefaultHeight: bool
+    /// `<sheetFormatPr zeroHeight="1"/>`: the rows the sheet does not list are hidden (Excel 2019: between the
+    /// listed rows and past the last of them).
+    ZeroHeight: bool
 }
 
 /// XLSX table style reference (e.g. `<tableStyleInfo name="TableStyleMedium7"
@@ -2714,6 +2717,7 @@ module Xlsx =
         DefaultColWidth = None
         DefaultRowHeight = None
         CustomDefaultHeight = false
+        ZeroHeight = false
     }
 
     let sheetFormatPr (sheet: XmlNode) : SheetFormat =
@@ -2728,6 +2732,7 @@ module Xlsx =
                     Xml.attr "customHeight" node
                     |> Option.map (fun v -> v = "1" || v = "true")
                     |> Option.defaultValue false
+                ZeroHeight = Xml.attr "zeroHeight" node |> Option.map (fun v -> v = "1" || v = "true") |> Option.defaultValue false
             }
 
     // Worksheet extraction (advanced features parsed separately)
@@ -3199,6 +3204,7 @@ module Xlsx =
             DefaultColWidth = nativeFloatAttr reader "defaultColWidth"
             DefaultRowHeight = nativeFloatAttr reader "defaultRowHeight"
             CustomDefaultHeight = nativeBoolAttr reader "customHeight"
+            ZeroHeight = nativeBoolAttr reader "zeroHeight"
         }
 
     let private sheetViewsNative (reader: System.Xml.XmlReader) =
