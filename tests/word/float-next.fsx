@@ -49,7 +49,7 @@ let wordLines name =
 /// Our lines: page, top and left of their text in points from the page's top-left.
 let ours name =
     let doc = File.ReadAllBytes(Path.Combine(dir, name + ".docx")) |> DocxReader.loadBytesNative |> Option.get |> Rbt.Word.Import.importDoc
-    let settings = { Layout.documentSettings 16.0 24.0 3.5 doc with SpaceShrink = 0.0; FirstPageExtraRoom = 0.0 }
+    let settings = { Layout.documentSettings 16.0 24.0 3.5 doc with SpaceShrink = 0.0; FirstPageExtraRoom = 0.0; NoteColumns = [] }
     let layouts, pages = Layout.layoutDocumentPages settings measureText measureRange doc
     let pageOf (y: float) = pages |> List.filter (fun p -> p.Top <= y + 0.01) |> List.length
     let pageTop (page: int) = (List.item (page - 1) pages).Top

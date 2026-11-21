@@ -432,6 +432,7 @@ module Vba =
         HangingPunctuation = Layout.documentHangingPunctuation doc.PageSetup
         SpaceShrink = Layout.documentSpaceShrink doc.PageSetup
         FirstPageExtraRoom = 0.0
+        NoteColumns = []
     }
 
     let private measureText (text: string) (style: TextBuf.TextStyle) =

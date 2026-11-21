@@ -63,7 +63,7 @@ word_suites=(
     table-merge-split table-columns anchored-objects drawing-order text-boxes
     group-shapes roundtrip-layout table-break-borders sections table-insert
     wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
-    column-balance section-end macros outline line-boxes marker-ascent endnote-start row-break rfonts-precedence footnote-block border-space
+    column-balance section-end macros outline line-boxes marker-ascent endnote-start row-break rfonts-precedence footnote-block footnote-columns border-space
     float-wrap float-next long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
     table-style-props border-across vmerge-content row-continue list-sections
     hyphen-break hyphenation justify-squeeze data-binding
