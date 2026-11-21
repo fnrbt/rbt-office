@@ -49,6 +49,12 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
   the small documents a rule is checked on; `--detail` lists every page whose first or last
   line differs; `--lines <name>` prints our lines of one document (page, y,
   height, block, text) for finding where a break moved.
+- Every line, for the documents with Word's lines in `tests/word/word-lines/<dir>__<name>.tsv`
+  (`pdf-geometry.py`'s line rows of Word's PDF, committed; `--refresh-word` rewrites the ones there
+  are): each line of ours against Word's at its place on the page, by its first and last word. The
+  table gives `lines k/n` after the pages, `--detail` and `--lines <name>` the lines that differ - a
+  line mid-page that a page's first and last do not show (magazine-feature's "Moving a turbine fifty
+  metres is" beside its picture). Add a document by putting its rows there.
 
 Run it before and after any layout change: a change must not make a document
 that matched stop matching.
@@ -92,7 +98,9 @@ floating pictures and shapes); where Word's lines and pictures are in its PDFs
 comes from `pdf-geometry.py` (each line's pieces across and down, each picture's
 box) into `word/geometry.tsv`, which `tests/word/float-wrap.fsx` checks against. `fixtures/float-table.py` writes
 `tests/word/fixtures/float-table/` (where a floating table, `w:tblpPr`, is placed and the text round
-it), read the same way into its `word/geometry.tsv` for `tests/word/float-table.fsx`.
+it), read the same way into its `word/geometry.tsv` for `tests/word/float-table.fsx`. `fixtures/float-next.py`
+(`tests/word/fixtures/float-next/`: the paragraphs after a picture's own going round it, in one column
+and in two; where its distB ends for them) likewise for `tests/word/float-next.fsx`.
 
 `fixtures/long-word.py` (where lines break round a word longer than the line, in fields' results,
 at a page's foot in a cell; `--lines <dir>` reads every line of Word's PDFs into `<dir>/word/lines.tsv`,

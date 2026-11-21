@@ -3129,7 +3129,7 @@ let defaultTabStopWidth = 48.0
 /// in another font is as tall as its own font's line (0: every font as that one).
 /// `column`: the left edge of the column the paragraph is in, from the left margin, and its
 /// width ((0, 0): no columns) - what an anchored picture is placed relative to.
-let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (column: float * float) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
+let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (spaceAbove: float) (tabStops: TabStop list) (firstLineStart: float) (tabOrigin: float) (hanging: bool) (column: float * float) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     let mutable lines = []
     let currentSegments = ResizeArray<Segment>()
     let mutable currentHasTextMetric = false
@@ -3143,6 +3143,8 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     let mutable currentHasFlowContent = false
     let mutable currentX = 0.0
     let mutable y = minBodyTop settings 0.0
+    // (Where the first line is when nothing moves it down: see wrapIntervalsForY.)
+    let firstLineY = y
     let mutable flushedLineCount = 0
     let availableWidth = max 1.0 maxWidth
     let mutable currentLineEnd = availableWidth
@@ -3197,6 +3199,11 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         // left-to-right. Empty list means the entire line is blocked.
         let globalLineY = contentY + (lineY - settings.PaddingTop)
         let lineBottom = globalLineY + settings.LineHeight
+        // The paragraph's first line reaches up through its space before (`spaceAbove`): it goes beside an
+        // obstacle whose bottom is in that space - a picture of a paragraph above with its distB, say -
+        // where the space after of the paragraph above does not count (Word 2019 and 2010: fixtures
+        // float-next b6-d9-m55 beside, -m65 not; a6-d9-m05 not).
+        let reachTop = if flushedLineCount = 0 && abs (lineY - firstLineY) < 0.01 then globalLineY - spaceAbove else globalLineY
         let active = ResizeArray<float * float>()
         let addActiveInterval startX endX =
             let mutable startX = startX
@@ -3219,7 +3226,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         // (The obstacles stand across from the text's left edge, the lines from the paragraph's
         // indent: float-table ind-* - a paragraph indented 1in goes on beside a table at the margin.)
         for (x, top, width, height) in floatObstacles do
-            if lineBottom > top && globalLineY < top + height then
+            if lineBottom > top && reachTop < top + height then
                 addActiveInterval (x - tabOrigin) (x - tabOrigin + width)
         let mutable gaps = []
         let mutable cursor = 0.0
@@ -3992,7 +3999,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
     List.rev lines, floatObstacles, placedBoxes
 
 let layoutLinesFromIndent (settings: LayoutSettings) measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging initialObstacles initialPlacedBoxes =
-    layoutLinesFromIndentWith settings.LineHeight 0.0 settings measureRange buffer maxWidth contentY tabStops firstLineStart tabOrigin hanging (0.0, 0.0) initialObstacles initialPlacedBoxes
+    layoutLinesFromIndentWith settings.LineHeight 0.0 settings measureRange buffer maxWidth contentY 0.0 tabStops firstLineStart tabOrigin hanging (0.0, 0.0) initialObstacles initialPlacedBoxes
 
 let layoutLinesStyledWithObstaclesWithRange (settings: LayoutSettings) (measureRange: TextRangeMeasurer) (buffer: TextBuffer.TextBuffer) (maxWidth: float) (contentY: float) (tabStops: TabStop list) (initialObstacles: FloatingObstacle list) (initialPlacedBoxes: PlacedFloatingBox list) =
     layoutLinesFromIndent settings measureRange buffer maxWidth contentY tabStops 0.0 0.0 false initialObstacles initialPlacedBoxes
@@ -4478,9 +4485,9 @@ let private layoutParagraphCore (settings: LayoutSettings) (measureText: TextMea
         if singleLineFastPath then
             match trySingleLineStyledNoObstacles lineSettings measureRange buffer availableWidth metadata.TabStops firstLineStart initialObstacles initialPlacedBoxes with
             | Some lines -> lines, initialObstacles, initialPlacedBoxes
-            | None -> layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
+            | None -> layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY spacingBefore metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
         else
-            layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
+            layoutLinesFromIndentWith textLineFloor contentLineRatio lineSettings measureRange buffer availableWidth contentY spacingBefore metadata.TabStops firstLineStart indent hanging column initialObstacles initialPlacedBoxes
     let lines, updatedObstacles, updatedPlacedBoxes =
         match memoEntry with
         | Some entry ->
@@ -8019,6 +8026,11 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             | _ -> ()
         found
     let mutable placedShapes : PlacedFloatingBox list = []
+    // What the pictures placed from the paragraphs laid out in this column so far keep free of text (their
+    // boxes, distances from text round them): the paragraphs after theirs go round them too, as on a page
+    // (Word 2019 and 2010: fixtures float-next col-*; the showcase magazine's "Moving a turbine fifty
+    // metres is" beside its turbines picture). Gone at the next column.
+    let mutable columnPictures : FloatingObstacle list = []
     let shapeIdOf (box: PlacedFloatingBox) =
         match box.Kind with
         | WordLayout.Floating.TextBox textBox -> textBox.Id
@@ -8050,6 +8062,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     let box = WordLayout.Floating.anchoredTextBoxBox anchorPage (pageTopOf page) top height textBox
                     yield { box with X = box.X + columnDx col } ]
     let advanceColumn () =
+        columnPictures <- []
         col <- col + 1
         if col >= n then
             col <- 0
@@ -8063,6 +8076,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let advancePage () =
         if n <= 1 || balancedHeight.IsSome then advanceColumn ()
         else
+            columnPictures <- []
             col <- 0
             page <- page + 1
             y <- columnTop ()
@@ -8071,10 +8085,11 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage; CheckNoteBreaks = Map.empty
         CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage None page)
-        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = placedShapes; CheckDropCap = pendingDropCap
+        CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = columnPictures; CheckPlacedBoxes = placedShapes; CheckDropCap = pendingDropCap
     }
     let restoreState (state: PassCheckpoint) =
         pendingDropCap <- state.CheckDropCap
+        columnPictures <- state.CheckObstacles
         placedShapes <- state.CheckPlacedBoxes
         col <- state.CheckCol
         page <- state.CheckPage
@@ -8204,8 +8219,13 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     | _ -> y
                 let dropsHere = not isContinuation && atColumnTop () && not (continuesPage ()) && (pushed || dropsAtTop)
                 // (Laid out where its column is across: what is anchored in it is placed from the column.)
+                // (Round the pictures of the paragraphs above it in the column too; what it returns of
+                // obstacles, its own pictures' only.)
                 let laidOut obstacles =
-                    layoutParagraphWithMemoAt dropsHere memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters obstacles []
+                    let input = columnPictures @ obstacles
+                    let layout, newCounters, updated, placedBoxes =
+                        layoutParagraphWithMemoAt dropsHere memo flowSettings measureText measureRange (columnWidth col) layoutY (columnDx col) style (effectiveBufferInContext styleContext) remaining counters input []
+                    layout, newCounters, (if LanguagePrimitives.PhysicalEquality updated input then [] else updated |> List.filter (fun o -> not (List.contains o input))), placedBoxes
                 // (The paragraph's first lines go around the drop cap: they stand beside it.)
                 let cap = if isContinuation then None else capLayoutAt layoutY
                 // A line fits when its text ends above the column bottom (lineVisibleFitHeight),
@@ -8258,7 +8278,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                             laidOut ((0.0, first.Y, capWidth + capFrame.Distance, frameHeight - 0.5) :: shapeObstacles)
                         | [] -> probe
                     | _ -> probe
-                let rawLayout, newCounters, _, _ = layoutAmong (shapeObstaclesIn col)
+                let rawLayout, newCounters, ownPictures, _ = layoutAmong (shapeObstaclesIn col)
                 // A shape anchored in the paragraph that text goes round is placed from the paragraph's top
                 // in the column where the paragraph starts (the anchor's place in the paragraph is not
                 // read: taken to be in its first part), across from that column, when some of the
@@ -8270,14 +8290,14 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                         match placeShapesOf para0.Id layoutY with
                         | [] -> []
                         | shapes -> if fitOf rawLayout > 0 then shapes else []
-                let rawLayout, newCounters =
+                let rawLayout, newCounters, ownPictures =
                     match shapesHere with
-                    | [] -> rawLayout, newCounters
+                    | [] -> rawLayout, newCounters, ownPictures
                     | shapes ->
                         placedShapes <- shapes @ placedShapes
                         ownShapes <- shapes @ ownShapes
-                        let layout, counters, _, _ = layoutAmong (shapeObstaclesIn col)
-                        layout, counters
+                        let layout, counters, pictures, _ = layoutAmong (shapeObstaclesIn col)
+                        layout, counters, pictures
                 // The letter, its baseline on that of the last line it is as high as.
                 let addCap () =
                     match cap, rawLayout.Lines with
@@ -8308,6 +8328,7 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                     counters <- newCounters
                     y <- layout.Y + layout.Height
                     previousParagraph <- Some (remaining, style, layout.Metadata, WordLayout.Paragraph.spacingAfter style layout.Metadata)
+                    columnPictures <- ownPictures @ columnPictures
                     placed <- true
                 // The paragraph goes on to the next column whole: a shape placed from it here goes with it
                 // in Word 2019's layout - placed again from where it starts there -, stays where it was

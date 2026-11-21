@@ -32,6 +32,13 @@
 // length, at most 40 characters). The table: Word's pages, ours, the pages of
 // Word whose first line is ours on the same page, and the first page that
 // differs with both first lines. --detail prints every page.
+//
+// Every line, not only a page's first and last: a document with Word's lines in
+// tests/word/word-lines/<dir>__<name>.tsv (committed; tools/word-parity/pdf-geometry.py's line rows of
+// Word's PDF - each piece of a line: page, top, left, first and last word - rewritten by --refresh-word
+// for the documents that have one) compared with ours line by line - its first and last word, where it
+// is on the page (compareLines). The table gives "lines k/n" after the pages; --detail and --lines
+// <name> list the lines that differ.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -54,6 +61,7 @@ const browserName = opt('--browser') ?? 'chromium';
 const filters = args;
 const port = Number(process.env.PORT ?? 16031);
 const refDir = docDir ? path.join(path.resolve(docDir), 'word') : path.join(repo, 'tests/word/word-pages');
+const wordLinesDir = path.join(repo, 'tests/word/word-lines');
 const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(repo, 'artifacts/fonts/windows'));
 const fontDirs = [fontDir, path.resolve(process.env.RB_WORD_EXTRA_FONT_DIR ?? path.join(path.dirname(fontDir), 'windows-extra'))]
     .filter((d) => fs.existsSync(d));
@@ -91,6 +99,15 @@ if (refresh) {
         fs.writeFileSync(path.join(refDir, d.key + '.tsv'), text.replace(/\r\n/g, '\n'));
     }
     fs.rmSync(stage, { recursive: true, force: true });
+    // (Word's lines of the documents that keep them, from its PDFs.)
+    if (!docDir)
+        for (const d of selected) {
+            const keep = path.join(wordLinesDir, d.key + '.tsv'), pdf = path.join(pdfDir, d.key + '.pdf');
+            if (!fs.existsSync(keep) || !fs.existsSync(pdf)) continue;
+            const r = spawnSync('python3', [path.join(here, 'pdf-geometry.py'), pdf], { encoding: 'utf8' });
+            if (r.status === 0) fs.writeFileSync(keep, r.stdout.split('\n').filter((l) => l.split('\t')[1] === 'line').join('\n') + '\n');
+            else console.error(`pdf-geometry.py failed for ${d.key}`);
+        }
 }
 
 const readWord = (key) => {
@@ -211,6 +228,19 @@ window.linesOf = async (url) => {
     const { editor } = await editorOf(url);
     return Word.getLayoutLines(editor).map((l) => [l.Page, Math.round(l.PageY * 100) / 100, Math.round(l.Height * 100) / 100, l.BlockId + "@" + Math.round(l.BlockHeight * 75) / 100, l.Text, (l.Segments ?? []).map((s) => s.Text + "=" + Math.round(s.Width * 75) / 100).join(" ").slice(0, 120), "x=" + (l.Segments?.length ? Math.round(l.Segments[0].X * 75) / 100 : "")]);
 };
+// Each body line with text: page, top and left in points, first and last word.
+window.lineWordsOf = async (url) => {
+    const { editor } = await editorOf(url);
+    const out = [];
+    for (const l of Word.getLayoutLines(editor)) {
+        if (String(l.BlockId).startsWith('__')) continue;
+        const segs = (l.Segments ?? []).filter((s) => String(s.Text ?? '').trim() !== '').sort((a, b) => a.X - b.X);
+        if (!segs.length || !/[\\p{L}\\p{N}]/u.test(l.Text)) continue;
+        const w =segs.map((s) => String(s.Text)).join('').trim().split(/\\s+/);
+        out.push([l.Page, l.PageY * 0.75, segs[0].X * 0.75, w[0], w[w.length - 1]]);
+    }
+    return out;
+};
 window.ready = true;
 
 </script>`;
@@ -247,6 +277,41 @@ const norm = (s) => String(s ?? '').toLowerCase().normalize('NFKD').replace(/[^\
 const same = (a, b) => { const x = norm(a), y = norm(b); const n = Math.min(40, x.length, y.length); return n === 0 ? x.length === y.length : x.slice(0, n) === y.slice(0, n); };
 const cut = (s, n = 48) => { s = String(s ?? ''); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
 
+// Word's pieces of lines of a document (tests/word/word-lines), or null.
+const readWordLines = (key) => {
+    const file = path.join(wordLinesDir, key + '.tsv');
+    if (docDir || !fs.existsSync(file)) return null;
+    return fs.readFileSync(file, 'utf8').split('\n').map((l) => l.split('\t')).filter((c) => c[1] === 'line')
+        .map((c) => ({ page: Number(c[2]), top: Number(c[3]), left: Number(c[5]), first: c[7], last: c[8] }));
+};
+// Word's lines against ours. A line of ours takes Word's pieces on its page within 4pt of its top that
+// start at its left (2pt) or right of it, short of the next line of ours there (another column's): Word's
+// line is its first piece's first word to its last piece's last (pdf-geometry.py splits a line where
+// justified spaces are wide, and on the two sides of a picture). { matched, total, diffs }: a line of
+// ours with other words or none of Word's there, or a piece of Word's no line of ours takes, differs.
+const compareLines = (word, ours) => {
+    const diffs = [];
+    let matched = 0;
+    const taken = new Set();
+    const near = (a, b) => a.page === b.page && Math.abs(a.top - b.top) <= 4;
+    const lines = ours.map(([page, top, left, first, last]) => ({ page, top, left, first, last }));
+    for (const o of lines) {
+        const next = lines.filter((n) => near(n, o) && n.left > o.left + 2).reduce((m, n) => Math.min(m, n.left), Infinity);
+        const pieces = word.filter((w) => near(w, o) && w.left >= o.left - 2 && w.left < next - 2).sort((a, b) => a.left - b.left);
+        pieces.forEach((w) => taken.add(w));
+        const w = pieces.length ? { first: pieces[0].first, last: pieces[pieces.length - 1].last } : null;
+        if (w && same(o.first, w.first) && same(o.last, w.last)) matched++;
+        else diffs.push({ page: o.page, top: o.top, word: w ? `${w.first} ... ${w.last}` : '(none there)', ours: `${o.first} ... ${o.last}` });
+    }
+    const left = word.filter((w) => !taken.has(w));
+    for (const w of left) diffs.push({ page: w.page, top: w.top, word: `${w.first} ... ${w.last}`, ours: '(none there)' });
+    diffs.sort((a, b) => a.page - b.page || a.top - b.top);
+    return { matched, total: lines.length + left.length, diffs };
+};
+const printLineDiffs = (lines) => {
+    for (const d of lines.diffs) console.log(`    line p${d.page} at ${d.top.toFixed(1)}pt: W "${d.word}" O "${d.ours}"`);
+};
+
 const rows = [];
 try {
     const tab = await browser.newPage();
@@ -256,6 +321,12 @@ try {
     if (linesFor) {
         const d = corpus.find((c) => c.key === linesFor) ?? corpus.find((c) => c.key.includes(linesFor));
         for (const l of await tab.evaluate((u) => window.linesOf(u), '/doc?i=' + corpus.indexOf(d))) console.log(l.join('\t'));
+        const wordLines = readWordLines(d.key);
+        if (wordLines) {
+            const lines = compareLines(wordLines, await tab.evaluate((u) => window.lineWordsOf(u), '/doc?i=' + corpus.indexOf(d)));
+            console.log(`lines ${lines.matched}/${lines.total} at Word's (first and last word)`);
+            printLineDiffs(lines);
+        }
         process.exit(0);
     }
     for (const d of selected) {
@@ -272,7 +343,9 @@ try {
             if (ok) matched++; else if (firstDiff === null) firstDiff = { page: i + 1, word: w.first, ours: o.first };
             pages.push({ page: i + 1, ok, lastOk: same(w.last, o.last), wordFirst: w.first, oursFirst: o.first, wordLast: w.last, oursLast: o.last });
         }
-        rows.push({ key: d.key, word: word.count, ours: ours.count, matched, firstDiff, pages });
+        const wordLines = readWordLines(d.key);
+        const lines = wordLines ? compareLines(wordLines, await tab.evaluate((u) => window.lineWordsOf(u), '/doc?i=' + corpus.indexOf(d))) : null;
+        rows.push({ key: d.key, word: word.count, ours: ours.count, matched, firstDiff, pages, lines });
     }
 } finally { await browser.close(); server.close(); }
 
@@ -284,9 +357,11 @@ for (const r of rows) {
     if (r.ours === r.word) samePages++;
     if (r.ours === r.word && r.matched === r.word) allStarts++;
     const diff = r.firstDiff ? `p${r.firstDiff.page}: Word "${cut(r.firstDiff.word, 30)}" / ours "${cut(r.firstDiff.ours, 30)}"` : '';
-    console.log(`${short(r.key).padEnd(52)} ${String(r.word).padStart(5)} ${String(r.ours).padStart(5)} ${`${r.matched}/${r.word}`.padStart(9)}  ${r.ours === r.word ? '' : '*'}${diff}`);
+    const lineNote = r.lines ? `  lines ${r.lines.matched}/${r.lines.total}` : '';
+    console.log(`${short(r.key).padEnd(52)} ${String(r.word).padStart(5)} ${String(r.ours).padStart(5)} ${`${r.matched}/${r.word}`.padStart(9)}  ${r.ours === r.word ? '' : '*'}${diff}${lineNote}`);
     if (detail) for (const p of r.pages) if (!p.ok || !p.lastOk)
         console.log(`    p${p.page} first ${p.ok ? '=' : '≠'} W "${cut(p.wordFirst)}" O "${cut(p.oursFirst)}" | last ${p.lastOk ? '=' : '≠'} W "${cut(p.wordLast)}" O "${cut(p.oursLast)}"`);
+    if (detail && r.lines) printLineDiffs(r.lines);
 }
 console.log(`\n${samePages} of ${rows.length} documents at Word's page count; ${allStarts} with every page starting at Word's line.`);
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(rows, null, 1));
