@@ -453,7 +453,11 @@ checks['cell-runs-and-accounting'] = async () => {
         await grid.ImportXlsx(await excelPackage(RUNS_SHEET, { 'xl/styles.xml': [STYLES_TYPE, STYLES_REL, RUNS_STYLES] }));
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
-        const spans = [...node(0, 0).querySelectorAll('span span')].map((span) => { const css = getComputedStyle(span); return [span.textContent, css.color, Number(css.fontWeight) >= 600, css.fontStyle, Math.round(parseFloat(css.fontSize) * 72 / 96)]; });
+        // (Sizes at Excel's whole pixels, ExcelText - 11 pt is 15 px; where the browser has no Calibri, its
+        // stand-in is drawn smaller, as tall as Calibri's letters.)
+        const hasCalibri = (() => { const c = document.createElement('canvas').getContext('2d'), t = 'mmmmmmmmmmlli WQ 0123456789'; c.font = '72px monospace'; const a = c.measureText(t).width; c.font = "72px 'Calibri', monospace"; return c.measureText(t).width !== a; })();
+        const scale = hasCalibri ? 1 : 0.4644 / 0.5186;
+        const spans = [...node(0, 0).querySelectorAll('span span')].map((span) => { const css = getComputedStyle(span); return [span.textContent, css.color, Number(css.fontWeight) >= 600, css.fontStyle, Math.round(parseFloat(css.fontSize) / scale * 72 / 96)]; });
         check('each run of a text in its own look', spans,
             [['OPEN', 'rgb(0, 176, 240)', true, 'normal', 11], [' vs. ', 'rgb(0, 0, 0)', false, 'normal', 11], ['CLOSED', 'rgb(255, 192, 0)', false, 'italic', 14]]);
         const cell = node(0, 1).getBoundingClientRect(), [sign, number] = [...node(0, 1).querySelectorAll('span')].map((span) => span.getBoundingClientRect());

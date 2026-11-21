@@ -894,6 +894,28 @@ let private generalNumberFormats =
 /// Width-aware Excel "General" number formatting. Picks the longest .NET
 /// "G<n>" representation that fits the cell width. If even the shortest
 /// representation overflows, returns `#####` like Excel does.
+/// How a number is fitted to its cell where its text is measured as Excel draws it (`ExcelText`:
+/// whole-pixel sizes and GDI's advances at the sheet's zoom), the cell's width in screen pixels
+/// there. What Excel shows depends on the zoom: `1E+06` for a 1234567 it shows whole at 100 % in a
+/// column too narrow for it at 110 %, `####` at 80 % for a `1E+06` it shows at 100 %. Checked in
+/// Excel 2019 at 50-200 % (hash-text.vbs, Range.Text at the sheet's zoom, 815 of 840 cells; the
+/// others at 50-70 %, where Excel draws in Small Fonts): the room is the cell less 5 px x the zoom;
+/// a formatted number fits when its text is no wider; a General number is the longest of its forms
+/// whose characters, each as wide as a digit (a minus sign as itself), fit; one that does not fit
+/// is as many `#` as fit in the cell less 5 px (x the zoom from 100 % up) - `#` measured, not a
+/// digit: 5 of them at 75 % in a 30-px column of Calibri 11, where a digit is 6 px and `#` 5.
+type NumberFit =
+    { /// The zoom (1.0 at 100 %).
+      Zoom: float }
+
+/// The room a text has in a cell `cellWidthPx` wide (screen pixels) at a zoom (`NumberFit`).
+let private fittedRoom (fit: NumberFit) (cellWidthPx: float) = max 0.0 (System.Math.Round cellWidthPx - 5.0 * fit.Zoom)
+
+/// `#` as many as fit in a cell (`NumberFit`).
+let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
+    let room = max 0.0 (System.Math.Round cellWidthPx - 5.0 * max 1.0 fit.Zoom)
+    System.String('#', max 1 (int (room / max 1.0 (measure "#"))))
+
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
     // Excel's General-format digit budget = floor((cellWidthPx - 5) / MDW).
     // The 5 px matches OOXML's column-width padding (2 px each side + 1 px
@@ -928,6 +950,35 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
     match result with
     | ValueSome s -> s
     | ValueNone -> System.String('#', maxChars)
+
+/// `generalNumberDisplay` measured as Excel draws the text (`NumberFit`): the longest of the
+/// same forms that fits, its characters as wide as a digit (a minus sign as itself).
+let private generalNumberFitted (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) (n: float): string =
+    let room = fittedRoom fit cellWidthPx
+    let digit = measure "0"
+    let minus = measure "-"
+    let fits (text: string) =
+        let mutable width = 0.0
+        for c in text do width <- width + (if c = '-' then minus else digit)
+        width <= room + 1e-9
+    let mutable result: string voption = ValueNone
+    let magnitude = abs n
+    if magnitude > 0.0 && magnitude < 1e-4 && magnitude >= 1e-9 then
+        let leadingZeros = int (floor (-(System.Math.Log10 magnitude)))
+        let mutable digits = 10
+        while result.IsNone && digits >= 1 do
+            let decimals = min 15 (leadingZeros + digits)
+            let text = (System.Math.Round(n, decimals)).ToString("F" + string decimals, System.Globalization.CultureInfo.InvariantCulture).TrimEnd('0').TrimEnd('.')
+            if fits text && text <> "0" && text <> "-0" then result <- ValueSome text
+            digits <- digits - 1
+    let mutable i = 0
+    while result.IsNone && i < generalNumberFormats.Length do
+        let s = NumberText.numberToString generalNumberFormats.[i] n
+        if fits s then result <- ValueSome s
+        i <- i + 1
+    match result with
+    | ValueSome s -> s
+    | ValueNone -> fittedHashes fit measure cellWidthPx
 
 let private fractionDenominatorDigits (code: string) : int option =
     let mutable i = 0
@@ -1556,11 +1607,21 @@ let private textUnderFormat (code: string) (text: string) : string =
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied
 /// numbers / dates, error markers.
-let cellDisplayTextIn
+let cellDisplayTextFitted
+    (fit: NumberFit option)
     (date1904: bool)
     (measure: (string -> float) option)
     (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+    // (Measured as Excel draws the text: fitted as Excel fits it, `NumberFit`.)
+    let fitOrOverflow measure cellWidth fontName fontPt text =
+        match fit, measure with
+        | Some fit, Some (m: string -> float) -> if m text <= fittedRoom fit cellWidth + 1e-9 then text else fittedHashes fit m cellWidth
+        | _ -> fitOrOverflow measure cellWidth fontName fontPt text
+    let generalNumberDisplay cellWidth fontPt n =
+        match fit, measure with
+        | Some fit, Some m -> generalNumberFitted fit m cellWidth n
+        | _ -> generalNumberDisplay cellWidth fontPt n
     match unwrapFormulaValue value with
     | CellValue.Empty -> ""
     | Number n ->
@@ -1602,6 +1663,10 @@ let cellDisplayTextIn
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
     | Formula _ -> ""
+
+/// `cellDisplayTextFitted` without Excel's measures (the text's width estimated).
+let cellDisplayTextIn (date1904: bool) (measure: (string -> float) option) (cellWidth: float) (format: CellFormat) (value: CellValue): string =
+    cellDisplayTextFitted None date1904 measure cellWidth format value
 
 /// `cellDisplayTextIn` in the 1900 date system.
 let cellDisplayText

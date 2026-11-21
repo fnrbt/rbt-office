@@ -199,7 +199,9 @@ let private emptyLook : CellLook =
 /// stored). `measure` measures its text where the painter knows its fonts (None: by Excel's digit
 /// width, `mdwPx`); `width` is the cell's width in pixels (a merged cell's whole width), what a
 /// number has to fit.
-let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData option) (measure: TextMeasurer option) (width: float) : CellLook =
+/// (`fit`: the text measured as Excel draws it, in screen pixels at a zoom, `width` too: a number
+/// fitted to its cell as Excel fits it, `CellText.NumberFit`.)
+let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) (col: int) (data: CellData option) (measure: TextMeasurer option) (width: float) : CellLook =
     if data.IsNone && model.Tables.IsEmpty && model.ConditionalFormats.IsEmpty then emptyLook
     else
         let addr = { Row = row; Col = col }
@@ -255,7 +257,9 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
         // (A number centred across the selection fits in the width of the run, as Excel shows it.)
         let fitWidth =
             if acrossTo <= col then width
-            else width + (seq { col + 1 .. acrossTo } |> Seq.sumBy (fun c -> model.ColumnWidths |> Map.tryFind c |> Option.defaultValue model.DefaultColumnWidth))
+            else
+                width + (match fit with Some fit -> fit.Zoom | None -> 1.0)
+                        * (seq { col + 1 .. acrossTo } |> Seq.sumBy (fun c -> model.ColumnWidths |> Map.tryFind c |> Option.defaultValue model.DefaultColumnWidth))
         // The text. (A number shrunk to fit or turned is not fitted to the cell's width: shrinking
         // is what makes it fit.)
         let text =
@@ -267,7 +271,7 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
                     match measure with
                     | Some m -> Some (fun (text: string) -> m text fontPt format.FontName format.Bold format.Italic)
                     | None -> None
-                cellDisplayTextIn model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else fitWidth) format value
+                cellDisplayTextFitted fit model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else fitWidth) format value
         let text =
             match format.DataBar, format.IconSet with
             | Some bar, _ when bar.HideValue -> ""
@@ -313,6 +317,10 @@ let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData opt
           IndentLeft = indentLeft; IndentRight = indentRight; Rotation = rotation
           Shrink = format.ShrinkToFit && not wrap && rotation = 0; AcrossTo = acrossTo
           DataBar = format.DataBar; Icon = icon }
+
+/// `cellLookFitted` with the text's width estimated (`CellText.cellDisplayTextIn`).
+let cellLook (model: SpreadsheetModel) (row: int) (col: int) (data: CellData option) (measure: TextMeasurer option) (width: float) : CellLook =
+    cellLookFitted None model row col data measure width
 
 let private isWhiteFill color =
     color = "#ffffff" || color = "#FFFFFF" || color = "white"

@@ -166,7 +166,9 @@ let private cellFontFamily (fontName: string option) : string =
 
 /// Whether the browser has a font family (its text is not drawn in the next family of the list).
 /// Asked once per family.
-[<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
+// (What was measured before a document font finished loading is forgotten when it has: the
+// families, and the widths measured in them.)
+[<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());if(!globalThis.__rbSpreadsheetFontsWatched&&typeof document!=='undefined'&&document.fonts&&document.fonts.addEventListener){globalThis.__rbSpreadsheetFontsWatched=true;document.fonts.addEventListener('loadingdone',()=>{const f=globalThis.__rbSpreadsheetFamilies;if(f)f.clear();for(const k of ['__rbSpreadsheetCellMeasure','__rbSpreadsheetPlainMeasure']){const m=globalThis[k];if(m){m.widths.clear();m.font='';}}});}let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
 let private fontFamilyAvailable (family: string) : bool = jsNative
 
 /// Ask a host's loader for the bytes of a face (`SetFontLoader`) and make them a document font; once
@@ -206,6 +208,53 @@ let private cellTextWidthPx (text: string) (fontPx: float) (family: string) (bol
 /// Excel draws it at 100 %) and family, as the grid draws it.
 let private cellTextWidth (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
     cellTextWidthPx text (SheetOps.pointsToPx fontPt * drawnFontScale fontName) (cellFontFamily fontName) bold italic
+
+// The width of a text as the browser draws it, without kerning (GDI does not kern a cell's text),
+// at a size in pixels. Remembered as `cellTextWidthPx`.
+[<Emit("(function(text,fontSize,family,bold,italic){const g=globalThis.__rbSpreadsheetPlainMeasure||(globalThis.__rbSpreadsheetPlainMeasure={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family;const key=font+'|'+text;let width=g.widths.get(key);if(width===undefined){if(g.font!==font){g.ctx.font=font;g.font=font;try{g.ctx.fontKerning='none';}catch(e){}}width=g.ctx.measureText(text).width;if(g.widths.size>20000)g.widths.clear();g.widths.set(key,width);}return width;})($0,$1,$2,$3,$4)")>]
+let private plainTextWidthPx (text: string) (fontPx: float) (family: string) (bold: bool) (italic: bool): float = jsNative
+
+/// The family the tables of `ExcelText` know a cell's font by (the grid draws a cell without one in Arial).
+let private excelFamily (fontName: string option) =
+    match fontName with
+    | Some family when family.Trim() <> "" -> family.Trim()
+    | _ -> "Arial"
+
+/// What text Excel draws in Small Fonts (`ExcelText.isSmallFonts`, under 8 points on screen) is drawn
+/// in: a plain, wide sans serif made for small sizes, as Small Fonts is, whatever the cell's font.
+let private smallFontsFamily = "Verdana, 'DejaVu Sans', Tahoma, sans-serif"
+
+/// The CSS family and the size factor (`drawnFontScale`) a cell's text is drawn in at a zoom.
+let private drawnFace (fontPt: float) (zoom: float) (fontName: string option) : string * float =
+    if ExcelText.isSmallFonts fontPt zoom then smallFontsFamily, 1.0
+    else cellFontFamily fontName, drawnFontScale fontName
+
+/// The width in screen pixels of a cell's text as Excel draws it at a zoom (`ExcelText`: at a whole
+/// pixel size, in GDI's advances; a character the tables do not know as the browser draws it there).
+let private excelTextWidth (zoom: float) (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
+    let px = ExcelText.pixelSize fontPt zoom
+    let family, scale = drawnFace fontPt zoom fontName
+    ExcelText.textWidth (fun s -> plainTextWidthPx s (float px * scale) family bold italic) (excelFamily fontName) bold italic px (ExcelText.isSmallFonts fontPt zoom) text
+
+/// The letter spacing (screen pixels a character) that makes the browser's line of `text`, drawn at
+/// Excel's whole pixel size (`drawnFace`), as wide as Excel's (`excelTextWidth`). 0 where the browser
+/// draws it so already.
+let private excelLetterSpacing (zoom: float) (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
+    if text.Length = 0 then 0.0
+    else
+        let px = ExcelText.pixelSize fontPt zoom
+        let family, scale = drawnFace fontPt zoom fontName
+        let drawn = plainTextWidthPx text (float px * scale) family bold italic
+        let spacing = (excelTextWidth zoom text fontPt fontName bold italic - drawn) / float text.Length
+        if abs spacing < 0.005 then 0.0 else spacing
+
+/// Call `f` whenever the document's fonts finish loading (a face added to the page and loaded once
+/// a text asks for it); gives what stops it.
+[<Emit("(function(f){if(typeof document==='undefined'||!document.fonts||!document.fonts.addEventListener)return function(){};const h=function(){f();};document.fonts.addEventListener('loadingdone',h);return function(){document.fonts.removeEventListener('loadingdone',h);};})($0)")>]
+let private onFontsLoaded (f: unit -> unit) : (unit -> unit) = jsNative
+
+/// A CSS length to a thousandth of a pixel.
+let private cssPxFine (size: float) : string = string (System.Math.Round (size * 1000.0) / 1000.0) + "px"
 
 
 // ---- macros in the browser -------------------------------------------------------------------------
@@ -3620,7 +3669,15 @@ type Spreadsheet(container: Element) as this =
         // (The measurer as a lambda here, not one kept in a module value: Fable keeps a function
         // value stored in an option curried and wraps it again - uncurry5, a WeakMap entry - every
         // time it is passed; a lambda written at the call is passed as it is.)
-        let look = SpreadsheetPaint.cellLook model row col cellData (Some (fun text fontPt fontName bold italic -> cellTextWidth text fontPt fontName bold italic)) w
+        // The text is measured as Excel draws it at the sheet's zoom (`ExcelText`), in screen pixels, and
+        // a number fitted to the cell's width on screen as Excel fits it (`CellText.NumberFit`).
+        // (Excel's column on screen is its whole pixels at 100 % x the zoom, rounded - 75 px at 90 % are
+        // 68 -, whatever the columns to its left.)
+        let zoom = appliedZoom
+        let screenWidth = System.Math.Floor (System.Math.Round (System.Math.Round w * zoom, 9) + 0.5)
+        let look =
+            SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom } : SpreadsheetCellText.NumberFit)) model row col cellData
+                (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -3662,15 +3719,19 @@ type Spreadsheet(container: Element) as this =
                 + (if look.UnderlineDouble then "double" else "")
             add "text-decoration" (lines.TrimEnd())
         if not (isNull fontLoader) && look.Text <> "" then wantFace look.FontName look.Bold look.Italic
-        match look.FontName with
-        | Some family when family <> "" ->
-            add "font-family" (cellFontFamily look.FontName)
-            if isCalibri look.FontName then add "font-size-adjust" (string calibriAspect)
-        | _ -> ()
-        // The cell's size in points drawn as Excel draws it at 100 %: 96 px to the
-        // inch, so 11 pt (the style sheet's default) is 14.67 px.
-        let fontPx = SheetOps.pointsToPx look.FontSize
-        if look.FontSize <> 11.0 then add "font-size" (cssPx fontPx)
+        let drawnFamily, drawnScale = drawnFace look.FontSize zoom look.FontName
+        if ExcelText.isSmallFonts look.FontSize zoom then add "font-family" drawnFamily
+        else
+            match look.FontName with
+            | Some family when family <> "" -> add "font-family" drawnFamily
+            | _ -> ()
+        // The cell's size in points drawn as Excel draws it: at a whole number of screen pixels,
+        // round(points x 96/72 x zoom) (`ExcelText.pixelSize`: 11 pt is 15 px at 100 % and 12 px at
+        // both 80 % and 85 %); in sheet pixels, which the content's zoom scales. (Calibri where the
+        // browser has none smaller, as tall as Calibri's letters, `drawnFontScale`: a size of its own
+        // rather than `font-size-adjust`, so that the text is measured as it is drawn.)
+        let fontPx = float (ExcelText.pixelSize look.FontSize zoom) / zoom * drawnScale
+        if look.Text <> "" then add "font-size" (cssPxFine fontPx)
         // Across the cell (the style sheet's default is the left).
         match look.Horizontal with
         | "distributed" | "justify" -> add "text-align" "justify"
@@ -3718,8 +3779,10 @@ type Spreadsheet(container: Element) as this =
                 add "padding-bottom" "0px"
             | _ -> add "line-height" (px (h - 4.0))
         // An indent pads the edge the text is aligned to.
-        if look.IndentRight > 0.0 then add "padding-right" (px (5.0 + look.IndentRight))
-        elif look.IndentLeft > 0.0 then add "padding-left" (px (5.0 + look.IndentLeft))
+        // (Excel sets a line of text in 2 px from the cell's left side and 3 px from its right - the
+        // grid line at its right is the cell's -, in sheet pixels at any zoom: the grid's style sheet.)
+        if look.IndentRight > 0.0 then add "padding-right" (px (3.0 + look.IndentRight))
+        elif look.IndentLeft > 0.0 then add "padding-left" (px (2.0 + look.IndentLeft))
         // The table's look of the cell, for its edges and theirs.
         let tableLook = look.Table
         // Borders and grid lines: one line per edge. A cell draws the edge
@@ -3908,22 +3971,27 @@ type Spreadsheet(container: Element) as this =
         // The text: number-formatted (#### for a number that does not fit), none where a data bar
         // or an icon set hides the value.
         let displayText = look.Text
-        let measureText (text: string) = cellTextWidth text look.FontSize look.FontName look.Bold look.Italic
+        // (In sheet pixels: what Excel draws on screen at the zoom, unscaled.)
+        let measureText (text: string) = excelTextWidth zoom text look.FontSize look.FontName look.Bold look.Italic / zoom
+        // Drawn as wide as Excel draws it: the browser's own advances evened out to Excel's over the
+        // line (`excelLetterSpacing`), unless the text is drawn smaller to fit below.
+        let mutable spacing = excelLetterSpacing zoom displayText look.FontSize look.FontName look.Bold look.Italic / zoom
+        let mutable squeezed = false
         // Shrink to fit: one line of text wider than its cell is drawn smaller
         // (never larger), down to what fits between the cell's paddings.
         if look.Shrink && displayText <> "" then
-            let room = w - 10.0 - look.IndentLeft - look.IndentRight
+            let room = w - 5.0 - look.IndentLeft - look.IndentRight
             let width = measureText displayText
             if room > 0.0 && width > room then
+                spacing <- 0.0
                 add "font-size" (string (System.Math.Floor (max 1.0 (fontPx * room / width * 0.98) * 100.0) / 100.0) + "px")
         // Turned text: a line through the middle of the cell at the format's
         // angle (stacked text: upright letters one under the other).
         let rotation = if displayText <> "" then look.Rotation else 0
         // A number is never cut off or run over its neighbours: its text was chosen to fit the
-        // cell by Excel's digit width (`CellText`), and Excel draws it as little as 2 px from the
-        // cell's edges. Where it is wider than the room between the cell's paddings, they give
-        // way; where the grid's font draws it wider than that (a family that is not at hand
-        // drawn in another), it is drawn smaller.
+        // cell as Excel draws it (`CellText.NumberFit`: the room between the cell's paddings).
+        // Where it is wider than that all the same (a merged cell's run, a rounding), the
+        // paddings give way; where it is wider than the cell, it is drawn smaller.
         let isNumber = match unwrapFormulaValue look.Value with CellValue.Number _ -> true | _ -> false
         // An accounting format's fill (`_($* #,##0_)`): the currency sign at the cell's left edge and
         // the number at its right, whatever the font (`CellText` pads the text with spaces for it,
@@ -3939,11 +4007,13 @@ type Spreadsheet(container: Element) as this =
         if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone && look.AcrossTo <= col then
             let indent = look.IndentLeft + look.IndentRight
             let width = measureText (match accounting with Some (sign, number) -> sign + " " + number | None -> displayText)
-            if width > w - 10.0 - indent then
-                if look.IndentRight = 0.0 then add "padding-right" "2px"
-                if look.IndentLeft = 0.0 then add "padding-left" "2px"
-                let room = w - 4.0 - indent
+            if width > w - 5.0 - indent then
+                squeezed <- true
+                if look.IndentRight = 0.0 then add "padding-right" "1px"
+                if look.IndentLeft = 0.0 then add "padding-left" "1px"
+                let room = w - 2.0 - indent
                 if room > 0.0 && width > room then
+                    spacing <- 0.0
                     add "font-size" (cssPx (System.Math.Floor (max 1.0 (fontPx * room / width * 0.98) * 100.0) / 100.0))
         // Centred across the selection: the text is let out of its box over the run of cells it is
         // centred across (`Paint.cellLook`) and centred there, in a box of its own that spans them.
@@ -3969,12 +4039,12 @@ type Spreadsheet(container: Element) as this =
             match SpreadsheetLayout.textOverflowSides look.Format look.Value with
             // (Not measured when even the widest glyphs would fit the cell. An indent is room the text
             // does not have in its cell: vertex42-home-mortgage's indented "Mortgage Information" was cut short.)
-            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 10.0 - look.IndentLeft - look.IndentRight ->
-                let excess = measureText displayText - (w - 10.0 - look.IndentLeft - look.IndentRight)
+            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 5.0 - look.IndentLeft - look.IndentRight ->
+                let excess = measureText displayText - (w - 5.0 - look.IndentLeft - look.IndentRight)
                 if excess > 0.0 then
                     wide <- true
                     // (Past the cell's edge: its own padding on that side is its to use.)
-                    let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 3.0 else 0.0
+                    let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 2.0 else 0.0
                     let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 3.0 else 0.0
                     let first, last = SpreadsheetLayout.textOverflowSpan model row col needLeft needRight
                     // Text of a frozen column runs on into the columns beside the frozen
@@ -4022,6 +4092,14 @@ type Spreadsheet(container: Element) as this =
             add "justify-content" "space-between"
             add "white-space" "pre"
         node.Wide <- wide || across > 0.0
+        // (Rich text is spaced run by run, below. The spacing follows a line's last character too: a
+        // right-aligned or centred line has its right padding less it, so that its characters stand
+        // where Excel's do.)
+        if spacing <> 0.0 && runs.IsNone then
+            add "letter-spacing" (cssPxFine spacing)
+            if not look.Wrap && not squeezed && rotation = 0 && across = 0.0
+               && (look.Align = SpreadsheetLayout.AlignRight || look.Align = SpreadsheetLayout.AlignCenter) then
+                add "padding-right" (cssPxFine (3.0 + look.IndentRight - spacing))
         setCssText cell (css.ToString())
         setAttribute cell "data-row" (string row)
         setAttribute cell "data-col" (string col)
@@ -4032,6 +4110,8 @@ type Spreadsheet(container: Element) as this =
             setTextContent span text
             let size = run.FontSize |> Option.defaultValue look.FontSize
             let family = run.FontName |> Option.orElse look.FontName
+            let runBold = run.Bold |> Option.defaultValue look.Bold
+            let runItalic = run.Italic |> Option.defaultValue look.Italic
             if not (isNull fontLoader) then wantFace family (run.Bold |> Option.defaultValue look.Bold) (run.Italic |> Option.defaultValue look.Italic)
             let small = run.VertAlign = Some VertAlignSuperscript || run.VertAlign = Some VertAlignSubscript
             let lines =
@@ -4043,9 +4123,14 @@ type Spreadsheet(container: Element) as this =
                       (match run.Italic with Some true -> "font-style:italic" | Some false -> "font-style:normal" | None -> "")
                       (if lines.IsEmpty then "" else "text-decoration:" + String.concat " " lines + (if run.UnderlineDouble = Some true then " double" else ""))
                       (match run.Color with Some color -> "color:" + color | None -> "")
-                      (if run.FontName.IsSome then "font-family:" + cellFontFamily family else "")
-                      (if run.FontName.IsSome && isCalibri family then "font-size-adjust:" + string calibriAspect else "")
-                      (if run.FontSize.IsSome || small then "font-size:" + cssPx (SheetOps.pointsToPx size * (if small then 0.6 else 1.0)) else "")
+                      (let points = size * (if small then 0.6 else 1.0)
+                       if ExcelText.isSmallFonts points zoom || run.FontName.IsSome then "font-family:" + fst (drawnFace points zoom family) else "")
+                      // (At Excel's whole pixel size, as wide as Excel draws it: as the cell's text.)
+                      (let points = size * (if small then 0.6 else 1.0)
+                       "font-size:" + cssPxFine (float (ExcelText.pixelSize points zoom) / zoom * snd (drawnFace points zoom family)))
+                      (let points = size * (if small then 0.6 else 1.0)
+                       let runSpacing = excelLetterSpacing zoom text points family runBold runItalic / zoom
+                       if runSpacing = 0.0 then "" else "letter-spacing:" + cssPxFine runSpacing)
                       (match run.VertAlign with Some VertAlignSuperscript -> "vertical-align:super" | Some VertAlignSubscript -> "vertical-align:sub" | _ -> "") ]
                  |> fun css -> css.Trim(';'))
             span
@@ -5877,6 +5962,18 @@ type Spreadsheet(container: Element) as this =
 
     /// Mount the spreadsheet
     member this.Mount() =
+        // A cell's text is measured in its font (`excelLetterSpacing`): drawn before a page's font has
+        // loaded, it is drawn again once it has.
+        let stopWatchingFonts =
+            onFontsLoaded (fun () ->
+                if not fontRedrawPending && not disposed then
+                    fontRedrawPending <- true
+                    setTimeoutMs (fun () ->
+                        fontRedrawPending <- false
+                        if not disposed then
+                            renderedStyleInputs <- [||]
+                            render ()) 30 |> ignore)
+        cleanups.Add stopWatchingFonts
         // Create container
         let gridDiv = createElement "div"
         setClassName gridDiv "spreadsheet-container"
@@ -5904,7 +6001,7 @@ type Spreadsheet(container: Element) as this =
             // (A cell has no border of its own: its grid lines - the edge above it and the edge
             // to its left - are an inset shadow, and borders are child elements; see drawCell.)
             // (Text a cell cannot show is cut at its edge, as Excel does: never "…".)
-            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 5px;overflow:hidden;white-space:nowrap;text-overflow:clip;box-sizing:border-box;"
+            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 3px 3px 2px;overflow:hidden;white-space:nowrap;text-overflow:clip;box-sizing:border-box;font-kerning:none;"
              + "font-family:Arial, sans-serif;font-size:" + cssPx (SheetOps.pointsToPx 11.0) + ";cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
              + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:30px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"

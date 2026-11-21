@@ -52,6 +52,30 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Cell text at a zoom, 2026-11-21
+
+The browser grid's cell text against Excel 2019 at 50-200 % (`ExcelText`, `GdiAdvances`, `CellText.NumberFit`).
+Found on the real-estate models (Excel's zoomed text 3-13 % wider than ours: other wrapping, overflow and `####`);
+each rule below confirmed on generated cells in Excel on the VM (`shoot-sheets.ps1 -KeepZoom` of a column of
+texts between black marker cells, 10 fonts x 13 zooms and 18 more cases; ink extents measured; `Range.Text` of
+numbers in 7 column widths x 12 zooms). Fixture `synthetic-text-zoom.xlsx`
+(`tools/excel-parity/make-text-zoom-fixture.py`, checked in Excel), xlsx-browser `grid-text-excel-parity`.
+
+| Rule (Excel 2019, GDI) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| Text is drawn at a whole pixel size: round(points x 96/72 x zoom), a half up | 80 % and 85 % of Calibri 11 alike (12 px), 67 % and 70 % alike; Arial 10 at 100 % 13 px (twenty zeros 140 px); Arial 13.5 at 75 % (13.5 px) as 14 px | the browser's size (14.67 px at 100 %, any zoom continuous) | `ExcelText.pixelSize`; the cell's CSS size is that over the zoom |
+| From 11 px, every character as wide as GDI hints it: a whole pixel, the design width rounded or a pixel either side | the widths of 10 and 20 repeats of `0` and `n` in 10 fonts x 13 zooms give each advance: FreeType's v35 interpreter has all 465 TrueType cases (Calibri `0` 7 px at 15 px, `n` 7 px at 12 px) | the browser's advances (Calibri 11 at 80 %: a line 9 % narrower) | `GdiAdvances` (generated, `make-gdi-advances.py`: design advances and hinted differences at 11-36 px of 56 faces of the Office fonts); other fonts: the browser's advance a character, rounded. The browser draws its own glyphs, spaced (`letter-spacing`) to Excel's width over the line; no kerning |
+| Under 8 points on screen (points x zoom), whatever the font, Windows' raster Small Fonts: its face as high as the pixel size or the next lower (10 px: the 120-dpi 6-pt face; 10.5 px: the 11-px face); bold a pixel wider a character | 185 cases of Calibri, Arial, Times, Verdana at 50-90 % and Arial 6-7.5 at 100 % agree within 1 px (a bitmap font in the shots: every font as wide); Calibri 8 at 100 % and Arial 10 at 80 % (8 pt) are TrueType | Calibri 11 at 67 %: a line 12 % narrower | Small Fonts' advances (from `smalle.fon` / `smallf.fon`) in `GdiAdvances`; drawn in a wide sans serif made for small sizes as Small Fonts is (Verdana, else DejaVu Sans), spaced to that width (a bitmap font is not drawn) |
+| A line of text is set in 2 px from the cell's left side and 3 px from its right (the grid line at its right is the cell's), x the zoom | left-, right- and centre-aligned lines of 18 cases at 50-200 % | 5 px each side | style sheet `padding: 3px 3px 3px 2px`; an indent adds to that side; a text overflows when wider than the cell less 5 px |
+| A number at a zoom is fitted to the column on screen (its 100 % pixels x the zoom, rounded): the room is the cell less 5 px x the zoom; a formatted number fits when its text is no wider; a General number takes the longest form whose characters, each a digit wide (a minus sign as itself), fit; else as many `#` as fit in the cell less 5 px (x the zoom from 100 %), `#` measured | `Range.Text` at the sheet's zoom: 816 of 840 cells agree (the rest at 50-70 %, in Small Fonts) | 644 (fitted at 100 %'s digit width whatever the zoom) | `CellText.NumberFit`, `cellDisplayTextFitted`, `Paint.cellLookFitted` (the browser grid only: other callers as before) |
+
+Left: font sizes are whole points in the model (`CellFormat.FontSize` is an int: 10.5 pt is drawn as 10, 7.5 as
+7); General numbers at 50-70 % (Small Fonts) are fitted a little differently by Excel (24 of 840 cells); in Small
+Fonts the text is drawn 1 px nearer the cell's left side than Excel's bitmap glyphs; the hinted widths come from
+FreeType's GDI-like interpreter, not GDI (all 465 measured cases agree, larger sizes not measured past 32 px);
+the grid's cell edges at a zoom are rounded where they fall (a column of 75 px at 90 % is 67 or 68 px on screen,
+Excel's always 68); autofit still measures with the browser's widths at 100 %.
+
 ## Formula oracle on real-world models, 2026-11-21
 
 Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel

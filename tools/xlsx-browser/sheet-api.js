@@ -199,7 +199,8 @@ checks['api-format'] = async () => {
         check('SetFontFamily(null): the default font again', fmt(0, 0).fontFamily, null);
         grid.SetFontSize(16);
         await frame();
-        check('SetFontSize', [fmt(0, 0).fontSize, fmt(1, 1).fontSize, css(0, 0).fontSize], [16, 16, '21.33px']);
+        // (16 pt drawn at Excel's whole pixel size, 21 px - ExcelText.)
+        check('SetFontSize', [fmt(0, 0).fontSize, fmt(1, 1).fontSize, css(0, 0).fontSize], [16, 16, '21px']);
         grid.SetFontSize(null);
         check('SetFontSize(null): the default size', fmt(0, 0).fontSize, null);
         check('SetFontSize refuses a size that is none', [thrown(() => grid.SetFontSize(0)), thrown(() => grid.SetFontSize('big'))].map((m) => /^SetFontSize: /.test(m ?? '')), [true, true]);
@@ -300,7 +301,7 @@ checks['api-format'] = async () => {
         check('SetShrinkToFit: the text is drawn smaller and fits', [fmt(7, 2).shrinkToFit, parseFloat(css(7, 2).fontSize) < 14.67, shrunkWidth <= node(7, 2).getBoundingClientRect().width], [true, true, true]);
         grid.ApplyFormat('shrinkToFit');
         await frame();
-        check("ApplyFormat('shrinkToFit') toggles", [fmt(7, 2).shrinkToFit, css(7, 2).fontSize], [false, '14.67px']);
+        check("ApplyFormat('shrinkToFit') toggles", [fmt(7, 2).shrinkToFit, css(7, 2).fontSize], [false, '15px']);
 
         // ---- number formats, decimals ----
         grid.SelectRange(8, 1, 9, 1);
@@ -1133,7 +1134,8 @@ checks['api-view'] = async () => {
             check(`zoom ${zoom}: cells are scaled and placed`, [near(round(node(0, 0).getBoundingClientRect()), expected(0, 0, zoom)), near(round(node(5, 3).getBoundingClientRect()), expected(5, 3, zoom))], [true, true]);
             const header = host.querySelector('.spreadsheet-col-header[data-col="2"]').getBoundingClientRect(), rowHeader = host.querySelector('.spreadsheet-row-header[data-row="4"]').getBoundingClientRect();
             check(`zoom ${zoom}: the headers too`, [near(round(header), [origin()[0] + (50 + 200) * zoom, origin()[1], 100 * zoom, 30 * zoom].map(Math.round)), near(round(rowHeader), [origin()[0], origin()[1] + (30 + 100) * zoom, 50 * zoom, 25 * zoom].map(Math.round))], [true, true]);
-            check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * (11 * 96 / 72) / 25) < 0.6, true);
+            // (At Excel's whole pixel size on screen: 11 pt is 7 px at 50 %, 18 at 125 %, 29 at 200 % - ExcelText.)
+            check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap), Excel's whole pixels`, Math.round(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom * 100) / 100, Math.round(11 * 96 / 72 * zoom));
             check(`zoom ${zoom}: the scroll extent is the zoomed sheet`, [Math.abs(scroller.scrollHeight - (30 + grid.GetModel().RowCount * 25) * zoom) <= 2, Math.abs(scroller.scrollWidth - (50 + grid.GetModel().ColCount * 100) * zoom) <= 2], [true, true]);
             // Hit testing: a click in the middle of where a cell is drawn selects it.
             const target = expected(4, 2, zoom);

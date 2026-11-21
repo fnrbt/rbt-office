@@ -1849,3 +1849,45 @@ checks['grid-excel-parity'] = async () => {
     close();
     return lines;
 };
+
+// A cell's text as Excel 2019 sizes and places it (synthetic-text-zoom, checked in Excel; ExcelText): at a whole
+// pixel size on screen - 15 px for 11 pt at 100 %, 12 px at both 80 % and 85 % -, in GDI's advance widths (twenty
+// zeros of Calibri 11 are 140 px at 100 %, 120 at 80 % and 85 %), in Small Fonts under 8 points on screen (67 %;
+// Arial 7 at 100 %); 2 px in from the cell's left side, 3 px from its right; a number fitted at the zoom.
+checks['grid-text-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-text-zoom.xlsx')).slice());
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const textBox = (element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect(); };
+        const near = (value, expected, slack = 0.75) => Math.abs(value - expected) <= slack ? expected : Math.round(value * 100) / 100;
+        const sheets = grid.GetSheetNames();
+        const show = async (name) => { grid.SwitchSheet(sheets.indexOf(name)); await frame(); await frame(); };
+        // (Where the browser has no Calibri the grid draws the next family as tall as Calibri's letters: smaller.)
+        const hasCalibri = (() => { const c = document.createElement('canvas').getContext('2d'), t = 'mmmmmmmmmmlli WQ 0123456789'; c.font = '72px monospace'; const a = c.measureText(t).width; c.font = "72px 'Calibri', monospace"; return c.measureText(t).width !== a; })();
+        const calibriScale = hasCalibri ? 1 : 0.4644 / 0.5186;
+        for (const [name, zoom, px, zeros] of [['Z100', 1, 15, 140], ['Z80', 0.8, 12, 120], ['Z85', 0.85, 12, 120], ['Z67', 0.67, 10, 120]]) {
+            await show(name);
+            const size = parseFloat(getComputedStyle(node(0, 1)).fontSize);
+            // (Small Fonts' text - 67 % - in a stand-in of its own, at its size.)
+            check(`${name}: the text is drawn at ${px} px on screen`, near(size * zoom / (name === 'Z67' ? 1 : calibriScale), px, 0.05), px);
+            check(`${name}: twenty zeros are ${zeros} px wide, as Excel draws them`, near(textBox(node(2, 1)).width, zeros), zeros);
+            const cell = node(0, 1).getBoundingClientRect(), right = node(1, 1).getBoundingClientRect();
+            check(`${name}: a left-aligned line starts 2 px x the zoom into the cell`, near(textBox(node(0, 1)).left - cell.left, 2 * zoom), 2 * zoom);
+            check(`${name}: a right-aligned line ends 3 px x the zoom before the cell's end`, near(right.right - textBox(node(1, 1)).right, 3 * zoom), 3 * zoom);
+        }
+        await show('Z80');
+        const pangram80 = textBox(node(0, 1)).width;
+        await show('Z85');
+        check('80 % and 85 % draw a line of Calibri 11 alike', near(textBox(node(0, 1)).width, pangram80, 0.05), pangram80);
+        await show('Arial');
+        check('Arial 10 at 100 %: 13 px; twenty zeros 140 px', [near(parseFloat(getComputedStyle(node(0, 1)).fontSize), 13, 0.05), near(textBox(node(0, 1)).width, 140)], [13, 140]);
+        check('Arial 7 at 100 %: 9 px, as wide as Small Fonts draws it (twenty zeros 100 px)', near(textBox(node(1, 1)).width, 100), 100);
+        await show('Numbers');
+        check('numbers at 75 % as Excel shows them there', [0, 1].map((row) => [1, 2, 3].map((col) => node(row, col)?.textContent ?? '')),
+            [['#####', '1E+06', '1234567'], ['#####', '#######', '#########']]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
