@@ -1909,6 +1909,20 @@ checks['font-faces-excel-parity'] = async () => {
         // (Excel's #s at 15 px are fewer than #'s advance gives in two of the columns - 4 in 50 px, 5 in 60: not matched.)
         check('Segoe UI Black 11: the number from 85 px', shown(2).map((t) => t === n), [false, false, false, false, false, false, false, false, false, true]);
         check('Segoe UI 10', shown(3), [h(4), h(5), h(5), h(6), h(6), h(7), n, n, n, n]);
+        // Small Fonts under 8 points on screen, taken to a twentieth of a point (synthetic-small-fonts, from Excel's
+        // pictures: Calibri / Arial 7 .. 16 at 23 zooms): 14 pt at 57 % (7.98) and 10.5 at 76 % are TrueType, 15 at 53 %
+        // (7.95) and 11 at 72 % (7.92) Small Fonts.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-small-fonts.xlsx')).slice());
+        const names = grid.GetSheetNames();
+        const small = async (sheet, row) => {
+            grid.SwitchSheet(names.indexOf(sheet)); await frame(); await frame();
+            const cell = [...host.querySelectorAll(`.spreadsheet-cell[data-row="${row}"][data-col="1"]`)].find((node) => node.style.display !== 'none');
+            return /Verdana/.test(cell?.style.fontFamily ?? '');
+        };
+        // (Rows: Calibri 7, 7.5, 8, 8.5, 9, 10, 10.5, 11, 12, 13, 14, 15, 16.)
+        check('Small Fonts: Calibri 14 / 13 at 57 %, 15 / 16 at 53 %, 11 / 12 at 72 %, 10.5 / 10 at 76 %',
+            [await small('Z57', 10), await small('Z57', 9), await small('Z53', 11), await small('Z53', 12), await small('Z72', 7), await small('Z72', 8), await small('Z76', 6), await small('Z76', 5)],
+            [false, true, true, false, true, false, false, true]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

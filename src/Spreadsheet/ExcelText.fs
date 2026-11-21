@@ -7,7 +7,7 @@
 ///   whole number of pixels, which is the design width rounded or a pixel either side of it
 ///   (Calibri's "0" is 7 px at 15 px, not 8; its "n" 7 px at 12 px, not 6). `GdiAdvances` has
 ///   these widths for the usual Office fonts.
-/// - Under 8 points on screen (points x zoom), whatever the font, in Windows' raster Small Fonts (the
+/// - Under 8 points on screen (points x zoom, to a twentieth), whatever the font, in Windows' raster Small Fonts (the
 ///   face as high as the pixel size, or the next lower), a pixel wider a character when bold -
 ///   Calibri 11 at 67 % or 70 %, Arial 7.5 at 100 %.
 /// - Without kerning.
@@ -21,10 +21,12 @@ open System.Collections.Generic
 let pixelSize (points: float) (zoom: float) : int =
     max 1 (int (floor (System.Math.Round (points * 96.0 / 72.0 * zoom, 9) + 0.5)))
 
-/// Whether Excel draws text of `points` at `zoom` in Small Fonts: under 8 points on screen (Arial
-/// 7.5 at 100 %, Calibri 11 at 70 %, Arial 10.5 at 75 % - 10.5 px, Small Fonts' 11-px face; not
-/// Calibri 8 at 100 % or Arial 10 at 80 %).
-let isSmallFonts (points: float) (zoom: float) = System.Math.Round (points * zoom, 9) < 8.0
+/// Whether Excel draws text of `points` at `zoom` in Small Fonts: under 8 points on screen, the size
+/// at the zoom taken to the nearest twentieth of a point (synthetic-small-fonts: Calibri and Arial 7 -
+/// 16 pt at 23 zooms) - Arial 7.5 at 100 %, Calibri 11 at 70 % and 72 % (7.92), Calibri 15 at 53 %
+/// (7.95), Arial 10.5 at 75 % (7.875: 10.5 px, Small Fonts' 11-px face); not Calibri 14 at 57 % or
+/// 10.5 at 76 % (7.98, which is 8), Calibri 8 at 100 %, Arial 10 at 80 %.
+let isSmallFonts (points: float) (zoom: float) = System.Math.Floor (System.Math.Round (points * zoom * 20.0, 9) + 0.5) < 160.0
 
 let private base36 (c: char) = if c <= '9' then int c - int '0' else int c - int 'a' + 10
 
