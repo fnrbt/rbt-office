@@ -24,6 +24,9 @@ p letters and the hyphen in the k characters, or moves it whole to the next line
 last point that fits, the probes of a word give all its points from 2 letters in to 1 letter from its end.
 --c14 <dir> writes the same probes in compatibility mode 14 (Word 2010's layout) for <dir>/words.txt:
 tests/word/fixtures/hyphen-words-c14 has the first 1000 words (the hyphenation of Word 2010's layout differs).
+tests/word/fixtures/hyphen-words-new: 2000 more words (none of words.txt; the 5-20-letter words of a
+frequency list, hermitdave/FrequencyWords en_50k, that dwyl/english-words has), checked in Word to weigh the
+hyphenation dictionary (tools/word-parity/hyphen-dictionary.py) on words it was not chosen with.
 No dependencies: the package is written as XML.
 """
 import os

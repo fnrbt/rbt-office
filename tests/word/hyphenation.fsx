@@ -9,8 +9,9 @@
 //   from the line's end is not broken), 2 letters after a break, and other points;
 // - w:consecutiveHyphenLimit n: at most n lines in a row end in a hyphen;
 // - left and justified text alike, trailing punctuation and a leading "(" aside, after a w:br too.
-// Ours uses Liang's patterns (hyph-en-us), which are not Word's: the probes are checked for the
-// agreement measured when they were chosen (mode 15: 90.6% of the probes; mode 14: 88.6%); the rule
+// Ours uses Liang's patterns (hyph-en-us) and the Moby list's points for common words (HyphenWordsEnUs),
+// which are not Word's: the probes are checked for the agreement measured when they were chosen (mode 15:
+// 94.1% of the probes, hyphen-words-new 95.6%; mode 14: 93.4%); the rule
 // fixtures line for line with Word's own points in place of the patterns (its points of the word lists,
 // mode 14's for the mode-14 documents), so that what they check is the rules.
 // Left out, as ours does otherwise on purpose: words with digits (dig*), all capitals (caps*: Word breaks
@@ -138,7 +139,7 @@ for name, label, page, column in [ "bottom-m15-last", "p32", 1, 0; "bottom-m15-a
     let ourColumn = if x > 400.0 then 1 else 0
     if (ourPage, ourColumn, hyphenated) <> (page, column, true) then
         fail (sprintf "%s: %s on page %d column %d (hyphenated %b), Word page %d column %d" name label (ourPage + 1) (ourColumn + 1) hyphenated (page + 1) (column + 1))
-Rbt.Word.Hyphenation.register Rbt.Word.HyphenPatternsEnUs.patterns Rbt.Word.HyphenPatternsEnUs.exceptions
+Rbt.Word.Hyphenation.register Rbt.Word.HyphenPatternsEnUs.patterns (Rbt.Word.HyphenPatternsEnUs.exceptions + " " + Rbt.Word.HyphenWordsEnUs.words)
 
 // The word lists: how many probes break where Word's do.
 let probeAgreement (folderName: string) =
@@ -167,12 +168,16 @@ let probeAgreement (folderName: string) =
     printfn "%s: %d of %d probes break as Word's (%.1f%%), laid out in %d ms" folderName same total (100.0 * float same / float (max 1 total)) watch.ElapsedMilliseconds
     float same / float (max 1 total), total, wordBreaks.Count
 
-let m15, n15, w15 = probeAgreement "hyphen-words"
-if n15 <> w15 then fail (sprintf "hyphen-words: %d probes read of %d" n15 w15)
-if m15 < 0.905 then fail (sprintf "hyphen-words: agreement %.3f below 0.905" m15)
-let m14, n14, w14 = probeAgreement "hyphen-words-c14"
-if n14 <> w14 then fail (sprintf "hyphen-words-c14: %d probes read of %d" n14 w14)
-if m14 < 0.885 then fail (sprintf "hyphen-words-c14: agreement %.3f below 0.885" m14)
+// (hyphen-words-new: 2000 more words, checked in Word after the patterns were chosen and before the
+// words of HyphenWordsEnUs were; patterns alone 91.4% of its probes, mode 15 hyphen-words 90.6%, mode 14 88.6%.)
+for folderName, least in [ "hyphen-words", 0.938; "hyphen-words-new", 0.953; "hyphen-words-c14", 0.93 ] do
+    let agreement, read, total = probeAgreement folderName
+    if read <> total then fail (sprintf "%s: %d probes read of %d" folderName read total)
+    if agreement < least then fail (sprintf "%s: agreement %.3f below %.3f" folderName agreement least)
+
+// magazine-feature p2: Word's "a hec-" / "tare at a time" (Moby's hec-tare; the patterns have no point).
+if Rbt.Word.Hyphenation.points "hectare" <> [| 3 |] then
+    fail (sprintf "hectare: points %A, Word's [|3|]" (Rbt.Word.Hyphenation.points "hectare"))
 
 // What hyphenation costs: the flow fixture laid out with and without it.
 let flow = docOf (Path.Combine(rulesFolder, "flow-m15-left-znone.docx"))

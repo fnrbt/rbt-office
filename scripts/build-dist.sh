@@ -28,7 +28,7 @@ node scripts/check-function-modules.mjs "$dist/spreadsheet"
 node scripts/check-start-up-modules.mjs "$dist/spreadsheet" Spreadsheet.js,Toolbar.js,XlsxImporter.js \
   'MacroProject\.js$,MacroHost\.js$,Rbt\.Vb\.,^rbt-vb/,XlsxPackageWriter\.js$,DocxReader\.js$,WordPackage,WordEditorPackage,office-formats/src/Main\.js$'
 node scripts/check-start-up-modules.mjs "$dist/word" Word.js,WordShell.js,WordHost.js \
-  'WordMacroProject\.js$,WordMacroHost\.js$,HyphenPatternsEnUs\.js$,Rbt\.Vb\.,^rbt-vb/,DocxReader\.js$,WordPackageOpen\.js$,WordPackageWriter,XlsxReader\.js$,XlsxPackageWriter\.js$,office-formats/src/Main\.js$'
+  'WordMacroProject\.js$,WordMacroHost\.js$,HyphenPatternsEnUs\.js$,HyphenWordsEnUs\.js$,Rbt\.Vb\.,^rbt-vb/,DocxReader\.js$,WordPackageOpen\.js$,WordPackageWriter,XlsxReader\.js$,XlsxPackageWriter\.js$,office-formats/src/Main\.js$'
 # The start-up graphs' sizes and what they load on use, for the record (`--top N --min`: the biggest
 # modules, minified and gzipped, with the import chain to each).
 node scripts/start-up-report.mjs "$dist/spreadsheet" Spreadsheet.js,Toolbar.js,XlsxImporter.js --top 0

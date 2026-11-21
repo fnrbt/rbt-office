@@ -15,6 +15,7 @@
     <Compile Include="WordLayout.fs" />
     <Compile Include="Math.fs" />
     <Compile Include="HyphenPatternsEnUs.fs" />
+    <Compile Include="HyphenWordsEnUs.fs" />
     <Compile Include="Hyphenation.fs" />
     <Compile Include="Layout.fs" />
     <Compile Include="LayoutFingerprint.fs" />
