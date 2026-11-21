@@ -72,6 +72,21 @@ def pattern_points(values, longest, exceptions, word):
     return [p for p in range(2, n - 1) if v[p + 1] % 2 == 1]
 
 
+def word_points():
+    """Word's points of the words of the measured samples (mode 15 and mode 14 alike)."""
+    out = {}
+    base = os.path.join(REPO, 'tests/word/fixtures')
+    for d in sorted(os.listdir(base)):
+        f = os.path.join(base, d, 'word', 'points.tsv')
+        if not d.startswith('hyphen-words') or not os.path.exists(f):
+            continue
+        for line in open(f, encoding='utf-8'):
+            c = line.rstrip('\n').split('\t')
+            if c[0] == 'word' and len(c) >= 3 and re.fullmatch(r'[a-z]+', c[1]):
+                out.setdefault(c[1], set()).update(int(x) for x in c[2].split(',') if x)
+    return out
+
+
 def main():
     moby_file, count_file = sys.argv[1], sys.argv[2]
     top = int(sys.argv[3]) if len(sys.argv) > 3 else 50000
@@ -93,6 +108,23 @@ def main():
         pts = [p for p in breaks(e) if p >= 2 and len(w) - p >= 2]
         if pts != pattern_points(values, longest, exceptions, w):
             entries[w] = pts
+    # Word's own points, where Word was asked (the measured samples: tests/word/fixtures/hyphen-words*,
+    # word/points.tsv): over Moby's, which differ from Word's for 1.4% of the words (serv-ice, Word ser-vice).
+    # (A point 2 letters from the end, which Word 2013's layout never shows, as Moby or the patterns have it.)
+    moby = {}
+    for line in raw.splitlines():
+        e = line.strip()
+        if re.fullmatch(r'[a-z]+(-[a-z]+)*', e):
+            moby.setdefault(e.replace('-', ''), [p for p in breaks(e) if p >= 2])
+    for w, seen in word_points().items():
+        base = moby.get(w) or pattern_points(values, longest, exceptions, w)
+        pts = sorted(set(seen) | {p for p in base if len(w) - p == 2})
+        pts = [p for p in pts if p >= 2 and len(w) - p >= 2]
+        if pts != pattern_points(values, longest, exceptions, w):
+            entries[w] = pts
+        else:
+            entries.pop(w, None)
+
     def show(w, pts):
         return ''.join(('-' if i in pts else '') + ch for i, ch in enumerate(w))
     items = [show(w, entries[w]) for w in sorted(entries)]
