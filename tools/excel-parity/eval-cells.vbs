@@ -5,6 +5,9 @@
 ' per cell: sheet, address, type (n number, s text, b boolean, e error, x empty), value (numbers with
 ' 15 significant digits), what the cell shows; then a line "CIRCULAR <sheet> <address>" for each
 ' sheet whose CircularReference Excel reports. Run it in the desktop session (run-vbs-in-session.ps1).
+' A number's line ends with its exact value, "m*2^e" (m an integer of up to 53 bits, as hi*2^26+lo):
+' "hi:lo:e". A line "#ITERATE<tab>count<tab>delta" first turns iterative calculation on.
+' A line "#NOCALC" leaves out the full recalculation (the values as typed in, one by one).
 Set fso = CreateObject("Scripting.FileSystemObject")
 inPath = WScript.Arguments(0)
 outPath = WScript.Arguments(1)
@@ -17,7 +20,12 @@ Set f = fso.OpenTextFile(inPath, 1, False, -1)
 n = 0
 Do While Not f.AtEndOfStream
   line = f.ReadLine
-  If Len(line) > 0 Then
+  If Left(line, 8) = "#ITERATE" Then
+    it = Split(line, vbTab)
+    x.Iteration = True : x.MaxIterations = CInt(it(1)) : x.MaxChange = CDbl(it(2))
+  ElseIf line = "#NOCALC" Then
+    noCalc = True
+  ElseIf Len(line) > 0 Then
     parts = Split(line, vbTab, 3)
     If UBound(parts) = 2 Then
       Set s = Nothing
@@ -43,7 +51,7 @@ Do While Not f.AtEndOfStream
   End If
 Loop
 f.Close
-x.CalculateFull
+If Not noCalc Then x.CalculateFull
 Set out = fso.OpenTextFile(outPath, 2, True, -1)
 For i = 0 To n - 1
   Set c = wb.Worksheets(lines(i)(0)).Range(lines(i)(1))
@@ -59,7 +67,11 @@ For i = 0 To n - 1
   Else
     t = "n" : s2 = x.WorksheetFunction.Text(v, "0.00000000000000E+00")
   End If
-  out.WriteLine lines(i)(0) & vbTab & lines(i)(1) & vbTab & t & vbTab & s2 & vbTab & c.Text
+  If t = "n" Then
+    out.WriteLine lines(i)(0) & vbTab & lines(i)(1) & vbTab & t & vbTab & s2 & vbTab & c.Text & vbTab & Exact(CDbl(v))
+  Else
+    out.WriteLine lines(i)(0) & vbTab & lines(i)(1) & vbTab & t & vbTab & s2 & vbTab & c.Text
+  End If
 Next
 For Each s In wb.Worksheets
   Set r = Nothing
@@ -69,5 +81,19 @@ For Each s In wb.Worksheets
   If Not r Is Nothing Then out.WriteLine "CIRCULAR" & vbTab & s.Name & vbTab & r.Address(False, False)
 Next
 out.Close
+x.Iteration = False
 wb.Close False
 x.Quit
+
+' v as hi:lo:e with v = (hi*2^26 + lo) * 2^e exactly (every step a multiplication by 2: exact).
+Function Exact(v)
+  Dim m, e, hi, lo, sg
+  If v = 0 Then Exact = "0:0:0" : Exit Function
+  sg = "" : m = v
+  If m < 0 Then sg = "-" : m = -m
+  e = 0
+  Do While m <> Fix(m) : m = m * 2 : e = e - 1 : Loop
+  Do While m >= 9007199254740992 : m = m / 2 : e = e + 1 : Loop
+  hi = Fix(m / 67108864) : lo = m - hi * 67108864
+  Exact = sg & CStr(hi) & ":" & CStr(lo) & ":" & CStr(e)
+End Function
