@@ -231,6 +231,13 @@ type Dxf = {
     /// `<u/>` (any kind but "none") and `<strike/>` of the dxf's font.
     Underline: bool option
     Strike: bool option
+    /// The lines of the dxf's `<border>`, side by side: Some for a side it
+    /// names - a side without a style (`<left/>`) is "none", which takes the
+    /// cell's own line away -, None for one it leaves alone.
+    BorderTop: CellBorderSide option
+    BorderBottom: CellBorderSide option
+    BorderLeft: CellBorderSide option
+    BorderRight: CellBorderSide option
     /// Only on a newly derived differential format: the original styles.xml
     /// dxf to clone and patch, retaining properties the editor does not model.
     SourceDxfIndex: int option
@@ -4683,10 +4690,15 @@ module ConditionalFormats =
 
     /// One `<dxf>` (of the styles part, or the `<x14:dxf>` of an x14 rule).
     let parseDxf (themeColors: string array) (dxf: XmlNode) : Dxf =
+        // (`auto` is the automatic colour, black: acre-apartment's "Property
+        // Summary" blacks out B14:D15 with a dxf of auto text on a black fill,
+        // its blue input text unseen in Excel.)
         let fontColor =
             Xlsx.sElem "font" dxf
             |> Option.bind (Xlsx.sElem "color")
-            |> Option.bind (Xlsx.resolveColorElement themeColors)
+            |> Option.bind (fun node ->
+                Xlsx.resolveColorElement themeColors node
+                |> Option.orElseWith (fun () -> if Xml.attr "auto" node |> Option.exists isTrueText then Some "000000" else None))
         let fillColor =
             Xlsx.sElem "fill" dxf
             |> Option.bind (Xlsx.sElem "patternFill")
@@ -4701,6 +4713,16 @@ module ConditionalFormats =
                 Xml.attr "val" node
                 |> Option.map (fun v -> v <> "0" && v <> "false")
                 |> Option.defaultValue true)
+        // (A side the dxf's `<border>` names without a style - `<left/>` - takes the cell's
+        // line away: acre-apartment's "MF Rent Roll" has no dotted grid below its units.)
+        let borderSide key =
+            Xlsx.sElem "border" dxf
+            |> Option.bind (Xlsx.sElem key)
+            |> Option.map (fun side ->
+                match Xml.attr "style" side with
+                | Some style when style <> "" && style <> "none" ->
+                    ({ Style = style; Color = Xlsx.sElem "color" side |> Option.bind (Xlsx.resolveColorElement themeColors) } : CellBorderSide)
+                | _ -> { Style = "none"; Color = None })
         {
             FontColor = fontColor
             FillColor = fillColor
@@ -4711,6 +4733,10 @@ module ConditionalFormats =
                 |> Option.bind (Xlsx.sElem "u")
                 |> Option.map (fun node -> Xml.attr "val" node <> Some "none")
             Strike = boolChild "strike"
+            BorderTop = borderSide "top"
+            BorderBottom = borderSide "bottom"
+            BorderLeft = borderSide "left"
+            BorderRight = borderSide "right"
             SourceDxfIndex = None
         }
 
@@ -5765,6 +5791,23 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
         let objects = ResizeArray<SheetObject>()
         let mutable order = 0
         for node in anchors do
+            // A linked picture (`a14:cameraTool`) Excel writes as `mc:AlternateContent` round its anchor
+            // (the choice for Excel 2010 and later, a fallback without the link): kept as written, at
+            // the place of the choice's anchor (acre-apartment's "Debt", "MF Rent Roll", ...).
+            let camera =
+                if Xml.name node |> Option.map Ns.stripNs <> Some "AlternateContent" || (Ns.descendantsNs "cameraTool" node).IsEmpty then None
+                else
+                    Ns.childNs "Choice" node
+                    |> Option.bind (fun choice -> Xml.children choice |> List.tryPick anchorOf)
+            match camera with
+            | Some anchor ->
+                objects.Add
+                    { Anchor = { anchor with Order = order }
+                      Kind = "other"
+                      Name = Ns.descendantsNs "cNvPr" node |> List.tryHead |> Option.bind (Xml.attr "name")
+                      Xml = XmlText.selfContainedXml rootAttrs (XmlText.xmlToString node) }
+                order <- order + 1
+            | None ->
             match anchorOf node with
             | Some anchor ->
                 let anchor = { anchor with Order = order }
@@ -5788,9 +5831,19 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
                                   ContentType = contentType
                                   Extension = extension
                                   Data = data })))
+                // (A hidden picture - `cNvPr hidden="1"`, which Excel does not draw - is kept as it is
+                // written, as the other objects are: houseflippingspreadsheet's check marks.)
+                let hidden =
+                    Ns.childNs "pic" node
+                    |> Option.bind (fun pic -> Ns.descendantsNs "cNvPr" pic |> List.tryHead)
+                    |> Option.bind (Xml.attr "hidden")
+                    |> Option.exists isTrueText
+                // (So is a linked picture of a range - Excel's camera, `a14:cameraTool`: Excel draws
+                // the cells as they are now, its picture is only what they were when it was saved.)
+                let linked = Ns.childNs "pic" node |> Option.exists (fun pic -> not (Ns.descendantsNs "cameraTool" pic).IsEmpty)
                 match picture with
-                | Some image -> images.Add image
-                | None ->
+                | Some image when not hidden && not linked -> images.Add image
+                | _ ->
                     let kind =
                         if not (Ns.descendantsNs "chart" node).IsEmpty then "chart"
                         elif (Ns.childNs "sp" node).IsSome || (Ns.childNs "cxnSp" node).IsSome then "shape"

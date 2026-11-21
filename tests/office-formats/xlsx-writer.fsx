@@ -372,7 +372,7 @@ let nastyWorkbook : XlsxWriter.XlsxWorkbookOut =
       DefinedNames = []
       VbaProjectSource = None
       VbaProjectBytes = None
-      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None } ]
+      Dxfs = [ { FontColor = Some "9C0006"; FillColor = Some "FFC7CE"; Bold = Some true; Italic = None; Underline = None; Strike = None; BorderTop = None; BorderBottom = None; BorderLeft = None; BorderRight = None; SourceDxfIndex = None } ]
       Preserved = XlsxReader.emptyWorkbookPreservation }
 let nastyBytes = XlsxPackageWriter.writeWorkbookPackageBytes nastyWorkbook
 

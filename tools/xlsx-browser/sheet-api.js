@@ -1129,7 +1129,8 @@ checks['api-view'] = async () => {
         for (const zoom of [0.5, 1.25, 2]) {
             grid.SetZoom(zoom); await frame();
             check(`zoom ${zoom}: GetZoom and the model`, [grid.GetZoom(), grid.GetModel().Zoom], [zoom, zoom]);
-            check(`zoom ${zoom}: cells are scaled and placed`, [round(node(0, 0).getBoundingClientRect()), round(node(5, 3).getBoundingClientRect())], [expected(0, 0, zoom), expected(5, 3, zoom)]);
+            // (Zoomed, a cell's edges are whole screen pixels - so that the fills of two cells meet -: within one of the scaled place.)
+            check(`zoom ${zoom}: cells are scaled and placed`, [near(round(node(0, 0).getBoundingClientRect()), expected(0, 0, zoom)), near(round(node(5, 3).getBoundingClientRect()), expected(5, 3, zoom))], [true, true]);
             const header = host.querySelector('.spreadsheet-col-header[data-col="2"]').getBoundingClientRect(), rowHeader = host.querySelector('.spreadsheet-row-header[data-row="4"]').getBoundingClientRect();
             check(`zoom ${zoom}: the headers too`, [near(round(header), [origin()[0] + (50 + 200) * zoom, origin()[1], 100 * zoom, 30 * zoom].map(Math.round)), near(round(rowHeader), [origin()[0], origin()[1] + (30 + 100) * zoom, 50 * zoom, 25 * zoom].map(Math.round))], [true, true]);
             check(`zoom ${zoom}: text is laid out at the zoomed size (not a scaled bitmap)`, Math.abs(parseFloat(getComputedStyle(node(4, 0)).fontSize) * zoom - node(4, 0).getBoundingClientRect().height * (11 * 96 / 72) / 25) < 0.6, true);
@@ -1192,7 +1193,7 @@ checks['api-view'] = async () => {
         grid.SwitchSheet(1); await frame();
         check('another sheet has its own zoom', [grid.GetZoom(), round(node(1, 1).getBoundingClientRect())], [1, expected(1, 1, 1)]);
         grid.SetZoom(0.75); grid.SwitchSheet(0); await frame();
-        check('... and coming back the first has its own', [grid.GetZoom(), Math.round(node(0, 0).getBoundingClientRect().height * 10) / 10], [1.5, 37.5]);
+        check('... and coming back the first has its own', [grid.GetZoom(), Math.abs(node(0, 0).getBoundingClientRect().height - 37.5) <= 1], [1.5, true]);
 
         // ---- pictures scale with the sheet ----
         const pictured = mountGrid();
@@ -1260,7 +1261,7 @@ checks['api-view'] = async () => {
         // After Dispose and Mount the view is applied to the new nodes.
         grid.SwitchSheet(0);
         grid.Dispose(); grid.Mount(); await frame();
-        check('mounted again: zoom and hidden headers are applied', [Math.round(node(0, 0).getBoundingClientRect().height * 100) / 100, getComputedStyle(host.querySelector('.spreadsheet-col-headers')).display], [33.75, 'none']);
+        check('mounted again: zoom and hidden headers are applied', [Math.abs(node(0, 0).getBoundingClientRect().height - 33.75) <= 1, getComputedStyle(host.querySelector('.spreadsheet-col-headers')).display], [true, 'none']);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

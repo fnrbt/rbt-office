@@ -196,7 +196,12 @@ let slicerXml = "<mc:AlternateContent xmlns:mc=\"http://schemas.openxmlformats.o
 eq "a slicer is not drawn as the text box that stands in for it: a placeholder" (Charts.objectScene noParts noData (anchorOf slicerXml) 200.0 100.0) None
 ok "an ellipse and a plain rectangle" ((Charts.objectScene noParts noData (anchorOf (shapeXml "ellipse" fillXml "")) 200.0 100.0).Value.Items |> List.exists (fun item -> match item with Charts.PEllipse (100.0, 50.0, 100.0, 50.0, Some "#336699", _, _, _) -> true | _ -> false)
                                        && (Charts.objectScene noParts noData (anchorOf (shapeXml "rect" fillXml "")) 200.0 100.0).Value.Items |> List.exists (fun item -> match item with Charts.PRect (_, _, _, _, Some "#336699", _, _, _, 0.0) -> true | _ -> false)) "not drawn"
-eq "a shape without fill, outline or text draws nothing: a placeholder" (Charts.objectScene noParts noData (anchorOf (shapeXml "rect" "<a:noFill/><a:ln><a:noFill/></a:ln>" "")) 200.0 100.0) None
+// (As in Excel, which shows the cells under it - houseflippingspreadsheet's empty text box over A1:I1 -, not a placeholder.)
+ok "a shape without fill, outline or text draws nothing"
+    (match Charts.objectScene noParts noData (anchorOf (shapeXml "rect" "<a:noFill/><a:ln><a:noFill/></a:ln>" "")) 200.0 100.0 with Some scene -> scene.Items.IsEmpty | None -> false) "a placeholder"
+// (Nor one marked hidden, `cNvPr hidden="1"`, whatever it has.)
+ok "a hidden shape draws nothing"
+    (match Charts.objectScene noParts noData (anchorOf ((shapeXml "rect" fillXml bodyXml).Replace("<xdr:sp>", "<xdr:sp><xdr:nvSpPr><xdr:cNvPr id=\"2\" name=\"Hidden\" hidden=\"1\"/><xdr:cNvSpPr/></xdr:nvSpPr>"))) 200.0 100.0 with Some scene -> scene.Items.IsEmpty | None -> false) "drawn"
 // A group: its children at their place in it, scaled to the rectangle the group has on the sheet.
 let groupXml =
     "<xdr:grpSp><xdr:grpSpPr><a:xfrm><a:off x=\"1000000\" y=\"1000000\"/><a:ext cx=\"4000000\" cy=\"2000000\"/><a:chOff x=\"1000000\" y=\"1000000\"/><a:chExt cx=\"4000000\" cy=\"2000000\"/></a:xfrm></xdr:grpSpPr>"

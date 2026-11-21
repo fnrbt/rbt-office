@@ -1796,3 +1796,56 @@ checks['grid-clipboard-without-events'] = async () => {
     close();
     return lines;
 };
+
+// The grid draws a sheet as Excel 2019 does (tests/test-documents-excel/synthetic-grid-parity.xlsx, made by
+// tools/excel-parity/make-grid-parity-fixture.py; each rule found on a real-world model and checked in Excel).
+checks['grid-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-grid-parity.xlsx')).slice());
+        grid.SwitchSheet(0); await frame(); await everyObjectSeen(host);
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const style = (element) => getComputedStyle(element);
+        // A run with properties of its own is in its own font: not bold in a bold cell.
+        const runs = [...node(0, 0).querySelectorAll('span')].map((span) => [span.textContent, style(span).fontWeight]);
+        check('a rich run without <b/> is not bold in a bold cell', runs.find(([text]) => text === 'italic only')?.[1], '400');
+        // `ht` without `customHeight` is the row's height.
+        check('a row of ht 15 (no customHeight) is 20 px high', Math.round(node(1, 0).getBoundingClientRect().height), 20);
+        check('... the rows round it the sheet\'s 12.75 pt (17 px)', Math.round(node(2, 0).getBoundingClientRect().height), 17);
+        // Conditional formats with lines: a side named without a style takes the edge's lines away.
+        const edges = (row, col) => [...node(row, col).querySelectorAll('.spreadsheet-edge')].map((edge) => edge.getAttribute('style'));
+        check('a rule of <left/><right/><top/><bottom/>: no line above or left of C4', edges(3, 2).filter((s) => /border-(top|left):\s*\d/.test(s)).length, 0);
+        check('... nor left of D4 (C4\'s right) nor above C5 (its bottom)', [edges(3, 3).some((s) => /border-left/.test(s)), edges(4, 2).some((s) => /border-top/.test(s))], [false, false]);
+        check('... the lines of the cells round the block stay', [edges(3, 1).some((s) => /border-left/.test(s)), edges(2, 2).some((s) => /border-top/.test(s))], [true, true]);
+        check('a rule\'s dashed left and thick red top are E4\'s, over its neighbours\' thin lines',
+            [edges(3, 4).some((s) => /border-left:\s*1px dashed rgb\(0, 0, 255\)/.test(s)), edges(3, 4).some((s) => /border-top:\s*3px solid rgb\(255, 0, 0\)/.test(s))], [true, true]);
+        // A dxf's automatic font colour is black.
+        check('a rule\'s auto font colour on a black fill: black on black', [style(node(6, 0)).color, style(node(6, 0)).backgroundColor], ['rgb(0, 0, 0)', 'rgb(0, 0, 0)']);
+        // Wrapped text is set in 3 px from the cell's sides.
+        check('wrapped text: 3 px from either side', [style(node(8, 1)).paddingLeft, style(node(8, 1)).paddingRight], ['3px', '3px']);
+        // Indented text that runs over its neighbours has room for its indent.
+        const clip = /inset\(0px (-?\d+)px/.exec(node(12, 0).getAttribute('style') ?? '');
+        check('an indented text runs on over the cells beside it, as far as it needs', clip !== null && Number(clip[1]) <= -node(12, 1).getBoundingClientRect().width, true);
+        // A column's default style is every empty cell's of it.
+        check('an empty cell of a column with a default style has its fill', [style(node(29, 9)).backgroundColor, style(node(29, 4)).backgroundColor], ['rgb(217, 217, 217)', 'rgb(255, 255, 255)']);
+        // Drawings: hidden ones and an empty, invisible text box are not drawn (nor a placeholder); a linked picture is.
+        const objects = [...host.querySelectorAll('.spreadsheet-drawing')];
+        check('no placeholder frame, no picture of the hidden ones', [host.querySelectorAll('.spreadsheet-object-label').length, host.querySelectorAll('img.spreadsheet-picture').length], [0, 0]);
+        check('hidden and empty objects draw nothing', objects.filter((item) => item.querySelector('svg') && !item.querySelector('svg text') && !item.querySelector('svg rect')).length, 3);
+        const camera = objects.find((item) => item.querySelector('svg text'));
+        check('a linked picture shows the cells of its range', camera ? [...camera.querySelectorAll('svg text')].map((text) => text.textContent) : null, ['Linked', '7.27', 'Picture', '12']);
+        check('... in their fonts', camera ? [...camera.querySelectorAll('svg text')].map((text) => text.getAttribute('font-weight') ?? '') : null, ['', '', 'bold', '']);
+        grid.SetCell(9, 1, '8.5'); await frame(); await everyObjectSeen(host);
+        const again = [...host.querySelectorAll('.spreadsheet-drawing svg text')].map((text) => text.textContent);
+        check('... as they are now', again.includes('8.5'), true);
+        // At 70 %: a medium line is 2 screen pixels; two filled cells meet.
+        grid.SwitchSheet(1); await frame();
+        const line = [...node(0, 0).querySelectorAll('.spreadsheet-edge'), ...(node(1, 0)?.querySelectorAll('.spreadsheet-edge') ?? [])].map((edge) => edge.getBoundingClientRect()).find((box) => box.height > 0.5 && box.width > 20);
+        check('a medium line at 70 %: 2 px', line ? Math.round(line.height) : null, 2);
+        const a = node(2, 0).getBoundingClientRect(), b = node(2, 1).getBoundingClientRect();
+        check('filled cells at 70 % meet at a whole screen pixel', [a.right === b.left, Number.isInteger(b.left - host.getBoundingClientRect().left)], [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

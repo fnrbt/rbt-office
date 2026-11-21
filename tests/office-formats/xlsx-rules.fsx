@@ -38,7 +38,7 @@ let toWriter (dxfs: ResizeArray<XlsxReader.Dxf>) (formats: ConditionalFormatRang
                 ({ Type = r.Type; Operator = r.Operator; Formulas = r.Formulas
                    DxfId = r.Style |> Option.map (fun s ->
                        dxfIndex { FontColor = s.FontColor |> Option.map (fun c -> c.TrimStart '#'); FillColor = s.FillColor |> Option.map (fun c -> c.TrimStart '#')
-                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None); SourceDxfIndex = None })
+                                  Bold = (if s.Bold then Some true else None); Italic = (if s.Italic then Some true else None); Underline = (if s.Underline then Some true else None); Strike = (if s.Strikethrough then Some true else None); BorderTop = None; BorderBottom = None; BorderLeft = None; BorderRight = None; SourceDxfIndex = None })
                    Ext = None
                    ColorScale = r.ColorScale |> List.map (fun (k, v, c) -> ({ CfvoType = k; CfvoValue = v; Color = c } : XlsxReader.CfColorStop))
                    DataBarColor = r.DataBarColor; DataBarCfvo = r.DataBarCfvo; Text = r.Text
@@ -63,7 +63,7 @@ let fromReader (wb: XlsxReader.Workbook) (sheet: XlsxReader.Worksheet) : Conditi
                    IconSet = r.IconSet; IconSetCfvo = r.IconSetCfvo; IconSetReverse = r.IconSetReverse; TimePeriod = r.TimePeriod
                    Ext = None
                    Priority = r.Priority; StopIfTrue = r.StopIfTrue
-                   Style = dxf |> Option.map (fun d -> ({ FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true); Underline = (d.Underline = Some true); Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
+                   Style = dxf |> Option.map (fun d -> ({ Borders = []; FontColor = d.FontColor; FillColor = d.FillColor; Bold = (d.Bold = Some true); Italic = (d.Italic = Some true); Underline = (d.Underline = Some true); Strikethrough = (d.Strike = Some true) } : CF.OoxmlStyle)) } : CF.OoxmlRule)) } : CF.OoxmlConditionalFormat))
     |> CF.ofOoxml
 
 let validationsOut (validations: ValidationRange list) : XlsxWriter.XlsxDataValidation list =
