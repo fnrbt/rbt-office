@@ -10206,13 +10206,13 @@ type Spreadsheet(container: Element) as this =
     /// How the workbook calculates circular references: { enabled,
     /// maxIterations, maxChange } - Excel's "Enable iterative calculation"
     /// (File > Options > Formulas), kept in the file. Off (the default, and
-    /// what a new workbook has): the formulas on a circular reference show
-    /// the cycle error (`#CYCLE!`), whether the cycle stays on one sheet or
-    /// crosses sheets, and what reads them has that error. On: they are
-    /// calculated again and again from the values they have until none
-    /// changes by `maxChange` or more, at most `maxIterations` times (100 and
-    /// 0.001 when off), as financial models with a deliberate circular
-    /// reference need.
+    /// what a new workbook has): the formulas on a circular reference, whether
+    /// the cycle stays on one sheet or crosses sheets, and what reads them are
+    /// not calculated - they keep the values they have (0, one just entered),
+    /// as in Excel. On: they and what reads them are calculated in sweeps, in
+    /// reading order, from the values they have, until none changes by
+    /// `maxChange` or more, at most `maxIterations` times (100 and 0.001 when
+    /// off) - and swept once more at every calculation, as in Excel.
     member _.GetIterativeCalculation() : obj =
         match workbook |> Option.bind (fun wb -> wb.Iteration) with
         | Some setting -> createObj [ "enabled" ==> true; "maxIterations" ==> setting.MaxIterations; "maxChange" ==> setting.MaxChange ]

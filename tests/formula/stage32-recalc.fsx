@@ -239,16 +239,17 @@ eq "a format changes no value" (formatted.ChangedCells, formatted.EvaluatedFormu
 // (They were left to the full recalculation; `edit` checks each against it.)
 let handled label outcome = ok label (outcome <> Declined) (sprintf "left to the full recalculation: %s" (Recalc.lastDecline engine))
 handled "a formula that reads itself" (edit "cycle" None (setCells "sheet1" [ at 30 3, Some (formula "=D31+1") ]))
-eq "the cycle is marked" (valueAt "sheet1" 30 3 current) (CellValue.Error Formula.Err.cycle)
+// (Without iterative calculation a formula on a circular reference is not calculated: it keeps its value, 0 when new.)
+eq "the cycle is not calculated" (valueAt "sheet1" 30 3 current) (CellValue.Number 0.0)
 ok "an edit elsewhere is incremental although a cycle exists" (edit "beside a cycle" None (setCells "sheet1" [ at 0 0, Some (number 1.0) ]) <> Declined) ""
 handled "a cycle through two cells" (edit "cycle 2" None (setCells "sheet1" [ at 31 3, Some (formula "=D33"); at 32 3, Some (formula "=D32") ]))
-eq "both show it" (valueAt "sheet1" 31 3 current, valueAt "sheet1" 32 3 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+eq "both not calculated" (valueAt "sheet1" 31 3 current, valueAt "sheet1" 32 3 current) (CellValue.Number 0.0, CellValue.Number 0.0)
 handled "what reads a cycle" (edit "reader of a cycle" None (setCells "sheet1" [ at 33 3, Some (formula "=D32*2"); at 34 3, Some (formula "=D34+1") ]))
-eq "... shows the error too" (valueAt "sheet1" 33 3 current) (CellValue.Error Formula.Err.cycle)
+eq "... not calculated either" (valueAt "sheet1" 33 3 current) (CellValue.Number 0.0)
 // A formula that was there before the edit closes the cycle with a formula the edit brings.
 handled "an existing formula drawn into a cycle" (edit "cycle 3" (Some [ "sheet1", at 36 3 ]) (setCells "sheet1" [ at 36 3, Some (formula "=D36+1") ]))
 handled "... its other half entered" (edit "cycle 3b" (Some [ "sheet1", at 35 3 ]) (setCells "sheet1" [ at 35 3, Some (formula "=D37*2") ]))
-eq "both halves show it" (valueAt "sheet1" 35 3 current, valueAt "sheet1" 36 3 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+eq "both halves keep their values (the new one 0)" (valueAt "sheet1" 35 3 current, valueAt "sheet1" 36 3 current) (CellValue.Number 0.0, CellValue.Number 1.0)
 handled "a cycle broken by a value" (edit "cycle 3 broken" None (setCells "sheet1" [ at 35 3, Some (number 4.0) ]))
 eq "the other half has its value again" (valueAt "sheet1" 36 3 current) (CellValue.Number 5.0)
 handled "the cycles removed" (edit "the cycles removed" None (setCells "sheet1" [ at 30 3, None; at 31 3, None; at 32 3, None; at 33 3, None; at 34 3, None; at 35 3, None; at 36 3, None ]))
@@ -393,9 +394,9 @@ do
            |> setCells other [ at 0 0, Some (formula "=Sheet1!A1+1") ]
     start wb
     eq "through the other sheet" (valueAt "sheet1" 1 0 current) (CellValue.Number 8.0)
-    // A circular reference through the other sheet is calculated by the engine: every formula on it shows it.
+    // A circular reference through the other sheet is calculated by the engine: every formula on it keeps its value.
     ok "the input overwritten by a formula that reads what depends on it: incremental" (edit "a cycle across sheets" None (setCells "sheet1" [ at 0 0, Some (formula "=A2+1") ]) <> Declined) (Recalc.lastDecline engine)
-    eq "... all three formulas of the cycle" (valueAt "sheet1" 0 0 current, valueAt "sheet1" 1 0 current, valueAt other 0 0 current) (CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle, CellValue.Error Formula.Err.cycle)
+    eq "... all three formulas of the cycle" (valueAt "sheet1" 0 0 current, valueAt "sheet1" 1 0 current, valueAt other 0 0 current) (CellValue.Number 0.0, CellValue.Number 8.0, CellValue.Number 4.0)
     ok "broken again" (edit "the cycle across sheets broken" None (setCells "sheet1" [ at 0 0, Some (number 5.0) ]) <> Declined) (Recalc.lastDecline engine)
     eq "... the values are back" (valueAt "sheet1" 1 0 current) (CellValue.Number 12.0)
 
@@ -778,8 +779,11 @@ let sortEdit (label: string) (change: Wb.Workbook -> Wb.Workbook) =
         current <- result
         Incremental (Recalc.lastStats engine)
     | None ->
-        fail <- fail + 1
-        printfn "FAIL %s: left to the full recalculation: %s" label (Recalc.lastDecline engine)
+        // (A sheet with circular references: formulas that keep their values move with a sort, and
+        // what says they keep them is the full pass's to find again.)
+        if not ((Recalc.lastDecline engine).Contains "keep their values") then
+            fail <- fail + 1
+            printfn "FAIL %s: left to the full recalculation: %s" label (Recalc.lastDecline engine)
         current <- full
         engine <- Recalc.build full
         Recalc.findCycles engine

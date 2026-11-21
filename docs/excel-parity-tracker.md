@@ -89,12 +89,14 @@ Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-v
   `CONCATENATE(blank," ",x)` gives "0" for it. So is an empty cell of a dynamic array. No negative zero.
 - A circular reference only through the branch of an IF / IFS / IFERROR / IFNA / CHOOSE the values do
   not take is none: `=IF(B1="",5,A2)` in A1 with `=A1` in A2 gives 5 and 5 (`Formula.liveReferences`,
-  in both passes). With the branch taken Excel reports it and shows 0; ours shows the cycle error.
+  in both passes). With the branch taken it is one (below).
 - Cancellation to 0 at the end of a formula's addition: a result under 8 units in the last place of
   the larger operand (7 are 0, 8 are not, for any mantissa), was 2^-48 of it. SUM's last addition
   the same, inside any expression (`=1*SUM(..)` too; `=SUM(a,-b,0)` not). Not SUMPRODUCT, not an
-  operation inside a function. `=(a-b)` in parentheses is not 0 in Excel; ours is (no parentheses
-  in the tree): left.
+  operation inside a function. Parentheses around the whole formula are an operation of their own
+  (2026-11-21, 80 shapes with A1 1.5 and B1 3 units above it): `=(A1-B1)`, `=((A1-B1))`, `=( A1-B1 )`,
+  `=(SUM(A1)-B1)` are not 0; `=(A1)-(B1)`, `=(A1*1)-B1`, `=(0.1+0.2)-0.3`, `{=A1-B1}` are, and so is
+  `=(SUM(A1,-B1))` (SUM's own). `Formula.wrappedForms`, marked by the parser.
 - SUMIF / SUMIFS: an error among the cells added is the result.
 - Another workbook's cells (`[1]Sheet!A1`, `'[1]My sheet'!A1`) are what xl/externalLinks keeps of
   them (`Workbook.External`); a sheet with `refreshError` is #REF!. `'Sheet'!#REF!` is #REF!.
@@ -106,7 +108,58 @@ Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-v
   Excel's PMT is within a unit of the exact value, not always the same unit.
 - SEQUENCE / RANDARRAY with an argument left empty (`SEQUENCE(20,,0)`) take its default.
 
-Left: Excel's IRR / RATE / XIRR stop short of the root (~1e-12); ours is the root.
+
+### Circular references, 2026-11-21
+
+Generated workbooks with values in the file, opened in Excel 2019 (`eval-file-on-vm.sh`, modes none /
+calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#NOCALC`):
+
+- Without iterative calculation the formulas of a circular reference **and every formula that reads
+  one** (directly or not) are not calculated: they keep the value they have - the file's (`=A1+C1` /
+  `=B1*0.5` at 100 / 50 stay 100 / 50; `=D1*2` reading `=B1+1` keeps 4; `=ISNUMBER(B1)` keeps 0), 0 for
+  one just typed (`=A1+5` beside a cycle). Not even when another input of the reader changes (`=A1+C1`
+  stays 0 when C1 is typed again; `=C1*2` beside it follows). Was: the cycle error, and what read it had it.
+  `Recalc` (`keptOf`, `Node.Held`: also for an engine that only looked for the cycles; a sort that moves
+  such a formula goes to the full pass) and the per-sheet pass (`Formula.keptValue`).
+- With iterative calculation (`calcPr iterate`): sweeps over the formulas of the cycles **and what reads
+  them**, in reading order (sheet, row, column - `=C2*0.5` / `=100+0.1*C1` at 20 / 50 give 25 / 102.5;
+  `=E2*3` above `=E2/2+1` reads it a sweep behind), each from the values the others have then, starting
+  from the file's. They stop when nothing calculated in the sweep changed by the maximum change - what
+  reads the cycle counts (`=A6/2+1` from 0 takes 11 sweeps at 0.001 alone, 13 with `=A6*3` beside it) - or
+  after the number of iterations (1: one sweep); the last sweep is kept (was dropped). Opening a workbook
+  calculates it; `CalculateFull` then sweeps again (one more, when settled); and every calculation -
+  any edit - sweeps once more (`=A6/2+1` typed is 2 - 2^-10, after five more entries 2 - 2^-15). All 6
+  iteration settings x 3 cycles agree exactly with Excel (one run against the open, two against open +
+  CalculateFull). A workbook calculated from nothing (no values yet) is swept in the order of what the
+  formulas read instead (from nothing, reading order lets an #N/A go round a cycle for good: saopaulo-condos).
+  The real-estate model with iterative calculation: 4196 of 4225 cells exact (was 3972), the 29 others near:
+  ours starts from nothing, Excel from its own last values.
+- Not reproduced: the formula that closes a cycle, typed in the editor, has the value it was given as it
+  was entered (the editor calculates a typed formula once before the recalculation); Excel's is 0.
+- Not reproduced: a formula with no value in the file (`<f>` without `<v>`) is "" in Excel (so `100+0.1*B1`
+  on a cycle is #VALUE!); ours starts it from 0.
+
+### Comparisons (found, not changed)
+
+`=`, `<`, `>`, `<>`, `<=`, `>=`, COUNTIF, SUMIF compare numbers rounded to 15 significant digits
+(1+22u vs 1+23u - 1.0000000000000049 / 1.0000000000000051 - differ; 1+23u vs 1+66u are equal;
+`=0.1+0.2=0.3` TRUE); MATCH / VLOOKUP exact compare the binary values (#N/A). A number typed into a
+formula keeps 15 significant digits, cut, not rounded (`=123456789012345.6` is 123456789012345). Ours
+compares the binary values everywhere: the operators have a dozen fast paths (SUMPRODUCT, FILTER,
+streams) that would all have to change together.
+
+### IRR / RATE / XIRR (found, not matched)
+
+Excel's IRR is within ~1e-13 of the root, not on it, and depends on the guess (`-1000,300,400,500`: guess
+0.1 -3.5e-17, 0.05 -3.6e-13, 0.5 +2.5e-14), also for two cash flows (results 1.2 +- an ulp minus 1). No
+Newton / secant / finite-difference variant in r, 1/(1+r) or 1+r (analytic or numeric derivative, 3 x 4
+x 7 step sizes) reproduces the digits on 120 + 120 probes; the errors are close to Newton in 1/(1+r)
+(about 1.15 times) without being it. XIRR is coarser: within ~1e-8 relative, the result the guess plus
+steps of a power of two (guess 0.1 and 0.2 give the same digits, `-1000, 1100` a year later is
+0.0999999940395 = 3355443 x 2^-25 with guess 0.1, 26843545 x 2^-28 with 0.5 or 1), a negative guess with a
+positive root #NUM!; a stepping search (step-halving, bracket and bisect, 6 starts x 10 tolerances) does
+not reproduce it either. Both stay within 1e-6 of ours (the 16 corpus XIRR cells and 5 of the real-estate
+models are "near").
 
 ## Grid sizes and theme fills against Excel 2019, 2026-11-21
 

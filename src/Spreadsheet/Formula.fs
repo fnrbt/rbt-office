@@ -840,10 +840,35 @@ let rangeOperatorName = ":"
 [<Literal>]
 let implicitIntersectionName = "SINGLE"
 
+// What depends on a formula's parsed form alone is worked out once and kept
+// with the form (weakly: it goes when the form goes) - a formula is evaluated
+// many times, its form stays.
+#if FABLE_COMPILER
+[<Emit("new WeakMap()")>]
+let private newFormTable () : obj = failwith "JS only"
+[<Emit("$0.get($1)")>]
+let private formTableGet (table: obj) (key: obj) : obj = failwith "JS only"
+[<Emit("$0.set($1, $2)")>]
+let private formTableSet (table: obj) (key: obj) (value: obj) : unit = failwith "JS only"
+#else
+let private newFormTable () = System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
+let private formTableGet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) : obj =
+    match table.TryGetValue key with
+    | true, value -> value
+    | false, _ -> null
+let private formTableSet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) (value: obj) : unit =
+    table.GetValue (key, (fun _ -> value)) |> ignore
+#endif
+/// The formulas written in parentheses as a whole (`=(A1-B1)`), by their parsed form: Excel takes
+/// the parentheses for an operation of its own, after the formula's last addition (`evalCell`).
+let private wrappedForms = newFormTable ()
+
 type private Parser = {
     Tokens: Token[]
     mutable Pos: int
     mutable PrimaryDepth: int
+    /// The formula is in parentheses as a whole: they open at its first token and close at its last.
+    mutable Wrapped: bool
 }
 
 let private parserMaxPrimaryDepth = 1024
@@ -871,6 +896,7 @@ let rec private parsePrimary (p: Parser) : Expr =
         | TPlus -> p.Pos <- p.Pos + 1; UnaryOp("+", parseUnary p)
         | TAt -> p.Pos <- p.Pos + 1; Function(implicitIntersectionName, [ parseRange p ])
         | TLParen ->
+            let opensFormula = p.Pos = 0
             p.Pos <- p.Pos + 1
             let e = parseComparison p
             // `(A1:A2,C1:C2)` — a comma inside plain parentheses is the
@@ -885,6 +911,7 @@ let rec private parsePrimary (p: Parser) : Expr =
                 Function(unionOperatorName, resizeArrayToList parts)
             else
                 expectP p TRParen
+                if opensFormula && peekP p = TEnd then p.Wrapped <- true
                 e
         | TSheet sheetName ->
             p.Pos <- p.Pos + 1
@@ -1218,10 +1245,12 @@ let private parseFormulaText (input: string) : Result<Expr, string> =
             else input
         let start = if input.Length > 0 && input.[0] = '=' then 1 else 0
         let tokens = tokenizeFrom input start
-        let p = { Tokens = tokens; Pos = 0; PrimaryDepth = 0 }
+        let p = { Tokens = tokens; Pos = 0; PrimaryDepth = 0; Wrapped = false }
         let e = parseComparison p
         match peekP p with
-        | TEnd -> Ok e
+        | TEnd ->
+            if p.Wrapped then formTableSet wrappedForms (box e) (box true)
+            Ok e
         | t -> Result.Error (sprintf "Unexpected trailing token %A" t)
     with ex -> Result.Error ex.Message
 
@@ -4372,25 +4401,6 @@ let private isArrayExprCore (openRanges: bool) (dynamicReferences: bool) (e: Exp
         | _ -> ()
     found
 
-// What depends on a formula's parsed form alone is worked out once and kept
-// with the form (weakly: it goes when the form goes) - a formula is evaluated
-// many times, its form stays.
-#if FABLE_COMPILER
-[<Emit("new WeakMap()")>]
-let private newFormTable () : obj = failwith "JS only"
-[<Emit("$0.get($1)")>]
-let private formTableGet (table: obj) (key: obj) : obj = failwith "JS only"
-[<Emit("$0.set($1, $2)")>]
-let private formTableSet (table: obj) (key: obj) (value: obj) : unit = failwith "JS only"
-#else
-let private newFormTable () = System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>()
-let private formTableGet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) : obj =
-    match table.TryGetValue key with
-    | true, value -> value
-    | false, _ -> null
-let private formTableSet (table: System.Runtime.CompilerServices.ConditionalWeakTable<obj, obj>) (key: obj) (value: obj) : unit =
-    table.GetValue (key, (fun _ -> value)) |> ignore
-#endif
 let private isArrayExprTable = newFormTable ()
 let private argsNeedPreparingTable = newFormTable ()
 let private argsArrayTable = newFormTable ()
@@ -14568,12 +14578,12 @@ and callProviderFunction (name: string) (args: Expr list) (ctx: EvalContext) : A
 /// The value of a cell's formula: `eval`, with what Excel does at the end of a formula whose last
 /// operation is an addition or a subtraction - a result within 8 units in the last place of the larger
 /// operand (`cancelsWithin`) is 0. (Since Excel 97; not inside a function or a deeper operation.
-/// `=1-0.9-0.1` is 0, `=1*(1-0.9-0.1)` is not. Excel also leaves `=(1-0.9-0.1)` alone: the
-/// parentheses are not kept here.)
+/// `=1-0.9-0.1` is 0, `=1*(1-0.9-0.1)` is not, nor is `=(1-0.9-0.1)`: in Excel the parentheses
+/// around the whole formula are its last operation (`wrappedForms`); `=(1-0.9)-0.1` is 0.)
 let evalCell (expr: Expr) (ctx: EvalContext) : CellValue =
     let value = eval expr ctx
     match expr, value with
-    | BinOp (left, ("+" | "-" as op), right), CellValue.Number x when x <> 0.0 && abs x < 1e-3 ->
+    | BinOp (left, ("+" | "-" as op), right), CellValue.Number x when x <> 0.0 && abs x < 1e-3 && isNull (formTableGet wrappedForms (box expr)) ->
         match unwrapValue (eval left ctx), unwrapValue (eval right ctx) with
         | CellValue.Number a, CellValue.Number b ->
             let b = if op = "-" then -b else b
@@ -14759,6 +14769,15 @@ let evalFormulaCell (expr: Expr) (ctx: EvalContext) (cached: CellValue) : CellVa
     | CellValue.Empty -> evalCell expr ctx
     | CellValue.Error e when e = Err.busy -> evalCell expr ctx
     | _ -> if keepsCachedValue expr then cached else evalCell expr ctx
+
+/// What a formula on a circular reference, or one that reads one, shows without iterative
+/// calculation: Excel does not calculate it, and it keeps the value it has (`value`, the cell's; one
+/// that has none, 0 - as a formula just typed into such a place).
+let keptValue (value: CellValue) : CellValue =
+    match (match value with CellValue.Formula (_, cached) -> unwrapValue cached | other -> unwrapValue other) with
+    | CellValue.Empty -> CellValue.Number 0.0
+    | CellValue.Error e when e = Err.cycle -> CellValue.Number 0.0
+    | other -> other
 
 let evaluateFormula (formula: string) (model: SpreadsheetModel)
                     (workbook: Rbt.Spreadsheet.Workbook.Workbook option) : CellValue =
@@ -14986,7 +15005,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                     ignore parseError
                     applyFormulaResult addr fc (CellValue.Error Err.syntax)
                 | None when cyclic.Contains addr ->
-                    applyFormulaResult addr fc (CellValue.Error Err.cycle)
+                    applyFormulaResult addr fc (keptValue fc.Cell.Value)
                 | None when Set.contains addr blockedAnchors ->
                     applyFormulaResult addr fc (CellValue.Error Err.spill)
                 | None ->
@@ -14998,7 +15017,7 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
         // A circular reference of the references written that the calculation does not follow
         // (`liveReferences`: the branch of an IF the values do not take): its formulas, and what
         // reads them, calculated in the order of what they read now, that order found again from
-        // their new values until it stays; those still on a cycle of it show the cycle error.
+        // their new values until it stays; those still on a cycle of it keep their values, and what reads them.
         let cyclicFormulas = cyclic |> Seq.filter (fun addr -> match Portable.Dict.tryFind addr formulaByAddress with ValueSome fc -> fc.ParseError.IsNone && not (Set.contains addr blockedAnchors) | ValueNone -> false) |> Seq.toArray
         if cyclicFormulas.Length > 0 then
             let readersOf = Dictionary<CellAddress, ResizeArray<CellAddress>>()
@@ -15066,12 +15085,20 @@ and private recalculateFormulasKeepingBlocked (blockedAnchors: Set<CellAddress>)
                             changed <- true
                     | _ -> ()
                 let calculation, onCycle = liveCycleOrder graph
+                // (On a cycle or reading one: not calculated - the value the formula has.)
+                let kept = Array.copy onCycle
+                for i in calculation do
+                    if graph.[i] |> Array.exists (fun j -> kept.[j]) then kept.[i] <- true
+                let held (i: int) =
+                    match Portable.Dict.tryFind members.[i] formulaByAddress with
+                    | ValueSome fc -> Some (keptValue fc.Cell.Value)
+                    | ValueNone -> None
                 for i in 0 .. n - 1 do
                     if onCycle.[i] then
                         cyclic.Add members.[i] |> ignore
-                        evaluate i (Some (CellValue.Error Err.cycle))
+                        evaluate i (held i)
                     else cyclic.Remove members.[i] |> ignore
-                for i in calculation do evaluate i None
+                for i in calculation do evaluate i (if kept.[i] then held i else None)
                 let next = Array.init n liveDeps
                 if next = graph || sweeps >= 8 then going <- false
                 else graph <- next
@@ -15499,7 +15526,7 @@ let installWorkbookPass (pass: WorkbookPass) : unit = workbookPass <- Some pass
 /// one dependency order that follows references across sheets, defined names,
 /// structured references and the cells dynamic arrays spill into, so that one
 /// run reaches the values (see Recalc.recalculateAll). Formulas on a circular
-/// reference - within a sheet or across sheets - show the cycle error.
+/// reference - within a sheet or across sheets - keep their values.
 let recalculateWorkbook (workbook: Rbt.Spreadsheet.Workbook.Workbook) : Rbt.Spreadsheet.Workbook.Workbook =
     if workbookPass.IsNone then
 #if !FABLE_COMPILER

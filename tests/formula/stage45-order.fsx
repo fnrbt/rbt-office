@@ -5,7 +5,8 @@
 // The full recalculation of a workbook has one dependency order for all its
 // sheets: one run reaches the values however they travel between sheets, and
 // the formulas on a circular reference - within a sheet, across sheets,
-// through a defined name - show the cycle error, as do no others. Formulas
+// through a defined name - and those that read one are not calculated: they keep
+// their values (0, one that has none), as in Excel without iterative calculation. Formulas
 // that choose their precedents while they are evaluated (OFFSET, INDIRECT)
 // and 3-D references are part of that order and of the incremental engine.
 
@@ -85,8 +86,8 @@ do
     let wb = three () |> setCells "sheet1" [ at 0 0, Some (formula "=Two!A1+1"); at 0 1, Some (formula "=A1*2"); at 0 2, Some (formula "=5+5"); at 0 3, Some (formula "=IFERROR(A1,-1)") ]
                       |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!A1+1"); at 1 0, Some (formula "=7") ]
     let calculated = settledInOne "a cycle across two sheets" wb
-    eq "both formulas of a cycle across two sheets show the cycle error" (valueAt "sheet1" 0 0 calculated, valueAt "sheet2" 0 0 calculated) (cycle, cycle)
-    eq "a formula that reads the cycle has its error; one that catches it, its own value" (valueAt "sheet1" 0 1 calculated, valueAt "sheet1" 0 3 calculated) (cycle, n -1.0)
+    eq "both formulas of a cycle across two sheets keep their values: none yet, 0" (valueAt "sheet1" 0 0 calculated, valueAt "sheet2" 0 0 calculated) (n 0.0, n 0.0)
+    eq "a formula that reads the cycle is not calculated either, one that would catch an error too" (valueAt "sheet1" 0 1 calculated, valueAt "sheet1" 0 3 calculated) (n 0.0, n 0.0)
     eq "formulas beside the cycle are calculated" (valueAt "sheet1" 0 2 calculated, valueAt "sheet2" 1 0 calculated) (n 10.0, n 7.0)
     // An edit that breaks the cycle: the values are there after one run.
     let broken = calculated |> setCells "sheet2" [ at 0 0, Some (number 4.0) ]
@@ -94,15 +95,15 @@ do
     eq "the cycle broken: values after one run" (valueAt "sheet1" 0 0 recovered, valueAt "sheet1" 0 1 recovered, valueAt "sheet1" 0 3 recovered) (n 5.0, n 10.0, n 5.0)
     // ... and one that makes it again.
     let again = settledInOne "the cycle made again" (recovered |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!B1") ])
-    eq "the cycle made again (through B1 now): all three" (valueAt "sheet1" 0 0 again, valueAt "sheet1" 0 1 again, valueAt "sheet2" 0 0 again) (cycle, cycle, cycle)
+    eq "the cycle made again (through B1 now): the three keep their values, the new formula 0" (valueAt "sheet1" 0 0 again, valueAt "sheet1" 0 1 again, valueAt "sheet2" 0 0 again) (n 5.0, n 10.0, n 0.0)
     let engine = Recalc.build recovered
     let edited = recovered |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!B1") ]
     // The engine calculates an edit that makes a cycle itself, as the full pass does.
-    ok "the incremental engine calculates the edit that makes the cycle" (match Recalc.recalculate engine edited None with Some result -> same result (full edited) && valueAt "sheet2" 0 0 result = cycle | None -> false) (Recalc.lastDecline engine)
+    ok "the incremental engine calculates the edit that makes the cycle" (match Recalc.recalculate engine edited None with Some result -> same result (full edited) && valueAt "sheet2" 0 0 result = n 0.0 | None -> false) (Recalc.lastDecline engine)
     let fullResult, fullEngine = Recalc.recalculateAll edited
     ok "the full pass's engine goes on incrementally beside the cycle" (
         match Recalc.recalculate fullEngine (fullResult |> setCells "sheet2" [ at 1 0, Some (number 8.0) ]) None with
-        | Some result -> valueAt "sheet2" 1 0 result = n 8.0 && valueAt "sheet1" 0 0 result = cycle
+        | Some result -> valueAt "sheet2" 1 0 result = n 8.0 && valueAt "sheet1" 0 0 result = n 5.0
         | None -> false) (Recalc.lastDecline fullEngine)
     ok "... and breaking the cycle is incremental too" (
         match Recalc.recalculate fullEngine (Recalc.recalculate fullEngine (fullResult |> setCells "sheet2" [ at 0 0, Some (number 1.0) ]) None |> Option.defaultValue fullResult) None with
@@ -114,15 +115,15 @@ do
                       |> setCells "sheet2" [ at 0 0, Some (formula "=Three!A1+1"); at 1 0, Some (formula "=1+1") ]
                       |> setCells "sheet3" [ at 0 0, Some (formula "=SUM(Sheet1!A1:A1)"); at 1 0, Some (formula "=Two!A2*3") ]
     let calculated = settledInOne "a cycle across three sheets" wb
-    eq "a cycle across three sheets (one link a range)" ([ for id in ids -> valueAt id 0 0 calculated ]) [ cycle; cycle; cycle ]
+    eq "a cycle across three sheets (one link a range)" ([ for id in ids -> valueAt id 0 0 calculated ]) [ n 0.0; n 0.0; n 0.0 ]
     eq "what is not on it" (valueAt "sheet2" 1 0 calculated, valueAt "sheet3" 1 0 calculated) (n 2.0, n 6.0)
 do
     // A formula that reads itself; one that reads itself in a range; a cycle through a defined name.
     let wb = three () |> setCells "sheet1" [ at 0 0, Some (formula "=A1+1"); at 1 1, Some (formula "=SUM(B1:B5)"); at 0 3, Some (formula "=LOOP+1"); at 0 4, Some (formula "=3") ]
     let wb = { wb with Names = wb.Names |> Map.add (None, "LOOP") "=Two!$C$1" } |> setCells "sheet2" [ at 0 2, Some (formula "=Sheet1!D1*2"); at 0 3, Some (formula "=Sheet1!E1") ]
     let calculated = settledInOne "self references and a name" wb
-    eq "a formula that reads itself, alone and in a range" (valueAt "sheet1" 0 0 calculated, valueAt "sheet1" 1 1 calculated) (cycle, cycle)
-    eq "a cycle through a defined name on another sheet" (valueAt "sheet1" 0 3 calculated, valueAt "sheet2" 0 2 calculated) (cycle, cycle)
+    eq "a formula that reads itself, alone and in a range" (valueAt "sheet1" 0 0 calculated, valueAt "sheet1" 1 1 calculated) (n 0.0, n 0.0)
+    eq "a cycle through a defined name on another sheet" (valueAt "sheet1" 0 3 calculated, valueAt "sheet2" 0 2 calculated) (n 0.0, n 0.0)
     eq "beside them" (valueAt "sheet2" 0 3 calculated) (n 3.0)
     // The name re-pointed: no cycle any more.
     let repointed = { calculated with Names = calculated.Names |> Map.add (None, "LOOP") "=Two!$D$1" }
@@ -133,7 +134,7 @@ do
                                            at 5 0, Some (formula "=A7+A8"); at 6 0, Some (formula "=A6"); at 7 0, Some (formula "=A6"); at 8 0, Some (formula "=IFERROR(A8,0)+1") ]
                       |> setCells "sheet2" [ at 0 1, Some (formula "=Sheet1!B1") ]
     let calculated = settledInOne "several cycles" wb
-    eq "two cycles, a reader of both, a figure of eight, a reader of that" ([ for row, col in [ 0, 0; 1, 0; 0, 1; 0, 2; 5, 0; 6, 0; 7, 0; 8, 0 ] -> valueAt "sheet1" row col calculated ]) [ cycle; cycle; cycle; n 2.0; cycle; cycle; cycle; n 1.0 ]
+    eq "two cycles, a reader of both, a figure of eight, a reader of that" ([ for row, col in [ 0, 0; 1, 0; 0, 1; 0, 2; 5, 0; 6, 0; 7, 0; 8, 0 ] -> valueAt "sheet1" row col calculated ]) [ n 0.0; n 0.0; n 0.0; n 0.0; n 0.0; n 0.0; n 0.0; n 0.0 ]
 
 // ---- OFFSET, INDIRECT ------------------------------------------------------------------
 do
@@ -211,7 +212,7 @@ do
     eq "the span Two:Three holds Sheet1 now, Sheet1:Three no longer Two" (valueAt "sheet1" 0 3 movedFull, valueAt "sheet1" 1 3 movedFull) (n 242.0, n 7.0)
     // A cycle through a 3-D reference.
     let looped = settledInOne "a cycle through a 3-D reference" (current |> setCells "sheet2" [ at 0 1, Some (formula "=Sheet1!D2") ])
-    eq "a formula inside the span that reads the 3-D sum, and one between them" (valueAt "sheet1" 1 3 looped, valueAt "sheet2" 0 1 looped, valueAt "sheet3" 0 1 looped) (cycle, cycle, cycle)
+    eq "a formula inside the span that reads the 3-D sum, and one between them" (valueAt "sheet1" 1 3 looped, valueAt "sheet2" 0 1 looped, valueAt "sheet3" 0 1 looped) (n 13.0, n 0.0, n 7.0)
 
 // ---- iterative calculation ------------------------------------------------------------
 // Excel's setting for workbooks with a deliberate circular reference (a loan whose
@@ -222,7 +223,7 @@ do
         three () |> setCells "sheet1" [ at 0 0, Some (number 1000.0); at 1 0, Some (number 0.1); at 2 0, Some (formula "=A1+Two!A1"); at 3 0, Some (formula "=A3*2") ]
                  |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!A3*Sheet1!A2"); at 1 0, Some (formula "=A1+1") ]
     let strict = settledInOne "a loan and its interest, no iteration" model
-    eq "without the setting: the cycle error" (valueAt "sheet1" 2 0 strict, valueAt "sheet2" 0 0 strict, valueAt "sheet1" 3 0 strict) (cycle, cycle, cycle)
+    eq "without the setting: not calculated (0)" (valueAt "sheet1" 2 0 strict, valueAt "sheet2" 0 0 strict, valueAt "sheet1" 3 0 strict) (n 0.0, n 0.0, n 0.0)
     let iterating = { model with Iteration = Some { MaxIterations = 100; MaxChange = 0.001 } }
     let calculated, engine = Recalc.recalculateAll iterating
     let near (value: CellValue) (expected: float) = match value with CellValue.Number x -> abs (x - expected) < 0.01 | _ -> false
@@ -230,7 +231,11 @@ do
     ok "with it: the cycle settles at its fixed point" (near (valueAt "sheet1" 2 0 calculated) 1111.111 && near (valueAt "sheet2" 0 0 calculated) 111.111) (sprintf "%A %A" (valueAt "sheet1" 2 0 calculated) (valueAt "sheet2" 0 0 calculated))
     ok "what reads the cycle follows" (near (valueAt "sheet1" 3 0 calculated) 2222.222 && near (valueAt "sheet2" 1 0 calculated) 112.111) ""
     eq "two formulas are on the cycle" (Recalc.cyclicCount engine) 2
-    ok "a second run leaves the settled workbook exactly as it is" (same calculated (full calculated)) ""
+    // (Excel calculates a circular reference at every calculation: a settled one moves by less than the maximum change.)
+    ok "a second run sweeps the settled cycle once more, by less than the maximum change" (
+        match valueAt "sheet1" 2 0 calculated, valueAt "sheet1" 2 0 (full calculated) with
+        | CellValue.Number a, CellValue.Number b -> a <> b && abs (a - b) < 0.001
+        | _ -> false) ""
     ok "switched on in a workbook that showed the cycle error: the formulas start from nothing" (near (valueAt "sheet1" 2 0 (full { strict with Iteration = iterating.Iteration })) 1111.111) ""
     // An input of the cycle edited: the engine settles it again, to the numbers of the full pass.
     let edited = calculated |> setCells "sheet1" [ at 0 0, Some (number 2000.0) ]
@@ -241,7 +246,7 @@ do
     ok "... and by an engine built for the calculated workbook" (match Recalc.recalculate (Recalc.build calculated) edited None with Some result -> same result again | None -> false) ""
     // An edit beside the cycle is incremental and leaves the cycle's values alone.
     match Recalc.recalculate engineAfter (again |> setCells "sheet3" [ at 0 0, Some (number 5.0) ]) None with
-    | Some result -> ok "an edit beside the cycle is incremental" (valueAt "sheet1" 2 0 result = valueAt "sheet1" 2 0 again && same result (full result)) ""
+    | Some result -> ok "an edit beside the cycle is incremental: one more sweep, as the full pass gives" (same result (full (again |> setCells "sheet3" [ at 0 0, Some (number 5.0) ]))) ""
     | None -> ok "an edit beside the cycle is incremental" false (Recalc.lastDecline engineAfter)
     // A cycle that does not settle stops at the workbook's number of iterations.
     let growing = { (three () |> setCells "sheet1" [ at 0 0, Some (formula "=Two!A1+1") ] |> setCells "sheet2" [ at 0 0, Some (formula "=Sheet1!A1") ]) with Iteration = Some { MaxIterations = 10; MaxChange = 0.001 } }
@@ -263,7 +268,7 @@ do
 // ---- a circular reference only through a branch the calculation does not take ----------------
 // Excel 2019 (tools/excel-parity/eval-cells.vbs): A1 =IF(B1="",5,A2) with A2 =A1 is no circular
 // reference - the IF does not read A2 - and gives 5, 5; nor is =IF(TRUE,7,A3) in A3. With B1 set the
-// IF reads A2: a circular reference (Excel's 0s, our cycle error). The same across sheets, through
+// IF reads A2: a circular reference - not calculated, the values the formulas had. The same across sheets, through
 // IFERROR / CHOOSE, and in the per-sheet pass.
 do
     let wb =
@@ -278,18 +283,54 @@ do
     // B1 set: the IF reads A2 - a circular reference, and what reads it has its error.
     let taken = calculated |> setCells "sheet1" [ at 0 1, Some (number 1.0) ]
     let looped = settledInOne "the branch taken" taken
-    eq "the branch taken makes the cycle" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 looped ]) [ cycle; cycle; n 7.0; cycle ]
+    eq "the branch taken makes the cycle: the values they had" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 looped ]) [ n 5.0; n 5.0; n 7.0; n 12.0 ]
     ok "the incremental engine says the same" (match Recalc.recalculate (Recalc.build calculated) taken None with Some result -> same result looped | None -> false) ""
     // Two!A1 > 0: D1 reads Two!A2, which reads D1.
     let across = settledInOne "the cycle across sheets taken" (calculated |> setCells "sheet2" [ at 0 0, Some (number 1.0) ])
-    eq "across sheets, the branch taken" (valueAt "sheet1" 0 3 across, valueAt "sheet2" 1 0 across) (cycle, cycle)
+    eq "across sheets, the branch taken" (valueAt "sheet1" 0 3 across, valueAt "sheet2" 1 0 across) (n 1.0, n 2.0)
     // And back: B1 cleared, the values again, incrementally too.
     let back = looped |> setCells "sheet1" [ at 0 1, None ]
     eq "the branch left again" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 (full back) ]) [ n 5.0; n 5.0; n 7.0; n 12.0 ]
     ok "... incrementally" (match Recalc.recalculate (Recalc.build looped) back None with Some result -> same result (full back) | None -> false) ""
-    // A formula that reads the cycle and catches its error has its own value.
-    let caught = settledInOne "a reader that catches the error" (taken |> setCells "sheet1" [ at 5 0, Some (formula "=IFERROR(A2,-1)") ])
-    eq "a reader of the cycle that catches it" (valueAt "sheet1" 5 0 caught) (n -1.0)
+    // A formula entered that reads the cycle is not calculated: 0 (Excel: =A1+5 beside a cycle shows 0).
+    let caught = settledInOne "a reader of the cycle" (taken |> setCells "sheet1" [ at 5 0, Some (formula "=IFERROR(A2,-1)") ])
+    eq "a reader of the cycle entered" (valueAt "sheet1" 5 0 caught) (n 0.0)
+
+// ---- circular references as Excel 2019 calculates a workbook it opens -------------------------
+// (tools/excel-parity/eval-file.vbs on generated workbooks whose formulas have values in the file.)
+// Without iterative calculation the formulas of a cycle and what reads them keep the file's values;
+// a formula beside them is calculated. With it: sweeps in reading order over the cycles and what reads
+// them, from the file's values, until nothing they give changes by the maximum change; the last kept.
+let cached body (value: float) = { Value = CellValue.Formula (body, CellValue.Number value); Format = defaultFormat; Comment = None }
+do
+    let wb = Wb.createWorkbook () |> setCells "sheet1" [ at 0 0, Some (number 5.0); at 0 1, Some (cached "=A1+C1" 100.0); at 0 2, Some (cached "=B1*0.5" 50.0)
+                                                         at 0 3, Some (cached "=B1+1" 101.0); at 0 4, Some (cached "=E1+1" 7.0); at 0 5, Some (cached "=A1*2" 999.0)
+                                                         at 0 6, Some (cached "=IFERROR(B1,\"x\")" 3.0); at 0 9, Some (cached "=D1*2" 4.0); at 0 10, Some (cached "=ISNUMBER(B1)" 0.0) ]
+    let calculated = full wb
+    eq "Excel: a cycle and what reads it keep the file's values, a formula beside them is calculated"
+        ([ for c in [ 1; 2; 3; 4; 5; 6; 9; 10 ] -> valueAt "sheet1" 0 c calculated ]) [ n 100.0; n 50.0; n 101.0; n 7.0; n 10.0; n 3.0; n 4.0; n 0.0 ]
+    let engine = Recalc.build calculated
+    Recalc.findCycles engine
+    let edited = calculated |> setCells "sheet1" [ at 0 0, Some (number 6.0) ]
+    ok "Excel: an input of the cycle typed again - still not calculated, what reads the cycle neither (incremental)"
+        (match Recalc.recalculate engine edited None with
+         | Some result -> [ for c in [ 1; 3; 5; 9 ] -> valueAt "sheet1" 0 c result ] = [ n 100.0; n 101.0; n 12.0; n 4.0 ]
+         | None -> false) (Recalc.lastDecline engine)
+let iterated (count: int) (change: float) (cells: (CellAddress * CellData option) list) =
+    full { (Wb.createWorkbook () |> setCells "sheet1" cells) with Iteration = Some { MaxIterations = count; MaxChange = change } }
+do
+    let cells = [ at 0 0, Some (cached "=100+0.1*A2" 50.0); at 1 0, Some (cached "=A1*0.5" 20.0)
+                  at 0 2, Some (cached "=C2*0.5" 20.0); at 1 2, Some (cached "=100+0.1*C1" 50.0)
+                  at 0 4, Some (cached "=E2*3" 0.0); at 1 4, Some (cached "=E2/2+1" 0.0) ]
+    let once = iterated 1 0.001 cells
+    eq "Excel, one iteration: one sweep in reading order from the file's values, a reader above the cycle a sweep behind"
+        ([ for r, c in [ 0, 0; 1, 0; 0, 2; 1, 2; 0, 4; 1, 4 ] -> valueAt "sheet1" r c once ]) [ n 102.0; n 51.0; n 25.0; n 102.5; n 0.0; n 1.0 ]
+    // A6 = A6/2+1 from 0 is 2 - 2^(1-k) after k sweeps; =A6*3 beside it changes three times as much.
+    let halving = [ at 5 0, Some (cached "=A6/2+1" 0.0); at 5 3, Some (cached "=A6*3" 0.0) ]
+    let settled = iterated 100 0.001 halving
+    eq "Excel: what reads the cycle counts in the maximum change (13 sweeps at 0.001, not 11), the last sweep kept"
+        (valueAt "sheet1" 5 0 settled, valueAt "sheet1" 5 3 settled) (n (2.0 - 2.0 ** -12.0), n (3.0 * (2.0 - 2.0 ** -12.0)))
+    eq "Excel: as many sweeps as the workbook's iterations" (valueAt "sheet1" 5 0 (iterated 3 0.001 halving)) (n 1.75)
 
 printfn "stage45-order: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

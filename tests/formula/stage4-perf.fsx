@@ -83,8 +83,9 @@ let cycleResult = recalculateAllFormulas None None cycleModel
 let f1 =
     match getCellValue { Row = 0; Col = 5 } cycleResult with
     | CellValue.Formula (_, v) -> v | v -> v
-ok "cycle-detected" (match f1 with CellValue.Error _ -> true | _ -> false)
-   (sprintf "expected cycle error, got %A" f1)
+// (Not calculated, as in Excel without iterative calculation: the value it had - none, 0.)
+ok "cycle-detected" (f1 = CellValue.Number 0.0)
+   (sprintf "expected 0 (a formula on a circular reference is not calculated), got %A" f1)
 
 printfn ""
 printfn "Stage 4 perf/correctness tests: %d passed, %d failed" pass fail

@@ -70,7 +70,7 @@ type Workbook = {
     /// Excel's "enable iterative calculation" (`<calcPr iterate="1">`): the
     /// formulas of a circular reference are calculated again and again from
     /// the values they have, until none changes by `MaxChange` or more, or
-    /// `MaxIterations` times. None (the default): they show the cycle error.
+    /// `MaxIterations` times. None (the default): they, and what reads them, are not calculated - they keep their values.
     Iteration: IterativeCalculation option
     /// What the workbook last read of the workbooks its formulas refer to (`[1]Sheet!A1`,
     /// `'[1]My sheet'!A1`): the values the file keeps of them (`xl/externalLinks`), by
