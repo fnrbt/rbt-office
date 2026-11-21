@@ -86,10 +86,10 @@ done
 chmod u+rw,go-rwx "$extra_dir"/* || true
 printf 'extra windows fonts copied to %s\n' "$extra_dir"
 
-# Office's cloud fonts a corpus document names (free-test-100kb and -500kb: Open Sans), which Word
+# Office's cloud fonts a corpus document names (free-test-100kb and -500kb: Open Sans; Excel models: Aptos Narrow), which Word
 # downloads into the user's font cache when it opens the document - not in C:/Windows/Fonts.
 cloud="C:/Users/${WORD_VM_USER:-olivia}/AppData/Local/Microsoft/FontCache/4/CloudFonts"
-for family in "Open Sans"; do
+for family in "Open Sans" "Aptos Narrow"; do
   slug="$(printf '%s' "$family" | tr -d ' ' | tr '[:upper:]' '[:lower:]')"
   # (The cache names its files by number: one per face.)
   for file in $(ssh "$vm" "powershell -NoProfile -Command \"Get-ChildItem '${cloud}/${family}' -Name\"" 2>/dev/null | tr -d '\r'); do

@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { facesIn } from './windows-faces.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, '../..');
@@ -20,8 +21,17 @@ if (!outDir || shots.length === 0) { console.error('usage: shoot-browser-sheets.
 fs.mkdirSync(outDir, { recursive: true });
 const jszip = path.join(repo, 'node_modules/jszip/dist/jszip.min.js');
 const port = Number(process.env.PORT ?? 16201);
+// The Windows fonts, registered as web fonts before the workbook is shown (RB_WORD_FONT_DIR, RB_WORD_EXTRA_FONT_DIR):
+// without them the grid measures and draws Calibri, Tahoma ... in the browser's fallback.
+const fontDir = path.resolve(process.env.RB_WORD_FONT_DIR ?? path.join(repo, 'artifacts/fonts/windows'));
+const fontDirs = [fontDir, path.resolve(process.env.RB_WORD_EXTRA_FONT_DIR ?? path.join(path.dirname(fontDir), 'windows-extra'))];
+const faces = facesIn(fontDirs).map((f, i) => ({ family: f.family, weight: f.weight, style: f.style, url: `/font/${i}`, path: path.join(f.dir, f.file) }));
+console.error(`${faces.length} faces from ${fontDirs.join(', ')}`);
 const page = `<!doctype html><meta charset="utf-8"><body style="margin:0"><script src="/jszip.min.js"></script>
 <script type="importmap">{"imports":{"jszip":"/jszip-shim.js"}}</script><script type="module">
+for (const f of ${JSON.stringify(faces.map(({ path: _, ...f }) => f))}) {
+    try { const face = new FontFace(f.family, 'url(' + f.url + ')', { weight: f.weight, style: f.style }); await face.load(); document.fonts.add(face); } catch { }
+}
 try {
     const { createSpreadsheet, container, frame, everyObjectSeen, bytesOf } = await import('/component.js');
     window.show = async (file, sheet, cell) => {
@@ -54,6 +64,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname === '/jszip.min.js') return send(200, 'text/javascript', fs.readFileSync(jszip));
     if (url.pathname === '/jszip-shim.js') return send(200, 'text/javascript', 'export default window.JSZip;');
     if (/^\/[\w-]+\.js$/.test(url.pathname) && fs.existsSync(path.join(harness, url.pathname.slice(1)))) return send(200, 'text/javascript', fs.readFileSync(path.join(harness, url.pathname.slice(1))));
+    if (url.pathname.startsWith('/font/')) { const f = faces[Number(url.pathname.slice(6))]; return f ? send(200, 'font/ttf', fs.readFileSync(f.path)) : send(404, 'text/plain', 'no font'); }
     if (url.pathname === '/fixture') { const file = path.join(repo, path.normalize(url.searchParams.get('name'))); return file.startsWith(repo) && fs.existsSync(file) ? send(200, 'application/octet-stream', fs.readFileSync(file)) : send(404, 'text/plain', 'no fixture'); }
     const file = path.join(dist, path.normalize(url.pathname));
     if (file.startsWith(dist) && fs.existsSync(file) && fs.statSync(file).isFile()) return send(200, 'text/javascript', fs.readFileSync(file));
@@ -72,7 +83,7 @@ try {
     for (const shot of shots) {
         const [file, sheet, cell = 'A1'] = shot.split('|');
         const clip = await tab.evaluate(([f, s, c]) => window.show(f, s, c), [file, sheet, cell]);
-        const out = path.join(outDir, `${path.basename(file, '.xlsx')}-${sheet.replace(/\W+/g, '_')}-${cell}.png`);
+        const out = path.join(outDir, `${path.basename(file).replace(/\.xlsx$/, '')}-${sheet.replace(/\W+/g, '_')}-${cell}.png`);
         fs.writeFileSync(out, await tab.screenshot({ clip }));
         console.log(out);
     }
