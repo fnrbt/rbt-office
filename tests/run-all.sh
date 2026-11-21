@@ -64,7 +64,7 @@ word_suites=(
     group-shapes roundtrip-layout table-break-borders sections table-insert
     wrap-band list-levels drop-caps default-tab-stop note-layout table-compat
     column-balance section-end macros outline line-boxes marker-ascent endnote-start row-break rfonts-precedence footnote-block border-space
-    float-wrap long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
+    float-wrap float-next long-word kerning hang-punct table-width embedded-fonts page-top-space float-table
     table-style-props border-across vmerge-content row-continue list-sections
     hyphen-break hyphenation justify-squeeze data-binding
     section-margins inline-break section-top-space line-baseline empty-mark heading-mark empty-lines keep-next-widow cell-line-fit cell-break
