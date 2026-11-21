@@ -262,8 +262,11 @@ let paginate (model: SpreadsheetModel) : Pagination =
 /// The width a column prints at: Excel lays the grid out with the floored
 /// screen width of a character but prints with the unfloored one, 15/14
 /// wider (see `Render.withPrintColumnWidths` in Spreadsheet.Pdf).
-let printColumnWidthPx (width: float) : float =
-    let printScale = 15.0 / 14.0
+/// (`mdw`: the sheet's maximum digit width. Excel's PDF lays a column out at 7.5 px a digit whatever the
+/// Normal font - Calibri 11's 7 px digits print 15/14 wider, Calibri 12's 8 px ones as many 7.5 px digits:
+/// milk-street-office's Monthly prints A1:R58 on its first page.)
+let printColumnWidthPx (mdw: float) (width: float) : float =
+    let printScale = 7.5 / (if mdw > 0.0 then mdw else 7.0)
     if width <= 0.0 then width else width * printScale
 
 /// The height a row prints at: the automatic rows of Calibri 11 and 12
@@ -277,8 +280,8 @@ let printRowHeightPx (px: float) : float =
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
     { model with
         DefaultRowHeight = printRowHeightPx model.DefaultRowHeight
-        DefaultColumnWidth = printColumnWidthPx model.DefaultColumnWidth
-        ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width))
+        DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.DefaultColumnWidth
+        ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth width))
         RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)) }
 
 /// The pages the sheet prints on: `paginate` of the sheet at its print

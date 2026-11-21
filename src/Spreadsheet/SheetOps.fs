@@ -1634,12 +1634,15 @@ let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (mod
         if fits addr.Row then
             let format = data.Format
             let line = lineHeight format
-            let merged = hasMerges && (findMergedCell addr model).IsSome
+            // (Only a wrapped or turned text is more than a line; merged with others, it is one.)
+            let merged () = hasMerges && (findMergedCell addr model).IsSome
             let height =
-                if merged then line
-                else
+                match data.Value with
+                | Empty | String "" -> line
+                | _ when not format.WrapText && not (isTurned format) -> line
+                | _ when merged () -> line
+                | _ ->
                     match data.Value with
-                    | Empty | String "" -> line
                     | _ when isTurned format ->
                         let text = shownText model data
                         Math.Ceiling (measure text (float (defaultArg format.FontSize (int points))) (format.FontName |> Option.orElse face) format.Bold format.Italic) + cellPadY

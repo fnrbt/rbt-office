@@ -652,7 +652,7 @@ let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetMo
 let private directPrintDimensionRemapLimit = 100000
 
 // (The sizes rows and columns print at are Pagination's: a host is told the same pages.)
-let private printColumnWidthPx width = Pagination.printColumnWidthPx width
+let private printColumnWidthPx mdw width = Pagination.printColumnWidthPx mdw width
 
 let private printRowHeightPx px = Pagination.printRowHeightPx px
 
@@ -689,8 +689,8 @@ let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
         | None -> ()
     mapped
 
-let private remapPrintColumnWidthsDirect maxCol values =
-    remapPrintDimensionDirect maxCol printColumnWidthPx values
+let private remapPrintColumnWidthsDirect mdw maxCol values =
+    remapPrintDimensionDirect maxCol (printColumnWidthPx mdw) values
 
 let private remapPrintRowHeightsDirect maxRow values =
     remapPrintDimensionDirect maxRow printRowHeightPx values
@@ -708,10 +708,10 @@ let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : Spread
     let widths =
         match maxPrintCol with
         | Some maxCol when maxCol >= 0 && maxCol <= directPrintDimensionRemapLimit ->
-            remapPrintColumnWidthsDirect maxCol model.ColumnWidths
+            remapPrintColumnWidthsDirect model.MaxDigitWidth maxCol model.ColumnWidths
         | _ ->
-            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx width)
-    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.DefaultColumnWidth }
+            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth width)
+    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.DefaultColumnWidth }
 
 /// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
 /// even though `cell.Height` via COM still reports 15 pt (20 px). This is a

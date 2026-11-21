@@ -122,6 +122,7 @@ let mkRow index cells : XlsxReader.Row =
         OutlineLevel = 0
         Collapsed = false
         Style = None
+        ThickEdges = 0
     }
 
 let mkSheetWithColumns columns rows : XlsxReader.Worksheet =

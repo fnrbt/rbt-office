@@ -979,13 +979,22 @@ module Import =
             | true, Some height when height > 0.0 -> FontMetrics.pointsToRowPx height
             | true, _ -> fontRowPx
             | false, _ ->
-                sheet.Columns
-                |> List.fold (fun px column ->
-                    match column.Style with
-                    | Some index when index > 0 && index < wb.Styles.Length && not column.Hidden ->
-                        let style = wb.Styles.[index]
-                        max px (FontMetrics.rowHeightPx (style.FontName |> Option.orElse defaultFace) (style.FontSize |> Option.defaultValue defaultPoints))
-                    | _ -> px) fontRowPx
+                // (The empty cells of a row are in their column's style: the line of the tallest font among
+                // the columns' styles - and the Normal font's, while a column has none. dcf-stock-analysis's
+                // `<col min="1" max="16384" style>` of Arial 10 makes its rows 12.75 pt, not Calibri's 15.)
+                let styled =
+                    sheet.Columns
+                    |> List.choose (fun column ->
+                        match column.Style with
+                        | Some index when index >= 0 && index < wb.Styles.Length ->
+                            let style = wb.Styles.[index]
+                            Some (column.Index, column.MaxIndex,
+                                  FontMetrics.rowHeightPx (style.FontName |> Option.orElse defaultFace) (style.FontSize |> Option.defaultValue defaultPoints))
+                        | _ -> None)
+                    |> List.sortBy (fun (first, _, _) -> first)
+                let coveredTo = styled |> List.fold (fun reached (first, last, _) -> if first <= reached + 1 then max reached last else reached) 0
+                let tallest = styled |> List.fold (fun px (_, _, line) -> max px line) 0.0
+                if coveredTo >= 16384 && tallest > 0.0 then tallest else max fontRowPx tallest
         // Excel 2019 fits the rows it opens to their cells - a row without `customHeight`, whatever
         // `ht` it has (synthetic-row-fit). Not on a sheet whose default height is its own, unless one
         // of its rows has a height of its own, one not the default or is hidden.
@@ -996,6 +1005,8 @@ module Import =
                 || (match row.RawHeight with Some height -> FontMetrics.pointsToRowPx height <> defaultRowPx | None -> false))
         let mutable rowHeights = Map.empty<int, float>
         let fittedRows = Collections.Generic.HashSet<int>()
+        // (A row that says `thickTop` / `thickBot` is fitted a pixel higher for each.)
+        let thickRows = Collections.Generic.Dictionary<int, int>()
         for row in sheet.Rows do
             let index = row.Index - 1
             if index >= 0 && index < rowCount then
@@ -1004,6 +1015,7 @@ module Import =
                 | Some true, None -> ()
                 | _, height when fitsRows ->
                     if not row.Hidden then fittedRows.Add index |> ignore
+                    if row.ThickEdges > 0 then thickRows.[index] <- row.ThickEdges
                     // (Till it is fitted: what the file says.)
                     match height with
                     | Some height when height > 0.0 -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
@@ -1216,9 +1228,10 @@ module Import =
                 let fitted = SheetOps.fitRowsOnOpen (fun row -> fittedRows.Contains row) defaultFace defaultPoints model
                 let mutable heights = model.RowHeights
                 for row in fittedRows do
-                    match Portable.Dict.tryFind row fitted with
-                    | ValueSome height when height <> model.DefaultRowHeight -> heights <- Map.add row height heights
-                    | _ -> heights <- Map.remove row heights
+                    let thick = match Portable.Dict.tryFind row thickRows with ValueSome edges -> float edges | ValueNone -> 0.0
+                    let height = (match Portable.Dict.tryFind row fitted with ValueSome height -> height | ValueNone -> model.DefaultRowHeight) + thick
+                    if height <> model.DefaultRowHeight then heights <- Map.add row height heights
+                    else heights <- Map.remove row heights
                 { model with RowHeights = heights }
         { Model = model
           TableColumns = tableColumns

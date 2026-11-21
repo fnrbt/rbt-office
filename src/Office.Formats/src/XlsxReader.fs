@@ -188,6 +188,9 @@ type Row = {
     /// list in it, to the last column, over a column's style (checked in Excel 2019). Without `customFormat`
     /// the `s` is not drawn.
     Style: int option
+    /// How many of `thickTop` / `thickBot` the row says (0..2): Excel 2019 fits such a row a pixel higher
+    /// for each (checked in Excel: the attribute counts, not the cells' borders).
+    ThickEdges: int
 }
 
 type ColumnInfo = {
@@ -2253,6 +2256,9 @@ module Xlsx =
             OutlineLevel = Xml.attr "outlineLevel" rowNode |> Option.bind tryParseInt |> Option.defaultValue 0
             Collapsed = Xml.attr "collapsed" rowNode |> Option.map isTrueText |> Option.defaultValue false
             Style = if customFormat then rowStyle else None
+            ThickEdges =
+                (if Xml.attr "thickTop" rowNode |> Option.exists isTrueText then 1 else 0)
+                + (if Xml.attr "thickBot" rowNode |> Option.exists isTrueText then 1 else 0)
         }
 
     // Row extraction
@@ -2326,8 +2332,8 @@ module Xlsx =
         { Lexer = lexer
           Ctx = ctx
           ColumnNames = System.Collections.Generic.Dictionary<int, string>()
-          RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans"; "outlineLevel"; "collapsed" |]
-          RowValues = Array.create 9 null
+          RowNames = [| "r"; "ht"; "customHeight"; "hidden"; "s"; "customFormat"; "spans"; "outlineLevel"; "collapsed"; "thickTop"; "thickBot" |]
+          RowValues = Array.create 11 null
           CellNames = [| "r"; "s"; "t"; "cm" |]
           CellValues = Array.create 4 null
           FormulaNames = [| "t"; "ref"; "si" |]
@@ -2584,7 +2590,10 @@ module Xlsx =
                                   Hidden = hidden
                                   OutlineLevel = outlineLevel
                                   Collapsed = collapsed
-                                  Style = if customFormat then rowStyle else None }
+                                  Style = if customFormat then rowStyle else None
+                                  ThickEdges =
+                                    (if boolAttribute scan.RowValues.[9] = Some true then 1 else 0)
+                                    + (if boolAttribute scan.RowValues.[10] = Some true then 1 else 0) }
                     | XmlToken.StartTag -> if lexer.SkipElement () < 0 then scan.Valid <- false
                     | XmlToken.EndTag -> going <- false
                     | XmlToken.Text | XmlToken.Comment | XmlToken.Instruction | XmlToken.CData -> ()
@@ -3139,6 +3148,7 @@ module Xlsx =
         let hidden = nativeBoolAttr reader "hidden"
         let outlineLevel = nativeIntAttr reader "outlineLevel" |> Option.defaultValue 0
         let collapsed = nativeBoolAttr reader "collapsed"
+        let thickEdges = (if nativeBoolAttr reader "thickTop" then 1 else 0) + (if nativeBoolAttr reader "thickBot" then 1 else 0)
         let rowStyle = nativeIntAttr reader "s"
         let customFormat = nativeBoolAttr reader "customFormat"
         let spans = nativeAttr reader "spans"
@@ -3166,6 +3176,7 @@ module Xlsx =
             OutlineLevel = outlineLevel
             Collapsed = collapsed
             Style = if customFormat then rowStyle else None
+            ThickEdges = thickEdges
         }
 
     let private columnInfoNative (reader: System.Xml.XmlReader) : ColumnInfo option =

@@ -15,8 +15,9 @@ as Excel 2019 does (found on real-world real-estate models, each checked in Exce
 - synthetic-normal-font-first.xlsx / synthetic-normal-font-style.xlsx: which font is the Normal one - fonts[0]
   Arial 12 with the Normal style's xf on Calibri 11, and the other way round.
 - synthetic-row-fit.xlsx (Calibri 11): "Rows": which rows Excel fits to their cells when it opens a file - rows
-  of no `ht` (larger fonts, wrapped text); "RowStyle": a row's style (`<row s customFormat="1">`) to the last
-  column; "Widths": Calibri 11's widths (maximum digit width 7, truncated: 9.140625 is 64 px).
+  of no `ht` (larger fonts, wrapped text), a pixel more for each of `thickTop` / `thickBot`; "RowStyle": a row's style (`<row s customFormat="1">`) to the last
+  column; "ColStyle", "ColStyleAll", "ColStyleSome": a column style's font in the rows' height (all columns of
+  Arial 10: rows of 12.75 pt); "Widths": Calibri 11's widths (maximum digit width 7, truncated: 9.140625 is 64 px).
 - synthetic-theme-shapes.xlsx: shapes of theme fills (Office 2007 theme): `fillRef idx` 0..3 (none, the theme's
   solid, its two gradients, phClr replaced by the reference's colour) and `gradFill` of `schemeClr` with
   lumMod / lumOff.
@@ -197,6 +198,7 @@ ROW_XFS = [
     '<xf numFmtId="0" fontId="5" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
     '<xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
     '<xf numFmtId="0" fontId="7" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
+    '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>',
 ]
 FIT_ROWS = [
     '<row r="1">' + inline('A1', 1, 'Big') + '</row>',
@@ -227,6 +229,8 @@ FIT_ROWS = [
     '<row r="25">' + inline('A25', 10, 'Arial 20') + '</row>',
     '<row r="26">' + inline('A26', 11, 'Times 14') + '</row>',
     '<row r="27">' + inline('A27', 12, 'Big bold') + '</row>',
+    '<row r="28" thickBot="1">' + inline('A28', 0, 'thickBot') + '</row>',
+    '<row r="29" thickTop="1" thickBot="1">' + inline('A29', 1, 'Big, both') + '</row>',
 ]
 STYLE_ROWS = [
     '<row r="3" spans="1:3" s="4" customFormat="1">' + inline('A3', 4, 'row style') + '<c r="B3" s="4"/><c r="C3" s="4"/></row>',
@@ -245,6 +249,9 @@ package(os.path.join(OUTDIR, 'synthetic-row-fit.xlsx'), [
     ('S6', sheet(FIT_ROWS[:2] + ['<row r="4" ht="30">' + inline('A4', 0, 'ht 30') + '</row>'], '<sheetFormatPr defaultRowHeight="15" customHeight="1"/>', col(2, 2, 12))),
     ('S7', sheet(FIT_ROWS[:2], '<sheetFormatPr defaultRowHeight="20" customHeight="1"/>', col(2, 2, 12))),
     ('S8', sheet(FIT_ROWS[:2], '<sheetFormatPr defaultRowHeight="20"/>', col(2, 2, 12))),
+    ('ColStyleAll', sheet(['<row r="1">' + inline('A1', 0, 'Calibri') + '</row>', '<row r="2">' + inline('A2', 13, 'Arial') + '</row>',
+                           '<row r="4"/>'], '<sheetFormatPr defaultRowHeight="15"/>', col(1, 16384, 9.140625, 13))),
+    ('ColStyleSome', sheet(['<row r="2">' + inline('A2', 13, 'Arial') + '</row>'], '<sheetFormatPr defaultRowHeight="15"/>', col(1, 3, 9.140625, 13))),
     ('ColStyle', sheet(FIT_ROWS[:2] + ['<row r="3">' + inline('A3', 0, 'plain') + '</row>'], '<sheetFormatPr defaultRowHeight="15"/>', col(2, 2, 12) + col(4, 4, 9.140625, 1))),
     ('RowStyle', sheet(STYLE_ROWS, '<sheetFormatPr defaultRowHeight="15"/>', col(8, 9, 9.140625, style=5))),
     ('Widths', sheet(width_rows(), '<sheetFormatPr defaultRowHeight="15"/>',

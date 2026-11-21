@@ -22,7 +22,20 @@ let private table : (string * string) list =
       "century gothic", "6:5:11 7:5:12 8:6:18 9:7:19 10:7:18 10.5:8:21 11:8:22 12:9:23 13:9:22 14:11:24 16:12:26 18:13:32 20:15:35 24:18:41 28:21:46 36:27:61"
       "aptos", "6:5:11 7:5:12 8:6:15 9:6:16 10:7:18 10.5:7:19 11:8:20 12:9:21 13:9:23 14:10:25 16:11:28 18:13:32 20:14:35 24:17:42 28:20:48 36:26:62"
       "trebuchet ms", "6:5:11 7:5:12 8:6:18 9:6:20 10:7:20 10.5:7:19 11:8:22 12:8:24 13:9:24 14:10:25 16:11:28 18:13:31 20:14:37 24:17:41 28:19:48 36:25:62"
-      "ms sans serif", "6:5:11 7:5:12 8:6:14 9:6:14 10:7:17 10.5:7:17 11:7:17 12:9:21 13:9:21 14:10:26 16:11:26 18:13:31 20:14:33 24:18:41 28:20:51 36:26:61" ]
+      "ms sans serif", "6:5:11 7:5:12 8:6:14 9:6:14 10:7:17 10.5:7:17 11:7:17 12:9:21 13:9:21 14:10:26 16:11:26 18:13:31 20:14:33 24:18:41 28:20:51 36:26:61"
+      "aptos narrow", "8:6:15 9:6:16 10:7:18 11:7:20 12:8:21 14:10:25 16:11:28 18:12:32 20:14:35"
+      "aptos display", "8:6:15 9:6:16 10:7:18 11:8:20 12:8:21 14:10:25 16:11:28 18:13:32 20:14:35"
+      "arial narrow", "8:5:17 9:5:18 10:6:17 11:7:22 12:7:21 14:9:24 16:10:27 18:11:31 20:12:34"
+      "consolas", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:12:27 18:13:31 20:15:35"
+      "candara", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:12:28 18:13:31 20:15:35"
+      "corbel", "8:6:15 9:6:16 10:7:17 11:8:20 12:8:21 14:10:25 16:11:28 18:13:31 20:14:35"
+      "book antiqua", "8:6:17 9:6:18 10:7:18 11:8:22 12:8:21 14:10:25 16:11:28 18:12:31 20:14:35"
+      "lucida sans", "8:7:15 9:8:16 10:8:17 11:9:19 12:10:20 14:12:24 16:13:27 18:15:30 20:17:34"
+      "franklin gothic book", "8:6:17 9:7:17 10:8:18 11:9:21 12:9:22 14:11:26 16:12:28 18:14:32 20:16:36"
+      "gill sans mt", "8:6:18 9:6:21 10:7:20 11:8:23 12:8:26 14:10:29 16:11:33 18:12:37 20:14:41"
+      "palatino linotype", "8:6:18 9:6:19 10:7:20 11:8:22 12:8:24 14:10:28 16:11:30 18:12:34 20:14:38"
+      "constantia", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:11:28 18:13:31 20:15:35"
+      "roboto", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:11:25 16:12:27 18:13:31 20:15:35" ]
 
 let private parsed =
     lazy (
@@ -35,13 +48,18 @@ let private parsed =
                 Double.Parse(parts.[0], Globalization.CultureInfo.InvariantCulture), float parts.[1], float parts.[2]))
         |> dict)
 
-/// The entries of a face; a face Excel does not have is drawn in its substitute, Arial ("Arial MT" is Arial).
+/// The entries of a face; a weight of a family measured is the family's; a face Excel does not have is drawn in
+/// its substitute, Arial ("Arial MT", Helvetica and a name no font has measure as Arial in Excel 2019).
 let private entriesOf (face: string option) =
     let key = (defaultArg face "Calibri").Trim().ToLowerInvariant()
     let key = if key.EndsWith " mt" then key.Substring(0, key.Length - 3) else key
     match parsed.Value.TryGetValue key with
     | true, entries -> entries
-    | false, _ -> parsed.Value.["arial"]
+    | false, _ ->
+        // (A weight or width of a family - "Segoe UI Black", "Calibri Bold" - measures as its family.)
+        match parsed.Value.Keys |> Seq.filter (fun family -> key.StartsWith (family + " ")) |> Seq.sortByDescending (fun family -> family.Length) |> Seq.tryHead with
+        | Some family -> parsed.Value.[family]
+        | None -> parsed.Value.["arial"]
 
 /// A size's value: the measured one, between two sizes in proportion, past the table in proportion to its end.
 let private lookup (pick: float * float * float -> float) (face: string option) (points: float) : float =

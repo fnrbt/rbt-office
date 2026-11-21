@@ -1074,15 +1074,17 @@ do
     eq "sizes: rows of the font's 15 pt whatever defaultRowHeight says, unless it is the sheet's own" (heights arial.[0] 2 @ heights arial.[3] 2 @ heights arial.[4] 2) [ 20.0; 20.0; 20.0; 20.0; 40.0; 40.0 ]
     eq "sizes: the Normal font is the first font, not the Normal style's" ((sheets "synthetic-normal-font-first.xlsx").[0].MaxDigitWidth, (sheets "synthetic-normal-font-style.xlsx").[0].MaxDigitWidth) (9.0, 7.0)
     let fit = sheets "synthetic-row-fit.xlsx"
-    eq "sizes: Calibri 11 widths, cut down" (widths fit.[11] 6) [ 64.0; 3.0; 15.0; 91.0; 7.0; 62.0 ]
-    let rows = heights fit.[0] 27
+    eq "sizes: Calibri 11 widths, cut down" (widths fit.[13] 6) [ 64.0; 3.0; 15.0; 91.0; 7.0; 62.0 ]
+    let rows = heights fit.[0] 29
     eq "sizes: rows fitted on opening (20 pt, custom, ht 30, empty 20 pt, number, ht 12, 8 pt, customHeight without ht, a row style of 20 pt, a hidden column's cell, Arial 20, Times 14)"
         [ rows.[0]; rows.[3]; rows.[4]; rows.[6]; rows.[7]; rows.[10]; rows.[11]; rows.[14]; rows.[16]; rows.[17]; rows.[20]; rows.[24]; rows.[25] ]
         [ 35.0; 20.0; 20.0; 35.0; 35.0; 35.0; 20.0; 20.0; 35.0; 35.0; 35.0; 34.0; 25.0 ]
     eq "sizes: three lines wrapped are three; a line break without wrapping one" (rows.[12], rows.[9]) (60.0, 20.0)
+    eq "sizes: a pixel more for thickBot, two for thickTop and thickBot" (rows.[27], rows.[28]) (21.0, 37.0)
     eq "sizes: a sheet of its own default height is fitted only with a row of a height of its own" (heights fit.[2] 2, heights fit.[4] 1, heights fit.[3] 1) ([ 20.0; 20.0 ], [ 35.0 ], [ 20.0 ])
-    eq "sizes: a column style of 20 pt makes the rows 35 px" (getRowHeight 2 fit.[9], getRowHeight 50 fit.[9]) (35.0, 35.0)
-    let styled = fit.[10]
+    eq "sizes: a column style of 20 pt makes the rows 35 px" (getRowHeight 2 fit.[11], getRowHeight 50 fit.[11]) (35.0, 35.0)
+    eq "sizes: every column in a style of Arial 10: rows of 17 px, a Calibri 11 cell's 20; some columns: 20" (heights fit.[9] 3 @ [ getRowHeight 40 fit.[9]; getRowHeight 1 fit.[10] ]) [ 20.0; 17.0; 17.0; 17.0; 20.0 ]
+    let styled = fit.[12]
     let fillAt row col = (Ops.shownCell styled (addr row col) |> Option.map (fun cell -> cell.Format.BgColor)) |> Option.flatten
     eq "sizes: a row's style to the last column, over a column's; not without customFormat; a cell's own" [ fillAt 2 12; fillAt 2 7; fillAt 3 7; fillAt 4 300; fillAt 6 1; fillAt 8 1 ] [ Some "#FFFF00"; Some "#FFFF00"; Some "#D9D9D9"; Some "#FFFF00"; None; None ]
     // Written again unedited, the widths are the file's; a width set is in the font's digits.

@@ -1888,16 +1888,17 @@ checks['sizing-excel-parity'] = async () => {
         check('... and opens again at 45 px, the others as they were', widths(9), [9, 45, 80, 90, 180, 349, 4, 18, 80]);
         // Calibri 11: 7 px digits, truncated (9.140625 is 64 px).
         await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-fit.xlsx')).slice());
-        grid.SwitchSheet(11); await frame();
+        grid.SwitchSheet(13); await frame();
         check('Calibri 11: columns of 9.14, 0.5, 2.1, 13, 1, 8.9 are 64, 3, 15, 91, 7, 62 px', widths(6), [64, 3, 15, 91, 7, 62]);
         // The rows Excel fits on opening: no customHeight, whatever ht says.
         grid.SwitchSheet(0); await frame();
-        const fit = heights(27);
+        const fit = heights(29);
         check('rows fitted to a 20 pt font, of a custom height, of ht 30 and short text, of an empty 20 pt cell, a number, ht 12, a font smaller than Normal, customHeight without ht',
             [fit[0], fit[3], fit[4], fit[6], fit[7], fit[10], fit[11], fit[13], fit[14]], [35, 20, 20, 35, 35, 35, 20, 35, 20]);
         check('a line break without wrapping is one line; three lines wrapped are three', [fit[9], fit[12]], [20, 60]);
         check('a row style\'s font counts, a cell in a hidden column counts', [fit[16], fit[17], fit[20]], [35, 35, 35]);
         check('rows of Arial 20, Times New Roman 14, Calibri 20 bold', [fit[24], fit[25], fit[26]], [34, 25, 35]);
+        check('a pixel more for thickBot, two for thickTop and thickBot', [fit[27], fit[28]], [21, 37]);
         // (Excel: 7 lines. How many ours are follows the widths the text is measured at - Calibri where the
         // browser has it, at Excel's 15 px: 7 - so lines of 20 px, 6 or 7 of them.)
         const wrapped = (height) => height % 20 === 0 && height >= 120 && height <= 140;
@@ -1914,15 +1915,34 @@ checks['sizing-excel-parity'] = async () => {
         const s6 = await sheetHeights(6);
         check('S6 (... a row of ht 30, not custom): fitted, that row too', [s6[0], wrapped(s6[1]), grid.GetRowHeight(3)], [35, true, 20]);
         check('S7: a default of 20 pt customHeight is 26 px (cut down)', await sheetHeights(7), [26, 26, 26]);
-        check('a column style of 20 pt makes every row 35 px', [(await sheetHeights(9))[0], grid.GetRowHeight(2), grid.GetRowHeight(40)], [35, 35, 35]);
+        check('a column style of 20 pt makes every row 35 px', [(await sheetHeights(11))[0], grid.GetRowHeight(2), grid.GetRowHeight(40)], [35, 35, 35]);
+        check('every column in a style of Arial 10: rows of 17 px, a Calibri 11 cell\'s 20; some columns: 20', [...(await sheetHeights(9)), grid.GetRowHeight(40), (await sheetHeights(10))[1]], [20, 17, 17, 17, 20]);
         // A row's default style (customFormat) to the last column, over a column's style; a cell's own style is its.
-        grid.SwitchSheet(10); await frame();
+        grid.SwitchSheet(12); await frame();
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
         const fill = (row, col) => node(row, col) ? getComputedStyle(node(row, col)).backgroundColor : null;
         const yellow = 'rgb(255, 255, 0)', grey = 'rgb(217, 217, 217)', white = 'rgb(255, 255, 255)';
         check('a row style is drawn past its spans, over a column style', [fill(2, 3), fill(2, 7), fill(2, 12), fill(4, 12)], [yellow, yellow, yellow, yellow]);
         check('... a column style where the row has none', fill(3, 7), grey);
         check('... not without customFormat; a cell of its own style keeps it', [fill(6, 1), fill(8, 1), fill(8, 2)], [white, white, yellow]);
+        // Shapes of the theme's fills: phClr in the reference's colour.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-theme-shapes.xlsx')).slice());
+        grid.SwitchSheet(0); await frame(); await everyObjectSeen(host);
+        const svgs = [...host.querySelectorAll('.spreadsheet-drawing svg')];
+        const shapeFill = (n) => {
+            const svg = svgs.find((item) => [...item.querySelectorAll('text')].some((text) => text.textContent === n));
+            const shape = svg?.querySelector('rect, path, polygon');
+            const paint = shape?.getAttribute('fill') ?? null;
+            const id = /url\(#([^)]+)\)/.exec(paint ?? '');
+            return id ? [...svg.querySelectorAll(`#${id[1]} stop`)].map((stop) => stop.getAttribute('stop-color')) : paint;
+        };
+        check('fillRef 1 accent1: the solid accent', shapeFill('1'), '#4F81BD');
+        const button = shapeFill('2');
+        check('fillRef 2 dk1 (the Office 2007 theme\'s gradient in black): light greys, not black', Array.isArray(button) && button.length === 3 && button.every((color) => color !== '#000000' && parseInt(color.slice(1, 3), 16) > 100), true);
+        check('fillRef 0: no fill', shapeFill('5'), 'none');
+        check('gradFill of accent1 lumMod 75 % to lumMod 40 % lumOff 60 % (Excel\'s accent 1 darker 25 %, lighter 60 %)', shapeFill('6'), ['#376092', '#B9CDE5']);
+        check('... the 2007 theme\'s gradient: tints of black mixed in linear light (Excel: C0C0C0 near the bottom, E8E8E8 near the top)', button, ['#BCBCBC', '#D0D0D0', '#EDEDED']);
+        check('fillRef 1001 / 1002: the background fills (Excel: D5E0C4)', [shapeFill('9'), shapeFill('10')], ['#4F81BD', '#D5E0C4']);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;
