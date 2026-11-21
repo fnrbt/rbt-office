@@ -140,3 +140,9 @@ columns: which column a note goes under, the separator, how far each column runs
 column's foot, balanced sections, unequal and three or four columns, compatibility mode 14); its docstring has
 the steps (a `WORD_VM_DIR` of its own keeps another run's staging folder apart); `pdf-geometry.py --paths` reads
 Word's lines and rules into `word/geometry.tsv`, which `tests/word/footnote-columns.fsx` checks ours against.
+
+`fixtures/tab-merge.py` writes `tests/word/fixtures/tab-merge/` (which tab stops a paragraph has when its style has
+some: merged, the same position, clear, a basedOn chain); every word's box from Word's PDFs in `word/words.tsv`
+(the docstring has the pdftotext line), checked by `tests/word/tab-merge.fsx`. `fixtures/picture-line.py` writes
+`tests/word/fixtures/picture-line/` (how tall the line of an inline picture is: spacing, fonts, a word beside it, an
+East Asian font, mode 14), Word's lines and pictures in `word/geometry.tsv` (its rule is open: see the ledger).

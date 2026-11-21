@@ -982,6 +982,8 @@ module Docx =
                     None))
 
     /// All real tab stops (pos-twips, alignment, leader). Skips val="clear".
+    /// A paragraph's (or a style's) own w:tabs, a w:val="clear" among them: it takes away the stop its
+    /// style has at that position when the two are merged (mergeParagraphProperties).
     let allTabStops props : (string * string * string option) list =
         wElem "tabs" props
         |> Option.map (fun tabs ->
@@ -989,7 +991,7 @@ module Docx =
             |> List.choose (fun tab ->
                 let isTab = Xml.name tab |> Option.exists (fun name -> Ns.stripNs name = "tab")
                 let align = attr "val" tab |> Option.defaultValue "left"
-                match (if isTab && align <> "clear" then attr "pos" tab else None) with
+                match (if isTab then attr "pos" tab else None) with
                 | Some pos -> Some (pos, align, attr "leader" tab)
                 | None -> None))
         |> Option.defaultValue []
@@ -5825,7 +5827,19 @@ let internal mergeParagraphProperties baseProps props = {
     HangingIndent = if props.FirstLineIndent.IsSome || props.HangingIndent.IsSome then props.HangingIndent else baseProps.HangingIndent
     RightTabPosition = props.RightTabPosition |> Option.orElse baseProps.RightTabPosition
     RightTabLeader = props.RightTabLeader |> Option.orElse baseProps.RightTabLeader
-    TabStops = (if List.isEmpty props.TabStops then baseProps.TabStops else props.TabStops)
+    // A paragraph's tab stops are its style's with its own added, its own at a position its style has one
+    // too, a clear one taking the style's away (Word 2019, fixtures tab-merge: merge, merge-left, same-pos,
+    // clear, clear-add, chain, chain-clear; the showcase magazine-feature's running head centred at the
+    // Header style's 4680 - ours took the paragraph's right stop alone and wrapped its last word).
+    TabStops =
+        match props.TabStops with
+        | [] -> baseProps.TabStops
+        | own ->
+            let twips (position: string) = match System.Double.TryParse(position, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture) with | true, value -> value | _ -> nan
+            let ownAt = own |> List.map (fun (position, _, _) -> twips position)
+            let kept = baseProps.TabStops |> List.filter (fun (position, _, _) -> not (List.contains (twips position) ownAt))
+            kept @ (own |> List.filter (fun (_, alignment, _) -> alignment <> "clear"))
+            |> List.sortBy (fun (position, _, _) -> twips position)
     Rtl = props.Rtl |> Option.orElse baseProps.Rtl
     SpacingBefore = props.SpacingBefore |> Option.orElse baseProps.SpacingBefore
     SpacingBeforeAuto = props.SpacingBeforeAuto |> Option.orElse baseProps.SpacingBeforeAuto

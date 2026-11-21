@@ -3243,6 +3243,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         if currentSpaceShrink > 0.0 then currentLineEnd + currentSpaceShrink + 0.004 else currentLineEnd - safety
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
+    // Where the text after a right tab ends - its stop, at the line's end at most (NaN: no such tab on the
+    // line): that text fits up to there, without the fit safety (Word 2019, fixtures tab-merge style-only,
+    // clear: a word set right at a stop at the right margin stays on the line; ours wrapped it).
+    let mutable alignedTabEnd = nan
 
     // A float is "already placed" when the anchor-extended second pass handed
     // us the box this very image run produced in the first pass. Identity is
@@ -3413,6 +3417,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         resizeArrayToList output
 
     let flushLine () =
+        alignedTabEnd <- nan
         if currentSegments.Count > 0 then
             let scale = settings.LineHeight / settings.FontSize
             let mutable hasInlineImage = false
@@ -3584,6 +3589,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
 
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
+        alignedTabEnd <- nan
         let defaultTab = (floor ((currentX + tabOrigin) / settings.DefaultTabStop) + 1.0) * settings.DefaultTabStop - tabOrigin
         // (Left of a hanging indent, the indent is the next stop unless a custom one comes first.)
         let beforeHangingIndent = hanging && currentX < -0.01
@@ -3592,7 +3598,9 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             let target = min (stop.Position - tabOrigin) currentLineEnd
             let following () = followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle
             match stop.Alignment with
-            | "right" -> max 0.0 (target - currentX - following ())
+            | "right" ->
+                alignedTabEnd <- target
+                max 0.0 (target - currentX - following ())
             | "center" -> max 0.0 (target - currentX - following () / 2.0)
             | "decimal" -> max 0.0 (target - currentX - followingWidthToDecimal currentTextStart currentDisplayText currentDisplayStyle)
             | _ -> max 0.0 (target - currentX)   // left (default)
@@ -3972,7 +3980,9 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
 
                             let fullFitSafety = fitSafety settings settings.InTableCell currentHasMixedTextMetrics
 
-                            let overflows = currentX + fitWidth > lineLimit fullFitSafety
+                            let overflows =
+                                currentX + fitWidth > lineLimit fullFitSafety
+                                && not (not hasTab && currentX + fitWidth <= alignedTabEnd + 0.01)
                             // For the strip-skip decision use the visible width (no trailing
                             // whitespace), so a short word like "Float" that fits the strip
                             // but whose trailing space pushes it over still gets placed.
