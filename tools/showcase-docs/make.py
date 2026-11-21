@@ -664,34 +664,129 @@ LOREM = {
 
 # ---------------------------------------------------------------- 6. magazine feature
 
+MAGAZINE = [
+    "The first turbines on the ridge went up in 1998, nine machines of 600 kilowatts each, and for most of the next decade they were the only thing on the skyline that moved. Farmers leased the land a hectare at a time; the rent paid for fences and, in one case, a new barn roof.",
+    "Twenty-eight years later the machines are tired. Gearboxes that were built for twenty years of service have been rebuilt twice, spare parts come from a scrapyard in Denmark, and on a still evening you can hear the oldest of them grinding from the road. The owners have a choice: keep patching, or start again.",
+    "Starting again is called repowering, and it is less simple than it sounds. A modern turbine sweeps an area bigger than two football pitches, and a single one of them produces more in a year than the whole of the original park. Fourteen machines come down; six go up, each almost three times as tall.",
+    "The sheep, at least, are unbothered. They graze between the towers all year and shelter in their shadow in August; the shepherd who leases the grazing says the access roads are the best thing that ever happened to the ridge, because they let him reach the top field in winter.",
+    "The engineers talk about capacity factors and wake losses; the people who live under the ridge talk about the noise at night and the shadow flicker in the kitchen in late afternoon. Both conversations end up at the same place: where exactly each tower stands.",
+    "Moving a turbine fifty metres is a decision about wind, about birds, about the line of sight from the village church and about the cost of the road that has to reach it. The planning file for the repowering runs to eleven hundred pages, most of it maps.",
+    "The parish council asked for, and got, a model of the new layout in the village hall: six white pins on a relief map, moved around over three public evenings. Two of them ended up where the engineers had first put them. The other four moved, one of them by almost half a kilometre, and the developer says the park lost about four per cent of its output in the process.",
+    "Nobody in the hall thought that was too much. What people asked about most was not the height or the noise but the lights: a modern tower carries a red aviation lamp, and twelve of them blinking on the skyline was the one thing the village was not prepared to accept. The new lamps switch on only when a radar sees an aircraft approaching.",
+    "There is a quieter argument about what happens to the old blades. Steel towers are cut up and sold, copper is stripped from the generators, and the concrete of the foundations is crushed for the new access roads. Blades are another matter: glass fibre and resin, forty metres long, and until recently the only place for them was a landfill.",
+    "The new contract requires every blade to be recycled. They will be cut into lengths on site, trucked to a kiln two hundred kilometres away and ground into filler for cement, where the glass replaces sand and the resin burns as fuel. It costs more than a landfill, and the developer agreed to it in the second week of the hearings.",
+    "The bigger change may be the money. The old park paid its rent to four landowners; the new one pays a share of its income into a fund the parish runs, about ninety thousand a year at today's prices. The council has already spent the first year's share, in advance, on the school roof and a minibus for the lunch club.",
+    "The first of the old machines comes down in April. The crane arrives in pieces on forty lorries, and the lift itself takes an afternoon if the wind allows it; the shepherd has already asked whether he can watch.",
+]
+
 def magazine_feature():
     doc = base("Georgia", "Georgia", size=10)
     justify_with_hyphenation(doc)
-    para(doc, "FEATURE  ·  ISSUE 15  ·  WINTER 2026", size=8.5, color=CORAL, bold=True, after=2, font="Segoe UI")
+    notes = Footnotes(doc)
+    # Running head and folio from page 2 on (the opening page has none).
+    sec0 = doc.sections[0]
+    sec0.different_first_page_header_footer = True
+    hp = sec0.header.paragraphs[0]
+    hp.paragraph_format.tab_stops.add_tab_stop(Cm(16.6), alignment=2)
+    r = hp.add_run("Taller, fewer, quieter"); r.font.small_caps = True; r.font.size = Pt(8.5); r.font.color.rgb = RGBColor.from_string(NAVY)
+    r = hp.add_run("\tFeature  ·  Issue 15"); r.font.size = Pt(8); r.font.color.rgb = RGBColor.from_string(GREY); r.font.name = "Segoe UI"
+    hp._p.get_or_add_pPr().append(parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="single" w:sz="4" w:space="4" w:color="{CORAL}"/></w:pBdr>'))
+    fp = sec0.footer.paragraphs[0]; fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    field(fp, "PAGE", "2")
+    kicker = para(doc, "Feature  ·  Issue 15  ·  Winter 2026", size=8.5, color=CORAL, bold=True, after=2, font="Segoe UI")
+    kicker.runs[0].font.small_caps = True
+    kicker.runs[0]._r.get_or_add_rPr().append(parse_xml(f'<w:spacing {nsdecls("w")} w:val="30"/>'))
     para(doc, "Taller, fewer, quieter", size=32, color=NAVY, after=2)
-    para(doc, "Repowering the ridge: what it takes to replace a wind farm with a bigger one, and who gets a say.", size=13, color=GREY, italic=True, after=8)
+    para(doc, "Repowering the ridge: what it takes to replace a wind farm with a bigger one, and who gets a say.", size=13, color=GREY, italic=True, after=4)
+    by = para(doc, after=8, font="Segoe UI")
+    for t, c, bold in [("Words by ", GREY, False), ("Mara Lindqvist", NAVY, True), ("   ·   Photographs: U.S. Fish and Wildlife Service", GREY, False)]:
+        r = by.add_run(t); r.font.size = Pt(8); r.font.name = "Segoe UI"; r.bold = bold; r.font.color.rgb = RGBColor.from_string(c)
+    by._p.get_or_add_pPr().append(parse_xml(f'<w:pBdr {nsdecls("w")}><w:top w:val="single" w:sz="12" w:space="4" w:color="{NAVY}"/></w:pBdr>'))
     pic = para(doc, after=2)
-    pic.add_run().add_picture(os.path.join(ASSETS, "turbines.jpg"), width=Cm(16.6))
+    pic.add_run().add_picture(os.path.join(ASSETS, "ridge.jpg"), width=Cm(16.6))
     para(doc, "Evening on the ridge: the old machines, due to come down next spring.", size=8, color=GREY, italic=True, after=10, font="Segoe UI")
     sec = doc.add_section(WD_SECTION.CONTINUOUS)
     columns(sec, 2, 0.8)
-    paragraphs = LOREM["wind"] * 2
-    for i, t in enumerate(paragraphs):
+
+    def photo(name, caption):
+        p = para(doc, after=2)
+        p.paragraph_format.keep_with_next = True
+        p.add_run().add_picture(os.path.join(ASSETS, name), width=Cm(7.9))
+        para(doc, caption, size=7.5, color=GREY, italic=True, after=8, font="Segoe UI")
+
+    def heading(t):
+        h = para(doc, t, size=11.5, color=NAVY, bold=True, before=8, after=3)
+        h.paragraph_format.keep_with_next = True
+
+    note_at = {
+        2: "Repowering: replacing a wind farm's turbines with fewer, larger ones on the same site, usually reusing its grid connection.",
+        4: "Capacity factor: a year's output as a share of what the machines would make running flat out all year. The old park's was 23 per cent; the new one is expected to reach 38.",
+        7: "Aircraft-detection lighting: the lamps stay dark unless a radar on the site sees an aircraft within four kilometres below 300 metres.",
+        10: "The fund's rules are on the parish noticeboard and at ridge-fund.example.org; any household in the parish can apply.",
+    }
+    indent = False
+    for i, t in enumerate(MAGAZINE):
+        if i == 4: heading("Who decides"); indent = False
+        if i == 8: heading("Where the blades go"); indent = False
+        if i == 10: heading("What the ridge gets"); indent = False
         p = para(doc, t, after=6, align=WD_ALIGN_PARAGRAPH.JUSTIFY)
-        p.paragraph_format.first_line_indent = Cm(0 if i == 0 else 0.5)
+        p.paragraph_format.first_line_indent = Cm(0.5 if indent else 0)
+        indent = True
+        if i in note_at:
+            notes.add(p, note_at[i])
         if i == 0:
             drop_cap(p)
         if i == 2:
-            # A pull quote: a floating text box in the column, text above and below it.
-            shape(p, "rect", 7.6, 2.6, 0, 0.2, "F6EFE3", line=(CORAL, 0), lines=["“Every blade will be ground into filler for cement.”", "— the new contract"],
-                  color=NAVY, size=13, bold=False, wrap="topAndBottom")
-        if i == 4:
-            float_picture(doc, p, os.path.join(ASSETS, "otter.jpg"), 4.2, h=("column", "right"), v=("paragraph", Cm(0.2)), wrap="square")
+            # A pull quote: rules above and below, the column's width.
+            q = para(doc, "“A single new machine makes more than the whole of the old park.”", size=13, color=NAVY, italic=True,
+                     align=WD_ALIGN_PARAGRAPH.CENTER, before=4, after=10)
+            q.paragraph_format.line_spacing = 1.1
+            q._p.get_or_add_pPr().append(parse_xml(f'<w:pBdr {nsdecls("w")}><w:top w:val="single" w:sz="8" w:space="6" w:color="{CORAL}"/>'
+                                                   f'<w:bottom w:val="single" w:sz="8" w:space="6" w:color="{CORAL}"/></w:pBdr>'))
+            indent = False
+        if i == 3:
+            photo("sheep.jpg", "The shepherd's flock grazes between the towers all year.")
+            indent = False
         if i == 6:
-            doc.add_heading("Who decides", 3)
+            para(doc, "What the village asked for, over three evenings:", after=2)
+            for s in ["no tower within a kilometre of a house", "no lights blinking all night", "the old foundations broken up, not left in the ground", "a share of the income, not a one-off payment"]:
+                b = doc.add_paragraph(s, style="List Bullet")
+                b.paragraph_format.space_after = Pt(1)
+            doc.paragraphs[-1].paragraph_format.space_after = Pt(6)
         if i == 7:
-            # A photo at the page's centre: each column's lines run down both its sides.
-            float_picture(doc, p, os.path.join(ASSETS, "turbines.jpg"), 5.0, h=("margin", "center"), v=("paragraph", Cm(0.3)), wrap="square")
+            facts = [para(doc, "BY THE NUMBERS", size=8.5, color=CORAL, bold=True, after=3, font="Segoe UI")]
+            for k, v in [("Turbines", "14 old, 6 new"), ("Tip height", "78 m → 200 m"), ("Output per year", "41 GWh → 118 GWh"),
+                         ("Homes supplied", "about 33,000"), ("Planning file", "1,100 pages")]:
+                f = para(doc, after=1)
+                f.paragraph_format.tab_stops.add_tab_stop(Cm(6.7), alignment=2, leader=1)
+                r = f.add_run(k + "\t"); r.font.size = Pt(9); r.font.color.rgb = RGBColor.from_string(GREY); r.font.name = "Segoe UI"
+                r = f.add_run(v); r.font.size = Pt(9); r.bold = True; r.font.color.rgb = RGBColor.from_string(NAVY); r.font.name = "Segoe UI"
+                facts.append(f)
+            box(facts, sz=4, color=SAND, space=6, fill=SAND)
+            para(doc, after=0).paragraph_format.line_spacing = 0.5
+        if i == 8:
+            t = doc.add_table(rows=1, cols=3)
+            table_borders(t, sz=4, color="D5DCE2", inside=False)
+            cell_margins(t, top=40, bottom=40, left=80, right=80)
+            for c, h in zip(t.rows[0].cells, ["Part", "Weight", "Goes to"]):
+                shade(c, NAVY); text(c, h, bold=True, color="FFFFFF", size=8.5, font="Segoe UI")
+            header_row(t.rows[0])
+            for k, row in enumerate([("Tower", "112 t", "Steel mill"), ("Nacelle", "38 t", "Parts, then scrap"), ("Blades (3)", "19 t", "Cement kiln"),
+                                     ("Foundation", "650 t", "Crushed for roads")]):
+                cells = t.add_row().cells
+                for c, v in zip(cells, row):
+                    if k % 2: shade(c, MIST)
+                    text(c, v, size=8.5, font="Segoe UI", bold=(c is cells[0]), color=INK)
+            widths(t, [2.4, 1.8, 3.7])
+            cap = para(doc, "One old machine, taken apart.", size=7.5, color=GREY, italic=True, before=2, after=8, font="Segoe UI")
+        if i == 9:
+            photo("row.jpg", "The new towers will stand almost three times as tall as these.")
+            indent = False
+    end = doc.paragraphs[-1]
+    r = end.add_run("  ■"); r.font.color.rgb = RGBColor.from_string(CORAL); r.font.size = Pt(8)
+    # A continuous section break after the text: Word balances the last page's columns.
+    doc.add_section(WD_SECTION.CONTINUOUS)
+    notes.save()
     save(doc, "magazine-feature.docx")
 
 # ---------------------------------------------------------------- 7. diagrams
