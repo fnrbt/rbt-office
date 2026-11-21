@@ -1073,6 +1073,8 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
     let outline (stroke: string option) (width: float) = stroke |> Option.filter (fun color -> color <> "none" && width > 0.0) |> Option.map (fun color -> color, width)
     // (A path with neither would stay the renderer's current path, and be painted with the next.)
     let addPath segments fill stroke = if Option.isSome fill || Option.isSome stroke then items.Add (VecPath (segments, fill, stroke))
+    // (The typeface of the text being walked: a chart's own, inside a `PFace`.)
+    let face = ref "Calibri"
     let rec walk (a, b, c, d, e, f) (item: Rbt.Spreadsheet.Charts.Primitive) =
         let at x y = a * x + c * y + e, b * x + d * y + f
         let move x y = VMove (at x y)
@@ -1095,7 +1097,7 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                             { X = px - size / 2.0 - 4.0; Y = py - long / 2.0; Width = size * 1.2; Height = long + 2.0 })
                 Color = color
                 FontSize = size * 0.75
-                FontName = Some "Calibri"
+                FontName = Some face.Value
                 Bold = bold
                 Italic = italic
                 Underline = false
@@ -1167,6 +1169,11 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
         | Rbt.Spreadsheet.Charts.PTransform (a2, b2, c2, d2, e2, f2, children) ->
             let composed = (a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2, a * e2 + c * f2 + e, b * e2 + d * f2 + f)
             children |> List.iter (walk composed)
+        | Rbt.Spreadsheet.Charts.PFace (inner, children) ->
+            let outer = face.Value
+            face.Value <- inner
+            children |> List.iter (walk (a, b, c, d, e, f))
+            face.Value <- outer
     scene.Items |> List.iter (walk (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
     List.ofSeq items
 

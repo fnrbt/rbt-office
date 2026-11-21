@@ -39,10 +39,10 @@
     <Compile Include="MacroHost.fs" />
     <Compile Include="MacroProject.fs" />
     <Compile Include="Layout.fs" />
-    <Compile Include="Charts.fs" />
-    <Compile Include="Slicers.fs" />
     <Compile Include="GdiAdvances.fs" />
     <Compile Include="ExcelText.fs" />
+    <Compile Include="Charts.fs" />
+    <Compile Include="Slicers.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="Png.fs" />
     <Compile Include="XlsxBridge.fs" />
