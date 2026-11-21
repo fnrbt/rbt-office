@@ -161,6 +161,9 @@ let effectiveFormat (model: SpreadsheetModel) (addr: CellAddress) : CellFormat =
     match Map.tryFind addr model.Cells with
     | Some cell -> cell.Format
     | None ->
+      match (if model.RowStyles.IsEmpty then None else Map.tryFind addr.Row model.RowStyles) with
+      | Some format -> format
+      | None ->
         match model.ColumnStyles with
         | [] -> defaultFormat
         | styles ->
@@ -194,11 +197,36 @@ let columnStyleCell (model: SpreadsheetModel) (col: int) : CellData option =
 
 /// `getCell`, else the cell of the column's default style (`columnStyleCell`),
 /// with the lines its conditional formats give it (`withBorderEffects`).
+let mutable private rowStyleCellsOf : obj = null
+let private rowStyleCells = Collections.Generic.Dictionary<int, CellData>()
+
+/// What a cell the sheet has no entry for in a row of a default style shows as (`RowStyles`): an empty
+/// cell in that style (Excel 2019 draws a `<row s customFormat="1">` to the last column, over a column's
+/// style). The cell made for a row is the same one each time it is asked for.
+let rowStyleCell (model: SpreadsheetModel) (row: int) : CellData option =
+    if model.RowStyles.IsEmpty then None
+    else
+        match Map.tryFind row model.RowStyles with
+        | None -> None
+        | Some format ->
+            if not (obj.ReferenceEquals(rowStyleCellsOf, model.RowStyles)) then
+                rowStyleCellsOf <- box model.RowStyles
+                rowStyleCells.Clear()
+            match rowStyleCells.TryGetValue row with
+            | true, cell -> Some cell
+            | false, _ ->
+                let cell = { Value = CellValue.Empty; Format = format; Comment = None }
+                rowStyleCells.[row] <- cell
+                Some cell
+
 let shownCell (model: SpreadsheetModel) (addr: CellAddress) : CellData option =
     let cell =
         match getCell addr model with
         | Some _ as found -> found
-        | None -> columnStyleCell model addr.Col
+        | None ->
+            match rowStyleCell model addr.Row with
+            | Some _ as styled -> styled
+            | None -> columnStyleCell model addr.Col
     if model.ConditionalFormats.IsEmpty then cell
     else ConditionalFormatting.withBorderEffects model addr cell
 
@@ -339,6 +367,9 @@ let summarizeFormats (model: SpreadsheetModel) (top: int, left: int, bottom: int
                 inside <- inside + 1.0
                 if mixed <> FormatField.All then add cell.Format
         if inside < area then
+            // (A row's default style is one of the formats of the block.)
+            for KeyValue(row, format) in model.RowStyles do
+                if row >= top && row <= bottom then add format
             // Cells that do not exist show a column's default style or the default format.
             let mutable covered = 0
             for style in model.ColumnStyles do
@@ -1559,6 +1590,73 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
                 | ValueSome height -> max autoRowHeightPx height
                 | ValueNone -> autoRowHeightPx
             yield row, min maxRowHeightPx height ]
+
+/// The measure the rows of a file are fitted with when it is opened (`fitRowsOnOpen`): a host that can
+/// measure text sets its own (the browser grid: its canvas). Without one a text is its characters at nine
+/// tenths of its font's maximum digit width.
+let mutable openFitMeasure : TextMeasure option = None
+
+/// The heights Excel 2019 gives the rows `fits` says it fits when it opens a file (synthetic-row-fit,
+/// checked in Excel): each row as high as its tallest cell - every cell of the row, an empty one with a
+/// format of its own, one in a hidden column too - at least the sheet's default height. A cell is a line of
+/// its font (`FontMetrics.rowHeightPx`: Calibri 20 is 35 px) - a line break without wrapping does not make
+/// another - a wrapped text as many lines as it takes at its column's width less 3 px a side, text turned by
+/// 90 degrees its length. A row's default style (`RowStyles`) counts as a cell of it. Cells merged with others
+/// count as a line. (`face`, `points`: the Normal font, of a format without its own.) By row, in pixels.
+let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (model: SpreadsheetModel) : Collections.Generic.Dictionary<int, float> =
+    let needed = Collections.Generic.Dictionary<int, float>()
+    // (Excel sets a font at whole pixels - Calibri 11 at 15 px, not 14.67 - so its text is that much wider:
+    // the text is measured at that size.)
+    let measure : TextMeasure =
+        let byPoints =
+            match openFitMeasure with
+            | Some measure -> measure
+            | None -> fun text fontPt fontFace _ _ -> float text.Length * FontMetrics.maxDigitWidth fontFace fontPt * 0.9
+        fun text fontPt fontFace bold italic -> byPoints text (Math.Round (fontPt * 4.0 / 3.0) * 0.75) fontFace bold italic
+    // (One line of a format, by format: the cells of a style share their format.)
+    let lineOf = Collections.Generic.Dictionary<string, float>()
+    let lineHeight (format: CellFormat) =
+        let fontFace = format.FontName |> Option.orElse face
+        let fontPt = format.FontSize |> Option.map float |> Option.defaultValue points
+        let key = (defaultArg fontFace "") + "|" + string fontPt
+        match lineOf.TryGetValue key with
+        | true, px -> px
+        | false, _ ->
+            let px = FontMetrics.rowHeightPx fontFace fontPt
+            lineOf.[key] <- px
+            px
+    let raise (row: int) (height: float) =
+        match needed.TryGetValue row with
+        | true, known when known >= height -> ()
+        | _ -> needed.[row] <- height
+    let hasMerges = not model.MergedCells.IsEmpty
+    for KeyValue(addr, data) in model.Cells do
+        if fits addr.Row then
+            let format = data.Format
+            let line = lineHeight format
+            let merged = hasMerges && (findMergedCell addr model).IsSome
+            let height =
+                if merged then line
+                else
+                    match data.Value with
+                    | Empty | String "" -> line
+                    | _ when isTurned format ->
+                        let text = shownText model data
+                        Math.Ceiling (measure text (float (defaultArg format.FontSize (int points))) (format.FontName |> Option.orElse face) format.Bold format.Italic) + cellPadY
+                    | value when format.WrapText && (match unwrapFormulaValue value with String _ -> true | _ -> false) ->
+                        let text = shownText model data
+                        let fontPt = format.FontSize |> Option.map float |> Option.defaultValue points
+                        let width = axisSize false addr.Col model - 6.0 - cellIndentPx format
+                        let lines = wrappedLineCount (fun part -> measure part fontPt (format.FontName |> Option.orElse face) format.Bold format.Italic) width text
+                        float lines * line
+                    | _ -> line
+            raise addr.Row height
+    for KeyValue(row, format) in model.RowStyles do
+        if fits row then raise row (lineHeight format)
+    let result = Collections.Generic.Dictionary<int, float>()
+    for KeyValue(row, height) in needed do
+        result.[row] <- min maxRowHeightPx (max model.DefaultRowHeight height)
+    result
 
 /// Apply sizes (index, size) to rows / columns.
 let applyAxisSizes (rows: bool) (sizes: (int * float) list) (model: SpreadsheetModel) : SpreadsheetModel =

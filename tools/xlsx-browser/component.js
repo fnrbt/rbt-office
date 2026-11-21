@@ -1810,8 +1810,8 @@ checks['grid-excel-parity'] = async () => {
         // A run with properties of its own is in its own font: not bold in a bold cell.
         const runs = [...node(0, 0).querySelectorAll('span')].map((span) => [span.textContent, style(span).fontWeight]);
         check('a rich run without <b/> is not bold in a bold cell', runs.find(([text]) => text === 'italic only')?.[1], '400');
-        // `ht` without `customHeight` is the row's height.
-        check('a row of ht 15 (no customHeight) is 20 px high', Math.round(node(1, 0).getBoundingClientRect().height), 20);
+        // `ht` without `customHeight` is not the row's height: Excel fits the row to its cells on opening.
+        check('a row of ht 15 (no customHeight) of Arial 10 text is fitted: 17 px', Math.round(node(1, 0).getBoundingClientRect().height), 17);
         check('... the rows round it the sheet\'s 12.75 pt (17 px)', Math.round(node(2, 0).getBoundingClientRect().height), 17);
         // Conditional formats with lines: a side named without a style takes the edge's lines away.
         const edges = (row, col) => [...node(row, col).querySelectorAll('.spreadsheet-edge')].map((edge) => edge.getAttribute('style'));
@@ -1845,6 +1845,84 @@ checks['grid-excel-parity'] = async () => {
         check('a medium line at 70 %: 2 px', line ? Math.round(line.height) : null, 2);
         const a = node(2, 0).getBoundingClientRect(), b = node(2, 1).getBoundingClientRect();
         check('filled cells at 70 % meet at a whole screen pixel', [a.right === b.left, Number.isInteger(b.left - host.getBoundingClientRect().left)], [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Sizes and theme fills as Excel 2019 shows them (tools/excel-parity/make-sizing-fixtures.py; every number
+// read from Excel 2019 on the fixtures): column widths in the Normal font's maximum digit width, row heights
+// of its font, the rows Excel fits on opening, a row's default style to the last column, a shape's theme fill.
+checks['sizing-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const sheetXml = async (bytes, n) => (await window.JSZip.loadAsync(bytes)).files[`xl/worksheets/sheet${n}.xml`].async('string');
+    const cols = (xml) => [...xml.matchAll(/<col\b[^>]*>/g)].map((m) => m[0]);
+    try {
+        const widthsFile = await bytesOf('tests/test-documents-excel/synthetic-font-widths.xlsx');
+        await grid.ImportXlsx(widthsFile.slice());
+        grid.SwitchSheet(0); await frame();
+        const widths = (n) => Array.from({ length: n }, (_, col) => grid.GetColumnWidth(col));
+        const heights = (n) => Array.from({ length: n }, (_, row) => grid.GetRowHeight(row));
+        // Arial MT 12 (Excel's Arial): a maximum digit width of 9 px.
+        check('Normal font Arial MT 12: columns of 1, 2.1, 8.9, 10, 20, 38.8, 0.5, 2 and none are Excel\'s pixels', widths(9), [9, 19, 80, 90, 180, 349, 4, 18, 80]);
+        check('... rows a line of Arial 12 (15 pt), whatever defaultRowHeight says', heights(4), [20, 20, 20, 20]);
+        grid.SwitchSheet(1); await frame();
+        check('defaultColWidth 20: 180 px', grid.GetColumnWidth(5), 180);
+        grid.SwitchSheet(2); await frame();
+        check('baseColWidth 12: 12 x 9 + 7 up to a multiple of 8, 120 px', grid.GetColumnWidth(5), 120);
+        grid.SwitchSheet(3); await frame();
+        check('defaultRowHeight 30 without customHeight: the font\'s 20 px', heights(5), [20, 20, 20, 20, 20]);
+        grid.SwitchSheet(4); await frame();
+        check('defaultRowHeight 30 customHeight: 40 px', heights(5), [40, 40, 40, 40, 40]);
+        // Unedited, the widths go back as they were; a width set goes back in the font's digits.
+        grid.SwitchSheet(0); await frame();
+        const unedited = await grid.ExportXlsx();
+        check('unedited: the <col> widths are the file\'s', cols(await sheetXml(unedited, 1)), cols(await sheetXml(widthsFile, 1)));
+        grid.SetColumnWidth(1, 45); await frame();
+        const edited = await grid.ExportXlsx();
+        const b = cols(await sheetXml(edited, 1)).find((tag) => /min="2"/.test(tag)) ?? '';
+        check('a column set to 45 px is written 5 digits of 9 px', /width="5"/.test(b), true);
+        check('... the others keep theirs', cols(await sheetXml(edited, 1)).filter((tag) => !/min="2"/.test(tag)), cols(await sheetXml(widthsFile, 1)).filter((tag) => !/min="2"/.test(tag)));
+        await grid.ImportXlsx(edited.slice()); grid.SwitchSheet(0); await frame();
+        check('... and opens again at 45 px, the others as they were', widths(9), [9, 45, 80, 90, 180, 349, 4, 18, 80]);
+        // Calibri 11: 7 px digits, truncated (9.140625 is 64 px).
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-fit.xlsx')).slice());
+        grid.SwitchSheet(11); await frame();
+        check('Calibri 11: columns of 9.14, 0.5, 2.1, 13, 1, 8.9 are 64, 3, 15, 91, 7, 62 px', widths(6), [64, 3, 15, 91, 7, 62]);
+        // The rows Excel fits on opening: no customHeight, whatever ht says.
+        grid.SwitchSheet(0); await frame();
+        const fit = heights(27);
+        check('rows fitted to a 20 pt font, of a custom height, of ht 30 and short text, of an empty 20 pt cell, a number, ht 12, a font smaller than Normal, customHeight without ht',
+            [fit[0], fit[3], fit[4], fit[6], fit[7], fit[10], fit[11], fit[13], fit[14]], [35, 20, 20, 35, 35, 35, 20, 35, 20]);
+        check('a line break without wrapping is one line; three lines wrapped are three', [fit[9], fit[12]], [20, 60]);
+        check('a row style\'s font counts, a cell in a hidden column counts', [fit[16], fit[17], fit[20]], [35, 35, 35]);
+        check('rows of Arial 20, Times New Roman 14, Calibri 20 bold', [fit[24], fit[25], fit[26]], [34, 25, 35]);
+        // (Excel: 7 lines. How many ours are follows the widths the text is measured at - Calibri where the
+        // browser has it, at Excel's 15 px: 7 - so lines of 20 px, 6 or 7 of them.)
+        const wrapped = (height) => height % 20 === 0 && height >= 120 && height <= 140;
+        check('wrapped text in a column of 84 px: 7 lines of 20 px, whatever ht says', [wrapped(fit[1]), fit[2] === fit[1]], [true, true]);
+        check('... in a column of 64 px: 10 lines', fit[5], 200);
+        // A sheet whose default height is its own: fitted only when one of its rows has a height of its own.
+        const sheetHeights = async (index) => { grid.SwitchSheet(index); await frame(); return heights(3); };
+        const s1 = await sheetHeights(1);
+        check('S1: fitted', [s1[0], wrapped(s1[1]), s1[2]], [35, true, 20]);
+        check('S2 (customHeight default, no row of a height): not fitted', await sheetHeights(2), [20, 20, 20]);
+        check('S3 (... a row of the default ht): not fitted', await sheetHeights(3), [20, 20, 20]);
+        const s4 = await sheetHeights(4);
+        check('S4 (... a row of customHeight): fitted', [s4[0], wrapped(s4[1])], [35, true]);
+        const s6 = await sheetHeights(6);
+        check('S6 (... a row of ht 30, not custom): fitted, that row too', [s6[0], wrapped(s6[1]), grid.GetRowHeight(3)], [35, true, 20]);
+        check('S7: a default of 20 pt customHeight is 26 px (cut down)', await sheetHeights(7), [26, 26, 26]);
+        check('a column style of 20 pt makes every row 35 px', [(await sheetHeights(9))[0], grid.GetRowHeight(2), grid.GetRowHeight(40)], [35, 35, 35]);
+        // A row's default style (customFormat) to the last column, over a column's style; a cell's own style is its.
+        grid.SwitchSheet(10); await frame();
+        const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+        const fill = (row, col) => node(row, col) ? getComputedStyle(node(row, col)).backgroundColor : null;
+        const yellow = 'rgb(255, 255, 0)', grey = 'rgb(217, 217, 217)', white = 'rgb(255, 255, 255)';
+        check('a row style is drawn past its spans, over a column style', [fill(2, 3), fill(2, 7), fill(2, 12), fill(4, 12)], [yellow, yellow, yellow, yellow]);
+        check('... a column style where the row has none', fill(3, 7), grey);
+        check('... not without customFormat; a cell of its own style keeps it', [fill(6, 1), fill(8, 1), fill(8, 2)], [white, white, yellow]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

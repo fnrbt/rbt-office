@@ -1474,6 +1474,9 @@ type SpreadsheetModel = {
     /// adds past those of the file are of this size too.
     DefaultRowHeight: float
     DefaultColumnWidth: float
+    /// The maximum digit width of the workbook's Normal font (its first font) in pixels, the unit of a
+    /// file's column widths: 7 for Calibri 11 and Arial 10, 9 for Arial 12 (`FontMetrics.maxDigitWidth`).
+    MaxDigitWidth: float
 
     /// The sizes hidden rows / columns go back to, and the outline (groups).
     Axes: SheetAxes
@@ -1603,6 +1606,10 @@ type SpreadsheetModel = {
     /// Default cell styles of columns. They move with their columns.
     ColumnStyles: ColumnStyle list
 
+    /// Default cell styles of rows (a file's `<row s customFormat="1">`), by row: every cell of the row the
+    /// sheet has no entry for shows in it, to the last column and over a column's style. They move with their rows.
+    RowStyles: Map<int, CellFormat>
+
     /// What-if data tables. Their ranges and input cells follow structure edits.
     DataTables: DataTable list
 
@@ -1706,6 +1713,7 @@ let createEmpty rowCount colCount = {
     ColumnWidths = Map.empty
     DefaultRowHeight = 25.0
     DefaultColumnWidth = 100.0
+    MaxDigitWidth = 7.0
     Axes = emptySheetAxes
     SearchQuery = None
     SearchCaseSensitive = None
@@ -1735,6 +1743,7 @@ let createEmpty rowCount colCount = {
     Threads = Map.empty
     Hyperlinks = []
     ColumnStyles = []
+    RowStyles = Map.empty
     DataTables = []
     KeptRanges = []
     TabColor = None
@@ -4153,6 +4162,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         Pivots = pivots
         DataTables = dataTables
         ColumnStyles = columnStyles
+        RowStyles = (if onRows && not model.RowStyles.IsEmpty then moveIndexMap model.RowStyles else model.RowStyles)
         Drawings = drawings
         Threads = (if Map.isEmpty model.Threads then model.Threads else moveAddressMap model.Threads)
         Cells = cells

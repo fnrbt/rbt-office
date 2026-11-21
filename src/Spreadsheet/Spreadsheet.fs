@@ -207,6 +207,9 @@ let private cellTextWidthPx (text: string) (fontPx: float) (family: string) (bol
 let private cellTextWidth (text: string) (fontPt: float) (fontName: string option) (bold: bool) (italic: bool): float =
     cellTextWidthPx text (SheetOps.pointsToPx fontPt * drawnFontScale fontName) (cellFontFamily fontName) bold italic
 
+// (The rows of a file Excel fits when it opens it are fitted with the widths the grid draws text at.)
+do SheetOps.openFitMeasure <- Some cellTextWidth
+
 
 // ---- macros in the browser -------------------------------------------------------------------------
 [<Emit("window.alert($0)")>]
@@ -1016,15 +1019,18 @@ type Spreadsheet(container: Element) as this =
     let lookedUpCells = System.Collections.Generic.Dictionary<float, CellData option>()
     let mutable lookedUpIn : obj = null
     let mutable lookedUpStyles : obj = null
+    let mutable lookedUpRowStyles : obj = null
     let mutable lookedUpRules : obj = null
     let cellAt (row: int) (col: int) : CellData option =
         if row < 0 || col < 0 then None
         else
             if not (obj.ReferenceEquals(lookedUpIn, model.Cells)) || not (obj.ReferenceEquals(lookedUpStyles, model.ColumnStyles))
+               || not (obj.ReferenceEquals(lookedUpRowStyles, model.RowStyles))
                || not (obj.ReferenceEquals(lookedUpRules, model.ConditionalFormats)) || lookedUpCells.Count > 40000 then
                 lookedUpCells.Clear()
                 lookedUpIn <- box model.Cells
                 lookedUpStyles <- box model.ColumnStyles
+                lookedUpRowStyles <- box model.RowStyles
                 lookedUpRules <- box model.ConditionalFormats
             let key = float row * 16384.0 + float col
             match Portable.Dict.tryFind key lookedUpCells with

@@ -130,7 +130,8 @@ ok "edit: nothing left at the old place of row 5" (backSheet.Rows |> List.forall
 eq "edit: merge" (backSheet.MergedCells |> List.exists (fun m -> m.StartRef.Row = 1 && m.StartRef.Column = "AF" && m.EndRef.Row = 2 && m.EndRef.Column = "AH")) true
 eq "edit: merges of the file moved down" (backSheet.MergedCells.Length) (wb.Sheets.[0].MergedCells.Length + 1)
 eq "edit: freeze panes" (backSheet.FrozenPane |> Option.map (fun p -> p.YSplit, p.XSplit)) (Some (3, 1))
-eq "edit: column width" (backSheet.Columns |> List.tryFind (fun c -> c.Index <= 31 && c.MaxIndex >= 31) |> Option.bind (fun c -> c.Width) |> Option.map (fun w -> Math.Round(w, 1))) (Some 30.0)
+// (210 px in the digits of the workbook's Normal font: Calibri 12's 8 px.)
+eq "edit: column width" (backSheet.Columns |> List.tryFind (fun c -> c.Index <= 31 && c.MaxIndex >= 31) |> Option.bind (fun c -> c.Width) |> Option.map (fun w -> Math.Round(w, 2))) (Some (Math.Round (210.0 / editedSheets.[0].MaxDigitWidth, 2)))
 eq "edit: hidden row / row height" (backSheet.Rows |> List.filter (fun r -> r.Index <= 2) |> List.map (fun r -> r.Index, r.Hidden, r.Height |> Option.map (fun h -> Math.Round(h, 0)))) [ 1, true, None; 2, false, Some 45.0 ]
 eq "edit: other sheets untouched" (editedOut.Sheets |> List.tail |> List.map (fun s -> s.Cells.Length)) ((XlsxWriter.packageFromReaderWorkbook wb).Sheets |> List.tail |> List.map (fun s -> s.Cells |> List.filter (fun c -> c.Value <> XlsxWriter.XlsxBlank || c.Format <> XlsxWriter.defaultXlsxCellFormat) |> List.length))
 eq "edit: sheets, kept parts and named styles carried over" (editedBack.Sheets |> List.map (fun s -> s.Name), editedBack.Preserved.NamedStyles.Length, editedBack.Preserved.ThemePath) (wb.Sheets |> List.map (fun s -> s.Name), wb.Preserved.NamedStyles.Length, wb.Preserved.ThemePath)
@@ -549,7 +550,7 @@ let rowAttributes (wb: XlsxReader.Workbook) =
 let columnAttributes (wb: XlsxReader.Workbook) =
     wb.Sheets.[0].Columns |> List.filter (fun c -> c.Hidden || c.OutlineLevel > 0 || c.Collapsed) |> List.map (fun c -> c.Index, c.MaxIndex, c.Hidden, c.Width |> Option.map (fun w -> Math.Round (w, 2)), c.OutlineLevel, c.Collapsed)
 eq "axes: hidden rows keep their height in the file; levels and collapsed marks are written" (rowAttributes axesFile)
-    [ 3, true, Some (Math.Round (40.0 / 1.333, 2)), 0, false; 4, true, None, 0, false; 6, false, None, 1, false; 7, true, None, 2, false; 8, true, None, 2, false; 9, false, None, 1, true ]
+    [ 3, true, Some 30.0, 0, false; 4, true, None, 0, false; 6, false, None, 1, false; 7, true, None, 2, false; 8, true, None, 2, false; 9, false, None, 1, true ]
 eq "axes: columns likewise" (columnAttributes axesFile) [ 2, 2, true, Some 20.0, 0, false; 3, 3, true, None, 0, false; 5, 6, true, None, 1, false; 7, 7, false, None, 0, true ]
 let axesImported = Bridge.Import.importWorkbook axesFile
 let axesAgain = axesImported.Sheets.[0].Model
@@ -1029,21 +1030,21 @@ do
     let annual = imported.Sheets |> Array.find (fun sheet -> sheet.Name = "Annual")
     let model = annual.Model
     let near (a: float) (b: float) = abs (a - b) < 0.01
-    // (defaultRowHeight="15.75": 21 px; defaultColWidth="11": 77 px.)
-    ok "defaults: the sheet's default row height" (near model.DefaultRowHeight (15.75 * 1.333)) (string model.DefaultRowHeight)
-    ok "defaults: the sheet's default column width" (near model.DefaultColumnWidth 77.0) (string model.DefaultColumnWidth)
+    // (Calibri 12, the Normal font: rows of 15.75 pt, 21 px; digits of 8 px, so defaultColWidth="11" is 88 px.)
+    ok "defaults: the sheet's default row height" (near model.DefaultRowHeight 21.0) (string model.DefaultRowHeight)
+    ok "defaults: the sheet's default column width" (near model.DefaultColumnWidth 88.0) (string model.DefaultColumnWidth)
     // The rows and columns the grid adds past the file's (398 rows, columns to L) are of that size.
     let grown = { model with RowCount = model.RowCount + 100; ColCount = model.ColCount + 26 }
-    ok "defaults: a row past the file's rows has the default height" (near (getRowHeight (model.RowCount + 20) grown) (15.75 * 1.333)) (string (getRowHeight (model.RowCount + 20) grown))
-    ok "defaults: a column past the file's columns has the default width" (near (getColumnWidth (model.ColCount + 3) grown) 77.0) (string (getColumnWidth (model.ColCount + 3) grown))
+    ok "defaults: a row past the file's rows has the default height" (near (getRowHeight (model.RowCount + 20) grown) 21.0) (string (getRowHeight (model.RowCount + 20) grown))
+    ok "defaults: a column past the file's columns has the default width" (near (getColumnWidth (model.ColCount + 3) grown) 88.0) (string (getColumnWidth (model.ColCount + 3) grown))
     let metrics = Rbt.Spreadsheet.Layout.metricsOf grown
     ok "defaults: ... in the layout too"
-        (near (metrics.RowPrefix.[model.RowCount + 21] - metrics.RowPrefix.[model.RowCount + 20]) (15.75 * 1.333) && near (metrics.ColPrefix.[model.ColCount + 4] - metrics.ColPrefix.[model.ColCount + 3]) 77.0)
+        (near (metrics.RowPrefix.[model.RowCount + 21] - metrics.RowPrefix.[model.RowCount + 20]) 21.0 && near (metrics.ColPrefix.[model.ColCount + 4] - metrics.ColPrefix.[model.ColCount + 3]) 88.0)
         (sprintf "%f %f" (metrics.RowPrefix.[model.RowCount + 21] - metrics.RowPrefix.[model.RowCount + 20]) (metrics.ColPrefix.[model.ColCount + 4] - metrics.ColPrefix.[model.ColCount + 3]))
     // ... a row hidden and shown again there, and one given the default height, are of it.
     let row = model.RowCount + 20
     let shownAgain = grown |> Ops.hideAxis true row row |> Ops.unhideAxis true row row
-    ok "defaults: hidden and shown again, the row is of the default height" (near (getRowHeight row shownAgain) (15.75 * 1.333)) (string (getRowHeight row shownAgain))
+    ok "defaults: hidden and shown again, the row is of the default height" (near (getRowHeight row shownAgain) 21.0) (string (getRowHeight row shownAgain))
     eq "defaults: a row set to the default height has no entry of its own" (Map.containsKey row (setRowHeight row grown.DefaultRowHeight (setRowHeight row 60.0 grown)).RowHeights) false
     // A sheet that states nothing has the file format's defaults (15 pt, 64 px, as Excel reports them); a new sheet the grid's.
     let plain = (Bridge.Import.importWorkbook (load "real-world/chart-zoo.xlsx")).Sheets.[0].Model
@@ -1059,6 +1060,42 @@ do
     let backSheet = back.Sheets |> List.find (fun sheet -> sheet.Name = "Annual")
     eq "defaults: an edited sheet is written with the defaults it had" (backSheet.Format.DefaultRowHeight, backSheet.Format.DefaultColWidth) (Some 15.75, Some 11.0)
     ok "defaults: ... and the row added past its rows has no height of its own" (backSheet.Rows |> List.forall (fun r -> r.Index <> model.RowCount + 6 || r.Height.IsNone || near r.Height.Value 15.75)) "a height"
+
+
+// ---- sizes as Excel 2019 shows them (tools/excel-parity/make-sizing-fixtures.py, checked in Excel) ----
+do
+    let sheets (file: string) = (Bridge.Import.importWorkbook (load ("test-documents-excel/" + file))).Sheets |> Array.map (fun sheet -> sheet.Model)
+    let widths (model: SpreadsheetModel) n = [ for col in 0 .. n - 1 -> getColumnWidth col model ]
+    let heights (model: SpreadsheetModel) n = [ for row in 0 .. n - 1 -> getRowHeight row model ]
+    let arial = sheets "synthetic-font-widths.xlsx"
+    eq "sizes: Arial MT 12 is digits of 9 px" arial.[0].MaxDigitWidth 9.0
+    eq "sizes: ... columns of 1, 2.1, 8.9, 10, 20, 38.8, 0.5, 2 and none" (widths arial.[0] 9) [ 9.0; 19.0; 80.0; 90.0; 180.0; 349.0; 4.0; 18.0; 80.0 ]
+    eq "sizes: defaultColWidth 20, baseColWidth 12" (getColumnWidth 3 arial.[1], getColumnWidth 3 arial.[2]) (180.0, 120.0)
+    eq "sizes: rows of the font's 15 pt whatever defaultRowHeight says, unless it is the sheet's own" (heights arial.[0] 2 @ heights arial.[3] 2 @ heights arial.[4] 2) [ 20.0; 20.0; 20.0; 20.0; 40.0; 40.0 ]
+    eq "sizes: the Normal font is the first font, not the Normal style's" ((sheets "synthetic-normal-font-first.xlsx").[0].MaxDigitWidth, (sheets "synthetic-normal-font-style.xlsx").[0].MaxDigitWidth) (9.0, 7.0)
+    let fit = sheets "synthetic-row-fit.xlsx"
+    eq "sizes: Calibri 11 widths, cut down" (widths fit.[11] 6) [ 64.0; 3.0; 15.0; 91.0; 7.0; 62.0 ]
+    let rows = heights fit.[0] 27
+    eq "sizes: rows fitted on opening (20 pt, custom, ht 30, empty 20 pt, number, ht 12, 8 pt, customHeight without ht, a row style of 20 pt, a hidden column's cell, Arial 20, Times 14)"
+        [ rows.[0]; rows.[3]; rows.[4]; rows.[6]; rows.[7]; rows.[10]; rows.[11]; rows.[14]; rows.[16]; rows.[17]; rows.[20]; rows.[24]; rows.[25] ]
+        [ 35.0; 20.0; 20.0; 35.0; 35.0; 35.0; 20.0; 20.0; 35.0; 35.0; 35.0; 34.0; 25.0 ]
+    eq "sizes: three lines wrapped are three; a line break without wrapping one" (rows.[12], rows.[9]) (60.0, 20.0)
+    eq "sizes: a sheet of its own default height is fitted only with a row of a height of its own" (heights fit.[2] 2, heights fit.[4] 1, heights fit.[3] 1) ([ 20.0; 20.0 ], [ 35.0 ], [ 20.0 ])
+    eq "sizes: a column style of 20 pt makes the rows 35 px" (getRowHeight 2 fit.[9], getRowHeight 50 fit.[9]) (35.0, 35.0)
+    let styled = fit.[10]
+    let fillAt row col = (Ops.shownCell styled (addr row col) |> Option.map (fun cell -> cell.Format.BgColor)) |> Option.flatten
+    eq "sizes: a row's style to the last column, over a column's; not without customFormat; a cell's own" [ fillAt 2 12; fillAt 2 7; fillAt 3 7; fillAt 4 300; fillAt 6 1; fillAt 8 1 ] [ Some "#FFFF00"; Some "#FFFF00"; Some "#D9D9D9"; Some "#FFFF00"; None; None ]
+    // Written again unedited, the widths are the file's; a width set is in the font's digits.
+    let wb = load "test-documents-excel/synthetic-font-widths.xlsx"
+    let imported = Bridge.Import.importWorkbook wb
+    let unedited = reread (Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported) Map.empty))
+    eq "sizes: unedited, the <col> widths are the file's" (unedited.Sheets.[0].Columns |> List.map (fun c -> c.Width)) (wb.Sheets.[0].Columns |> List.map (fun c -> c.Width))
+    let models = modelsOf imported |> Array.mapi (fun i m -> if i = 0 then setColumnWidth 1 45.0 m else m)
+    let edited = reread (Bridge.Export.toWorkbookOut (inputOf imported models Map.empty))
+    eq "sizes: a column of 45 px is 5 digits of 9 px, the others the file's"
+        (edited.Sheets.[0].Columns |> List.map (fun c -> c.Index, c.Width))
+        (wb.Sheets.[0].Columns |> List.map (fun c -> c.Index, (if c.Index = 2 then Some 5.0 else c.Width)))
+    eq "sizes: ... and read again, 45 px" (widths (Bridge.Import.importWorkbook edited).Sheets.[0].Model 3) [ 9.0; 45.0; 80.0 ]
 
 
 printfn ""

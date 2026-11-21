@@ -184,6 +184,10 @@ type Row = {
     /// a collapsed group).
     OutlineLevel: int
     Collapsed: bool
+    /// The row's style (`s`) when it says `customFormat`: Excel draws every cell of the row the row does not
+    /// list in it, to the last column, over a column's style (checked in Excel 2019). Without `customFormat`
+    /// the `s` is not drawn.
+    Style: int option
 }
 
 type ColumnInfo = {
@@ -1373,6 +1377,9 @@ type Workbook = {
     TableStyles: TableStyleDefinition list
     /// The custom slicer and timeline styles and the defaults styles.xml names (its extension list).
     SlicerStyles: SlicerStyles
+    /// The workbook's Normal font as Excel takes it - the first `<font>` of styles.xml, whatever the Normal
+    /// style's xf says (checked in Excel 2019): its face (a theme font for `<scheme>` without `<name>`) and size.
+    DefaultFont: string option * float option
     /// True when the source workbook uses the 1904 date system
     /// (`<workbookPr date1904="1"/>`). Every consumer of this model assumes
     /// 1900-system serials, so the reader has already shifted the value of
@@ -2245,6 +2252,7 @@ module Xlsx =
             Hidden = hidden
             OutlineLevel = Xml.attr "outlineLevel" rowNode |> Option.bind tryParseInt |> Option.defaultValue 0
             Collapsed = Xml.attr "collapsed" rowNode |> Option.map isTrueText |> Option.defaultValue false
+            Style = if customFormat then rowStyle else None
         }
 
     // Row extraction
@@ -2575,7 +2583,8 @@ module Xlsx =
                                   CustomHeight = customHeightAttr
                                   Hidden = hidden
                                   OutlineLevel = outlineLevel
-                                  Collapsed = collapsed }
+                                  Collapsed = collapsed
+                                  Style = if customFormat then rowStyle else None }
                     | XmlToken.StartTag -> if lexer.SkipElement () < 0 then scan.Valid <- false
                     | XmlToken.EndTag -> going <- false
                     | XmlToken.Text | XmlToken.Comment | XmlToken.Instruction | XmlToken.CData -> ()
@@ -3156,6 +3165,7 @@ module Xlsx =
             Hidden = hidden
             OutlineLevel = outlineLevel
             Collapsed = collapsed
+            Style = if customFormat then rowStyle else None
         }
 
     let private columnInfoNative (reader: System.Xml.XmlReader) : ColumnInfo option =
@@ -4355,6 +4365,19 @@ module Xlsx =
             DiagonalUp = border.DiagonalUp
             DiagonalDown = border.DiagonalDown
         }
+
+    /// The first font of styles.xml: Excel's Normal font (`Workbook.DefaultFont`).
+    let parseDefaultFont (themeMajorFont: string option) (themeMinorFont: string option) (stylesXml: string) : string option * float option =
+        let doc = XmlDsl.parse stylesXml
+        match sElem "fonts" doc |> Option.map (sElems "font") |> Option.defaultValue [] with
+        | first :: _ ->
+            let size = sElem "sz" first |> Option.bind (Xml.attr "val") |> Option.bind tryParseFloat
+            let name = sElem "name" first |> Option.bind (Xml.attr "val")
+            let scheme = sElem "scheme" first |> Option.bind (Xml.attr "val") |> Option.defaultValue ""
+            (match name with
+             | Some _ -> name
+             | None -> (match scheme with "major" -> themeMajorFont | "minor" -> themeMinorFont | _ -> None)), size
+        | [] -> None, None
 
     let parseStyles (themeColors: string array) (themeMajorFont: string option) (themeMinorFont: string option) (stylesXml: string) : CellStyle array =
         let doc = XmlDsl.parse stylesXml
@@ -6475,6 +6498,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         ThemeColors = themeColors
         TableStyles = tableStyles
         SlicerStyles = slicerStyles
+        DefaultFont = stylesXml |> Option.map (Xlsx.parseDefaultFont themeMajorFont themeMinorFont) |> Option.defaultValue (None, None)
         Date1904 = header.Date1904
         Preserved = preserved
     }

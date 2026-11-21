@@ -8,6 +8,7 @@
     <Compile Include="Dom.fs" />
     <Compile Include="NumberText.fs" />
     <Compile Include="TableStyles.fs" />
+    <Compile Include="FontMetrics.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
