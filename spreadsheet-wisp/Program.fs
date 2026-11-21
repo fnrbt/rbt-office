@@ -331,7 +331,7 @@ let main argv =
           IncreaseDecimals = (fun () -> status.Value <- "Increase decimals not wired")
           DecreaseDecimals = (fun () -> status.Value <- "Decrease decimals not wired")
           ApplyFontFamily = (fun v -> updateFormat st (fun f -> { f with FontName = Some v }))
-          ApplyFontSize = (fun v -> match Int32.TryParse v with true, n -> updateFormat st (fun f -> { f with FontSize = Some n }) | _ -> ())
+          ApplyFontSize = (fun v -> match Double.TryParse(v, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with true, n when n >= 1.0 && n <= 409.0 -> updateFormat st (fun f -> { f with FontSize = Some (Rbt.Spreadsheet.Model.fontSizeAsKept n) }) | _ -> ())
           ApplyTextColor = (fun v -> updateFormat st (fun f -> { f with TextColor = Some v }))
           ApplyBgColor = (fun v -> updateFormat st (fun f -> { f with BgColor = Some v }))
           ApplyBorderStyle = (fun side ->
@@ -389,7 +389,7 @@ let main argv =
           TextColor = (fun () -> (fmt()).TextColor |> Option.defaultValue "#000000")
           BgColor = (fun () -> (fmt()).BgColor |> Option.defaultValue "#FFFFFF")
           FontFamily = (fun () -> (fmt()).FontName |> Option.defaultValue "Calibri")
-          FontSize = (fun () -> sprintf "%d" ((fmt()).FontSize |> Option.defaultValue 11))
+          FontSize = (fun () -> ((fmt()).FontSize |> Option.defaultValue 11.0).ToString(Globalization.CultureInfo.InvariantCulture))
           BorderStyle = (fun () -> "none")
           ZoomLevel = (fun () -> zoom.Value)
           ActiveSheet = (fun () -> st.SheetNames.Value |> Array.tryItem st.ActiveSheet.Value |> Option.defaultValue "")

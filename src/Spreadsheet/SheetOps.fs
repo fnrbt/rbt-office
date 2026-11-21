@@ -1442,7 +1442,7 @@ let pointsToPx (points: float) = points * 96.0 / 72.0
 /// 28 for 16, 35 for 20, 42 for 24; a row of n lines is n of them (Excel
 /// 2019, Calibri; within a pixel a line elsewhere).
 let lineHeightPxOfPoints (points: float) = Math.Ceiling (pointsToPx points * 1.3 - 1e-9)
-let private cellFontPt (format: CellFormat) = float (defaultArg format.FontSize 11)
+let private cellFontPt (format: CellFormat) = defaultArg format.FontSize 11.0
 /// The height of a line of a cell's text, as the grid draws it.
 let cellLineHeightPx (format: CellFormat) = lineHeightPxOfPoints (cellFontPt format)
 let private cellIndentPx (format: CellFormat) =
@@ -1617,7 +1617,7 @@ let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (mod
     let lineOf = Collections.Generic.Dictionary<string, float>()
     let lineHeight (format: CellFormat) =
         let fontFace = format.FontName |> Option.orElse face
-        let fontPt = format.FontSize |> Option.map float |> Option.defaultValue points
+        let fontPt = format.FontSize |> Option.defaultValue points
         let key = (defaultArg fontFace "") + "|" + string fontPt
         match lineOf.TryGetValue key with
         | true, px -> px
@@ -1645,10 +1645,10 @@ let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (mod
                     match data.Value with
                     | _ when isTurned format ->
                         let text = shownText model data
-                        Math.Ceiling (measure text (float (defaultArg format.FontSize (int points))) (format.FontName |> Option.orElse face) format.Bold format.Italic) + cellPadY
+                        Math.Ceiling (measure text (defaultArg format.FontSize points) (format.FontName |> Option.orElse face) format.Bold format.Italic) + cellPadY
                     | value when format.WrapText && (match unwrapFormulaValue value with String _ -> true | _ -> false) ->
                         let text = shownText model data
-                        let fontPt = format.FontSize |> Option.map float |> Option.defaultValue points
+                        let fontPt = format.FontSize |> Option.defaultValue points
                         let width = axisSize false addr.Col model - 6.0 - cellIndentPx format
                         let lines = wrappedLineCount (fun part -> measure part fontPt (format.FontName |> Option.orElse face) format.Bold format.Italic) width text
                         float lines * line

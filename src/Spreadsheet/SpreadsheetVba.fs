@@ -218,7 +218,7 @@ let private emitModelSnapshotCell (model: SpreadsheetModel) (viewport: Rbt.Sprea
     let cellData = getCell addr model
     let value = getCellValue addr model
     let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-    let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+    let fontPt = format.FontSize |> Option.defaultValue 11.0
     let displayText = Rbt.Spreadsheet.CellText.cellDisplayTextIn model.Date1904 None rect.Width format value
     let mergedRows, mergedCols =
         match merge with

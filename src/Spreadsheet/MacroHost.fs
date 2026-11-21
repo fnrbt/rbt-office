@@ -1906,7 +1906,7 @@ let private fontType =
                 let u = match scalarOf v with VBoolean b -> (if b then 2 else -4142) | other -> toInt other
                 s.ChangeFormats(fun f -> { f with Underline = (u = 2 || u = -4119 || u = 4 || u = 5); UnderlineDouble = (u = -4119) }))
         prop "Strikethrough" (fun s -> VBoolean (s.Format().Strikethrough)) (fun s v -> let b = toBool v in s.ChangeFormats(fun f -> { f with Strikethrough = b }))
-        prop "Size" (fun s -> VDouble (s.Format().FontSize |> Option.map float |> Option.defaultValue 11.0)) (fun s v -> let size = int (Math.Round (toFloat v)) in s.ChangeFormats(fun f -> { f with FontSize = Some size }))
+        prop "Size" (fun s -> VDouble (s.Format().FontSize |> Option.defaultValue 11.0)) (fun s v -> let size = fontSizeAsKept (toFloat v) in s.ChangeFormats(fun f -> { f with FontSize = Some size }))
         prop "Name" (fun s -> VString (s.Format().FontName |> Option.defaultValue "Calibri")) (fun s v -> let name = toText v in s.ChangeFormats(fun f -> { f with FontName = Some name }))
         prop "Color" (fun s -> VDouble (float (colorToLong (s.Format().TextColor) |> Option.defaultValue 0))) (fun s v -> let color = longToColor (toInt v) in s.ChangeFormats(fun f -> { f with TextColor = Some color }))
         prop "ColorIndex" (fun s -> VLong (paletteIndex (s.Format().TextColor) -4105)) (fun s v -> let color = paletteColor (toInt v) in s.ChangeFormats(fun f -> { f with TextColor = color }))

@@ -233,7 +233,7 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
             match effect with
             | Some effect -> Rbt.Spreadsheet.ConditionalFormatting.applyEffect effect withTable
             | None -> withTable
-        let fontPt = match format.FontSize with Some size -> float size | None -> 11.0
+        let fontPt = defaultArg format.FontSize 11.0
         let horizontal = lowerAlign format.HorizontalAlign
         let rotation = format.TextRotation
         let wrap = format.WrapText

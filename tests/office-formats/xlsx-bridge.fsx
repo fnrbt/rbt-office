@@ -244,7 +244,7 @@ eq "view: a sheet converted on demand" (viewLazy.Zoom, viewLazy.ShowHeaders, vie
 let dressed =
     { defaultFormat with
         Bold = true; Italic = true; Underline = true; UnderlineDouble = true; Strikethrough = true
-        FontName = Some "Georgia"; FontSize = Some 14; TextColor = Some "#112233"; BgColor = Some "#FFEEDD"
+        FontName = Some "Georgia"; FontSize = Some 14.0; TextColor = Some "#112233"; BgColor = Some "#FFEEDD"
         HorizontalAlign = Some "right"; VerticalAlign = Some "top"; WrapText = true; Indent = 2; ShrinkToFit = false; TextRotation = 45
         NumberFormat = Some "#,##0.000"
         BorderTop = Some { Style = "thin"; Color = Some "#FF0000" }; BorderBottom = Some { Style = "double"; Color = Some "#00FF00" }
@@ -1099,6 +1099,22 @@ do
         (wb.Sheets.[0].Columns |> List.map (fun c -> c.Index, (if c.Index = 2 then Some 5.0 else c.Width)))
     eq "sizes: ... and read again, 45 px" (widths (Bridge.Import.importWorkbook edited).Sheets.[0].Model 3) [ 9.0; 45.0; 80.0 ]
 
+
+// ---- fractional font sizes (tools/excel-parity/make-row-height-fixtures.py, checked in Excel) ----
+do
+    let wb = load "test-documents-excel/synthetic-row-heights.xlsx"
+    let imported = Bridge.Import.importWorkbook wb
+    let fonts = imported.Sheets |> Array.find (fun sheet -> sheet.Name = "Fonts")
+    let sizeAt row = (Map.tryFind (addr row 0) fonts.Model.Cells |> Option.bind (fun cell -> cell.Format.FontSize))
+    eq "fonts: sizes keep their fractions (10.5, 7.5, 13.5, 9.5, 11.5 pt)" [ for row in 0 .. 4 -> sizeAt row ] [ Some 10.5; Some 7.5; Some 13.5; Some 9.5; Some 11.5 ]
+    // Excel's rows (Calibri 11 sheet): a font is measured at its pixel size - Calibri 15.5 pt is 21 px, as 16 pt.
+    eq "fonts: rows of Calibri 10.5 / 7.5 / 13.5 / 9.5 / 11.5, Arial 10.5 / 7.5 / 13.5 / 11.5, Times 10.5 / 13.5, Calibri 15.5, Arial 17.5"
+        [ for row in 0 .. 12 -> getRowHeight row fonts.Model ] [ 20.0; 20.0; 24.0; 20.0; 20.0; 20.0; 20.0; 23.0; 20.0; 20.0; 23.0; 28.0; 29.0 ]
+    let back = reread (Bridge.Export.toWorkbookOut (inputOf imported (modelsOf imported) Map.empty))
+    let backFonts = back.Sheets |> List.find (fun sheet -> sheet.Name = "Fonts")
+    let backSize row = backFonts.Rows |> List.tryFind (fun r -> r.Index = row + 1) |> Option.bind (fun r -> r.Cells |> List.tryHead) |> Option.bind (fun c -> c.Style) |> Option.bind (fun style -> style.FontSize)
+    eq "fonts: written back as they were" [ for row in 0 .. 4 -> backSize row ] [ Some 10.5; Some 7.5; Some 13.5; Some 9.5; Some 11.5 ]
+    eq "fonts: a size set is kept to a twentieth of a point, as Excel keeps it" (List.map fontSizeAsKept [ 10.3; 8.33; 10.01; 10.5 ]) [ 10.3; 8.35; 10.0; 10.5 ]
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

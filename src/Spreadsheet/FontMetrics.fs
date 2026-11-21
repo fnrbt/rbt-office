@@ -1,51 +1,25 @@
 /// What Excel 2019 makes of a font at 100 % on Windows (96 dpi): its maximum digit width - the unit of
 /// column widths - and the height of a row of one line of it. Measured in Excel 2019 with each font as the
-/// workbook's Normal font (`tools/excel-parity/make-sizing-fixtures.py`, docs/excel-parity-tracker.md):
-/// a column of ColumnWidth 10 and 20 (10 x mdw + padding, 20 x mdw + padding) and the sheet's StandardHeight.
+/// workbook's Normal font (`tools/excel-parity/make-font-metrics.py`, docs/excel-parity-tracker.md):
+/// a column of ColumnWidth 10 and 20 (10 x mdw + padding, 20 x mdw + padding) and the sheet's StandardHeight,
+/// by the font's pixel size (fractional sizes too: 10.5 pt is 14 px).
 module Rbt.Spreadsheet.FontMetrics
 
 open System
 
-/// Face -> "size:mdw:rowPx" (points, pixels, pixels).
-let private table : (string * string) list =
-    [ "calibri", "6:5:11 7:5:12 8:6:15 9:6:16 10:7:17 10.5:7:19 11:7:20 12:8:21 13:9:23 14:10:25 16:11:28 18:12:31 20:14:35 24:16:42 28:19:48 36:24:62"
-      "arial", "6:5:11 7:5:12 8:6:15 9:7:16 10:7:17 10.5:8:18 11:8:19 12:9:20 13:9:22 14:11:24 16:12:27 18:13:31 20:15:34 24:18:40 28:21:46 36:27:59"
-      "times new roman", "6:5:11 7:5:12 8:6:15 9:6:16 10:6:17 10.5:7:18 11:7:20 12:8:21 13:9:22 14:9:25 16:11:27 18:12:31 20:14:35 24:16:41 28:19:47 36:24:61"
-      "cambria", "6:5:11 7:5:12 8:6:14 9:7:16 10:7:17 10.5:8:18 11:8:19 12:9:21 13:9:22 14:11:24 16:12:27 18:13:30 20:15:34 24:18:40 28:20:46 36:27:60"
-      "verdana", "6:5:11 7:5:12 8:7:14 9:8:15 10:8:17 10.5:9:18 11:10:19 12:10:20 13:11:21 14:12:24 16:13:26 18:15:30 20:17:33 24:20:39 28:24:47 36:31:61"
-      "tahoma", "6:5:11 7:5:12 8:6:14 9:7:15 10:7:17 10.5:8:18 11:8:19 12:9:20 13:9:22 14:10:24 16:11:26 18:13:30 20:15:34 24:17:40 28:20:46 36:26:59"
-      "segoe ui", "6:5:11 7:5:12 8:6:14 9:6:16 10:7:19 10.5:8:21 11:8:22 12:9:23 13:9:25 14:10:27 16:11:34 18:13:35 20:15:41 24:17:50 28:20:54 36:26:70"
-      "courier new", "6:5:11 7:5:12 8:7:15 9:7:16 10:8:18 10.5:8:19 11:9:20 12:10:21 13:10:23 14:11:25 16:13:28 18:14:32 20:16:35 24:19:42 28:22:48 36:29:62"
-      "georgia", "6:5:11 7:5:12 8:8:15 9:8:16 10:9:17 10.5:9:18 11:9:19 12:10:20 13:10:22 14:12:24 16:13:27 18:15:31 20:17:34 24:20:40 28:23:46 36:29:60"
-      "calibri light", "6:5:11 7:5:12 8:6:15 9:6:16 10:7:17 10.5:7:19 11:8:20 12:8:21 13:9:23 14:10:25 16:11:28 18:12:31 20:14:35 24:16:42 28:19:48 36:24:62"
-      "garamond", "6:5:11 7:5:12 8:5:15 9:6:16 10:6:17 10.5:7:19 11:7:20 12:8:21 13:8:22 14:9:25 16:10:28 18:11:31 20:13:35 24:15:41 28:17:48 36:23:62"
-      "century gothic", "6:5:11 7:5:12 8:6:18 9:7:19 10:7:18 10.5:8:21 11:8:22 12:9:23 13:9:22 14:11:24 16:12:26 18:13:32 20:15:35 24:18:41 28:21:46 36:27:61"
-      "aptos", "6:5:11 7:5:12 8:6:15 9:6:16 10:7:18 10.5:7:19 11:8:20 12:9:21 13:9:23 14:10:25 16:11:28 18:13:32 20:14:35 24:17:42 28:20:48 36:26:62"
-      "trebuchet ms", "6:5:11 7:5:12 8:6:18 9:6:20 10:7:20 10.5:7:19 11:8:22 12:8:24 13:9:24 14:10:25 16:11:28 18:13:31 20:14:37 24:17:41 28:19:48 36:25:62"
-      "ms sans serif", "6:5:11 7:5:12 8:6:14 9:6:14 10:7:17 10.5:7:17 11:7:17 12:9:21 13:9:21 14:10:26 16:11:26 18:13:31 20:14:33 24:18:41 28:20:51 36:26:61"
-      "aptos narrow", "8:6:15 9:6:16 10:7:18 11:7:20 12:8:21 14:10:25 16:11:28 18:12:32 20:14:35"
-      "aptos display", "8:6:15 9:6:16 10:7:18 11:8:20 12:8:21 14:10:25 16:11:28 18:13:32 20:14:35"
-      "arial narrow", "8:5:17 9:5:18 10:6:17 11:7:22 12:7:21 14:9:24 16:10:27 18:11:31 20:12:34"
-      "consolas", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:12:27 18:13:31 20:15:35"
-      "candara", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:12:28 18:13:31 20:15:35"
-      "corbel", "8:6:15 9:6:16 10:7:17 11:8:20 12:8:21 14:10:25 16:11:28 18:13:31 20:14:35"
-      "book antiqua", "8:6:17 9:6:18 10:7:18 11:8:22 12:8:21 14:10:25 16:11:28 18:12:31 20:14:35"
-      "lucida sans", "8:7:15 9:8:16 10:8:17 11:9:19 12:10:20 14:12:24 16:13:27 18:15:30 20:17:34"
-      "franklin gothic book", "8:6:17 9:7:17 10:8:18 11:9:21 12:9:22 14:11:26 16:12:28 18:14:32 20:16:36"
-      "gill sans mt", "8:6:18 9:6:21 10:7:20 11:8:23 12:8:26 14:10:29 16:11:33 18:12:37 20:14:41"
-      "palatino linotype", "8:6:18 9:6:19 10:7:20 11:8:22 12:8:24 14:10:28 16:11:30 18:12:34 20:14:38"
-      "constantia", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:10:25 16:11:28 18:13:31 20:15:35"
-      "roboto", "8:6:15 9:7:16 10:7:17 11:8:20 12:9:21 14:11:25 16:12:27 18:13:31 20:15:35" ]
+/// The pixel size Excel sets a font of `points` at (96 dpi): round(points x 4/3), a half up - 10.5 pt is 14 px,
+/// 8 and 8.5 pt are both 11 px and measure the same.
+let pixelSize (points: float) : int = int (Math.Floor (Math.Round (points * 4.0 / 3.0, 9) + 0.5))
 
 let private parsed =
     lazy (
-        table
+        FontMetricsData.regular
         |> List.map (fun (face, text) ->
             face,
             text.Split(' ')
             |> Array.map (fun entry ->
                 let parts = entry.Split(':')
-                Double.Parse(parts.[0], Globalization.CultureInfo.InvariantCulture), float parts.[1], float parts.[2]))
+                float parts.[0], float parts.[1], float parts.[2]))
         |> dict)
 
 /// The entries of a face; a weight of a family measured is the family's; a face Excel does not have is drawn in
@@ -56,25 +30,27 @@ let private entriesOf (face: string option) =
     match parsed.Value.TryGetValue key with
     | true, entries -> entries
     | false, _ ->
-        // (A weight or width of a family - "Segoe UI Black", "Calibri Bold" - measures as its family.)
+        // (A weight or width of a family - "Segoe UI Semibold", "Calibri Bold" - measures as its family.)
         match parsed.Value.Keys |> Seq.filter (fun family -> key.StartsWith (family + " ")) |> Seq.sortByDescending (fun family -> family.Length) |> Seq.tryHead with
         | Some family -> parsed.Value.[family]
         | None -> parsed.Value.["arial"]
 
-/// A size's value: the measured one, between two sizes in proportion, past the table in proportion to its end.
+/// A size's value, by its pixel size: the measured one, between two measured pixel sizes in proportion, past the
+/// table in proportion to its end.
 let private lookup (pick: float * float * float -> float) (face: string option) (points: float) : float =
     let entries = entriesOf face
-    let size (s, _, _) = s
-    match entries |> Array.tryFind (fun entry -> size entry = points) with
+    let size = float (pixelSize points)
+    let px (s, _, _) = s
+    match entries |> Array.tryFind (fun entry -> px entry = size) with
     | Some entry -> pick entry
     | None ->
         let first, last = entries.[0], entries.[entries.Length - 1]
-        if points <= size first then max 1.0 (Math.Round (pick first * points / size first))
-        elif points >= size last then Math.Round (pick last * points / size last)
+        if size <= px first then max 1.0 (Math.Round (pick first * size / px first))
+        elif size >= px last then Math.Round (pick last * size / px last)
         else
-            let upper = entries |> Array.findIndex (fun entry -> size entry > points)
+            let upper = entries |> Array.findIndex (fun entry -> px entry > size)
             let a, b = entries.[upper - 1], entries.[upper]
-            Math.Round (pick a + (pick b - pick a) * (points - size a) / (size b - size a))
+            Math.Round (pick a + (pick b - pick a) * (size - px a) / (px b - px a))
 
 /// The maximum digit width of a font (face, points) in pixels: 7 for Calibri 11 and Arial 10, 9 for Arial 12.
 let maxDigitWidth (face: string option) (points: float) : float =

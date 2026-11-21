@@ -5268,7 +5268,7 @@ type Spreadsheet(container: Element) as this =
                 ("position:absolute;left:" + px x + ";top:" + px y + ";width:" + px (max 40.0 w) + ";height:" + px (max 18.0 h)
                  + ";border:2px solid #217346;outline:none;padding:0 3px;margin:0;font-family:" + cellFontFamily editFormat.FontName
                  + (if isCalibri editFormat.FontName then ";font-size-adjust:" + string calibriAspect else "")
-                 + ";font-size:" + cssPx (SheetOps.pointsToPx (float (defaultArg editFormat.FontSize 11))) + ";background:white;box-sizing:border-box;z-index:11")
+                 + ";font-size:" + cssPx (SheetOps.pointsToPx (defaultArg editFormat.FontSize 11.0)) + ";background:white;box-sizing:border-box;z-index:11")
             if getValue layer.EditInput <> model.EditBuffer && not (isActiveElement layer.EditInput) then setValue layer.EditInput model.EditBuffer
         | _ -> hide layer.EditInput
         // The fill handle, at the bottom-right corner of the selection.
@@ -7685,7 +7685,7 @@ type Spreadsheet(container: Element) as this =
             let cellData = getCell addr model
             let value = getCellValue addr model
             let format = cellData |> Option.map (fun c -> c.Format) |> Option.defaultValue defaultFormat
-            let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+            let fontPt = format.FontSize |> Option.defaultValue 11.0
             let measure =
                 viewport.Measurer
                 |> Option.map (fun m -> fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
@@ -8792,8 +8792,8 @@ type Spreadsheet(container: Element) as this =
     member _.SetFontFamily(family: obj) =
         if formatSelection "Font" (Host.formatPatchOfObj "SetFontFamily" "format" (createObj [ "fontFamily" ==> (if Host.isNullish family then null else family) ])) then render()
 
-    /// The font size of the selection in points (1 to 409; whole points are
-    /// kept), or null for the default size (11).
+    /// The font size of the selection in points (1 to 409, kept to a twentieth
+    /// of a point as Excel keeps it: 10.5 stays 10.5), or null for the default size (11).
     member _.SetFontSize(points: obj) =
         if formatSelection "Font size" (Host.formatPatchOfObj "SetFontSize" "format" (createObj [ "fontSize" ==> (if Host.isNullish points then null else points) ])) then render()
 

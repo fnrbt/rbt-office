@@ -1612,7 +1612,7 @@ let cellDisplayTextFitted
     (date1904: bool)
     (measure: (string -> float) option)
     (cellWidth: float) (format: CellFormat) (value: CellValue): string =
-    let fontPt = format.FontSize |> Option.map float |> Option.defaultValue 11.0
+    let fontPt = format.FontSize |> Option.defaultValue 11.0
     // (Measured as Excel draws the text: fitted as Excel fits it, `NumberFit`.)
     let fitOrOverflow measure cellWidth fontName fontPt text =
         match fit, measure with

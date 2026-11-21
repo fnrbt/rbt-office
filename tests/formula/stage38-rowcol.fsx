@@ -74,7 +74,7 @@ eq "structure: a deleted hidden row / column is gone" (Ops.hiddenRuns true cut, 
 let measure : Ops.TextMeasure = fun text size _ bold _ -> float text.Length * 10.0 * size / 11.0 * (if bold then 1.1 else 1.0)
 let content =
     sheetOf [ at 0 0, text "abcd"; at 1 0, text "abcdefgh"; at 2 0, num 1234.5 |> withFormat (fun f -> { f with NumberFormat = Some "#,##0.00" })
-              at 0 1, text "abcd" |> withFormat (fun f -> { f with Bold = true; FontSize = Some 22 })
+              at 0 1, text "abcd" |> withFormat (fun f -> { f with Bold = true; FontSize = Some 22.0 })
               at 0 2, text "abcdefghij" |> withFormat (fun f -> { f with Indent = 2 })
               at 0 3, text "one\ntwo three" |> withFormat (fun f -> { f with WrapText = true })
               at 0 4, text "merged text that is long"; at 3 5, text "turned" |> withFormat (fun f -> { f with TextRotation = 90 })
@@ -102,7 +102,7 @@ eq "wrap: a long word after a short one" (Ops.wrappedLineCount (fun t -> float t
 
 let tall =
     sheetOf [ at 0 0, text "abcd"; at 1 0, text "abcd efgh ijkl mnop qrst" |> withFormat (fun f -> { f with WrapText = true })
-              at 2 0, text "abcd" |> withFormat (fun f -> { f with FontSize = Some 22 }); at 3 0, text "a\nb\nc"
+              at 2 0, text "abcd" |> withFormat (fun f -> { f with FontSize = Some 22.0 }); at 3 0, text "a\nb\nc"
               at 4 0, text "abcd efgh ijkl mnop qrst" |> withFormat (fun f -> { f with WrapText = true })
               at 6 0, text "tall" ; at 7 0, text "turned" |> withFormat (fun f -> { f with TextRotation = 90 }) ]
     |> addMergedCell 4 0 4 1 |> addMergedCell 6 0 7 0

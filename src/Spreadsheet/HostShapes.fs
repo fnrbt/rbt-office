@@ -276,8 +276,8 @@ let formatPatchOfObj (memberName: string) (what: string) (value: obj) : CellForm
         match size with
         | Some size when size < 1.0 || size > 409.0 -> hostFail memberName (sprintf "%s must be between 1 and 409 points, got %g" (name "fontSize") size)
         | _ -> ()
-        // (The model holds whole points.)
-        let size = size |> Option.map (fun size -> int (System.Math.Floor (size + 0.5)))
+        // (As Excel keeps a size: to a twentieth of a point.)
+        let size = size |> Option.map fontSizeAsKept
         changes.Add (fun format -> { format with FontSize = size })
     if present "textColor" then
         let color = optionalArg (colorArg memberName (name "textColor")) (getKey value "textColor")

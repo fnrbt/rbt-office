@@ -164,7 +164,7 @@ type CellFormat = {
     FontName: string option
     TextColor: string option
     BgColor: string option
-    FontSize: int option
+    FontSize: float option
     HorizontalAlign: string option  // "left", "center", "right", "justify"
     VerticalAlign: string option    // "top", "middle", "bottom"
     WrapText: bool
@@ -211,6 +211,10 @@ type CellFormat = {
     /// Conditional-formatting icon, drawn at the cell's left (see `IconDraw`).
     IconSet: IconDraw option
 }
+
+/// A font size as Excel keeps it when one is set (Font.Size, the font size box): to a twentieth of a point
+/// (Excel 2019: 10.3 stays 10.3, 8.33 is 8.35, 10.01 is 10).
+let fontSizeAsKept (points: float) : float = System.Math.Floor (points * 20.0 + 0.5) / 20.0
 
 /// Default format
 let defaultFormat = {

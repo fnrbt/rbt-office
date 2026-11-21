@@ -77,7 +77,7 @@ eq "literal equal" (described (Equal -3.0)) ("cellIs", Some "equal", Some "-3", 
 eq "literal between" (described (Between (1.0, 9.0))) ("cellIs", Some "between", Some "1", Some "9", None)
 eq "literal contains" (described (ContainsText "north")) ("containsText", None, None, None, Some "north")
 eq "formulas are given without =" (Ops.describeRule { Rule = Expression "=A1>5"; Style = style }).Formula1 (Some "A1>5")
-eq "a rule's format is the six properties" (Ops.describeRule { Rule = DuplicateValues; Style = { style with FontSize = Some 20; WrapText = true } }).Style (Some style)
+eq "a rule's format is the six properties" (Ops.describeRule { Rule = DuplicateValues; Style = { style with FontSize = Some 20.0; WrapText = true } }).Style (Some style)
 eq "a visual rule has no format" (Ops.describeRule { Rule = DataBar (lo, hi, "#638EC6"); Style = style }).Style None
 
 // ---- what a description is refused for ----------------------------------------------

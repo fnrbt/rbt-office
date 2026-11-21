@@ -955,8 +955,8 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
                     (fun f ->
                         if n = 0 then f
                         else
-                            let size = defaultArg f.FontSize 11 + n
-                            { f with FontSize = Some (if n > 0 then min 409 size else max 8 size) }), "Font size"
+                            let size = defaultArg f.FontSize 11.0 + float n
+                            { f with FontSize = Some (if n > 0 then min 409.0 size else max 8.0 size) }), "Font size"
                 | ChangeIndent n -> (fun f -> { f with Indent = max 0 (min 250 (f.Indent + n)) }), "Indent"
                 | HorizontalAlign value -> (fun f -> { f with HorizontalAlign = value }), "Horizontal alignment"
                 | VerticalAlign value -> (fun f -> { f with VerticalAlign = value }), "Vertical alignment"
