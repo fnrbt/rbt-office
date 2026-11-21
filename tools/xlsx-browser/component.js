@@ -1860,7 +1860,17 @@ checks['grid-text-excel-parity'] = async () => {
     try {
         await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-text-zoom.xlsx')).slice());
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
-        const textBox = (element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect(); };
+        // (The text alone: a cell of a number stored as text has the green triangle of Excel's error check too.)
+        const textBox = (element) => {
+            const range = document.createRange(), walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                range.selectNodeContents(node);
+                const r = range.getBoundingClientRect();
+                if (r.width > 0) { left = Math.min(left, r.left); right = Math.max(right, r.right); top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); }
+            }
+            return { left, right, top, bottom, width: right - left, height: bottom - top };
+        };
         const near = (value, expected, slack = 0.75) => Math.abs(value - expected) <= slack ? expected : Math.round(value * 100) / 100;
         const sheets = grid.GetSheetNames();
         const show = async (name) => { grid.SwitchSheet(sheets.indexOf(name)); await frame(); await frame(); };
