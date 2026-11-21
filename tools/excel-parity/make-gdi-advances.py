@@ -52,6 +52,7 @@ FACES = [
     ('Tahoma', 0, 0, 'windows-extra/tahoma.ttf', 0), ('Tahoma', 1, 0, 'windows-extra/tahomabd.ttf', 0),
     ('Segoe UI', 0, 0, 'windows/segoeui.ttf', 0), ('Segoe UI', 1, 0, 'windows/segoeuib.ttf', 0),
     ('Segoe UI', 0, 1, 'windows/segoeuii.ttf', 0), ('Segoe UI', 1, 1, 'windows/segoeuiz.ttf', 0),
+    ('Segoe UI Black', 0, 0, 'windows-extra/seguibl.ttf', 0), ('Segoe UI Black', 0, 1, 'windows-extra/seguibli.ttf', 0),
     ('Garamond', 0, 0, 'windows/GARA.TTF', 0), ('Garamond', 1, 0, 'windows/GARABD.TTF', 0), ('Garamond', 0, 1, 'windows/GARAIT.TTF', 0),
     ('Georgia', 0, 0, 'windows-extra/georgia.ttf', 0), ('Georgia', 1, 0, 'windows-extra/georgiab.ttf', 0),
     ('Georgia', 0, 1, 'windows-extra/georgiai.ttf', 0), ('Georgia', 1, 1, 'windows-extra/georgiaz.ttf', 0),

@@ -1892,6 +1892,28 @@ checks['grid-text-excel-parity'] = async () => {
     return lines;
 };
 
+// Segoe UI Black (acre-property-acquisition's font) measured as Excel 2019 draws it (synthetic-font-faces,
+// make-font-faces-fixture.py; Range.Text read from Excel): $1,592,811 in columns of 40 .. 85 px shows as the number
+// or as many #s as Excel shows.
+checks['font-faces-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-font-faces.xlsx')).slice());
+        grid.SwitchSheet(0); await frame(); await frame();
+        const text = (row, col) => [...host.querySelectorAll(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)].find((node) => node.style.display !== 'none')?.textContent;
+        const shown = (row) => Array.from({ length: 10 }, (_, i) => text(row, i + 1));
+        const n = '$1,592,811', h = (count) => '#'.repeat(count);
+        check('Segoe UI Black 9', shown(0), [h(5), h(5), h(6), h(7), h(7), h(8), n, n, n, n]);
+        check('Segoe UI Black 10', shown(1), [h(4), h(5), h(5), h(6), h(6), h(7), h(8), n, n, n]);
+        // (Excel's #s at 15 px are fewer than #'s advance gives in two of the columns - 4 in 50 px, 5 in 60: not matched.)
+        check('Segoe UI Black 11: the number from 85 px', shown(2).map((t) => t === n), [false, false, false, false, false, false, false, false, false, true]);
+        check('Segoe UI 10', shown(3), [h(4), h(5), h(5), h(6), h(6), h(7), n, n, n, n]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Wrapped text broken into lines where Excel 2019 breaks it on screen (synthetic-wrap-budget, make-wrap-fixture.py,
 // each column's lines read from Excel's pictures): a line fits while it is no wider than the cell on screen less 5 px,
 // in Excel's widths at the zoom (bold Calibri 11 "Releasing Cost", 90 px, one line from a 95-px column).
