@@ -6,7 +6,8 @@ real-estate models, checked in Excel; tools/xlsx-browser check `grid-excel-parit
 - "Grid", Arial 10 in a sheet of 12.75-pt rows:
   - A1: a bold cell of rich text, "Note: " without run properties (bold, as the cell) and a run with its own
     (italic only): Excel draws that run upright weight, not bold.
-  - row 2: ht="15" without customHeight: Excel shows the row 15 pt (20 px) high, not the sheet's 12.75.
+  - row 2: ht="15" without customHeight: Excel fits the row to its cells when it opens the file - 12.75 pt
+    (17 px), a line of Arial 10 - whatever `ht` says (make-sizing-fixtures.py).
   - B3:E5: thin lines round every cell; C4 has a conditional format whose dxf names every side without a
     style (`<left/><right/>...`): no line on any of its edges, not even its neighbours'; E4 one of a dashed
     blue left and a thick red top, in place of its neighbours' thin lines.

@@ -121,6 +121,8 @@ let mkRow index cells : XlsxReader.Row =
         Hidden = false
         OutlineLevel = 0
         Collapsed = false
+        Style = None
+        ThickEdges = 0
     }
 
 let mkSheetWithColumns columns rows : XlsxReader.Worksheet =
@@ -169,6 +171,7 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         ThemeColors = [||]
         TableStyles = []
         SlicerStyles = XlsxReader.SlicerStyleDefinitions.none
+        DefaultFont = None, None
         Date1904 = false
         Preserved = XlsxReader.emptyWorkbookPreservation
     }

@@ -403,8 +403,8 @@ let private extrasOfModel (original: XlsxReader.SheetExtras) (before: Spreadshee
     let rowAxis, columnAxis =
         if axesUnchanged then original.RowAxis, original.ColumnAxis
         else
-            axisOf model.RowHeights model.Axes.HiddenRowSizes model.Axes.RowLevels model.Axes.CollapsedRows 1.333,
-            axisOf model.ColumnWidths model.Axes.HiddenColSizes model.Axes.ColLevels model.Axes.CollapsedCols 7.0
+            axisOf model.RowHeights model.Axes.HiddenRowSizes model.Axes.RowLevels model.Axes.CollapsedRows (4.0 / 3.0),
+            axisOf model.ColumnWidths model.Axes.HiddenColSizes model.Axes.ColLevels model.Axes.CollapsedCols model.MaxDigitWidth
     // A formula that spilled is written as a dynamic array formula over the
     // cells it fills: opened again (here or elsewhere), those cells are its
     // results, not cells in its way. A formula the file had as a legacy
@@ -943,39 +943,85 @@ module Import =
                 if r + 1 > rowCount then rowCount <- r + 1
                 if c + 1 > colCount then colCount <- c + 1
 
-        // Column widths: file units are characters, the model's are pixels (~7 px per character).
-        let defaultColWidth =
+        // Column widths: file units are characters of the maximum digit width of the workbook's Normal font
+        // (its first font: 7 px for Calibri 11 and Arial 10, 9 for Arial 12), the model's are whole pixels
+        // (`FontMetrics.columnWidthPx`, as Excel 2019 shows them).
+        let defaultFace, defaultPoints = fst wb.DefaultFont, snd wb.DefaultFont |> Option.defaultValue 11.0
+        let mdw = FontMetrics.maxDigitWidth defaultFace defaultPoints
+        let columnPx (width: float) = FontMetrics.columnWidthPx mdw width
+        let defaultColPx =
             match sheet.Format.DefaultColWidth with
-            | Some width -> width
-            | None ->
-                // (`baseColWidth` characters and 5 px of padding, up to a multiple of 8 px: 8 is 64 px, Excel's default.)
-                let characters = sheet.Format.BaseColWidth |> Option.defaultValue 8.0
-                System.Math.Ceiling ((characters * 7.0 + 5.0) / 8.0) * 8.0 / 7.0
+            | Some width when width > 0.0 -> columnPx width
+            | _ -> FontMetrics.baseColumnWidthPx mdw (sheet.Format.BaseColWidth |> Option.defaultValue 8.0)
         let mutable columnWidths = Map.empty<int, float>
-        if colCount > 0 then
-            let widths = Array.create colCount defaultColWidth
+        // (The columns the file sizes, past the cells too: a `<col>` to the last column says what the
+        // columns after the others have, `DefaultColumnWidth`.)
+        let sizedCount =
+            sheet.Columns |> List.fold (fun count column -> if column.MaxIndex < 16384 then max count column.MaxIndex else max count (column.Index - 1)) colCount
+        if sizedCount > 0 then
+            let widths = Array.create sizedCount defaultColPx
             for column in sheet.Columns do
                 let first = max 0 (column.Index - 1)
-                let last = min (colCount - 1) (column.MaxIndex - 1)
+                let last = min (sizedCount - 1) (column.MaxIndex - 1)
                 if first <= last then
-                    let width = if column.Hidden then 0.0 else column.Width |> Option.defaultValue 0.0
+                    let width = if column.Hidden then 0.0 else column.Width |> Option.defaultValue 0.0 |> columnPx
                     for col = first to last do
                         widths.[col] <- width
-            for col in 0 .. colCount - 1 do
-                if widths.[col] > 0.0 then columnWidths <- Map.add col (widths.[col] * 7.0) columnWidths
-        // Row heights: points in the file, pixels in the model.
-        let defaultRowHeight = sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
+            for col in 0 .. sizedCount - 1 do
+                if widths.[col] > 0.0 then columnWidths <- Map.add col widths.[col] columnWidths
+        // Row heights: points in the file, whole pixels in the model (cut down: 20 pt is 26 px). A row
+        // without a height of its own is as high as a line of the Normal font (15 pt for Calibri 11,
+        // 12.75 for Arial 10), whatever `defaultRowHeight` says - unless the sheet says that height is
+        // its own (`customHeight`) - and as high as the font of a column's default style at least.
+        let fontRowPx = FontMetrics.rowHeightPx defaultFace defaultPoints
+        let defaultRowPx =
+            match sheet.Format.CustomDefaultHeight, sheet.Format.DefaultRowHeight with
+            | true, Some height when height > 0.0 -> FontMetrics.pointsToRowPx height
+            | true, _ -> fontRowPx
+            | false, _ ->
+                // (The empty cells of a row are in their column's style: the line of the tallest font among
+                // the columns' styles - and the Normal font's, while a column has none. dcf-stock-analysis's
+                // `<col min="1" max="16384" style>` of Arial 10 makes its rows 12.75 pt, not Calibri's 15.)
+                let styled =
+                    sheet.Columns
+                    |> List.choose (fun column ->
+                        match column.Style with
+                        | Some index when index >= 0 && index < wb.Styles.Length ->
+                            let style = wb.Styles.[index]
+                            Some (column.Index, column.MaxIndex,
+                                  FontMetrics.rowHeightPx (style.FontName |> Option.orElse defaultFace) (style.FontSize |> Option.defaultValue defaultPoints))
+                        | _ -> None)
+                    |> List.sortBy (fun (first, _, _) -> first)
+                let coveredTo = styled |> List.fold (fun reached (first, last, _) -> if first <= reached + 1 then max reached last else reached) 0
+                let tallest = styled |> List.fold (fun px (_, _, line) -> max px line) 0.0
+                if coveredTo >= 16384 && tallest > 0.0 then tallest else max fontRowPx tallest
+        // Excel 2019 fits the rows it opens to their cells - a row without `customHeight`, whatever
+        // `ht` it has (synthetic-row-fit). Not on a sheet whose default height is its own, unless one
+        // of its rows has a height of its own, one not the default or is hidden.
+        let fitsRows =
+            not sheet.Format.CustomDefaultHeight
+            || sheet.Rows |> List.exists (fun row ->
+                row.CustomHeight = Some true || row.Hidden
+                || (match row.RawHeight with Some height -> FontMetrics.pointsToRowPx height <> defaultRowPx | None -> false))
         let mutable rowHeights = Map.empty<int, float>
-        // A row's `ht` is the height Excel shows it at whether or not it says
-        // `customHeight`: that only marks a height the user set, which edits
-        // in the row leave alone (vertex42-rental-cash-flow's rows of ht 15 in
-        // a sheet of 12.75 are 20 px in Excel).
+        let fittedRows = Collections.Generic.HashSet<int>()
+        // (A row that says `thickTop` / `thickBot` is fitted a pixel higher for each.)
+        let thickRows = Collections.Generic.Dictionary<int, int>()
         for row in sheet.Rows do
             let index = row.Index - 1
-            match row.Height |> Option.orElse row.RawHeight with
-            | Some height when index >= 0 && index < rowCount && height > 0.0 ->
-                rowHeights <- Map.add index (height * 1.333) rowHeights
-            | _ -> ()
+            if index >= 0 && index < rowCount then
+                match row.CustomHeight, row.RawHeight with
+                | Some true, Some height -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                | Some true, None -> ()
+                | _, height when fitsRows ->
+                    if not row.Hidden then fittedRows.Add index |> ignore
+                    if row.ThickEdges > 0 then thickRows.[index] <- row.ThickEdges
+                    // (Till it is fitted: what the file says.)
+                    match height with
+                    | Some height when height > 0.0 -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                    | _ -> ()
+                | _, Some height when height > 0.0 -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                | _ -> ()
         // A size of 0 is how the model marks a hidden row / column; the size
         // it is shown at again, and the outline, are kept beside the sizes.
         let mutable hiddenRowSizes = Map.empty<int, float>
@@ -987,7 +1033,7 @@ module Import =
         for row in sheet.Rows do
             let index = row.Index - 1
             if row.Hidden then
-                hiddenRowSizes <- Map.add index ((row.Height |> Option.orElse row.RawHeight |> Option.defaultValue defaultRowHeight) * 1.333) hiddenRowSizes
+                hiddenRowSizes <- Map.add index (row.Height |> Option.orElse row.RawHeight |> Option.map FontMetrics.pointsToRowPx |> Option.defaultValue defaultRowPx) hiddenRowSizes
                 rowHeights <- Map.add index 0.0 rowHeights
             if row.OutlineLevel > 0 then rowLevels <- Map.add index (min 7 row.OutlineLevel) rowLevels
             if row.Collapsed then collapsedRows <- Set.add index collapsedRows
@@ -996,7 +1042,7 @@ module Import =
             if column.Hidden || column.OutlineLevel > 0 || column.Collapsed then
                 for idx in column.Index .. min column.MaxIndex (column.Index + 1023) do
                     if column.Hidden then
-                        hiddenColSizes <- Map.add (idx - 1) ((column.Width |> Option.defaultValue defaultColWidth) * 7.0) hiddenColSizes
+                        hiddenColSizes <- Map.add (idx - 1) (column.Width |> Option.map columnPx |> Option.defaultValue defaultColPx) hiddenColSizes
                         columnWidths <- Map.add (idx - 1) 0.0 columnWidths
                     if column.OutlineLevel > 0 then colLevels <- Map.add (idx - 1) (min 7 column.OutlineLevel) colLevels
                     if column.Collapsed then collapsedCols <- Set.add (idx - 1) collapsedCols
@@ -1124,6 +1170,16 @@ module Import =
                 Date1904 = wb.Date1904
                 Hyperlinks = hyperlinks
                 ColumnStyles = columnStyles
+                RowStyles =
+                    sheet.Rows |> List.fold (fun styles row ->
+                        match row.Style with
+                        | Some index when index >= 0 && index < wb.Styles.Length && row.Index >= 1 ->
+                            let rowFormat =
+                                match Portable.Dict.tryFind index styleCache with
+                                | ValueSome cached -> cached
+                                | ValueNone -> format wb.Styles.[index]
+                            Map.add (row.Index - 1) rowFormat styles
+                        | _ -> styles) Map.empty
                 DataTables = dataTables
                 KeptRanges = keptRanges
                 Cells = cellMap
@@ -1134,17 +1190,18 @@ module Import =
                 // (What the sheet says every row and column has: the rows and columns past the
                 // file's are of that size too. A sheet that hides every row - a default of 0 -
                 // keeps the grid's own.)
-                DefaultRowHeight = (if defaultRowHeight > 0.0 then defaultRowHeight * 1.333 else 25.0)
+                DefaultRowHeight = (if defaultRowPx > 0.0 then defaultRowPx else 25.0)
+                MaxDigitWidth = mdw
                 DefaultColumnWidth =
                     // (A <col> that runs to the last column - Excel writes one for "every column
                     // from here on" - says what the columns past the used ones have.)
                     (let tail =
                         sheet.Columns
-                        |> List.tryFind (fun column -> column.MaxIndex >= 16384 && column.Index - 1 <= colCount && not column.Hidden)
+                        |> List.tryFind (fun column -> column.MaxIndex >= 16384 && column.Index - 1 <= sizedCount && not column.Hidden)
                         |> Option.bind (fun column -> column.Width)
                      match tail with
-                     | Some width when width > 0.0 -> width * 7.0
-                     | _ -> if defaultColWidth > 0.0 then defaultColWidth * 7.0 else 100.0)
+                     | Some width when width > 0.0 -> columnPx width
+                     | _ -> if defaultColPx > 0.0 then defaultColPx else 100.0)
                 Axes = axes
                 Tables = sheetTables
                 FrozenRows = sheet.FrozenPane |> Option.map (fun p -> p.YSplit) |> Option.defaultValue 0
@@ -1165,6 +1222,17 @@ module Import =
                 ArrayMarks = arrayMarks
                 Pivots = sheet.PivotTables |> List.choose pivotLayout }
             |> withAutoFilter wb sheet
+        let model =
+            if fittedRows.Count = 0 then model
+            else
+                let fitted = SheetOps.fitRowsOnOpen (fun row -> fittedRows.Contains row) defaultFace defaultPoints model
+                let mutable heights = model.RowHeights
+                for row in fittedRows do
+                    let thick = match Portable.Dict.tryFind row thickRows with ValueSome edges -> float edges | ValueNone -> 0.0
+                    let height = (match Portable.Dict.tryFind row fitted with ValueSome height -> height | ValueNone -> model.DefaultRowHeight) + thick
+                    if height <> model.DefaultRowHeight then heights <- Map.add row height heights
+                    else heights <- Map.remove row heights
+                { model with RowHeights = heights }
         { Model = model
           TableColumns = tableColumns
           State = sheetStateText sheet.State }
@@ -1823,8 +1891,8 @@ module Export =
           State = state
           CellSource = XlsxWriter.sheetCells cells
           MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
-          ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, px / 7.0)
-          RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px / 1.333)
+          ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, FontMetrics.columnWidthOfPx model.MaxDigitWidth px)
+          RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px * 0.75)
           FrozenRows = model.FrozenRows
           FrozenCols = model.FrozenCols
           ShowGridLines = model.ShowGridLines
@@ -2214,8 +2282,8 @@ module Export =
             // deleted, each index has the size the model gives it.)
             // (The file's sizes are by index: with rows or columns inserted or
             // deleted, by where each row and column of the file is now.)
-            ColumnWidths = movedSizes false original.ColumnWidths before.ColumnWidths model.ColumnWidths 7.0 model.DefaultColumnWidth fromModel.ColumnWidths
-            RowHeights = movedSizes true original.RowHeights before.RowHeights model.RowHeights 1.333 model.DefaultRowHeight fromModel.RowHeights
+            ColumnWidths = movedSizes false original.ColumnWidths before.ColumnWidths model.ColumnWidths model.MaxDigitWidth model.DefaultColumnWidth fromModel.ColumnWidths
+            RowHeights = movedSizes true original.RowHeights before.RowHeights model.RowHeights (4.0 / 3.0) model.DefaultRowHeight fromModel.RowHeights
             Tables =
                 if unchanged (fun m -> m.Tables) then original.Tables
                 else
@@ -2845,7 +2913,7 @@ module Export =
                                 heightWas <> height
                                 && not (heightWas.IsNone && hidden && (match height with Some size -> abs (size - now.DefaultRowHeight) < 0.01 | None -> true))
                             if hiddenWas <> hidden || heightChanged || levelWas <> level || collapsedWas <> collapsed then
-                                yield ({ Row = row; HeightChanged = heightChanged; Height = height |> Option.map (fun size -> size / 1.333)
+                                yield ({ Row = row; HeightChanged = heightChanged; Height = height |> Option.map (fun size -> size * 0.75)
                                          Hidden = hidden; Level = level; Collapsed = collapsed } : XlsxReader.SheetRowPatch) ]
             let levelsOf (levels: Map<int, int>) = levels |> Map.fold (fun deepest _ level -> max deepest level) 0
             let setup (pick: PageSetup -> 'T) = pick before.PageSetup = pick model.PageSetup

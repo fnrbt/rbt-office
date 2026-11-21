@@ -124,23 +124,71 @@ let defaultTheme : ThemeColors =
                  "accent1", "4472C4"; "accent2", "ED7D31"; "accent3", "A5A5A5"; "accent4", "FFC000"; "accent5", "5B9BD5"; "accent6", "70AD47"
                  "hlink", "0563C1"; "folHlink", "954F72" ]
 
-/// The colours of a theme part (`a:clrScheme`).
+/// The formatting schemes (`a:fmtScheme`) of the themes read, by the key a theme's colours name theirs
+/// under (`#fmtScheme`): a shape's style reference (`fillRef idx`, `lnRef idx`) is one of its fills and lines.
+let private formatSchemes = Collections.Generic.Dictionary<string, XmlDsl.XmlNode>()
+
+/// The colours of a theme part (`a:clrScheme`), and its formatting scheme (under `#fmtScheme`).
 let parseTheme (xml: string) : ThemeColors =
     try
-        match descendants "clrScheme" (XmlDsl.parse xml) |> List.tryHead with
-        | None -> defaultTheme
+        let root = XmlDsl.parse xml
+        let colors =
+            match descendants "clrScheme" root |> List.tryHead with
+            | None -> defaultTheme
+            | Some scheme ->
+                kids scheme
+                |> List.fold (fun (colors: ThemeColors) entry ->
+                    let color =
+                        match child "srgbClr" entry |> Option.bind (attr "val"), child "sysClr" entry |> Option.bind (attr "lastClr") with
+                        | Some rgb, _ -> Some rgb
+                        | None, Some rgb -> Some rgb
+                        | _ -> None
+                    match color with
+                    | Some rgb when nameOf entry <> "" -> Map.add (nameOf entry) (rgb.ToUpperInvariant()) colors
+                    | _ -> colors) defaultTheme
+        match descendants "fmtScheme" root |> List.tryHead with
         | Some scheme ->
-            kids scheme
-            |> List.fold (fun (colors: ThemeColors) entry ->
-                let color =
-                    match child "srgbClr" entry |> Option.bind (attr "val"), child "sysClr" entry |> Option.bind (attr "lastClr") with
-                    | Some rgb, _ -> Some rgb
-                    | None, Some rgb -> Some rgb
-                    | _ -> None
-                match color with
-                | Some rgb when nameOf entry <> "" -> Map.add (nameOf entry) (rgb.ToUpperInvariant()) colors
-                | _ -> colors) defaultTheme
+            let key = string (formatSchemes.Count + 1)
+            formatSchemes.[key] <- scheme
+            Map.add "#fmtScheme" key colors
+        | None -> colors
     with _ -> defaultTheme
+
+/// Office's own formatting scheme (2013 and later): the fills and lines of a theme that has none.
+let private defaultFormatScheme =
+    lazy (
+        XmlDsl.parse (
+            "<a:fmtScheme xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\" name=\"Office\"><a:fillStyleLst>"
+            + "<a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill>"
+            + "<a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"110000\"/><a:satMod val=\"105000\"/><a:tint val=\"67000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"105000\"/><a:satMod val=\"103000\"/><a:tint val=\"73000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"105000\"/><a:satMod val=\"109000\"/><a:tint val=\"81000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill>"
+            + "<a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:satMod val=\"103000\"/><a:lumMod val=\"102000\"/><a:tint val=\"94000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:satMod val=\"110000\"/><a:lumMod val=\"100000\"/><a:shade val=\"100000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:lumMod val=\"99000\"/><a:satMod val=\"120000\"/><a:shade val=\"78000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill>"
+            + "</a:fillStyleLst><a:lnStyleLst>"
+            + "<a:ln w=\"6350\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
+            + "<a:ln w=\"12700\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
+            + "<a:ln w=\"19050\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
+            + "</a:lnStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill>"
+            + "<a:solidFill><a:schemeClr val=\"phClr\"><a:tint val=\"95000\"/><a:satMod val=\"170000\"/></a:schemeClr></a:solidFill>"
+            + "<a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:tint val=\"93000\"/><a:satMod val=\"150000\"/><a:shade val=\"98000\"/><a:lumMod val=\"102000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:tint val=\"98000\"/><a:satMod val=\"130000\"/><a:shade val=\"90000\"/><a:lumMod val=\"103000\"/></a:schemeClr></a:gs>"
+            + "<a:gs pos=\"100000\"><a:schemeClr val=\"phClr\"><a:shade val=\"63000\"/><a:satMod val=\"120000\"/></a:schemeClr></a:gs></a:gsLst><a:lin ang=\"5400000\" scaled=\"0\"/></a:gradFill>"
+            + "</a:bgFillStyleLst></a:fmtScheme>"))
+
+/// The fill (`fillRef`: 1.. the scheme's fills, 1001.. its background fills) or line (`lnRef`: 1.. its
+/// lines) a style reference of index `idx` names, from the theme's formatting scheme.
+let private schemeEntry (theme: ThemeColors) (lists: string list) (idx: int) : XmlDsl.XmlNode option =
+    let scheme =
+        match Map.tryFind "#fmtScheme" theme |> Option.bind (fun key -> match formatSchemes.TryGetValue key with | true, node -> Some node | _ -> None) with
+        | Some node -> node
+        | None -> defaultFormatScheme.Value
+    let listName, index =
+        match lists with
+        | [ fills; backgrounds ] -> (if idx >= 1001 then backgrounds, idx - 1001 else fills, idx - 1)
+        | _ -> List.head lists, idx - 1
+    descendants listName scheme |> List.tryHead |> Option.bind (fun list -> kids list |> List.filter (fun node -> nameOf node <> "") |> List.tryItem index)
 
 let private hex2 (value: float) =
     let n = int (Math.Round (max 0.0 (min 255.0 value)))
@@ -184,9 +232,19 @@ let private rgbOfHsl (h: float, s: float, l: float) : float * float * float =
 /// A DrawingML colour element (`a:srgbClr`, `a:schemeClr`, `a:sysClr`,
 /// `a:prstClr`) with its modifiers (`lumMod`, `lumOff`, `tint`, `shade`), as
 /// `#RRGGBB`, and its opacity (`alpha`).
-let private colorOfNode (theme: ThemeColors) (node: XmlDsl.XmlNode) : (string * float) option =
+/// A channel (0..255) mixed with `toward` (0 black, 1 white) by `share`, in linear light.
+let private linearMix (channel: float) (share: float) (toward: float) : float =
+    let c = max 0.0 (min 255.0 channel) / 255.0
+    let linear = if c <= 0.04045 then c / 12.92 else Math.Pow ((c + 0.055) / 1.055, 2.4)
+    let mixed = linear * (1.0 - share) + toward * share
+    (if mixed <= 0.0031308 then mixed * 12.92 else 1.055 * Math.Pow (mixed, 1.0 / 2.4) - 0.055) * 255.0
+
+let rec private colorOfNodeWith (theme: ThemeColors) (placeholder: XmlDsl.XmlNode option) (node: XmlDsl.XmlNode) : (string * float) option =
     let baseColor =
         match nameOf node with
+        // (The colour of a theme's style: the one the shape's style reference gives, with its modifiers.)
+        | "schemeClr" when attr "val" node = Some "phClr" && placeholder.IsSome ->
+            placeholder |> Option.bind (colorOfNodeWith theme None) |> Option.map (fun (hex, _) -> hex.TrimStart '#')
         | "srgbClr" -> attr "val" node
         | "sysClr" -> attr "lastClr" node |> Option.orElse (match attr "val" node with Some "window" -> Some "FFFFFF" | Some _ -> Some "000000" | None -> None)
         | "schemeClr" ->
@@ -211,11 +269,16 @@ let private colorOfNode (theme: ThemeColors) (node: XmlDsl.XmlNode) : (string * 
             match nameOf modifier with
             | "lumMod" -> (let h, s, l = hslOf (r, g, b) in let r2, g2, b2 = rgbOfHsl (h, s, min 1.0 (l * amount)) in r <- r2; g <- g2; b <- b2)
             | "lumOff" -> (let h, s, l = hslOf (r, g, b) in let r2, g2, b2 = rgbOfHsl (h, s, min 1.0 (max 0.0 (l + amount))) in r <- r2; g <- g2; b <- b2)
-            | "tint" -> (r <- r + (255.0 - r) * (1.0 - amount); g <- g + (255.0 - g) * (1.0 - amount); b <- b + (255.0 - b) * (1.0 - amount))
-            | "shade" -> (r <- r * amount; g <- g * amount; b <- b * amount)
+            // (Tint and shade mix with white and black in linear light, as Office does: a 50 % tint of
+            // black is C0C0C0-ish in Excel 2019, not 808080.)
+            | "tint" -> (r <- linearMix r (1.0 - amount) 1.0; g <- linearMix g (1.0 - amount) 1.0; b <- linearMix b (1.0 - amount) 1.0)
+            | "shade" -> (r <- linearMix r (1.0 - amount) 0.0; g <- linearMix g (1.0 - amount) 0.0; b <- linearMix b (1.0 - amount) 0.0)
+            | "satMod" -> (let h, s, l = hslOf (r, g, b) in let r2, g2, b2 = rgbOfHsl (h, min 1.0 (s * amount), l) in r <- r2; g <- g2; b <- b2)
             | "alpha" -> alpha <- amount
             | _ -> ()
         "#" + hex2 r + hex2 g + hex2 b, alpha)
+
+let private colorOfNode (theme: ThemeColors) (node: XmlDsl.XmlNode) : (string * float) option = colorOfNodeWith theme None node
 
 /// How a shape is filled: nothing stated, no fill, or a colour - `#RRGGBB`, or for a
 /// gradient of a shape or a series what `gradientOf` reads (a line and a text take its first colour).
@@ -262,8 +325,8 @@ let solidOf (fill: string) : string =
 
 /// The fill an element states. `gradients`: a gradient of two or more stops is a gradient
 /// (a shape, a series, a chart's background); otherwise its first colour (a line, a text).
-let private fillWith (gradients: bool) (theme: ThemeColors) (holder: XmlDsl.XmlNode) : Fill =
-    let colorIn (node: XmlDsl.XmlNode) = kids node |> List.tryPick (colorOfNode theme)
+let private fillWithPlaceholder (placeholder: XmlDsl.XmlNode option) (gradients: bool) (theme: ThemeColors) (holder: XmlDsl.XmlNode) : Fill =
+    let colorIn (node: XmlDsl.XmlNode) = kids node |> List.tryPick (colorOfNodeWith theme placeholder)
     match child "noFill" holder, child "solidFill" holder, child "gradFill" holder, child "pattFill" holder with
     | Some _, _, _, _ -> FillNone
     | _, Some solid, _, _ -> (match colorIn solid with Some (color, alpha) -> FillColor (color, alpha) | None -> FillAuto)
@@ -289,6 +352,35 @@ let private fillWith (gradients: bool) (theme: ThemeColors) (holder: XmlDsl.XmlN
             FillColor ("gradient(" + direction + ";" + text + ")", 1.0))
     | _, _, _, Some pattern -> (match child "fgClr" pattern |> Option.bind colorIn with Some (color, alpha) -> FillColor (color, alpha) | None -> FillAuto)
     | _ -> FillAuto
+
+let private fillWith (gradients: bool) (theme: ThemeColors) (holder: XmlDsl.XmlNode) : Fill = fillWithPlaceholder None gradients theme holder
+
+/// The fill a shape's style reference names (`<a:fillRef idx>` and its colour): none for 0, else the
+/// theme's fill of that index in the reference's colour (Excel 2019: an Office 2007 theme's `idx="2"` in
+/// `dk1` is a grey gradient, not black).
+let private styleFill (theme: ThemeColors) (reference: XmlDsl.XmlNode) : Fill =
+    match attr "idx" reference |> Option.bind number |> Option.map int with
+    | Some 0 -> FillNone
+    | Some idx ->
+        let color = kids reference |> List.tryFind (fun node -> nameOf node <> "")
+        match schemeEntry theme [ "fillStyleLst"; "bgFillStyleLst" ] idx with
+        | Some entry -> fillWithPlaceholder color true theme (XmlDsl.Element ("spPr", Map.empty, [ entry ], XmlDsl.Span.none))
+        | None -> (match color |> Option.bind (colorOfNode theme) with Some (hex, alpha) -> FillColor (hex, alpha) | None -> FillAuto)
+    | None -> FillAuto
+
+/// The line a shape's style reference names (`<a:lnRef idx>`): none for 0, else the theme's line of that
+/// index in the reference's colour - its colour and its width in pixels.
+let private styleLine (theme: ThemeColors) (reference: XmlDsl.XmlNode) : (string * float) option =
+    let color = kids reference |> List.tryFind (fun node -> nameOf node <> "")
+    match attr "idx" reference |> Option.bind number |> Option.map int with
+    | Some 0 -> None
+    | idx ->
+        let entry = idx |> Option.bind (schemeEntry theme [ "lnStyleLst" ])
+        let width = entry |> Option.bind (attr "w") |> Option.bind number |> Option.map (fun emu -> max 0.75 (emu / 9525.0)) |> Option.defaultValue 1.0
+        match entry |> Option.map (fillWithPlaceholder color false theme) with
+        | Some (FillColor (hex, _)) -> Some (hex, width)
+        | Some FillNone -> None
+        | _ -> color |> Option.bind (colorOfNode theme) |> Option.map (fun (hex, _) -> hex, width)
 
 let private fillOf (theme: ThemeColors) (holder: XmlDsl.XmlNode) : Fill = fillWith false theme holder
 
@@ -2871,13 +2963,20 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
         match props |> Option.map (shapeFillOf parts.Theme) |> Option.defaultValue FillAuto with
         | FillColor (color, opacity) -> Some (color, opacity)
         | FillNone -> None
-        | FillAuto -> if isConnector then None else styleColor "fillRef"
+        | FillAuto ->
+            if isConnector then None
+            else
+                match style |> Option.bind (child "fillRef") |> Option.map (styleFill parts.Theme) with
+                | Some (FillColor (color, opacity)) -> Some (color, opacity)
+                | Some FillNone -> None
+                | _ -> styleColor "fillRef"
+    let styleStroke () = style |> Option.bind (child "lnRef") |> Option.bind (styleLine parts.Theme)
     let stroke =
         match props |> Option.bind (strokeOf parts.Theme) with
         | Some { Paint = FillColor (color, _); Width = strokeWidth } -> Some (color, strokeWidth)
         | Some { Paint = FillNone } -> None
-        | Some { Width = strokeWidth } -> styleColor "lnRef" |> Option.map (fun (color, _) -> color, strokeWidth)
-        | None -> styleColor "lnRef" |> Option.map (fun (color, _) -> color, 1.0)
+        | Some { Width = strokeWidth } -> styleStroke () |> Option.map (fun (color, _) -> color, strokeWidth)
+        | None -> styleStroke ()
     let fillColor, opacity = (match fill with Some (color, opacity) -> Some color, opacity | None -> None, 1.0)
     let strokeColor, strokeWidth = (match stroke with Some (color, strokeWidth) -> Some color, strokeWidth | None -> None, 0.0)
     let flipH = props |> Option.bind (child "xfrm") |> Option.bind (attr "flipH") |> Option.exists (fun value -> value = "1" || value = "true")

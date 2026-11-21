@@ -106,13 +106,14 @@ let untouchedElements = [ "sheetPr"; "sheetViews"; "sheetFormatPr"; "cols"; "ign
 // ---- a row's height -----------------------------------------------------------
 // Row 6 gets a height: its <row> says so, and nothing else of the part differs.
 do
-    let saved, _ = exportWith (M.setRowHeight 5 53.32)
+    let saved, _ = exportWith (M.setRowHeight 5 (40.0 / 0.75))
     let now = sheetOf saved
     ok "row height: only that row's tag differs from the file's part" (withoutRow 6 now = withoutRow 6 was) (sprintf "%d chars, the file's %d" now.Length was.Length)
     ok "row height: the row states it" (attribute "ht" (rowTag 6 now) = Some "40" && attribute "customHeight" (rowTag 6 now) = Some "1") (rowTag 6 now)
     ok "row height: the row keeps its other attributes"
         (attribute "s" (rowTag 6 now) = attribute "s" (rowTag 6 was) && attribute "x14ac:dyDescent" (rowTag 6 now) = attribute "x14ac:dyDescent" (rowTag 6 was)) (rowTag 6 now + " <- " + rowTag 6 was)
-    ok "row height: read back" (Map.tryFind 5 (reread saved).RowHeights |> Option.exists (fun size -> abs (size - 53.32) < 0.1)) (sprintf "%A" (Map.tryFind 5 (reread saved).RowHeights))
+    // (Read back in whole pixels, as Excel shows 40 pt: 53 px.)
+    ok "row height: read back" (Map.tryFind 5 (reread saved).RowHeights = Some 53.0) (sprintf "%A" (Map.tryFind 5 (reread saved).RowHeights))
 
 // ---- a hidden row, a group ----------------------------------------------------
 do
@@ -415,7 +416,7 @@ do
     // (Its width is the column's to the left, as Excel makes it; written, so Excel does not hide a styled column.)
     let expected = edited.ColumnWidths |> Map.tryFind 4 |> Option.defaultValue edited.DefaultColumnWidth
     ok "inserted column: an explicit width (the one to the left's) prevents Excel hiding a styled column"
-        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - expected) < 0.01))
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * edited.MaxDigitWidth - expected) < 0.01))
         (sprintf "%A" inserted)
 do
     let saved, edited = exportWith (M.insertColumn 1 >> M.insertColumn 3 >> M.deleteColumn 1)
@@ -423,7 +424,7 @@ do
     let inserted = columns |> List.find (fun column -> column.Index <= 3 && column.MaxIndex >= 3)
     let expected = edited.ColumnWidths |> Map.tryFind 2 |> Option.defaultValue edited.DefaultColumnWidth
     ok "inserted column: its visible width follows later insertion and deletion"
-        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * 7.0 - expected) < 0.01))
+        (not inserted.Hidden && inserted.Width |> Option.exists (fun width -> abs (width * edited.MaxDigitWidth - expected) < 0.01))
         (sprintf "%A" inserted)
 
 // ---- a note is a change of the comments part and of its box, not of the sheet's part ------

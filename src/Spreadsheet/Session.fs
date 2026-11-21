@@ -142,7 +142,7 @@ let sameSheetContent (x: SpreadsheetModel) (y: SpreadsheetModel) =
      && (obj.ReferenceEquals(x.Hyperlinks, y.Hyperlinks) || x.Hyperlinks = y.Hyperlinks) && x.Macros = y.Macros
      && obj.ReferenceEquals(x.Pivots, y.Pivots)
      && obj.ReferenceEquals(x.AuthoredCharts, y.AuthoredCharts)
-     && obj.ReferenceEquals(x.ColumnStyles, y.ColumnStyles)
+     && obj.ReferenceEquals(x.ColumnStyles, y.ColumnStyles) && obj.ReferenceEquals(x.RowStyles, y.RowStyles)
      && obj.ReferenceEquals(x.DataTables, y.DataTables)
      && obj.ReferenceEquals(x.KeptRanges, y.KeptRanges)
      && x.SourceSheet = y.SourceSheet && x.KeptFrom = y.KeptFrom
@@ -439,6 +439,7 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
                 Pivots = chooseRef was.Pivots becomes.Pivots now.Pivots
                 AuthoredCharts = patchMap eqOption was.AuthoredCharts becomes.AuthoredCharts now.AuthoredCharts
                 ColumnStyles = chooseRef was.ColumnStyles becomes.ColumnStyles now.ColumnStyles
+                RowStyles = chooseRef was.RowStyles becomes.RowStyles now.RowStyles
                 DataTables = chooseRef was.DataTables becomes.DataTables now.DataTables
                 KeptRanges = chooseRef was.KeptRanges becomes.KeptRanges now.KeptRanges
                 SourceSheet = choose was.SourceSheet becomes.SourceSheet now.SourceSheet

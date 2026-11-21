@@ -256,6 +256,9 @@ let private onFontsLoaded (f: unit -> unit) : (unit -> unit) = jsNative
 /// A CSS length to a thousandth of a pixel.
 let private cssPxFine (size: float) : string = string (System.Math.Round (size * 1000.0) / 1000.0) + "px"
 
+// (The rows of a file Excel fits when it opens it are fitted with the widths Excel draws text at at 100 %.)
+do SheetOps.openFitMeasure <- Some (excelTextWidth 1.0)
+
 
 // ---- macros in the browser -------------------------------------------------------------------------
 [<Emit("window.alert($0)")>]
@@ -1065,15 +1068,18 @@ type Spreadsheet(container: Element) as this =
     let lookedUpCells = System.Collections.Generic.Dictionary<float, CellData option>()
     let mutable lookedUpIn : obj = null
     let mutable lookedUpStyles : obj = null
+    let mutable lookedUpRowStyles : obj = null
     let mutable lookedUpRules : obj = null
     let cellAt (row: int) (col: int) : CellData option =
         if row < 0 || col < 0 then None
         else
             if not (obj.ReferenceEquals(lookedUpIn, model.Cells)) || not (obj.ReferenceEquals(lookedUpStyles, model.ColumnStyles))
+               || not (obj.ReferenceEquals(lookedUpRowStyles, model.RowStyles))
                || not (obj.ReferenceEquals(lookedUpRules, model.ConditionalFormats)) || lookedUpCells.Count > 40000 then
                 lookedUpCells.Clear()
                 lookedUpIn <- box model.Cells
                 lookedUpStyles <- box model.ColumnStyles
+                lookedUpRowStyles <- box model.RowStyles
                 lookedUpRules <- box model.ConditionalFormats
             let key = float row * 16384.0 + float col
             match Portable.Dict.tryFind key lookedUpCells with

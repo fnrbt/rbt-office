@@ -109,6 +109,46 @@ Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-v
 
 Left: Excel's IRR / RATE / XIRR stop short of the root (~1e-12); ours is the root.
 
+## Grid sizes and theme fills against Excel 2019, 2026-11-21
+
+Found on the real-estate models (houseflippingspreadsheet's Arial MT 12 columns 29 % too narrow and black
+buttons, choudhary's row styles stopping at the row's last cell, rows of wrapped text not fitted); each
+rule then confirmed on generated workbooks opened in Excel 2019 on the VM - Excel's own numbers read with
+COM (`Columns(i).Width`, `Rows(i).Height`, `StandardWidth`, `StandardHeight`) and its pictures taken with
+`shoot-sheets.ps1`. Fixtures: `tools/excel-parity/make-sizing-fixtures.py` (synthetic-font-widths,
+synthetic-normal-font-first / -style, synthetic-row-fit, synthetic-theme-shapes); checks: xlsx-browser
+`sizing-excel-parity`, `tests/office-formats/xlsx-bridge.fsx` ("sizes:").
+
+| Rule (Excel 2019) | Evidence | Where |
+| --- | --- | --- |
+| A column's width unit is the maximum digit width (mdw) of the workbook's first `<font>` - not the Normal style's xf font. Pixels = trunc(((256 w + trunc(128 / mdw)) / 256) x mdw): Arial MT 12 (drawn as Arial) mdw 9, widths 1, 2.098, 8.898, 10, 20, 38.797, 0.5, 2 are 9, 19, 80, 90, 180, 349, 4, 18 px; Calibri 11 mdw 7, 9.140625, 0.5, 2.098, 13, 1, 8.898 are 64, 3, 15, 91, 7, 62 px (truncated, not rounded) | COM widths of synthetic-font-widths / -row-fit "Widths"; fonts[0] Arial 12 + Normal xf Calibri 11 is mdw 9, the other way round 7 | `FontMetrics.columnWidthPx`, `XlsxBridge` import |
+| mdw and a line's height per face and size: a sweep of 16 faces x 16 sizes and 14 more x 9 sizes as the Normal font (ColumnWidth 10 and 20: mdw = difference / 10; padding = 2 ceil(mdw / 4) + 1, 5 px at 7-8, 7 at 9-12); a face no font has ("NoSuchFont Xyz"), Helvetica and Arial MT measure as Arial | `StandardHeight` and widths of each, all consistent with the padding and default-width formulas | `FontMetrics` table (a weight of a family - "Segoe UI Black" - as its family: acre-property-acquisition's rows of it are Segoe UI's 22 px in Excel) |
+| The default column (no `defaultColWidth`) is `baseColWidth` (8) x mdw + padding, up to a multiple of 8 px: 64 at mdw 7, 80 at 9, baseColWidth 12 at 9 is 120; `defaultColWidth` is a width like any other (20 at 9: 180 px) | synthetic-font-widths "Widths", "BaseCol", "DefaultCol" | `FontMetrics.baseColumnWidthPx` |
+| The default row height is a line of the Normal font (Arial 12: 15 pt) whatever `defaultRowHeight` says (15.7, 30), unless `sheetFormatPr customHeight="1"` (then that, in whole pixels cut down: 20 pt is 26 px, 16 is 21); the empty cells of a row are in their column's style: the tallest font of the columns' styles counts, and the Normal font's while a column has no style (a `<col style>` of Calibri 20 on one column: every row 26.25 pt; Arial 10 on all 16384: rows of 12.75 pt, as dcf-stock-analysis's) | "RowDefault", "RowCustom", "S7", trigger "T12", "ColStyle", "ColStyleAll" (stdH 12.75, a Calibri 11 cell's row 15), "ColStyleSome" (15) | `XlsxBridge` import |
+| Rows are fitted to their cells when Excel opens a file: every row without `customHeight`, whatever its `ht` (ht 30 of one short line is 15 pt, ht 12 of Calibri 20 is 26.25; synthetic-grid-parity's row of ht 15 in Arial 10 is 12.75 - the earlier rule "ht without customHeight is the height" was wrong). A cell is a line of its font (table), a wrapped text n lines (n x the line: 7 lines of Calibri 11 are 105 pt), a line break without wrapping one line, an empty cell with a font of its own counts, so does a row's style font and a cell in a hidden column; nothing makes a row lower than the default (8 pt text: 15) | synthetic-row-fit "Rows": 26.25, 105, 105, 15 (custom), 15, 150, 26.25 (empty 20 pt cell), 26.25, 15, 15, 26.25, 15, 45 ... ; same with `fileVersion` / `x14ac:dyDescent` added | `SheetOps.fitRowsOnOpen` |
+| A row that says `thickBot="1"` or `thickTop="1"` is fitted a pixel higher for each (the attribute counts, not the cells' borders: medium, thick, double bottom borders without it change nothing) - choudhary's and bramosman's rows of `thickBot` are 21 / 22 px | probe of 12 border cases; "Rows" 28, 29: 15.75, 27.75 pt | `XlsxReader.Row.ThickEdges`, `XlsxBridge` |
+| ... except on a sheet whose default height is its own (`sheetFormatPr customHeight="1"`) none of whose rows has a height of its own (customHeight, an `ht` other than the default, hidden) | S2, S3 (ht = default) not fitted; S4 (a custom row), S6 / T9 (ht 30 / 16), T10, T11 (hidden row) fitted | `XlsxBridge` import (`fitsRows`) |
+| A row's style (`<row s customFormat="1">`) is every cell of the row the row does not list, to XFD, over a column's style; without `customFormat` the `s` is not drawn; a cell's own style is its own | picture of synthetic-row-fit "RowStyle" | `Model.RowStyles`, `SheetOps.shownCell` / `effectiveFormat` |
+| A shape's style reference is the theme's formatting scheme: `fillRef idx` 0 none, 1-3 the scheme's fills, 1001+ its background fills, `phClr` the reference's colour; `lnRef idx` likewise (width and colour); DrawingML `tint` / `shade` mix with white / black in linear light (black tint 50 % is ~BCBCBC, Excel's pixel C0C0C0 near that end of the 2007 theme's gradient), `satMod` scales the saturation | picture of synthetic-theme-shapes: grey gradient E8E8E8 -> C0C0C0 for idx 2 in dk1 (was solid black), D5E0C4 for 1002 in accent3 (ours D5E0C4), 376092 -> B9CDE5 for accent1 lumMod 75 % / lumMod 40 % lumOff 60 % | `Charts.styleFill`, `styleLine`, `colorOfNodeWith` |
+
+Fitting is right where the file's own `ht` is not: files Excel saved at another DPI keep heights of it (acre-apartment's `ht="15.6"` in a sheet of `defaultRowHeight="14.4"`), Excel at 96 DPI fits them again (21 px). On the 12 real-estate models (rows 1-40, columns 1-20 of 65 sheets, Excel's COM numbers): columns 1291 of 1300 as Excel (before: 1107; the rest are columns a sheet hides past its last), rows 2547 of 2600 (before: 1451; the rest: rows a mixed-font row 1 px off, wrapped help texts, rows a sheet hides past its last).
+
+Print: a column prints at 7.5 px a digit of the sheet's maximum digit width whatever the font (`Pagination.printColumnWidthPx`: 15/14 of the screen at 7 px, 15/16 at 8; milk-street-office's Monthly still prints A1:R58 on its first page, as Excel's PDF).
+
+Export: a column's width is written back as pixels / mdw (Excel reads that as the same pixels), a row's
+height as pixels x 0.75; widths and heights the user left alone are written as the file had them (xlsx-browser
+`sizing-excel-parity`: unedited `<col>`s identical, a column set to 45 px is `width="5"` at mdw 9 and reads
+back 45 px).
+
+Left: a row with `x14ac:dyDescent` on the sheet and `defaultRowHeight="30"` keeps rows of one Calibri 11 line at 30 pt in Excel (18 and 12.75 do not: unexplained, not followed); a row mixing fonts is 1 px higher in Excel than the taller font's own line (Arial 12 in a Calibri 11
+sheet: 21 px, ours 20; Arial 10 wrapped in it: 17 n + 1); a row of a wrapped cell whose column has a style
+of a larger font is 3 px higher in Excel (107.25 pt, ours 105); a row whose wrapped cell is merged across
+columns is 26.25 pt in Excel (unexplained; ours a line); text turned 90 degrees fits a few pixels lower than
+Excel (79 px for "Turned text"); how many lines a wrapped text takes follows the browser's measure of the
+text (Excel's GDI widths at whole-pixel font sizes are wider - fitted at Excel's pixel size); a sheet added in
+the editor to a workbook whose Normal font is not 7 px wide writes its widths in 7 px digits; columns hidden
+by a `<col hidden>` to XFD are hidden only for 1024 columns (choudhary shows columns ANF.. that Excel hides).
+
 ## Excel 2019 checks of 2026-11-10 (0.1.29, branch `sheet/excel-checks`)
 
 How: the VM (`winvm`) had no desktop session, so Excel ran straight from SSH (`cscript` over `ssh winvm`;

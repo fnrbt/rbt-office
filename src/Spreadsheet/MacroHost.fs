@@ -1050,10 +1050,18 @@ type private RangeState(book: MacroWorkbook, r: RangeRef, lines: int, areas: Ran
         book.ChangeModel(r.Sheet, fun m -> { m with MergedCells = m.MergedCells |> List.filter (fun x -> x.EndRow < r.Top || x.StartRow > r.Bottom || x.EndCol < r.Left || x.StartCol > r.Right) })
     member _.ColumnWidth() =
         let px = book.Model(r.Sheet).ColumnWidths |> Map.tryFind r.Left |> Option.defaultValue (book.Model(r.Sheet).DefaultColumnWidth)
-        VDouble (if px < 12.0 then Math.Round(px / 12.0, 2) else Math.Round((px - 5.0) / 7.0, 2))
+        // (Characters of the Normal font's maximum digit width and its padding: 7 px and 5 for Calibri 11.)
+        let mdw = book.Model(r.Sheet).MaxDigitWidth
+        let one = mdw + FontMetrics.columnPaddingPx mdw
+        VDouble (if px < one then Math.Round(px / one, 2) else Math.Round((px - FontMetrics.columnPaddingPx mdw) / mdw, 2))
     member _.SetColumnWidth(width: float) =
-        // (Excel: a width under one character is 12 px a character; from one on, 7 px each and 5 of padding.)
-        let px = if width <= 0.0 then 0.0 elif width < 1.0 then Math.Round(width * 12.0) else Math.Floor((256.0 * width + 18.0) / 256.0 * 7.0) + 5.0
+        // (Excel: a width under one character is a character and the padding a character; from one on,
+        // the maximum digit width each and the padding - 7 px and 5 for Calibri 11.)
+        let mdw = book.Model(r.Sheet).MaxDigitWidth
+        let padding = FontMetrics.columnPaddingPx mdw
+        let px =
+            if width <= 0.0 then 0.0 elif width < 1.0 then Math.Round(width * (mdw + padding))
+            else Math.Floor((256.0 * width + Math.Floor (128.0 / mdw)) / 256.0 * mdw) + padding
         if wholeRows then
             // Every column: the sheet's default width.
             book.ChangeModel(r.Sheet, fun m -> { m with DefaultColumnWidth = px; ColumnWidths = Map.empty })
