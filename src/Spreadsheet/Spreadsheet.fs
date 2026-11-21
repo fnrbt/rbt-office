@@ -1015,17 +1015,23 @@ type Spreadsheet(container: Element) as this =
     /// neighbours, so each visible cell is asked for several times in a pass.
     let lookedUpCells = System.Collections.Generic.Dictionary<float, CellData option>()
     let mutable lookedUpIn : obj = null
+    let mutable lookedUpStyles : obj = null
+    let mutable lookedUpRules : obj = null
     let cellAt (row: int) (col: int) : CellData option =
         if row < 0 || col < 0 then None
         else
-            if not (obj.ReferenceEquals(lookedUpIn, model.Cells)) || lookedUpCells.Count > 40000 then
+            if not (obj.ReferenceEquals(lookedUpIn, model.Cells)) || not (obj.ReferenceEquals(lookedUpStyles, model.ColumnStyles))
+               || not (obj.ReferenceEquals(lookedUpRules, model.ConditionalFormats)) || lookedUpCells.Count > 40000 then
                 lookedUpCells.Clear()
                 lookedUpIn <- box model.Cells
+                lookedUpStyles <- box model.ColumnStyles
+                lookedUpRules <- box model.ConditionalFormats
             let key = float row * 16384.0 + float col
             match Portable.Dict.tryFind key lookedUpCells with
             | ValueSome known -> known
             | ValueNone ->
-                let found = getCell { Row = row; Col = col } model
+                // (A cell without an entry is drawn in its column's default style.)
+                let found = SheetOps.shownCell model { Row = row; Col = col }
                 lookedUpCells.[key] <- found
                 found
     let mutable renderedStyleInputs: obj array = [||]
@@ -1390,9 +1396,105 @@ type Spreadsheet(container: Element) as this =
                             | None, None -> true
                             | Some left, Some right -> obj.ReferenceEquals(left, right) || left = right
                             | _ -> false) a b) now cells
+    /// The range a linked picture (Excel's camera, `<a14:cameraTool cellRange="'Raw Data'!$B$4:$D$11">`)
+    /// shows: its sheet's index and the range.
+    let cameraRange (xml: string) : (int * CellRange) option =
+        let at = xml.IndexOf "cameraTool"
+        if at < 0 then None
+        else
+            let key = "cellRange=\""
+            let start = xml.IndexOf(key, at)
+            if start < 0 then None
+            else
+                let start = start + key.Length
+                let finish = xml.IndexOf('"', start)
+                if finish < 0 then None
+                else
+                    let reference = xml.Substring(start, finish - start).Replace("&apos;", "'").Replace("&quot;", "\"").Replace("&amp;", "&")
+                    match reference.LastIndexOf '!' with
+                    | -1 -> None
+                    | bang ->
+                        let sheet = reference.Substring(0, bang).Trim()
+                        let sheet = if sheet.StartsWith "'" && sheet.EndsWith "'" && sheet.Length >= 2 then sheet.Substring(1, sheet.Length - 2).Replace("''", "'") else sheet
+                        match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(sheet, System.StringComparison.OrdinalIgnoreCase)), SheetOps.tryParseRange (reference.Substring(bang + 1)) with
+                        | Some index, Some range when (range.To.Row - range.From.Row + 1) * (range.To.Col - range.From.Col + 1) <= 10000 -> Some (index, range)
+                        | _ -> None
+    /// A linked picture as SVG: the cells of its range as they are now - fills, lines, text in their
+    /// fonts and colours, the grid lines of a sheet that shows them -, stretched to the picture, as
+    /// Excel draws it (acre-apartment's "Property Return Metrics" box: a picture of 'Raw Data'!B4:D11
+    /// on five of its sheets). None when its range cannot be read.
+    let cameraSvg (index: int) (range: CellRange) (width: float) (height: float) (seen: ResizeArray<string * int * int * int * int * CellData option [] []>) : string option =
+        if index <> activeSheetIndex && isDeferredSheet sheets.[index] then convertInPlace index
+        let source = if index = activeSheetIndex then model else sheets.[index]
+        let r0, c0, r1, c1 = range.From.Row, range.From.Col, range.To.Row, range.To.Col
+        let left (c: int) = SpreadsheetLayout.columnLeft source c - SpreadsheetLayout.columnLeft source c0
+        let top (r: int) = SpreadsheetLayout.rowTop source r - SpreadsheetLayout.rowTop source r0
+        let totalWidth, totalHeight = left (c1 + 1), top (r1 + 1)
+        if totalWidth <= 0.0 || totalHeight <= 0.0 then None
+        else
+            // (Read as a chart reads its cells: drawn again when they change.)
+            seen.Add ((sheetNames.[index].ToUpperInvariant(), r0, c0, r1, c1,
+                       Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } source))))
+            let number (value: float) = (System.Math.Round (value * 100.0) / 100.0).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            let fills = System.Text.StringBuilder()
+            let texts = System.Text.StringBuilder()
+            let lines = System.Text.StringBuilder()
+            let line (x1: float) (y1: float) (x2: float) (y2: float) (edge: SpreadsheetLayout.SharedEdge) =
+                match edge with
+                | SpreadsheetLayout.EdgeBorder border ->
+                    (match borderCssParts border.Style with
+                     | Some (weight, kind) ->
+                        let dash = match kind with "dotted" -> " stroke-dasharray=\"1 1\"" | "dashed" -> " stroke-dasharray=\"3 1\"" | _ -> ""
+                        lines.Append(sprintf "<line x1=\"%s\" y1=\"%s\" x2=\"%s\" y2=\"%s\" stroke=\"%s\" stroke-width=\"%d\"%s/>" (number x1) (number y1) (number x2) (number y2) (htmlEscape (defaultArg border.Color "#000000")) weight dash) |> ignore
+                     | None -> ())
+                // (A grid line where the sheet shows one: between two cells without a fill.)
+                | SpreadsheetLayout.EdgeGrid true ->
+                    lines.Append(sprintf "<line x1=\"%s\" y1=\"%s\" x2=\"%s\" y2=\"%s\" stroke=\"#d4d4d4\" stroke-width=\"1\"/>" (number x1) (number y1) (number x2) (number y2)) |> ignore
+                | _ -> ()
+            for r in r0 .. r1 do
+                for c in c0 .. c1 do
+                    let merge = findMergedCell { Row = r; Col = c } source
+                    let primary = match merge with Some m -> m.StartRow = r && m.StartCol = c | None -> true
+                    let x, y = left c, top r
+                    let w, h = left (c + 1) - x, top (r + 1) - y
+                    if primary && w > 0.0 && h > 0.0 then
+                        let spanW = match merge with Some m -> left (min c1 m.EndCol + 1) - x | None -> w
+                        let spanH = match merge with Some m -> top (min r1 m.EndRow + 1) - y | None -> h
+                        let look = SpreadsheetPaint.cellLook source r c (SheetOps.shownCell source { Row = r; Col = c }) (Some (fun text fontPt fontName bold italic -> cellTextWidth text fontPt fontName bold italic)) spanW
+                        fills.Append(sprintf "<rect x=\"%s\" y=\"%s\" width=\"%s\" height=\"%s\" fill=\"%s\"/>" (number x) (number y) (number spanW) (number spanH) (htmlEscape (defaultArg look.Fill "#ffffff"))) |> ignore
+                        if look.Text <> "" then
+                            let fontPx = SheetOps.pointsToPx look.FontSize
+                            let anchor, tx =
+                                match look.Align with
+                                | SpreadsheetLayout.AlignRight -> "end", x + spanW - 3.0 - look.IndentRight
+                                | SpreadsheetLayout.AlignCenter -> "middle", x + spanW / 2.0
+                                | SpreadsheetLayout.AlignLeft -> "start", x + 3.0 + look.IndentLeft
+                            let baseline =
+                                match look.VerticalAlign with
+                                | SpreadsheetPaint.VAlignTop -> y + 2.0 + fontPx * 0.95
+                                | SpreadsheetPaint.VAlignMiddle -> y + spanH / 2.0 + fontPx * 0.35
+                                | SpreadsheetPaint.VAlignBottom -> y + spanH - 4.0
+                            texts.Append(sprintf "<text x=\"%s\" y=\"%s\" text-anchor=\"%s\" font-family=\"%s\" font-size=\"%s\" fill=\"%s\"%s%s>%s</text>"
+                                            (number tx) (number baseline) anchor (htmlEscape (cellFontFamily look.FontName)) (number fontPx) (htmlEscape (defaultArg look.TextColor "#000000"))
+                                            (if look.Bold then " font-weight=\"bold\"" else "") (if look.Italic then " font-style=\"italic\"" else "")
+                                            (htmlEscape look.Text)) |> ignore
+                    // The lines of the cell's top and left edges, and of the range's right and bottom ones.
+                    if w > 0.0 && h > 0.0 then
+                        line x y (x + w) y (SpreadsheetLayout.edgeAbove source r c)
+                        line x y x (y + h) (SpreadsheetLayout.edgeLeft source r c)
+                        if c = c1 then line (x + w) y (x + w) (y + h) (SpreadsheetLayout.edgeRight source r c)
+                        if r = r1 then line x (y + h) (x + w) (y + h) (SpreadsheetLayout.edgeBelow source r c)
+            Some (sprintf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" preserveAspectRatio=\"none\" style=\"display:block\">%s%s%s</svg>"
+                    (number width) (number height) (number totalWidth) (number totalHeight) (fills.ToString()) (lines.ToString()) (texts.ToString()))
     /// A kept object of the sheet on display as SVG for its rectangle, with the blocks of cells its
     /// charts read; None for what is not drawn (the frame then says what the object is).
     let objectSvg (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option =
+        match cameraRange xml with
+        | Some (index, range) ->
+            let seen = ResizeArray<string * int * int * int * int * CellData option [] []>()
+            (try cameraSvg index range width height seen with error -> reportError "drawing" (box error); None)
+            |> Option.map (fun svg -> svg, seen.ToArray())
+        | None ->
         try
             drawingPartsOf model
             |> Option.bind (fun parts ->
@@ -2093,6 +2195,8 @@ type Spreadsheet(container: Element) as this =
             match contentElement, gridContainer with
             | Some content, Some grid ->
                 appliedZoom <- zoom
+                // (A cell's edges are rounded to the screen's pixels at the zoom: every cell is placed again.)
+                styleEpoch <- styleEpoch + 1
                 setStyle content "zoom" (if zoom = 1.0 then "" else string zoom)
                 containerHeight <- gridClientHeight grid
                 containerWidth <- gridClientWidth grid
@@ -3528,10 +3632,23 @@ type Spreadsheet(container: Element) as this =
         // when a column's width is not a whole number - a white line through
         // a row of filled cells, and through text that runs across it.)
         let span (start: float) (size: float) = string (int (start + size + 0.5) - int (start + 0.5)) + "px"
-        add "left" (px x)
-        add "top" (px y)
-        add "width" (span x w)
-        add "height" (span y h)
+        if appliedZoom = 1.0 then
+            add "left" (px x)
+            add "top" (px y)
+            add "width" (span x w)
+            add "height" (span y h)
+        else
+            // Zoomed, the edges are rounded to the screen's pixels instead (the content is scaled by
+            // CSS zoom): a whole sheet pixel scaled by 85 % is not a whole screen pixel, and two
+            // cells' fills, each rounded on its own, left a white line between them (acre-apartment's
+            // sheets at 85 %; Excel's fills meet).
+            let device (value: float) = System.Math.Floor (value * appliedZoom + 0.5)
+            let at (value: float) = string (device value / appliedZoom) + "px"
+            let size (start: float) (length: float) = string ((device (start + length) - device start) / appliedZoom) + "px"
+            add "left" (at x)
+            add "top" (at y)
+            add "width" (size x w)
+            add "height" (size y h)
         // The look: fill and font.
         match look.Fill with Some fill -> add "background-color" fill | None -> ()
         match look.TextColor with Some color -> add "color" color | None -> ()
@@ -3574,6 +3691,11 @@ type Spreadsheet(container: Element) as this =
             // (Its own line breaks are kept.)
             add "white-space" "pre-line"
             add "word-wrap" "break-word"
+            // Excel wraps text to the width of the cell less 3 px each side (wrap-threshold, checked
+            // in Excel: bold Calibri 11 "Releasing Cost", 89 px of ink, is one line in a 95-px column
+            // and two in a 93-px one), not the 5 px a line of text is set in from the cell's edge.
+            if look.IndentLeft = 0.0 then add "padding-left" "3px"
+            if look.IndentRight = 0.0 then add "padding-right" "3px"
             add "line-height" (px lineHeight)
             add "display" "flex"
             add "flex-direction" "column"
@@ -3615,6 +3737,15 @@ type Spreadsheet(container: Element) as this =
                 | None -> row, col
         let edgeChildren = ResizeArray<int * string>()
         let borderWidth (border: BorderStyle) = match borderCssParts border.Style with Some (width, _) -> width | None -> 0
+        // A line is as many screen pixels wide at every zoom: Excel draws a medium line 2 px wide at 70 %
+        // too (choudhary-real-estate-leasing's "Inc St", the line above "End of Sheet"), where the
+        // content's CSS zoom made it 1.4 px - drawn 1 px.
+        let zoomedBorderCss (border: BorderStyle) =
+            if appliedZoom = 1.0 then borderCss border
+            else
+                match borderCssParts border.Style with
+                | Some (width, line) -> string (float width / appliedZoom) + "px " + line + " " + (border.Color |> Option.defaultValue "#000000")
+                | None -> "none"
         // The runs of one kind along an edge of the cell: (offset, length, kind).
         let runsAlong = SpreadsheetLayout.edgeRuns
         let gridColor = defaultGridColor
@@ -3642,7 +3773,7 @@ type Spreadsheet(container: Element) as this =
             | _ ->
                 for offset, length, kind in runs do
                     match kind with
-                    | SpreadsheetLayout.EdgeBorder border -> edgeChildren.Add (borderPriority border.Style, place offset length (borderWidth border) (borderCss border))
+                    | SpreadsheetLayout.EdgeBorder border -> edgeChildren.Add (borderPriority border.Style, place offset length (borderWidth border) (zoomedBorderCss border))
                     | SpreadsheetLayout.EdgeGrid true -> edgeChildren.Add (0, place offset length 1 ("1px solid " + gridColor))
                     | _ -> ()
         let columnStart (c: int) = SpreadsheetLayout.columnLeft model c
@@ -3835,9 +3966,10 @@ type Spreadsheet(container: Element) as this =
         let mutable crossed : (float * int) list = []
         if displayText <> "" && endRow = row && endCol = col && icon.IsNone && across = 0.0 then
             match SpreadsheetLayout.textOverflowSides look.Format look.Value with
-            // (Not measured when even the widest glyphs would fit the cell.)
-            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 10.0 ->
-                let excess = measureText displayText - (w - 10.0)
+            // (Not measured when even the widest glyphs would fit the cell. An indent is room the text
+            // does not have in its cell: vertex42-home-mortgage's indented "Mortgage Information" was cut short.)
+            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 10.0 - look.IndentLeft - look.IndentRight ->
+                let excess = measureText displayText - (w - 10.0 - look.IndentLeft - look.IndentRight)
                 if excess > 0.0 then
                     wide <- true
                     // (Past the cell's edge: its own padding on that side is its to use.)

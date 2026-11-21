@@ -516,14 +516,21 @@ module Import =
             DiagonalUp = s.DiagonalUp
             DiagonalDown = s.DiagonalDown }
 
-    /// A run of rich text. Only what the run turns on is recorded; the rest
-    /// follows the cell's own format.
-    let private runOverride (theme: string array) (props: XlsxReader.RunProps) : RunOverride =
-        let onlyTrue value = if value then Some true else None
+    /// A run of rich text. A run without properties (`<rPr>`) is in the cell's
+    /// own format; one with them is in its own font: bold, italic, underline
+    /// and strike are off where it does not turn them on, whatever the cell's
+    /// font has (vertex42-rental-cash-flow's B58, a bold italic cell of "Note: "
+    /// and an italic run: Excel draws the run upright weight and COM says its
+    /// Bold is mixed; investmentpropertycalculator's "How To Use: " is bold, the
+    /// run after it is not). Size, face and colour it does not give follow the cell.
+    /// (`ofCell` false: a run of a note, whose text is in its own plain font, records only what it turns on.)
+    let private runOverrideOf (ofCell: bool) (theme: string array) (props: XlsxReader.RunProps) : RunOverride =
+        let own = ofCell && props <> XlsxReader.emptyRunProps
+        let onlyTrue value = if value then Some true elif own then Some false else None
         { Bold = onlyTrue props.Bold
           Italic = onlyTrue props.Italic
           Underline = onlyTrue props.Underline
-          UnderlineDouble = onlyTrue props.UnderlineDouble
+          UnderlineDouble = (if props.UnderlineDouble then Some true else None)
           Strikethrough = onlyTrue props.Strikethrough
           Color = props.Color |> Option.bind (XlsxReader.Xlsx.themeRunColor theme) |> Option.bind hexColor
           FontName = props.FontName
@@ -658,7 +665,10 @@ module Import =
                                InExtList = ext.InExtList } : CF.OoxmlRuleExt))
                        Style =
                         dxf |> Option.map (fun d ->
-                            ({ FontColor = d.FontColor |> Option.bind hexColor
+                            ({ Borders =
+                                [ d.BorderTop; d.BorderBottom; d.BorderLeft; d.BorderRight ]
+                                |> List.map (Option.map (fun side -> ({ Style = side.Style; Color = side.Color |> Option.bind hexColor } : BorderStyle)))
+                               FontColor = d.FontColor |> Option.bind hexColor
                                FillColor = d.FillColor |> Option.bind hexColor
                                Bold = (d.Bold = Some true)
                                Italic = (d.Italic = Some true)
@@ -846,7 +856,7 @@ module Import =
                           Author = c.Author
                           // (One run without a format of its own is a plain text.)
                           Runs =
-                            (let runs = c.Runs |> List.map (fun (text, props) -> text, runOverride wb.ThemeColors props)
+                            (let runs = c.Runs |> List.map (fun (text, props) -> text, runOverrideOf false wb.ThemeColors props)
                              if runs |> List.exists (fun (_, run) -> run <> emptyRunOverride) && (runs |> List.map fst |> String.concat "") = c.Text then runs else []) }
         // One CellFormat per style of the workbook, shared by every cell that uses it.
         let styleCache = Collections.Generic.Dictionary<int, CellFormat>()
@@ -921,7 +931,7 @@ module Import =
                                 | XlsxReader.SharedString idx when idx >= 0 && idx < wb.SharedStringRuns.Length -> wb.SharedStringRuns.[idx]
                                 | _ -> []
                         match runs with
-                        | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverride wb.ThemeColors props)) richRuns
+                        | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverrideOf true wb.ThemeColors props)) richRuns
                         | _ -> ()
 
         // A note on a cell the sheet data has no element for (a cell without
@@ -956,9 +966,13 @@ module Import =
         // Row heights: points in the file, pixels in the model.
         let defaultRowHeight = sheet.Format.DefaultRowHeight |> Option.defaultValue 15.0
         let mutable rowHeights = Map.empty<int, float>
+        // A row's `ht` is the height Excel shows it at whether or not it says
+        // `customHeight`: that only marks a height the user set, which edits
+        // in the row leave alone (vertex42-rental-cash-flow's rows of ht 15 in
+        // a sheet of 12.75 are 20 px in Excel).
         for row in sheet.Rows do
             let index = row.Index - 1
-            match row.Height with
+            match row.Height |> Option.orElse row.RawHeight with
             | Some height when index >= 0 && index < rowCount && height > 0.0 ->
                 rowHeights <- Map.add index (height * 1.333) rowHeights
             | _ -> ()
@@ -973,7 +987,7 @@ module Import =
         for row in sheet.Rows do
             let index = row.Index - 1
             if row.Hidden then
-                hiddenRowSizes <- Map.add index ((row.Height |> Option.defaultValue defaultRowHeight) * 1.333) hiddenRowSizes
+                hiddenRowSizes <- Map.add index ((row.Height |> Option.orElse row.RawHeight |> Option.defaultValue defaultRowHeight) * 1.333) hiddenRowSizes
                 rowHeights <- Map.add index 0.0 rowHeights
             if row.OutlineLevel > 0 then rowLevels <- Map.add index (min 7 row.OutlineLevel) rowLevels
             if row.Collapsed then collapsedRows <- Set.add index collapsedRows
@@ -1490,6 +1504,9 @@ module Export =
     /// The sheet's conditional formats in the writer's shape. Each rule's
     /// style becomes a `<dxf>`; `dxfIndex` hands out its index in the
     /// workbook-wide table.
+    let private dxfSide (sides: BorderStyle option list) (index: int) : XlsxReader.CellBorderSide option =
+        List.tryItem index sides |> Option.flatten |> Option.map (fun line -> { Style = line.Style; Color = line.Color |> Option.map (fun c -> c.TrimStart '#') })
+
     let private conditionalFormats (dxfIndex: XlsxReader.Dxf -> int) (model: SpreadsheetModel) : XlsxReader.ConditionalFormat list =
         CF.toOoxml model.ConditionalFormats
         |> List.map (fun cf ->
@@ -1505,6 +1522,10 @@ module Export =
                                Italic = (if style.Italic then Some true else None)
                                Underline = (if style.Underline then Some true else None)
                                Strike = (if style.Strikethrough then Some true else None)
+                               BorderTop = dxfSide style.Borders 0
+                               BorderBottom = dxfSide style.Borders 1
+                               BorderLeft = dxfSide style.Borders 2
+                               BorderRight = dxfSide style.Borders 3
                                SourceDxfIndex = None } : XlsxReader.Dxf))
                     // A rule of the x14 list has its format in place, not in the styles part.
                     let inExtList = rule.Ext |> Option.exists (fun ext -> ext.InExtList)
@@ -1727,7 +1748,8 @@ module Export =
                     let hex = if color = "" then None else Some (color.TrimStart '#')
                     let dxf : XlsxReader.Dxf =
                         { FontColor = (if font then hex else None); FillColor = (if font then None else hex)
-                          Bold = None; Italic = None; Underline = None; Strike = None; SourceDxfIndex = None }
+                          Bold = None; Italic = None; Underline = None; Strike = None
+                          BorderTop = None; BorderBottom = None; BorderLeft = None; BorderRight = None; SourceDxfIndex = None }
                     { empty with Kind = "colorFilter"; DxfId = Some (dxfIndex dxf); CellColor = not font }
                 | FilterDynamic kind -> { empty with Kind = "dynamicFilter"; DynamicType = kind }
                 | FilterKept xml -> { empty with Kind = "other"; Xml = xml }

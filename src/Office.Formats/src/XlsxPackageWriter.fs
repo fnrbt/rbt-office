@@ -366,7 +366,19 @@ let private dxfXml (element: string) (d: XlsxReader.Dxf) =
         |> xmlColor
         |> Option.map (fun c -> sprintf "<fill><patternFill><bgColor rgb=\"%s\"/></patternFill></fill>" c)
         |> Option.defaultValue ""
-    "<" + element + ">" + font + fill + "</" + element + ">"
+    // (A side without a line - "none" - is written as the bare element: it takes the cell's line away.)
+    let border =
+        let side name (line: XlsxReader.CellBorderSide option) =
+            match line with
+            | Some line when line.Style <> "none" && line.Style <> "" ->
+                match xmlColor line.Color with
+                | Some rgb -> sprintf "<%s style=\"%s\"><color rgb=\"%s\"/></%s>" name line.Style rgb name
+                | None -> sprintf "<%s style=\"%s\"/>" name line.Style
+            | Some _ -> sprintf "<%s/>" name
+            | None -> ""
+        if d.BorderTop.IsNone && d.BorderBottom.IsNone && d.BorderLeft.IsNone && d.BorderRight.IsNone then ""
+        else "<border>" + side "left" d.BorderLeft + side "right" d.BorderRight + side "top" d.BorderTop + side "bottom" d.BorderBottom + "</border>"
+    "<" + element + ">" + font + fill + border + "</" + element + ">"
 
 /// A cellXfs entry: the format with the ids of its number format, font,
 /// fill, border and the named cell style it is based on.

@@ -1,7 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$ListPath)
+param([Parameter(Mandatory = $true)][string]$ListPath, [switch]$KeepZoom)
 # Screenshots of Excel's worksheet pane (PrintWindow of the EXCEL7 window, as screenshot-excel.ps1), one per
 # line of LIST: workbook path, sheet name, the cell to scroll to the top left, output PNG (tab separated).
-# Zoom 100%, the selection parked out of sight. Run it in the desktop session (run-vbs-in-session.ps1).
+# Zoom 100% (-KeepZoom: the zoom the sheet is saved with, which is what a user sees), the selection parked out of sight. Run it in the desktop session (run-vbs-in-session.ps1).
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type -Namespace RbShoot -Name Win32 -MemberDefinition @'
@@ -46,7 +46,7 @@ try {
         try { $excel.WindowState = -4137 } catch { }
         $ws = $wb.Worksheets.Item($sheetName)
         $ws.Activate()
-        $excel.ActiveWindow.Zoom = 100
+        if (-not $KeepZoom) { $excel.ActiveWindow.Zoom = 100 }
         try { $ws.Range("XFD1048576").Select() } catch { }
         $excel.Goto($ws.Range($cell), $true)
         try { $ws.Range("XFD1048576").Select() } catch { }

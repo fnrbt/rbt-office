@@ -168,6 +168,40 @@ let effectiveFormat (model: SpreadsheetModel) (addr: CellAddress) : CellFormat =
             | Some style -> style.Format
             | None -> defaultFormat
 
+let mutable private columnStyleCellsOf : obj = null
+let mutable private columnStyleCells : (ColumnStyle * CellData) array = [||]
+
+/// What a cell the sheet has no entry for shows as: an empty cell in the
+/// default style of its column, if the column has one (None: an empty cell
+/// in the default format). Excel draws the whole column in that style - its
+/// fill, its borders - down to the last row (acre-apartment's "Version" sheet
+/// is a grey page: `<col min="2" max="16384" style=...>`). The cell made for
+/// a column style is the same one each time it is asked for.
+let columnStyleCell (model: SpreadsheetModel) (col: int) : CellData option =
+    match model.ColumnStyles with
+    | [] -> None
+    | styles ->
+        if not (obj.ReferenceEquals(columnStyleCellsOf, styles)) then
+            columnStyleCellsOf <- box styles
+            columnStyleCells <- styles |> List.map (fun style -> style, { Value = CellValue.Empty; Format = style.Format; Comment = None }) |> Array.ofList
+        let mutable found = None
+        let mutable i = 0
+        while found.IsNone && i < columnStyleCells.Length do
+            let style, cell = columnStyleCells.[i]
+            if col >= style.First && col <= style.Last then found <- Some cell
+            i <- i + 1
+        found
+
+/// `getCell`, else the cell of the column's default style (`columnStyleCell`),
+/// with the lines its conditional formats give it (`withBorderEffects`).
+let shownCell (model: SpreadsheetModel) (addr: CellAddress) : CellData option =
+    let cell =
+        match getCell addr model with
+        | Some _ as found -> found
+        | None -> columnStyleCell model addr.Col
+    if model.ConditionalFormats.IsEmpty then cell
+    else ConditionalFormatting.withBorderEffects model addr cell
+
 /// The properties of a format a host works with, as bits (for `FormatSummary.Mixed`).
 module FormatField =
     [<Literal>]

@@ -30,11 +30,39 @@ type CellEffect = {
     DataBar: DataBarDraw option
     /// See `CellFormat.IconSet`.
     IconSet: IconDraw option
+    /// The lines a rule gives the cell's sides; a line of style "none"
+    /// takes the cell's own line away.
+    BorderTop: BorderStyle option
+    BorderBottom: BorderStyle option
+    BorderLeft: BorderStyle option
+    BorderRight: BorderStyle option
 }
 
 let noEffect : CellEffect =
     { TextColor = None; BgColor = None; Bold = None; Italic = None; Underline = None; Strikethrough = None
-      DataBar = None; IconSet = None }
+      DataBar = None; IconSet = None; BorderTop = None; BorderBottom = None; BorderLeft = None; BorderRight = None }
+
+/// A side's line under a rule's line for it ("none": no line).
+let private sideWith (rule: BorderStyle option) (own: BorderStyle option) =
+    match rule with
+    | Some line when line.Style = "none" -> None
+    | Some _ -> rule
+    | None -> own
+
+/// Whether a rule's style (a format) has a line for any side: Excel's
+/// `<dxf><border>`.
+let styleHasBorders (style: CellFormat) =
+    style.BorderTop.IsSome || style.BorderBottom.IsSome || style.BorderLeft.IsSome || style.BorderRight.IsSome
+
+/// A cell's format with only the lines of an effect laid over it.
+let applyBorderEffect (effect: CellEffect) (format: CellFormat) : CellFormat =
+    if effect.BorderTop.IsNone && effect.BorderBottom.IsNone && effect.BorderLeft.IsNone && effect.BorderRight.IsNone then format
+    else
+        { format with
+            BorderTop = sideWith effect.BorderTop format.BorderTop
+            BorderBottom = sideWith effect.BorderBottom format.BorderBottom
+            BorderLeft = sideWith effect.BorderLeft format.BorderLeft
+            BorderRight = sideWith effect.BorderRight format.BorderRight }
 
 /// Lay an effect over a cell's own format.
 let applyEffect (effect: CellEffect) (format: CellFormat) : CellFormat =
@@ -46,7 +74,11 @@ let applyEffect (effect: CellEffect) (format: CellFormat) : CellFormat =
         Underline = defaultArg effect.Underline format.Underline
         Strikethrough = defaultArg effect.Strikethrough format.Strikethrough
         DataBar = (match effect.DataBar with Some _ -> effect.DataBar | None -> format.DataBar)
-        IconSet = (match effect.IconSet with Some _ -> effect.IconSet | None -> format.IconSet) }
+        IconSet = (match effect.IconSet with Some _ -> effect.IconSet | None -> format.IconSet)
+        BorderTop = sideWith effect.BorderTop format.BorderTop
+        BorderBottom = sideWith effect.BorderBottom format.BorderBottom
+        BorderLeft = sideWith effect.BorderLeft format.BorderLeft
+        BorderRight = sideWith effect.BorderRight format.BorderRight }
 
 /// Evaluates a formula written for one cell at another: (formula, rows moved,
 /// columns moved, sheet, cell). `Formula.evaluateFormulaShifted workbook sheet`
@@ -478,7 +510,11 @@ let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : Ce
             Bold = (if style.Bold then Some true else None)
             Italic = (if style.Italic then Some true else None)
             Underline = (if style.Underline then Some true else None)
-            Strikethrough = (if style.Strikethrough then Some true else None) }
+            Strikethrough = (if style.Strikethrough then Some true else None)
+            BorderTop = style.BorderTop
+            BorderBottom = style.BorderBottom
+            BorderLeft = style.BorderLeft
+            BorderRight = style.BorderRight }
 
 /// The first of two effects wins property by property.
 let private mergeEffects (first: CellEffect) (second: CellEffect) : CellEffect =
@@ -490,7 +526,11 @@ let private mergeEffects (first: CellEffect) (second: CellEffect) : CellEffect =
       Underline = pick first.Underline second.Underline
       Strikethrough = pick first.Strikethrough second.Strikethrough
       DataBar = pick first.DataBar second.DataBar
-      IconSet = pick first.IconSet second.IconSet }
+      IconSet = pick first.IconSet second.IconSet
+      BorderTop = pick first.BorderTop second.BorderTop
+      BorderBottom = pick first.BorderBottom second.BorderBottom
+      BorderLeft = pick first.BorderLeft second.BorderLeft
+      BorderRight = pick first.BorderRight second.BorderRight }
 
 /// What the sheet's conditional formats do to a cell; None when no rule
 /// covering it matches.
@@ -552,6 +592,44 @@ let contextFor (model: SpreadsheetModel) : Context =
         cachedContext <- Some ctx
         ctx
 
+let mutable private bordersOf : obj = null
+let mutable private rulesHaveBorders = false
+
+/// What ends the style of a line a conditional format gives a cell's side
+/// (`withBorderEffects`): such a line is the edge's whatever the cell on the
+/// other side has, and its "none" takes the edge's lines away (`Layout`).
+let ruleLineMark = "!"
+
+/// A cell with the lines the sheet's conditional formats give it (Excel's
+/// `<dxf><border>`), marked as a rule's (`ruleLineMark`): the lines of a cell
+/// are drawn from what the cells either side of an edge hold, so they are
+/// laid over the cell itself. The cell as it is when no rule with lines
+/// covers it.
+let withBorderEffects (model: SpreadsheetModel) (addr: CellAddress) (data: CellData option) : CellData option =
+    if model.ConditionalFormats.IsEmpty then data
+    else
+        if not (obj.ReferenceEquals(bordersOf, model.ConditionalFormats)) then
+            bordersOf <- box model.ConditionalFormats
+            rulesHaveBorders <- model.ConditionalFormats |> List.exists (fun entry -> styleHasBorders entry.Format.Style)
+        if not rulesHaveBorders then data
+        else
+            match effectAt (contextFor model) addr with
+            | Some effect when effect.BorderTop.IsSome || effect.BorderBottom.IsSome || effect.BorderLeft.IsSome || effect.BorderRight.IsSome ->
+                let marked (rule: BorderStyle option) (own: BorderStyle option) =
+                    match rule with
+                    | Some line -> Some { line with Style = line.Style + ruleLineMark }
+                    | None -> own
+                let lay (format: CellFormat) =
+                    { format with
+                        BorderTop = marked effect.BorderTop format.BorderTop
+                        BorderBottom = marked effect.BorderBottom format.BorderBottom
+                        BorderLeft = marked effect.BorderLeft format.BorderLeft
+                        BorderRight = marked effect.BorderRight format.BorderRight }
+                match data with
+                | Some cell -> Some { cell with Format = lay cell.Format }
+                | None -> Some { Value = CellValue.Empty; Format = lay defaultFormat; Comment = None }
+            | _ -> data
+
 /// A cell's format with the sheet's conditional formats applied.
 let formatAt (model: SpreadsheetModel) (addr: CellAddress) (format: CellFormat) : CellFormat =
     if model.ConditionalFormats.IsEmpty then format
@@ -568,6 +646,8 @@ let formatAt (model: SpreadsheetModel) (addr: CellAddress) (format: CellFormat) 
 
 /// The differential style (`<dxf>`) a rule applies.
 type OoxmlStyle = {
+    /// The lines of its `<border>` (a side named without a style: "none").
+    Borders: BorderStyle option list
     FontColor: string option
     FillColor: string option
     Bold: bool
@@ -858,7 +938,11 @@ let ofOoxml (formats: OoxmlConditionalFormat list) : ConditionalFormatRange list
                             Bold = s.Bold
                             Italic = s.Italic
                             Underline = s.Underline
-                            Strikethrough = s.Strikethrough }
+                            Strikethrough = s.Strikethrough
+                            BorderTop = List.tryItem 0 s.Borders |> Option.flatten
+                            BorderBottom = List.tryItem 1 s.Borders |> Option.flatten
+                            BorderLeft = List.tryItem 2 s.Borders |> Option.flatten
+                            BorderRight = List.tryItem 3 s.Borders |> Option.flatten }
                     | None -> defaultFormat
                 yield { Id = 0
                         Ranges = ranges
@@ -966,6 +1050,7 @@ let toOoxml (formats: ConditionalFormatRange list) : OoxmlConditionalFormat list
             let style = entry.Format.Style
             let hasStyle =
                 style.TextColor.IsSome || style.BgColor.IsSome || style.Bold || style.Italic || style.Underline || style.Strikethrough
+                || styleHasBorders style
             let visual =
                 match entry.Format.Rule with
                 | ColorScale _ | DataBar _ | IconSet _ | DataBarEx _ | IconSetEx _ -> true
@@ -983,7 +1068,8 @@ let toOoxml (formats: ConditionalFormatRange list) : OoxmlConditionalFormat list
                     Style =
                         if visual || not hasStyle then None
                         else Some { FontColor = style.TextColor; FillColor = style.BgColor; Bold = style.Bold; Italic = style.Italic
-                                    Underline = style.Underline; Strikethrough = style.Strikethrough } }
+                                    Underline = style.Underline; Strikethrough = style.Strikethrough
+                                    Borders = (if styleHasBorders style then [ style.BorderTop; style.BorderBottom; style.BorderLeft; style.BorderRight ] else []) } }
             match blocks |> Seq.tryFind (fun (key, _) -> key = sqref) with
             | Some (_, rules) -> rules.Add rule
             | None ->

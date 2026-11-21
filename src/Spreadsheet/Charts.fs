@@ -3117,8 +3117,22 @@ let objectScene (parts: DrawingParts) (data: ChartData) (anchorXml: string) (wid
             kids anchor
             |> List.collect flattened
             |> List.tryFind (fun item -> match nameOf item with "sp" | "cxnSp" | "pic" | "graphicFrame" | "grpSp" -> true | _ -> false)
+        // (Excel does not draw an object marked hidden - `cNvPr hidden="1"`: houseflippingspreadsheet's
+        // check marks and "15%" that a macro shows -, nor anything of a shape with no fill, no line and no
+        // text: a placeholder for either would hide the cells under it.)
+        let hidden (element: XmlDsl.XmlNode) =
+            descendants "cNvPr" element |> List.tryHead |> Option.bind (attr "hidden") |> Option.exists (fun value -> value = "1" || value = "true")
+        let blankShape (element: XmlDsl.XmlNode) =
+            nameOf element = "sp"
+            && (descendants "t" element |> List.forall (fun text -> (innerText text).Trim() = ""))
+            && (match child "spPr" element with
+                | Some properties ->
+                    (child "noFill" properties).IsSome
+                    && (match child "ln" properties with Some line -> (child "noFill" line).IsSome | None -> false)
+                | None -> false)
         match content with
         | None -> None
+        | Some element when hidden element || blankShape element -> Some { Width = width; Height = height; Items = [] }
         | Some element ->
             let items = elementItems parts data charts unknown element 0.0 0.0 width height
             // (A frame whose chart is not drawn, a group of nothing known: a placeholder says what it is.)

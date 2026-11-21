@@ -410,7 +410,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
     let cellState (cell: CellGeometry) =
         let addr = cell.Address
         // Its look (`cellLook`): its format with its table's look under it and its conditional formats over it.
-        let look = cellLook model addr.Row addr.Col (getCell addr model) viewport.Measurer cell.Rect.Width
+        let look = cellLook model addr.Row addr.Col (SheetOps.shownCell model addr) viewport.Measurer cell.Rect.Width
         cell, look, zoneForCell model addr.Row addr.Col
 
     let states = cells |> List.map cellState
