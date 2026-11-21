@@ -6,7 +6,11 @@
 /// at least 2 letters in and 3 from the end (2 in Word 2010's layout, compatibility mode 14, whose
 /// points differ too). Liang's TeX patterns (hyph-en-us, HyphenPatternsEnUs.fs) give Word's points for
 /// 84% of the words and Word's break for 91% of the probes (mode 14: 78% / 89% with 2 from the end);
-/// more points than Word in 4% of the points, fewer in 12%. The patterns are loaded on use.
+/// more points than Word in 4% of the points, fewer in 12%. Word's points are a dictionary's: the Moby
+/// hyphenation list's are Word's for 98.6% of the words it has of 2000 more checked in Word (the patterns':
+/// 87.7%), so its points for the 50000 commonest words where they differ from the patterns
+/// (HyphenWordsEnUs.fs) are installed over the patterns' exceptions: Word's break for 94.1% of the probes
+/// (95.6% of the 2000 more's, 93.4% in mode 14). Patterns and words are loaded on use.
 module Rbt.Word.Hyphenation
 
 open System.Collections.Generic
@@ -86,11 +90,12 @@ let mutable private loaded : Patterns option =
 #if FABLE_COMPILER
     None
 #else
-    Some (parse HyphenPatternsEnUs.patterns HyphenPatternsEnUs.exceptions)
+    Some (parse HyphenPatternsEnUs.patterns (HyphenPatternsEnUs.exceptions + " " + HyphenWordsEnUs.words))
 #endif
 let private cache = Dictionary<string, int[]>()
 
-/// Installs the patterns (HyphenPatternsEnUs: imported on use in the browser, see Word.fs).
+/// Installs the patterns and the words that are exceptions to them, later ones over earlier ones
+/// (HyphenPatternsEnUs, HyphenWordsEnUs: imported on use in the browser, see Word.fs).
 let register (patterns: string) (exceptions: string) =
     loaded <- Some (parse patterns exceptions)
     cache.Clear()
@@ -99,7 +104,7 @@ let register (patterns: string) (exceptions: string) =
 let isLoaded () = loaded.IsSome
 
 #if FABLE_COMPILER
-[<Fable.Core.Emit("import('./HyphenPatternsEnUs.js').then(m => [m.patterns, m.exceptions])")>]
+[<Fable.Core.Emit("Promise.all([import('./HyphenPatternsEnUs.js'), import('./HyphenWordsEnUs.js')]).then(([m, d]) => [m.patterns, m.exceptions + ' ' + d.words])")>]
 let private importPatterns () : Fable.Core.JS.Promise<string array> = Fable.Core.Util.jsNative
 [<Fable.Core.Emit("$0.then($1)")>]
 let private andThen (_promise: Fable.Core.JS.Promise<'T>) (_next: 'T -> 'U) : Fable.Core.JS.Promise<'U> = Fable.Core.Util.jsNative

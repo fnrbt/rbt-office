@@ -37,7 +37,7 @@ let fontSet =
           face "Times New Roman" "LiberationSerif-Regular.ttf"; face "Arial" "LiberationSans-Regular.ttf" ]
 let measureText = Shaper.createMeasurer fontSet
 let measureRange = Shaper.createRangeMeasurer fontSet
-Rbt.Word.Hyphenation.register Rbt.Word.HyphenPatternsEnUs.patterns Rbt.Word.HyphenPatternsEnUs.exceptions
+Rbt.Word.Hyphenation.register Rbt.Word.HyphenPatternsEnUs.patterns (Rbt.Word.HyphenPatternsEnUs.exceptions + " " + Rbt.Word.HyphenWordsEnUs.words)
 
 // Word's: doc -> probe -> fits; and which documents' probes are their paragraphs' last lines.
 let rows =
