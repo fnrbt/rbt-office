@@ -1894,7 +1894,7 @@ checks['grid-text-excel-parity'] = async () => {
 
 // Segoe UI Black (acre-property-acquisition's font) measured as Excel 2019 draws it (synthetic-font-faces,
 // make-font-faces-fixture.py; Range.Text read from Excel): $1,592,811 in columns of 40 .. 85 px shows as the number
-// or as many #s as Excel shows.
+// or as many #s as Excel shows; a number's room in its cell for 10 fonts at 9 zooms; Small Fonts' threshold.
 checks['font-faces-excel-parity'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();
@@ -1906,9 +1906,33 @@ checks['font-faces-excel-parity'] = async () => {
         const n = '$1,592,811', h = (count) => '#'.repeat(count);
         check('Segoe UI Black 9', shown(0), [h(5), h(5), h(6), h(7), h(7), h(8), n, n, n, n]);
         check('Segoe UI Black 10', shown(1), [h(4), h(5), h(5), h(6), h(6), h(7), h(8), n, n, n]);
-        // (Excel's #s at 15 px are fewer than #'s advance gives in two of the columns - 4 in 50 px, 5 in 60: not matched.)
-        check('Segoe UI Black 11: the number from 85 px', shown(2).map((t) => t === n), [false, false, false, false, false, false, false, false, false, true]);
+        // (Its digit 9 px: the room is the cell less 7 px, `CellText.fittedRoom`.)
+        check('Segoe UI Black 11', shown(2), [h(3), h(4), h(4), h(5), h(5), h(6), h(7), h(7), h(8), n]);
         check('Segoe UI 10', shown(3), [h(4), h(5), h(5), h(6), h(6), h(7), n, n, n, n]);
+        // A number's room: the cell less 2 x ceil(d / 4) + 1 px, d the font's widest digit as drawn (synthetic-font-faces
+        // "Room*": 10 fonts at 9 zooms, every cell's Range.Text from Excel in synthetic-font-faces.excel.json).
+        const excel = JSON.parse(new TextDecoder().decode(await bytesOf('tests/test-documents-excel/synthetic-font-faces.excel.json')));
+        const scroller = host.querySelector('.spreadsheet-container');
+        for (const [sheet, rows] of Object.entries(excel)) {
+            grid.SwitchSheet(grid.GetSheetNames().indexOf(sheet)); await frame(); await frame();
+            const seen = new Map();
+            for (const top of [0, 300]) for (let left = 0; left < 8000; left += 600) {
+                scroller.scrollTop = top; scroller.scrollLeft = left; await frame(); await frame();
+                for (const node of host.querySelectorAll('.spreadsheet-cell')) {
+                    if (node.style.display === 'none') continue;
+                    seen.set(node.dataset.row + ',' + node.dataset.col, node.textContent);
+                }
+            }
+            scroller.scrollLeft = 0; scroller.scrollTop = 0;
+            let same = 0, total = 0; const wrong = [];
+            for (const [row, texts] of rows) texts.forEach((want, i) => {
+                const got = seen.get(row + ',' + (i + 1)) ?? '?';
+                const norm = typeof want === 'number' ? '#'.repeat(want) : want;
+                total++;
+                if (got.trim() === norm.trim()) same++; else if (wrong.length < 12) wrong.push(`${row},${i + 1}: ${got} want ${norm}`);
+            });
+            check(`${sheet}: every number's text as Excel's (${wrong.join('; ')})`, same, total);
+        }
         // Small Fonts under 8 points on screen, taken to a twentieth of a point (synthetic-small-fonts, from Excel's
         // pictures: Calibri / Arial 7 .. 16 at 23 zooms): 14 pt at 57 % (7.98) and 10.5 at 76 % are TrueType, 15 at 53 %
         // (7.95) and 11 at 72 % (7.92) Small Fonts.

@@ -3711,7 +3711,7 @@ type Spreadsheet(container: Element) as this =
         let zoom = appliedZoom
         let screenWidth = System.Math.Floor (System.Math.Round (System.Math.Round w * zoom, 9) + 0.5)
         let look =
-            SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom } : SpreadsheetCellText.NumberFit)) model row col cellData
+            SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0 } : SpreadsheetCellText.NumberFit)) model row col cellData
                 (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
