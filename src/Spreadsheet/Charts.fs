@@ -401,19 +401,23 @@ type TextStyle = {
     Color: string option
     Bold: bool option
     Italic: bool option
+    /// The typeface (`a:latin`; a theme's "+mn-lt" is not one).
+    Face: string option
 }
 
-let private noTextStyle = { Size = None; Color = None; Bold = None; Italic = None }
+let private noTextStyle = { Size = None; Color = None; Bold = None; Italic = None; Face = None }
 
 let private runStyle (theme: ThemeColors) (props: XmlDsl.XmlNode) : TextStyle =
     { Size = attr "sz" props |> Option.bind number |> Option.map (fun value -> value / 100.0)
       Color = (match fillOf theme props with FillColor (color, _) -> Some color | _ -> None)
       Bold = attr "b" props |> Option.map (fun value -> value = "1" || value = "true")
-      Italic = attr "i" props |> Option.map (fun value -> value = "1" || value = "true") }
+      Italic = attr "i" props |> Option.map (fun value -> value = "1" || value = "true")
+      Face = child "latin" props |> Option.bind (attr "typeface") |> Option.filter (fun face -> face <> "" && not (face.StartsWith "+")) }
 
 let private over (first: TextStyle) (second: TextStyle) : TextStyle =
     { Size = first.Size |> Option.orElse second.Size; Color = first.Color |> Option.orElse second.Color
-      Bold = first.Bold |> Option.orElse second.Bold; Italic = first.Italic |> Option.orElse second.Italic }
+      Bold = first.Bold |> Option.orElse second.Bold; Italic = first.Italic |> Option.orElse second.Italic
+      Face = first.Face |> Option.orElse second.Face }
 
 /// The style of `c:txPr` (its paragraph's default run properties).
 let private textPropsOf (theme: ThemeColors) (holder: XmlDsl.XmlNode) : TextStyle =
@@ -456,6 +460,10 @@ type LabelSpec = {
     Separator: string option
     /// The points whose label is taken away (`c:dLbl` with `c:delete`).
     Deleted: Set<int>
+    /// A point's label of its own (`c:dLbl`): what it shows, its look.
+    Points: Map<int, LabelSpec>
+    /// A label moved from its place (`c:dLbl`'s manual layout): by these fractions of the chart's width and height.
+    Offset: (float * float) option
 }
 
 type Series = {
@@ -555,6 +563,11 @@ type Axis = {
     /// What the labels are divided by (`c:dispUnits`: 1000 for thousands), and the label that says so.
     DisplayUnit: float
     DisplayUnitLabel: string option
+    /// A date axis' unit of its points (`c:baseTimeUnit`: "days" | "months" | "years") and of its major step.
+    BaseTimeUnit: string option
+    MajorTimeUnit: string option
+    /// The labels turned (`a:bodyPr rot`), in degrees.
+    LabelRotation: float option
 }
 
 /// Where the file puts a title, a legend or the plot area (`c:manualLayout`): fractions of the
@@ -581,6 +594,8 @@ type Legend = {
     Overlay: bool
     /// The entries taken out of the legend (`c:legendEntry` with `c:delete`), by index.
     Deleted: Set<int>
+    /// An entry's text of its own look (`c:legendEntry` with `c:txPr`), by index.
+    EntryStyles: Map<int, TextStyle>
 }
 
 type Chart = {
@@ -643,25 +658,53 @@ let private dataRefOf (holder: XmlDsl.XmlNode) : DataRef option =
         | "v" -> Some { Formula = None; Numbers = Map.empty; Strings = Map.ofList [ 0, innerText item ]; Count = 1; FormatCode = None; FollowedEdit = false; LimitToCachedPoints = false }
         | _ -> None)
 
+let private labelSpecOf (theme: ThemeColors) (labels: XmlDsl.XmlNode) (parent: LabelSpec option) : LabelSpec =
+    let flag (name: string) (inherited: LabelSpec -> bool) =
+        match valOf name labels with
+        | Some _ -> isOn (valOf name labels) false
+        | None -> parent |> Option.map inherited |> Option.defaultValue false
+    let offset =
+        path [ "layout"; "manualLayout" ] labels
+        |> Option.bind (fun manual ->
+            match valOf "x" manual |> Option.bind number, valOf "y" manual |> Option.bind number with
+            | None, None -> None
+            | x, y -> Some (defaultArg x 0.0, defaultArg y 0.0))
+    { ShowValue = flag "showVal" (fun spec -> spec.ShowValue)
+      ShowPercent = flag "showPercent" (fun spec -> spec.ShowPercent)
+      ShowCategory = flag "showCatName" (fun spec -> spec.ShowCategory)
+      ShowSeries = flag "showSerName" (fun spec -> spec.ShowSeries)
+      Position = valOf "dLblPos" labels |> Option.orElse (parent |> Option.bind (fun spec -> spec.Position))
+      FormatCode =
+        (match child "numFmt" labels with
+         | Some format -> if isOn (attr "sourceLinked" format) false then None else attr "formatCode" format
+         | None -> parent |> Option.bind (fun spec -> spec.FormatCode))
+      Style = over (textPropsOf theme labels) (parent |> Option.map (fun spec -> spec.Style) |> Option.defaultValue noTextStyle)
+      Separator = child "separator" labels |> Option.map innerText |> Option.orElse (parent |> Option.bind (fun spec -> spec.Separator))
+      Deleted = Set.empty
+      Points = Map.empty
+      Offset = offset }
+
 let private labelsOf (theme: ThemeColors) (holder: XmlDsl.XmlNode) : LabelSpec option =
     child "dLbls" holder
     |> Option.bind (fun labels ->
         if isOn (valOf "delete" labels) false then None
         else
-            let spec =
-                { ShowValue = isOn (valOf "showVal" labels) false
-                  ShowPercent = isOn (valOf "showPercent" labels) false
-                  ShowCategory = isOn (valOf "showCatName" labels) false
-                  ShowSeries = isOn (valOf "showSerName" labels) false
-                  Position = valOf "dLblPos" labels
-                  FormatCode = child "numFmt" labels |> Option.bind (fun format -> if isOn (attr "sourceLinked" format) false then None else attr "formatCode" format)
-                  Style = textPropsOf theme labels
-                  Separator = child "separator" labels |> Option.map innerText
-                  Deleted =
-                    childrenNamed "dLbl" labels
-                    |> List.choose (fun label -> if isOn (valOf "delete" label) false then valOf "idx" label |> Option.bind number |> Option.map int else None)
-                    |> Set.ofList }
-            if spec.ShowValue || spec.ShowPercent || spec.ShowCategory || spec.ShowSeries then Some spec else None)
+            let spec = labelSpecOf theme labels None
+            let pointLabels = childrenNamed "dLbl" labels
+            let deleted =
+                pointLabels
+                |> List.choose (fun label -> if isOn (valOf "delete" label) false then valOf "idx" label |> Option.bind number |> Option.map int else None)
+                |> Set.ofList
+            let points =
+                pointLabels
+                |> List.choose (fun label ->
+                    match valOf "idx" label |> Option.bind number with
+                    | Some index when not (isOn (valOf "delete" label) false) -> Some (int index, labelSpecOf theme label (Some spec))
+                    | _ -> None)
+                |> Map.ofList
+            let spec = { spec with Deleted = deleted; Points = points }
+            let shows (spec: LabelSpec) = spec.ShowValue || spec.ShowPercent || spec.ShowCategory || spec.ShowSeries
+            if shows spec || (points |> Map.exists (fun _ point -> shows point)) then Some spec else None)
 
 /// `c:layout` of a title, a legend or the plot area.
 let private layoutOf (holder: XmlDsl.XmlNode) : ManualLayout option =
@@ -831,7 +874,12 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
                     | None, Some "millions" -> "Millions" | None, Some "tenMillions" -> "x 10000000" | None, Some "hundredMillions" -> "x 100000000"
                     | None, Some "billions" -> "Billions" | None, Some "trillions" -> "Trillions"
                     | None, _ -> "")
-                |> Option.filter (fun text -> text <> "")) })
+                |> Option.filter (fun text -> text <> ""))
+          BaseTimeUnit = valOf "baseTimeUnit" node
+          MajorTimeUnit = valOf "majorTimeUnit" node
+          LabelRotation =
+            child "txPr" node |> Option.bind (child "bodyPr") |> Option.bind (attr "rot") |> Option.bind number
+            |> Option.map (fun rot -> rot / 60000.0) |> Option.filter (fun rot -> rot <> 0.0) })
 
 // ---------------------------------------------------------------------------
 // The newer kinds (`cx:chartSpace` of a chartEx part)
@@ -983,7 +1031,8 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                               FormatCode = child "numFmt" labels |> Option.bind (fun format -> if isOn (attr "sourceLinked" format) false then None else attr "formatCode" format)
                               Style = textPropsOf theme labels
                               Separator = child "separator" labels |> Option.map innerText
-                              Deleted = childrenNamed "dataLabelHidden" labels |> List.choose (fun hidden -> attr "idx" hidden |> Option.bind number |> Option.map int) |> Set.ofList })
+                              Deleted = childrenNamed "dataLabelHidden" labels |> List.choose (fun hidden -> attr "idx" hidden |> Option.bind number |> Option.map int) |> Set.ofList
+                              Points = Map.empty; Offset = None })
                         |> Option.filter (fun spec -> spec.ShowValue || spec.ShowCategory || spec.ShowSeries)
                     let shape = child "spPr" node
                     { Order = order; Index = order
@@ -1046,7 +1095,8 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                       CrossesId = None
                       LogBase = None
                       DisplayUnit = 1.0
-                      DisplayUnitLabel = None })
+                      DisplayUnitLabel = None
+                      BaseTimeUnit = None; MajorTimeUnit = None; LabelRotation = None })
             let titleNode = child "title" chart
             let titleText =
                 match titleNode |> Option.bind (child "tx") |> Option.bind chartExText with
@@ -1073,7 +1123,7 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                     child "legend" chart
                     |> Option.map (fun legend ->
                         { Position = attr "pos" legend |> Option.defaultValue "t"; Style = textPropsOf theme legend; Layout = None
-                          Overlay = isOn (attr "overlay" legend) false; Deleted = Set.empty })
+                          Overlay = isOn (attr "overlay" legend) false; Deleted = Set.empty; EntryStyles = Map.empty })
                   Background = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                   Border = shape |> Option.bind (strokeOf theme)
                   PlotBackground = area |> Option.bind (child "spPr") |> Option.map (shapeFillOf theme) |> Option.defaultValue FillNone
@@ -1135,7 +1185,14 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                                   Deleted =
                                     childrenNamed "legendEntry" legend
                                     |> List.choose (fun entry -> if isOn (valOf "delete" entry) false then valOf "idx" entry |> Option.bind number |> Option.map int else None)
-                                    |> Set.ofList })
+                                    |> Set.ofList
+                                  EntryStyles =
+                                    childrenNamed "legendEntry" legend
+                                    |> List.choose (fun entry ->
+                                        match valOf "idx" entry |> Option.bind number, child "txPr" entry with
+                                        | Some index, Some _ -> Some (int index, textPropsOf theme entry)
+                                        | _ -> None)
+                                    |> Map.ofList })
                            Background = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                            // (A chart without a look of its own has Excel's grey frame.)
                            Border =
@@ -1210,6 +1267,8 @@ type Primitive =
     | PGroup of x: float * y: float * width: float * height: float * items: Primitive list
     /// Primitives under a transformation (a rotated or flipped shape): x' = a x + c y + e, y' = b x + d y + f.
     | PTransform of a: float * b: float * c: float * d: float * e: float * f: float * items: Primitive list
+    /// Primitives whose text is in a typeface of its own (a chart's `a:latin`), not Calibri.
+    | PFace of face: string * items: Primitive list
 
 type Scene = {
     Width: float
@@ -1295,6 +1354,8 @@ let rec private primitiveSvg (defs: ResizeArray<string>) (item: Primitive) : str
         // (Four decimals for the matrix: two would turn a shape by a visibly different angle.)
         let precise (value: float) = (Math.Round (value * 10000.0) / 10000.0).ToString(Globalization.CultureInfo.InvariantCulture)
         sprintf "<g transform=\"matrix(%s %s %s %s %s %s)\">%s</g>" (precise a) (precise b) (precise c) (precise d) (fmt e) (fmt f) (items |> List.map (primitiveSvg defs) |> String.concat "")
+    | PFace (face, items) ->
+        sprintf "<g font-family=\"%s, Calibri, Carlito, Arial, sans-serif\">%s</g>" (xmlText ("'" + face.Replace("'", "") + "'")) (items |> List.map (primitiveSvg defs) |> String.concat "")
 
 /// A scene as an `<svg>` element of its size (the font is Calibri, as Excel's charts).
 let sceneSvg (scene: Scene) : string =
@@ -1489,6 +1550,23 @@ let private cellsOf (data: ChartData) (source: DataRef) : CellData option list o
             Some (if source.LimitToCachedPoints && not source.FollowedEdit && source.Count > 0 && source.Count < cells.Length
                   then List.truncate source.Count cells else cells))
 
+/// The x values of a scatter series as Excel 2019 plots them: the numbers of its cells; but where a cell holds
+/// text, or the range is of more than one column and row (`c:multiLvlStrRef`), the points' places 1, 2, 3 ...
+/// (checked: synthetic-chart-parity "ScatterText", an x axis 0 .. 150 for 120 points; vertex42's mortgage
+/// calculator's interest-rate history against its No. / Date columns).
+let private xValuesOf (data: ChartData) (source: DataRef option) (count: int) (numbers: DataRef option -> float option []) (texts: DataRef option -> string []) : float option [] * bool =
+    match source with
+    | None -> [||], false
+    | Some reference ->
+        let blocky =
+            reference.Formula |> Option.bind parseAreas
+            |> Option.map (List.exists (fun (_, r0, c0, r1, c1) -> r1 > r0 && c1 > c0)) |> Option.defaultValue false
+        let values = numbers source
+        let words = texts source
+        let text = blocky || (words |> Array.mapi (fun index word -> word.Trim() <> "" && (index >= values.Length || values.[index].IsNone)) |> Array.exists id)
+        if text then Array.init count (fun index -> Some (float (index + 1))), true
+        else values, false
+
 let rec private numberOfValue (value: CellValue) : float option =
     match value with
     | CellValue.Number n -> Some n
@@ -1601,37 +1679,70 @@ let private textWidth (size: float) (text: string) : float =
 /// Points to pixels.
 let private px (points: float) = points * 96.0 / 72.0
 
-/// The scale of a value axis over lo .. hi: its ends and the step of its
-/// ticks, as Excel chooses them (zero is an end unless the values are
-/// close together far from it; room above the largest value).
-let private valueScale (lo: float) (hi: float) (fixedMin: float option) (fixedMax: float option) (fixedStep: float option) : float * float * float =
+/// The width of a text in a chart's typeface (None: Calibri) at `size` pixels, as GDI draws it where the
+/// tables know the face (`ExcelText`), else Calibri's and a little more. A heavier weight of a family the
+/// tables have (Segoe UI Black, Semibold) is its bold, a tenth wider for Black.
+let private faceWidth (face: string option) (size: float) (bold: bool) (text: string) : float =
+    let family = defaultArg face "Calibri"
+    let family, bold, wider =
+        if family.StartsWith "Segoe UI " then "Segoe UI", true, (if family.EndsWith "Black" then 1.1 else 1.0)
+        else family, bold, 1.0
+    if size > 0.0 && ExcelText.knowsFamily family then
+        let pixels = max 1 (int (Math.Round size))
+        ExcelText.textWidth (fun ch -> calibriWidth (float pixels) bold ch) family bold false pixels false text * size / float pixels * wider
+    else calibriWidth size bold text * 1.08 * wider
+
+/// The height of a line of text in a chart at `size` pixels (Calibri's line spacing, 1.2207 em, as Excel
+/// lays out its charts' labels).
+let private lineOf (size: float) = size * 2500.0 / 2048.0
+
+/// The scale of a value axis over lo .. hi: its ends and the step of its ticks, as Excel 2019
+/// chooses them (each rule checked on charts made in Excel, `tools/excel-parity/chart-axis-probe.vbs`):
+/// - zero is an end unless the values are close together far from it - their spread no more than a
+///   sixth of the largest: then the low end is the lowest less half the spread (50 .. 60: from 45);
+/// - 5 % of the spread is added beyond the largest (below the lowest, when that is under zero);
+/// - the step is the smallest of 1, 2, 5 x 10^n that cuts the axis into no more than `most` intervals
+///   (at most 10: `axisIntervals`), the ends whole steps;
+/// - nothing to show (no values, or only zeros) is 0 .. 1.
+let private valueScale (lo: float) (hi: float) (fixedMin: float option) (fixedMax: float option) (fixedStep: float option) (most: int) : float * float * float =
     let lo, hi = (if lo > hi then hi, lo else lo, hi)
-    let lo, hi = (if lo = hi then (if lo = 0.0 then 0.0, 1.0 elif lo > 0.0 then 0.0, hi else lo, 0.0) else lo, hi)
-    let low = if lo >= 0.0 then (if (hi - lo) / hi > 0.1667 then 0.0 else lo) else lo
-    let high = if hi <= 0.0 then (if (hi - lo) / (-lo) > 0.1667 then 0.0 else hi) else hi
+    let most = max 1 (min 10 most)
+    let empty = lo = 0.0 && hi = 0.0
+    let lo, hi = (if lo = hi && not empty then (if lo > 0.0 then 0.0, hi else lo, 0.0) else lo, hi)
+    let spread = hi - lo
+    // (The ends before they are whole steps.)
+    let low, high =
+        if empty then 0.0, 1.0
+        elif lo >= 0.0 then (if spread / hi > 1.0 / 6.0 then 0.0 else lo - spread / 2.0), hi + spread * 0.05
+        elif hi <= 0.0 then lo - spread * 0.05, (if spread / -lo > 1.0 / 6.0 then 0.0 else hi + spread / 2.0)
+        else lo - spread * 0.05, hi + spread * 0.05
     let low = defaultArg fixedMin low
     let high = defaultArg fixedMax high
-    let range = if high > low then high - low else 1.0
+    let wholeLow (step: float) = match fixedMin with Some value -> value | None -> Math.Floor (low / step + 1e-9) * step
+    let wholeHigh (step: float) = match fixedMax with Some value -> value | None -> Math.Ceiling (high / step - 1e-9) * step
     let step =
         match fixedStep with
         | Some step when step > 0.0 -> step
         | _ ->
-            let rough = range / 10.0
-            let power = Math.Pow(10.0, Math.Floor (Math.Log10 rough))
-            let unit = rough / power
-            (if unit <= 1.0 then 1.0 elif unit <= 2.0 then 2.0 elif unit <= 5.0 then 5.0 else 10.0) * power
-    let minimum =
-        match fixedMin with
-        | Some value -> value
-        | None -> if low = 0.0 then 0.0 else Math.Floor ((low - (if lo < 0.0 then range * 0.05 else 0.0)) / step) * step
-    let maximum =
-        match fixedMax with
-        | Some value -> value
-        | None -> if high = 0.0 then 0.0 else Math.Ceiling ((high + range * 0.05) / step) * step
+            let range = if high > low then high - low else 1.0
+            let power = Math.Pow(10.0, Math.Floor (Math.Log10 (range / 10.0)))
+            let ladder = [ for scale in 0 .. 12 do for unit in [ 1.0; 2.0; 5.0 ] -> unit * power * Math.Pow(10.0, float scale) ]
+            ladder |> List.tryFind (fun step -> (wholeHigh step - wholeLow step) / step <= float most + 1e-9) |> Option.defaultValue (List.last ladder)
+    let minimum = wholeLow step
+    let maximum = wholeHigh step
     let maximum = if maximum <= minimum then minimum + step else maximum
     // (Never more ticks than can be read.)
     let step = if (maximum - minimum) / step > 40.0 then (maximum - minimum) / 10.0 else step
     minimum, maximum, step
+
+/// How many intervals Excel lets a value axis have (`valueScale`): an axis up the side as many as lines of its
+/// labels fit in the plot area's height, less two; one along the bottom one for every 3.8 times the labels' size
+/// of the plot area's width (both with the axis' labels; sizes in pixels). Checked in Excel 2019 on column and
+/// bar charts of fonts of 8 - 24 pt, to a quarter of a point.
+let private axisIntervals (alongBottom: bool) (room: float) (labelSize: float) : int =
+    if labelSize <= 0.0 then 10
+    elif alongBottom then int (Math.Floor (room / (3.8 * labelSize)))
+    else int (Math.Floor (room / (labelSize * 2500.0 / 2048.0))) - 2
 
 let private generalNumber (value: float) : string =
     let rounded = Math.Round (value * 1e10) / 1e10
@@ -1692,6 +1803,8 @@ type private SeriesData = {
     Sizes: float option []
     Look: SeriesLook
     FormatCode: string option
+    /// The number format of the x values (a scatter chart's), when they are numbers.
+    XFormatCode: string option
     /// On the secondary value axis.
     Secondary: bool
 }
@@ -1859,7 +1972,7 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
             let lo = Array.append starts ends |> Array.fold min 0.0
             let hi = Array.append starts ends |> Array.fold max 0.0
             let minimum, maximum, step =
-                valueScale lo hi (valAxis |> Option.bind (fun axis -> axis.Min)) (valAxis |> Option.bind (fun axis -> axis.Max)) (valAxis |> Option.bind (fun axis -> axis.MajorUnit))
+                valueScale lo hi (valAxis |> Option.bind (fun axis -> axis.Min)) (valAxis |> Option.bind (fun axis -> axis.Max)) (valAxis |> Option.bind (fun axis -> axis.MajorUnit)) 10
             let ticks = ticksOf { Min = minimum; Max = maximum; Step = step; Log = None }
             let tickText (tick: float) =
                 match valAxis with
@@ -1966,6 +2079,19 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     // (Text that names no colour is black, as Excel draws it: the charts it writes name theirs.)
     let textColor (style: TextStyle) = over style chart.TextStyle |> fun merged -> merged.Color |> Option.defaultValue "#000000"
     let textSize (style: TextStyle) (otherwise: float) = px (over style chart.TextStyle |> fun merged -> merged.Size |> Option.defaultValue otherwise)
+    let faceOf (style: TextStyle) = (over style chart.TextStyle).Face
+    /// A text in its typeface: Calibri as it is, another in a `PFace`.
+    let addText (style: TextStyle) (item: Primitive) =
+        match faceOf style with
+        | Some face when face <> "Calibri" ->
+            // (A heavy weight of a family - Segoe UI Black - is the family's bold where the weight is not there.)
+            let heavy = [ " Black"; " Heavy"; " Semibold"; " Bold" ] |> List.tryFind (fun weight -> face.EndsWith weight)
+            match heavy, item with
+            | Some weight, PText (x, y, text, size, color, anchor, _, italic, turn) ->
+                add (PFace (face.Substring(0, face.Length - weight.Length), [ PText (x, y, text, size, color, anchor, true, italic, turn) ]))
+            | _ -> add (PFace (face, [ item ]))
+        | _ -> add item
+    let widthIn (style: TextStyle) (size: float) (bold: bool) (text: string) = faceWidth (faceOf style) size bold text
 
     // ---- the chart's own rectangle ----
     (match chart.Background with
@@ -2029,10 +2155,11 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 { Source = source; Plot = plot; Ordinal = at
                   Label = (if name.Trim() = "" then sprintf "Series%d" (at + 1) else name)
                   Values = numbersOf data source.Values
-                  XValues = numbersOf data source.XValues
+                  XValues = (let values = numbersOf data source.Values in fst (xValuesOf data source.XValues values.Length (numbersOf data) (textsOf data)))
                   Sizes = numbersOf data source.BubbleSizes
                   Look = look
                   FormatCode = formatCodeOf data source.Values
+                  XFormatCode = (if snd (xValuesOf data source.XValues 0 (numbersOf data) (textsOf data)) then None else formatCodeOf data source.XValues)
                   Secondary = secondary }))
     let firstPlot = chart.Plots |> List.tryHead
     let isPie = match firstPlot with Some plot -> plot.Kind = PiePlot || plot.Kind = DoughnutPlot | None -> false
@@ -2056,7 +2183,10 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         | Some text -> Some text
         | None when not chart.AutoTitleDeleted && series.Length = 1 -> Some series.Head.Label
         | None -> None
-    let mutable top = 6.0
+    // (Excel 2019 lays a chart out from a margin: the plot area's box - with its axes' labels - 11 pt in from
+    // the chart's edges, a title or a legend 6 pt in, and 11 pt between them and the plot area.)
+    let edge, gap = px 6.0, px 11.0
+    let mutable top = gap
     (match title with
      | Some text ->
         // (A title of its own text that names no size or weight: 10 pt bold, as Excel draws it; one made
@@ -2064,8 +2194,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         let size = textSize chart.TitleStyle (if chart.Title.IsSome then 10.0 else 14.0)
         let bold = chart.TitleStyle.Bold |> Option.orElse chart.TextStyle.Bold |> Option.defaultValue chart.Title.IsSome
         let lines = text.Split('\n')
-        let blockHeight = float lines.Length * size * 1.25
-        let widest = lines |> Array.fold (fun most line -> max most (calibriWidth size bold line)) 0.0
+        // (Its box: its lines and 1.5 pt above and below them.)
+        let blockHeight = float lines.Length * lineOf size + px 3.0
+        let widest = lines |> Array.fold (fun most line -> max most (widthIn chart.TitleStyle size bold line)) 0.0
         // Where the file puts it (`c:layout`): from the chart's edges, or moved from its own place.
         let x, anchor =
             match chart.TitleLayout with
@@ -2077,52 +2208,64 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         let y =
             match chart.TitleLayout with
             | Some { YEdge = true; Y = Some y } -> y * height + 3.0
-            | Some { Y = Some y } -> top + y * height
-            | _ -> top
+            | Some { Y = Some y } -> edge + y * height
+            | _ -> edge
         let y = max 0.0 (min y (height - blockHeight))
         lines |> Array.iteri (fun index line ->
-            add (PText (x, y + size * 0.7 + float index * size * 1.25, line, size, textColor chart.TitleStyle, anchor, bold, (chart.TitleStyle.Italic |> Option.defaultValue false), 0.0)))
+            addText chart.TitleStyle (PText (x, y + px 1.5 + (float index + 0.5) * lineOf size, line, size, textColor chart.TitleStyle, anchor, bold, (chart.TitleStyle.Italic |> Option.defaultValue false), 0.0)))
         // (Room is made for a title at the top that is not laid over the plot.)
-        if not chart.TitleOverlay && y < height * 0.4 then top <- max top (y + blockHeight + 8.0)
+        if not chart.TitleOverlay && y < height * 0.4 then top <- max top (y + blockHeight + gap)
      | None -> ())
 
     // ---- legend ----
-    let legendEntries : (string * string * bool) list =
-        // (text, colour, a line rather than a box)
+    let legendEntries : (string * string * bool * TextStyle) list =
+        // (text, colour, a line rather than a box, the look of its text)
+        let styleAt (index: int) =
+            match chart.Legend with
+            | Some legend -> (match Map.tryFind index legend.EntryStyles with Some own -> over own legend.Style | None -> legend.Style)
+            | None -> noTextStyle
         let all =
             if isPie then
                 match series with
-                | first :: _ -> categories |> Array.toList |> List.mapi (fun index text -> text, fst (pointColor first index), false)
+                | first :: _ -> categories |> Array.toList |> List.mapi (fun index text -> text, fst (pointColor first index), false, styleAt index)
                 | [] -> []
             else
-                series |> List.map (fun item ->
+                series |> List.mapi (fun index item ->
                     item.Label, (match item.Look.LineColor with Some color when not item.Look.Filled -> color | _ -> item.Look.Color),
-                    (item.Plot.Kind = LinePlot || item.Plot.Kind = ScatterPlot || item.Plot.Kind = StockPlot || (item.Plot.Kind = RadarPlot && item.Plot.RadarStyle <> "filled")))
+                    (item.Plot.Kind = LinePlot || item.Plot.Kind = ScatterPlot || item.Plot.Kind = StockPlot || (item.Plot.Kind = RadarPlot && item.Plot.RadarStyle <> "filled")),
+                    styleAt index)
         match chart.Legend with
         | Some legend when not legend.Deleted.IsEmpty -> all |> List.indexed |> List.filter (fun (index, _) -> not (Set.contains index legend.Deleted)) |> List.map snd
         | _ -> all
-    let mutable left = 8.0
-    let mutable right = width - 8.0
-    let mutable bottom = height - 8.0
+    let mutable left = gap
+    let mutable right = width - gap
+    let mutable bottom = height - gap
     (match chart.Legend with
      | Some legend when not legendEntries.IsEmpty ->
-        let size = textSize legend.Style 9.0
-        let color = textColor legend.Style
-        let swatch = size * 0.75
-        let keyWidth (line: bool) = if line then swatch * 1.6 else swatch
-        let entryWidth (text: string, _: string, line: bool) = keyWidth line + 5.0 + textWidth size text + 14.0
-        let drawEntry (x: float) (y: float) (room: float) (text: string, entryColor: string, line: bool) =
-            if line then add (PLine (x, y, x + swatch * 1.6, y, entryColor, 2.25, None))
+        // (Excel 2019's legend, checked on charts made in Excel: an entry is a line of its text; entries one under
+        // another are 5.85 pt apart, the box 3 pt round them; a legend at the side is centred on the plot area's box,
+        // one at the bottom or the top on its width; a box of the file's own size shares its height out evenly.)
+        let sizeOf (style: TextStyle) = textSize style 10.0
+        let size = sizeOf legend.Style
+        let swatch = size * 0.6
+        let keyWidth (line: bool) = if line then swatch * 2.4 else swatch
+        let entryWidth (text: string, _: string, line: bool, style: TextStyle) = keyWidth line + px 3.0 + widthIn style (sizeOf style) (style.Bold |> Option.defaultValue false) text
+        let pitch = lineOf size + px 5.85
+        let padding = px 3.0
+        let drawEntry (x: float) (y: float) (room: float) (text: string, entryColor: string, line: bool, style: TextStyle) =
+            if line then add (PLine (x, y, x + keyWidth true, y, entryColor, 2.25, None))
             else add (PRect (x, y - swatch / 2.0, swatch, swatch, Some entryColor, 1.0, None, 0.0, 0.0))
+            let textSize = sizeOf style
+            let bold = style.Bold |> Option.defaultValue false
             // (A text longer than its place ends in an ellipsis.)
-            let textRoom = room - keyWidth line - 5.0
+            let textRoom = room - keyWidth line - px 3.0
             let shownText =
-                if textRoom > 12.0 && textWidth size text > textRoom + 14.0 && text.Length > 3 then
+                if textRoom > 12.0 && widthIn style textSize bold text > textRoom + 2.0 && text.Length > 3 then
                     let mutable keep = text.Length - 1
-                    while keep > 1 && textWidth size (text.Substring(0, keep) + "…") > textRoom + 10.0 do keep <- keep - 1
+                    while keep > 1 && widthIn style textSize bold (text.Substring(0, keep) + "…") > textRoom do keep <- keep - 1
                     text.Substring(0, keep) + "…"
                 else text
-            add (PText (x + keyWidth line + 5.0, y, shownText, size, color, "start", false, false, 0.0))
+            addText style (PText (x + keyWidth line + px 3.0, y, shownText, textSize, textColor style, "start", bold, (style.Italic |> Option.defaultValue false), 0.0))
         let horizontal = legend.Position = "b" || legend.Position = "t"
         // The rectangle the file gives the legend (`c:layout`), or the side of the chart it is at.
         let box =
@@ -2133,54 +2276,56 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             | _ -> None
         if horizontal then
             // Rows of entries, centred.
-            let rowHeight = size * 1.5
-            let room = match box with Some (_, _, Some boxWidth, _) -> boxWidth | _ -> width - 16.0
-            let rows = ResizeArray<ResizeArray<string * string * bool>>()
-            let mutable current = ResizeArray<string * string * bool>()
+            let between = px 8.0
+            let room = match box with Some (_, _, Some boxWidth, _) -> boxWidth - 2.0 * padding | _ -> right - left
+            let rows = ResizeArray<ResizeArray<string * string * bool * TextStyle>>()
+            let mutable current = ResizeArray<string * string * bool * TextStyle>()
             let mutable used = 0.0
             for entry in legendEntries do
                 let entryW = entryWidth entry
-                if used + entryW > room + 14.0 && current.Count > 0 then
+                if used + entryW > room && current.Count > 0 then
                     rows.Add current
-                    current <- ResizeArray<string * string * bool>()
+                    current <- ResizeArray<string * string * bool * TextStyle>()
                     used <- 0.0
                 current.Add entry
-                used <- used + entryW
+                used <- used + entryW + between
             if current.Count > 0 then rows.Add current
             let rows = rows |> Seq.truncate 6 |> Seq.toList
-            let blockHeight = float rows.Length * rowHeight
+            let blockHeight = float rows.Length * pitch
             let boxLeft, boxTop, boxWidth, boxHeight =
                 match box with
                 | Some (boxLeft, boxTop, boxWidth, boxHeight) -> boxLeft, boxTop, (boxWidth |> Option.defaultValue (width - boxLeft)), (boxHeight |> Option.defaultValue blockHeight)
-                | None -> 0.0, (if legend.Position = "b" then bottom - blockHeight else top), width, blockHeight
+                | None -> left, (if legend.Position = "b" then height - edge - blockHeight else (if top > gap then top - gap + edge else edge)), right - left, blockHeight
             let startY = boxTop + max 0.0 ((boxHeight - blockHeight) / 2.0)
             rows |> List.iteri (fun rowIndex row ->
-                let total = (row |> Seq.sumBy entryWidth) - 14.0
+                let total = (row |> Seq.sumBy (fun entry -> entryWidth entry + between)) - between
                 let mutable x = max 4.0 (boxLeft + (boxWidth - total) / 2.0)
                 for entry in row do
-                    drawEntry x (startY + rowHeight * (float rowIndex + 0.5)) (entryWidth entry - 14.0) entry
-                    x <- x + entryWidth entry)
+                    drawEntry x (startY + pitch * (float rowIndex + 0.5)) (entryWidth entry) entry
+                    x <- x + entryWidth entry + between)
             if not legend.Overlay then
-                if legend.Position = "b" then bottom <- min bottom (boxTop - 4.0)
-                else top <- max top (boxTop + max blockHeight boxHeight + 4.0)
+                if legend.Position = "b" then bottom <- min bottom (boxTop - gap)
+                else top <- max top (boxTop + max blockHeight boxHeight + gap)
         else
             let position = legend.Position
             let widest = legendEntries |> List.fold (fun most entry -> max most (entryWidth entry)) 0.0
-            let boxLeft, boxTop, boxWidth, boxHeight =
+            let count = legendEntries.Length
+            let boxLeft, boxTop, boxWidth, boxHeight, spread =
                 match box with
                 | Some (boxLeft, boxTop, boxWidth, boxHeight) ->
-                    boxLeft, boxTop, (boxWidth |> Option.defaultValue (min widest (width - boxLeft))), (boxHeight |> Option.defaultValue (bottom - boxTop))
+                    boxLeft, boxTop, (boxWidth |> Option.defaultValue (min (widest + 2.0 * padding) (width - boxLeft))), (boxHeight |> Option.defaultValue (bottom - boxTop)), boxHeight.IsSome
                 | None ->
-                    let blockWidth = min (width * 0.4) widest
-                    (if position = "l" then left else right - blockWidth + 4.0), top, blockWidth, bottom - top
+                    let blockWidth = min (width * 0.4) (widest + 2.0 * padding)
+                    let blockHeight = min (bottom - top) (2.0 * padding + float count * lineOf size + float (count - 1) * px 5.85)
+                    let blockTop = if position = "tr" then top else (top + bottom) / 2.0 - blockHeight / 2.0
+                    (if position = "l" then edge else width - edge - blockWidth), blockTop, blockWidth, blockHeight, false
             // (Every entry is there: the lines move together where the legend is short.)
-            let rowHeight = max (size * 1.05) (min (size * 1.6) (boxHeight / float legendEntries.Length))
-            let shown = legendEntries |> List.truncate (max 1 (int ((boxHeight + 1.0) / rowHeight)))
-            let blockHeight = float shown.Length * rowHeight
-            let startY = if position = "tr" && box.IsNone then boxTop else boxTop + max 0.0 ((boxHeight - blockHeight) / 2.0)
-            shown |> List.iteri (fun index entry -> drawEntry (boxLeft + 2.0) (startY + rowHeight * (float index + 0.5)) (boxWidth - 4.0) entry)
+            let rowHeight = if spread then boxHeight / float count else max (size * 1.05) (min pitch ((boxHeight - 2.0 * padding + px 5.85) / float count))
+            let shown = legendEntries |> List.truncate (max 1 (int ((boxHeight + 1.0) / max 1.0 (min rowHeight (size * 1.05)))))
+            let startY = if spread then boxTop else boxTop + padding - px 5.85 / 2.0
+            shown |> List.iteri (fun index entry -> drawEntry (boxLeft + padding) (startY + rowHeight * (float index + 0.5)) (boxWidth - 2.0 * padding) entry)
             if not legend.Overlay then
-                if position = "l" then left <- max left (boxLeft + boxWidth + 6.0) else right <- min right (boxLeft - 2.0)
+                if position = "l" then left <- max left (boxLeft + boxWidth + gap) else right <- min right (boxLeft - gap)
      | _ -> ())
 
     let labelStyleOf (item: SeriesData) = item.Source.Labels |> Option.orElse item.Plot.Labels
@@ -2199,22 +2344,51 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                          | Some code when code.Contains "%" && not spec.ShowValue -> (try data.Format code part with _ -> generalNumber (Math.Round (part * 100.0)) + "%")
                          | _ -> generalNumber (Math.Round (part * 100.0)) + "%")
               | None -> () ]
-        |> String.concat (spec.Separator |> Option.defaultValue "; ")
+        // (Without a separator of its own, a pie's label is a line for each part - Excel 2019's
+        // "Studio\n14%" -, another chart's parts are on one line.)
+        |> String.concat (spec.Separator |> Option.defaultValue (if item.Plot.Kind = PiePlot || item.Plot.Kind = DoughnutPlot then "\n" else "; "))
     let labelled (item: SeriesData) (index: int) : LabelSpec option =
-        labelStyleOf item |> Option.filter (fun spec -> not (Set.contains index spec.Deleted))
+        labelStyleOf item
+        |> Option.filter (fun spec -> not (Set.contains index spec.Deleted))
+        |> Option.map (fun spec -> Map.tryFind index spec.Points |> Option.defaultValue spec)
+        |> Option.filter (fun spec -> spec.ShowValue || spec.ShowPercent || spec.ShowCategory || spec.ShowSeries)
+    /// A label's lines: its parts, each broken at its spaces to the width Excel gives a label, a fifth of the
+    /// chart's (checked: synthetic-chart-parity "PieLabels": "Two / BR/One / BA / 14%" in a chart of 225 pt).
+    let wrapLabel (style: TextStyle) (size: float) (bold: bool) (text: string) : string list =
+        let room = width / 5.0 - px 6.0
+        [ for part in text.Split('\n') do
+            let words = ResizeArray<string>()
+            let mutable start = 0
+            for at in 0 .. part.Length - 1 do
+                if part.[at] = ' ' then
+                    words.Add (part.Substring(start, at - start + 1))
+                    start <- at + 1
+            if start < part.Length then words.Add (part.Substring start)
+            let mutable line = ""
+            for word in words do
+                if line <> "" && widthIn style size bold ((line + word).TrimEnd()) > room then
+                    yield line.TrimEnd()
+                    line <- word
+                else line <- line + word
+            yield line.TrimEnd() ]
     let plotRect = layoutRect chart.PlotLayout width height
 
     if isPie then
         // ---- pie, doughnut ----
         let rings = series |> List.filter (fun item -> item.Plot.Kind = PiePlot || item.Plot.Kind = DoughnutPlot)
         let rings = (match firstPlot with Some plot when plot.Kind = PiePlot -> List.truncate 1 rings | _ -> rings)
-        let outside = rings |> List.exists (fun item -> match labelStyleOf item with Some spec -> spec.Position = Some "outEnd" | None -> false)
+        // (Labels that may stand outside the pie - at its end, or where they fit best - make Excel 2019 leave
+        // 1.5625 times their size round it: a pie of 174.9 pt in 203 with labels of 9 pt.)
+        let outsideSize =
+            rings |> List.choose (fun item ->
+                match labelStyleOf item with
+                | Some spec when spec.Position = Some "outEnd" || spec.Position = Some "bestFit" -> Some (textSize spec.Style 10.0)
+                | _ -> None)
+            |> List.fold max 0.0
         let cx, cy, radius =
             match plotRect with
             | Some (x, y, w, h) -> x + w / 2.0, y + h / 2.0, max 4.0 (min w h / 2.0)
-            | None ->
-                let room = if outside then 18.0 else 4.0
-                (left + right) / 2.0, (top + bottom) / 2.0, max 4.0 (min (right - left) (bottom - top) / 2.0 - room)
+            | None -> (left + right) / 2.0, (top + bottom) / 2.0, max 4.0 (min (right - left) (bottom - top) / 2.0 - outsideSize * 1.5625)
         let exploded = rings |> List.fold (fun most item -> max most item.Source.Explosion) 0.0
         let radius = if exploded > 0.0 then radius / (1.0 + min 1.0 (exploded / 100.0)) else radius
         let hole = (match firstPlot with Some plot when plot.Kind = DoughnutPlot -> radius * (max 10.0 (min 90.0 plot.HoleSize)) / 100.0 | _ -> 0.0)
@@ -2257,18 +2431,37 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                                 else sprintf "M%s %sL%s %sA%s %s 0 %d 1 %s %sZ" (fmt cx) (fmt cy) (fmt ax) (fmt ay) (fmt outer) (fmt outer) large (fmt bx) (fmt by)
                             add (PPath (d, Some color, opacity, fst separator, snd separator))
                         (match labelled item index with
-                         | Some spec when sweep > 0.12 ->
-                            let size = textSize spec.Style 9.0
-                            let outsideLabel = spec.Position = Some "outEnd"
+                         | Some spec ->
+                            let size = textSize spec.Style 10.0
+                            let bold = spec.Style.Bold |> Option.defaultValue false
+                            let lines = wrapLabel spec.Style size bold (labelText item spec index value (Some (value / total)))
+                            let lineHeight = lineOf size
+                            let boxWidth = (lines |> List.fold (fun most line -> max most (widthIn spec.Style size bold line)) 0.0) + px 6.0
+                            let boxHeight = float lines.Length * lineHeight + px 3.0
+                            // (Where a label stands: in the slice, or outside its end - the box just clear of the
+                            // circle; where it fits best is in the slice when the slice holds it.)
+                            let reach = abs (Math.Sin middle) * boxWidth / 2.0 + abs (Math.Cos middle) * boxHeight / 2.0
+                            let fitsInside =
+                                let at = outer * 0.6
+                                sweep * at >= min boxWidth boxHeight + px 2.0 && at + reach <= outer && (sweep >= Math.PI || 2.0 * at * Math.Sin (sweep / 2.0) >= max boxWidth boxHeight * 0.8)
+                            // (A label moved by hand is moved from where the series' labels stand: A.CRE's "Occupied
+                            // Units" of best fit, moved a little, is outside its 75 % slice as the others are.)
+                            let position = if spec.Offset.IsSome then (labelStyleOf item |> Option.bind (fun series -> series.Position) |> Option.orElse spec.Position) else spec.Position
+                            let outsideLabel = position = Some "outEnd" || (position = Some "bestFit" && not fitsInside)
                             let at =
-                                if outsideLabel then outer + size * 0.9
+                                if outsideLabel then outer + px 2.0 + reach
                                 elif inner > 0.0 then (inner + outer) / 2.0
-                                elif spec.Position = Some "inEnd" then outer * 0.82
-                                elif spec.Position = Some "ctr" then outer * 0.5
-                                else outer * 0.68
+                                elif position = Some "inEnd" then outer - reach - px 2.0
+                                elif position = Some "ctr" then outer * 0.5
+                                else outer * 0.6
                             let x, y = point at middle
-                            let anchor = if not outsideLabel then "middle" elif Math.Sin middle > 0.3 then "start" elif Math.Sin middle < -0.3 then "end" else "middle"
-                            add (PText (x, y, labelText item spec index value (Some (value / total)), size, (spec.Style.Color |> Option.defaultValue (if outsideLabel then "#404040" else "#FFFFFF")), anchor, (spec.Style.Bold |> Option.defaultValue false), false, 0.0))
+                            let x, y = (match spec.Offset with Some (dx, dy) -> x + dx * width, y + dy * height | None -> x, y)
+                            // (Kept inside the chart.)
+                            let x = max (boxWidth / 2.0) (min (width - boxWidth / 2.0) x)
+                            let y = max (boxHeight / 2.0) (min (height - boxHeight / 2.0) y)
+                            let color = spec.Style.Color |> Option.orElse chart.TextStyle.Color |> Option.defaultValue (if outsideLabel then "#404040" else "#FFFFFF")
+                            lines |> List.iteri (fun lineIndex line ->
+                                addText spec.Style (PText (x, y - boxHeight / 2.0 + px 1.5 + (float lineIndex + 0.5) * lineHeight, line, size, color, "middle", bold, (spec.Style.Italic |> Option.defaultValue false), 0.0)))
                          | _ -> ())
                         angle <- angle + sweep))
     elif isRadar then
@@ -2277,7 +2470,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         let lo, hi =
             let values = series |> List.collect (fun item -> item.Values |> Array.choose id |> Array.toList)
             if values.IsEmpty then 0.0, 1.0 else List.min values, List.max values
-        let vMin, vMax, vStep = valueScale lo hi (primaryValueAxis |> Option.bind (fun a -> a.Min)) (primaryValueAxis |> Option.bind (fun a -> a.Max)) (primaryValueAxis |> Option.bind (fun a -> a.MajorUnit))
+        let vMin, vMax, vStep = valueScale lo hi (primaryValueAxis |> Option.bind (fun a -> a.Min)) (primaryValueAxis |> Option.bind (fun a -> a.Max)) (primaryValueAxis |> Option.bind (fun a -> a.MajorUnit)) 10
         let scale = { Min = vMin; Max = vMax; Step = vStep; Log = None }
         let categoryAxis = chart.Axes |> List.tryFind (fun axis -> axis.Kind = "cat" || axis.Kind = "date")
         let labelSize = textSize (categoryAxis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle) 9.0
@@ -2336,7 +2529,68 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             | Some first -> valueAxes |> List.tryFind (fun axis -> axis.Id <> first.Id && series |> List.exists (fun item -> item.Secondary && List.contains axis.Id item.Plot.AxisIds))
             | None -> None
         let xAxis = if isScatter then valueAxes |> List.tryFind (fun axis -> axis.Position = "b" || axis.Position = "t") else None
-        let count = pointCount
+        // A date axis (`c:dateAx`) over categories that are dates: a band for every day, month or year from the
+        // first date to the last (`c:baseTimeUnit`, else the finest the dates need), each point in the band of
+        // its date, a label every major unit (`c:majorUnit` of `c:majorTimeUnit`) from the first, in the axis'
+        // number format - as Excel 2019 draws vertex42's mortgage balance (checked: synthetic-chart-parity
+        // "DateLine", the axis from the first date to the last).
+        let dated : (float option [] * string * int) option =
+            match categoryAxis with
+            | Some axis when axis.Kind = "date" && not isScatter && not horizontal ->
+                let dates = series |> List.tryPick (fun item -> match item.Source.Categories with Some source -> Some (numbersOf data (Some source)) | None -> None)
+                match dates with
+                | Some dates when dates |> Array.exists (fun date -> match date with Some value -> value >= 1.0 | None -> false) ->
+                    let days = dates |> Array.choose id |> Array.filter (fun value -> value >= 1.0) |> Array.map (fun value -> DateTime(1899, 12, 30).AddDays(Math.Floor value))
+                    let unit =
+                        match axis.BaseTimeUnit with
+                        | Some unit -> unit
+                        | None ->
+                            if days |> Array.forall (fun day -> day.Day = 1 && day.Month = days.[0].Month) then "years"
+                            elif days |> Array.forall (fun day -> day.Day = days.[0].Day) then "months"
+                            else "days"
+                    Some (dates, unit, 0)
+                | _ -> None
+            | _ -> None
+        let unitOf (unit: string) (serial: float) =
+            let day = DateTime(1899, 12, 30).AddDays(Math.Floor serial)
+            match unit with
+            | "years" -> day.Year
+            | "months" -> day.Year * 12 + day.Month - 1
+            | _ -> int (Math.Floor serial)
+        let series, categories =
+            match dated with
+            | Some (dates, unit, _) ->
+                let units = dates |> Array.map (Option.filter (fun value -> value >= 1.0) >> Option.map (unitOf unit))
+                let first = units |> Array.choose id |> Array.min
+                let last = units |> Array.choose id |> Array.max
+                let bands = last - first + 1
+                let moved (values: float option []) =
+                    let placed = Array.create bands None
+                    values |> Array.iteri (fun index value ->
+                        match (if index < units.Length then units.[index] else None), value with
+                        | Some at, Some v -> placed.[at - first] <- Some v
+                        | _ -> ())
+                    placed
+                let axis = categoryAxis.Value
+                let step = max 1 (int (defaultArg axis.MajorUnit 1.0))
+                let stepUnits =
+                    match unit, defaultArg axis.MajorTimeUnit unit with
+                    | "months", "years" -> step * 12
+                    | "days", "months" -> step * 30
+                    | "days", "years" -> step * 365
+                    | _ -> step
+                let code = (match axis.FormatCode with Some code when not axis.SourceLinked && code <> "General" -> code | _ -> "m/d/yyyy")
+                let labelOf (band: int) =
+                    let serial =
+                        match unit with
+                        | "years" -> (DateTime(first + band, 1, 1) - DateTime(1899, 12, 30)).TotalDays
+                        | "months" -> let m = first + band in (DateTime(m / 12, m % 12 + 1, 1) - DateTime(1899, 12, 30)).TotalDays
+                        | _ -> float (first + band)
+                    try data.Format code serial with _ -> generalNumber serial
+                (series |> List.map (fun item -> { item with Values = moved item.Values })),
+                Array.init bands (fun band -> if band % stepUnits = 0 then labelOf band else "")
+            | None -> series, categories
+        let count = max 1 categories.Length
         // What a series reaches on its value axis, stacked ones by their sums.
         let stackedOf (plot: Plot) = plot.Grouping = "stacked" || plot.Grouping = "percentStacked"
         let groupTotals (members: SeriesData list) (percent: bool) : (float [] * float []) =
@@ -2377,7 +2631,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             let high = (match axis.Max with Some value when value > 0.0 -> exponent value | _ -> Math.Ceiling (exponent hi - 1e-9))
             let high = if high <= low then low + 1.0 else high
             { Min = low; Max = high; Step = max 1.0 (Math.Ceiling ((high - low) / 12.0)); Log = Some logBase }
-        let scaleFor (axis: Axis option) (secondary: bool) : AxisScale =
+        let scaleFor (axis: Axis option) (secondary: bool) (most: int) : AxisScale =
             let percent = chart.Plots |> List.exists (fun plot -> plot.Grouping = "percentStacked" && series |> List.exists (fun item -> obj.ReferenceEquals(item.Plot, plot) && item.Secondary = secondary))
             match axis with
             | Some ({ LogBase = Some logBase } as logAxis) when not percent ->
@@ -2385,89 +2639,120 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                  | Some (lo, hi) -> logScale logBase lo hi logAxis
                  | None -> { Min = 0.0; Max = 1.0; Step = 1.0; Log = Some logBase })
             | _ ->
+                let fixedOf (pick: Axis -> float option) = axis |> Option.bind pick
                 match extent secondary false with
-                | None -> { Min = 0.0; Max = 1.0; Step = 0.2; Log = None }
-                | Some (lo, hi) ->
-                    if percent then { Min = (if lo < 0.0 then -1.0 else 0.0); Max = 1.0; Step = 0.1; Log = None }
-                    else
-                        let minimum, maximum, step = valueScale lo hi (axis |> Option.bind (fun a -> a.Min)) (axis |> Option.bind (fun a -> a.Max)) (axis |> Option.bind (fun a -> a.MajorUnit))
-                        { Min = minimum; Max = maximum; Step = step; Log = None }
-        let primaryScale = scaleFor primaryValueAxis false
-        let secondaryScale = scaleFor secondaryAxis true
-        let xScale : AxisScale =
-            if not isScatter then { Min = 0.0; Max = 1.0; Step = 1.0; Log = None }
-            else
-                let values = series |> List.collect (fun item -> item.XValues |> Array.choose id |> Array.toList)
-                match values, xAxis with
-                | [], _ -> { Min = 0.0; Max = float (max 1 count); Step = 1.0; Log = None }
-                | _, Some ({ LogBase = Some logBase } as logAxis) when values |> List.exists (fun value -> value > 0.0) ->
-                    let positive = values |> List.filter (fun value -> value > 0.0)
-                    logScale logBase (List.min positive) (List.max positive) logAxis
-                | _ ->
-                    let minimum, maximum, step = valueScale (List.min values) (List.max values) (xAxis |> Option.bind (fun a -> a.Min)) (xAxis |> Option.bind (fun a -> a.Max)) (xAxis |> Option.bind (fun a -> a.MajorUnit))
+                | Some (lo, _) when percent ->
+                    { Min = (if lo < 0.0 then -1.0 else 0.0); Max = 1.0; Step = 0.1; Log = None }
+                | found ->
+                    // (No values at all: as values from 0 to 1 - Excel 2019's 0 .. 1.2 on a short axis.)
+                    let lo, hi = defaultArg found (0.0, 1.0)
+                    let minimum, maximum, step = valueScale lo hi (fixedOf (fun a -> a.Min)) (fixedOf (fun a -> a.Max)) (fixedOf (fun a -> a.MajorUnit)) most
                     { Min = minimum; Max = maximum; Step = step; Log = None }
-        let axisFormat (axis: Axis option) (secondary: bool) : float -> string =
-            let percent = chart.Plots |> List.exists (fun plot -> plot.Grouping = "percentStacked" && series |> List.exists (fun item -> obj.ReferenceEquals(item.Plot, plot) && item.Secondary = secondary))
-            let linked = series |> List.tryPick (fun item -> if item.Secondary = secondary then item.FormatCode else None)
+        let xFormat = series |> List.tryPick (fun item -> item.XFormatCode)
+        let axisFormat (axis: Axis option) (secondary: bool) (isX: bool) : float -> string =
+            let percent = not isX && chart.Plots |> List.exists (fun plot -> plot.Grouping = "percentStacked" && series |> List.exists (fun item -> obj.ReferenceEquals(item.Plot, plot) && item.Secondary = secondary))
+            // (An axis linked to its source has the format of the values it shows: the x values' along the bottom
+            // of a scatter chart, the y values' up its side.)
+            let linked = if isX then xFormat else series |> List.tryPick (fun item -> if item.Secondary = secondary then item.FormatCode else None)
             let code =
                 match axis with
-                | Some axis when not axis.SourceLinked -> axis.FormatCode |> Option.filter (fun code -> code <> "General")
-                | Some axis -> linked |> Option.orElse (axis.FormatCode |> Option.filter (fun code -> code <> "General"))
+                | Some axis when not axis.SourceLinked -> axis.FormatCode
+                | Some axis -> linked |> Option.orElse axis.FormatCode
                 | None -> linked
+            let code = code |> Option.filter (fun code -> code <> "General")
             // (The labels of an axis in thousands, millions ... say the value divided by that.)
             let unit = match axis with Some axis when axis.DisplayUnit > 0.0 -> axis.DisplayUnit | _ -> 1.0
             match code with
             | _ when percent -> (fun value -> generalNumber (Math.Round (value * 100.0)) + "%")
             | Some code -> (fun value -> try data.Format code (value / unit) with _ -> generalNumber (value / unit))
             | None -> (fun value -> generalNumber (value / unit))
-        let valueLabels = ticksOf primaryScale |> List.map (axisFormat primaryValueAxis false)
-        let secondaryLabels = if secondaryAxis.IsSome then ticksOf secondaryScale |> List.map (axisFormat secondaryAxis true) else []
         let shown (axis: Axis option) = match axis with Some axis -> not axis.Deleted && axis.LabelsShown | None -> false
-        let valueSize = textSize (primaryValueAxis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle) 9.0
-        let categorySize = textSize (categoryAxis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle) 9.0
-        let valueColor = textColor (primaryValueAxis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle)
-        let categoryColor = textColor (categoryAxis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle)
-        let widest (labels: string list) (size: float) = labels |> List.fold (fun most text -> max most (textWidth size text)) 0.0
+        let styleOf (axis: Axis option) = axis |> Option.map (fun axis -> axis.LabelStyle) |> Option.defaultValue noTextStyle
+        let valueStyle, categoryStyle = styleOf primaryValueAxis, styleOf categoryAxis
+        let xStyle = styleOf xAxis
+        let valueSize = textSize valueStyle 10.0
+        let categorySize = textSize categoryStyle 10.0
+        let valueColor = textColor valueStyle
+        let categoryColor = textColor categoryStyle
+        let widest (style: TextStyle) (labels: string list) (size: float) = labels |> List.fold (fun most text -> max most (widthIn style size false text)) 0.0
         // Axis titles (and what says that an axis is in thousands, millions ...).
         let axisTitle (axis: Axis option) =
             axis |> Option.bind (fun axis ->
                 if axis.Deleted then None
                 else
+                    let style = over axis.TitleStyle axis.LabelStyle
                     match axis.Title, axis.DisplayUnitLabel with
-                    | Some text, Some units -> Some (text + " (" + units + ")", textSize axis.TitleStyle 10.0, textColor axis.TitleStyle)
-                    | Some text, None -> Some (text, textSize axis.TitleStyle 10.0, textColor axis.TitleStyle)
-                    | None, Some units -> Some (units, textSize axis.TitleStyle 10.0, textColor axis.TitleStyle)
+                    | Some text, Some units -> Some (text + " (" + units + ")", textSize style 10.0, textColor style, style)
+                    | Some text, None -> Some (text, textSize style 10.0, textColor style, style)
+                    | None, Some units -> Some (units, textSize style 10.0, textColor style, style)
                     | None, None -> None)
         let sideAxis, baseAxis = (if horizontal then categoryAxis, primaryValueAxis elif isScatter then primaryValueAxis, xAxis else primaryValueAxis, categoryAxis)
         // (A plot area the file places leaves the titles of its axes where they are by themselves.)
         (match axisTitle sideAxis with
-         | Some (text, size, color) ->
-            add (PText (left + size * 0.6, (match plotRect with Some (_, y, _, h) -> y + h / 2.0 | None -> (top + bottom) / 2.0), text, size, color, "middle", false, false, -90.0))
+         | Some (text, size, color, style) ->
+            addText style (PText (left + size * 0.6, (match plotRect with Some (_, y, _, h) -> y + h / 2.0 | None -> (top + bottom) / 2.0), text, size, color, "middle", false, false, -90.0))
             left <- left + size * 1.5
          | None -> ())
         (match axisTitle baseAxis with
-         | Some (text, size, color) ->
-            add (PText ((match plotRect with Some (x, _, w, _) -> x + w / 2.0 | None -> (left + right) / 2.0), bottom - size * 0.6, text, size, color, "middle", false, false, 0.0))
+         | Some (text, size, color, style) ->
+            addText style (PText ((match plotRect with Some (x, _, w, _) -> x + w / 2.0 | None -> (left + right) / 2.0), bottom - size * 0.6, text, size, color, "middle", false, false, 0.0))
             bottom <- bottom - size * 1.5
          | None -> ())
         (match (if secondaryAxis.IsSome then axisTitle secondaryAxis else None) with
-         | Some (text, size, color) ->
-            add (PText (right - size * 0.6, (match plotRect with Some (_, y, _, h) -> y + h / 2.0 | None -> (top + bottom) / 2.0), text, size, color, "middle", false, false, -90.0))
+         | Some (text, size, color, style) ->
+            addText style (PText (right - size * 0.6, (match plotRect with Some (_, y, _, h) -> y + h / 2.0 | None -> (top + bottom) / 2.0), text, size, color, "middle", false, false, -90.0))
             right <- right - size * 1.5
          | None -> ())
-        // The room the tick labels take.
+        // The labels along the bottom: a line of them, or - turned - as long as the longest.
         let categoryLabels = categories |> Array.toList
-        let xLabels = if isScatter then ticksOf xScale |> List.map (axisFormat xAxis false) else []
+        let turned = match categoryAxis with Some axis when not isScatter && not horizontal -> axis.LabelRotation |> Option.filter (fun rot -> abs rot > 45.0) | _ -> None
+        let baseSize = if horizontal then valueSize elif isScatter then textSize xStyle 10.0 else categorySize
+        let baseShown = if horizontal then shown primaryValueAxis elif isScatter then shown xAxis else shown categoryAxis
+        let baseRoom =
+            if not baseShown then 4.0
+            else
+                match turned with
+                | Some _ -> widest categoryStyle categoryLabels categorySize + px 4.0
+                | None -> lineOf baseSize + px 1.5
+        // The plot area's box with its axes' labels: where the file puts it, or what the title, the legend and the
+        // axes' titles leave. Excel cuts a value axis into as many intervals as its labels allow in it (`axisIntervals`).
+        let boxWidth, boxHeight =
+            match chart.PlotLayout, plotRect with
+            | Some { Inner = true }, Some (_, _, w, h) -> w + px 20.0, h + baseRoom
+            | _, Some (_, _, w, h) -> w, h
+            | _ -> right - left, bottom - top
+        let primaryScale = scaleFor primaryValueAxis false (axisIntervals horizontal (if horizontal then boxWidth else boxHeight) valueSize)
+        let secondaryScale = scaleFor secondaryAxis true (axisIntervals false boxHeight valueSize)
+        let xScale : AxisScale =
+            if not isScatter then { Min = 0.0; Max = 1.0; Step = 1.0; Log = None }
+            else
+                // (The x values of the points drawn: those with a y value.)
+                let values =
+                    series |> List.collect (fun item ->
+                        item.XValues |> Array.mapi (fun index x -> if index < item.Values.Length && item.Values.[index].IsSome then x else None)
+                        |> Array.choose id |> Array.toList)
+                let most = axisIntervals true boxWidth (textSize xStyle 10.0)
+                match values, xAxis with
+                | [], _ -> { Min = 0.0; Max = float (max 1 count); Step = 1.0; Log = None }
+                | _, Some ({ LogBase = Some logBase } as logAxis) when values |> List.exists (fun value -> value > 0.0) ->
+                    let positive = values |> List.filter (fun value -> value > 0.0)
+                    logScale logBase (List.min positive) (List.max positive) logAxis
+                | _ ->
+                    let minimum, maximum, step = valueScale (List.min values) (List.max values) (xAxis |> Option.bind (fun a -> a.Min)) (xAxis |> Option.bind (fun a -> a.Max)) (xAxis |> Option.bind (fun a -> a.MajorUnit)) most
+                    { Min = minimum; Max = maximum; Step = step; Log = None }
+        let valueLabels = ticksOf primaryScale |> List.map (axisFormat primaryValueAxis false false)
+        let secondaryLabels = if secondaryAxis.IsSome then ticksOf secondaryScale |> List.map (axisFormat secondaryAxis true false) else []
+        // The room the tick labels take.
+        let xLabels = if isScatter then ticksOf xScale |> List.map (axisFormat xAxis false true) else []
         let sideLabels, baseLabels = (if horizontal then categoryLabels, valueLabels elif isScatter then valueLabels, xLabels else valueLabels, categoryLabels)
-        let sideSize, baseSize = (if horizontal then categorySize, valueSize else valueSize, categorySize)
-        let sideShown, baseShown = (if horizontal then shown categoryAxis, shown primaryValueAxis elif isScatter then shown primaryValueAxis, shown xAxis else shown primaryValueAxis, shown categoryAxis)
-        let sideRoom = if sideShown then min (width * 0.4) (widest sideLabels sideSize) + 8.0 else 4.0
-        let baseRoom = if baseShown then baseSize * 1.25 + 6.0 else 4.0
-        let secondaryRoom = if secondaryAxis.IsSome && shown secondaryAxis then widest secondaryLabels valueSize + 8.0 else 0.0
+        let sideSize, sideStyle = (if horizontal then categorySize, categoryStyle else valueSize, valueStyle)
+        let sideShown = if horizontal then shown categoryAxis else shown primaryValueAxis
+        let sideRoom = if sideShown then min (width * 0.4) (widest sideStyle sideLabels sideSize) + px 3.85 else 4.0
+        let secondaryRoom = if secondaryAxis.IsSome && shown secondaryAxis then widest valueStyle secondaryLabels valueSize + px 3.85 else 0.0
         // (The last label of a value axis along the bottom is centred on the plot's edge: half of it is beyond.)
         let overhang =
             if baseShown && (horizontal || isScatter) && secondaryRoom = 0.0 then
-                (match List.tryLast baseLabels with Some text -> textWidth baseSize text / 2.0 | None -> 0.0)
+                (match List.tryLast baseLabels with Some text -> widthIn (if isScatter then xStyle else valueStyle) baseSize false text / 2.0 | None -> 0.0)
             else 0.0
         let plotLeft, plotTop, plotRight, plotBottom =
             match chart.PlotLayout, plotRect with
@@ -2476,10 +2761,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 // (A rectangle for the plot area with its labels: the labels are inside it.)
                 let left, top, right, bottom = (match plotRect with Some (x, y, w, h) -> max 2.0 x, max 2.0 y, min (width - 2.0) (x + w), min (height - 2.0) (y + h) | None -> left, top, right, bottom)
                 let plotLeft = left + sideRoom
-                let plotRight = max (plotLeft + 10.0) (right - secondaryRoom - (if baseShown && not horizontal && not isScatter then 0.0 else max 6.0 overhang) - 4.0)
-                let plotTop = top + (if title.IsNone && plotRect.IsNone then 6.0 else 0.0)
-                let plotBottom = max (plotTop + 10.0) (bottom - baseRoom)
-                plotLeft, plotTop, plotRight, plotBottom
+                let plotRight = max (plotLeft + 10.0) (right - secondaryRoom - (if baseShown && not horizontal && not isScatter then 0.0 else overhang))
+                let plotBottom = max (top + 10.0) (bottom - baseRoom)
+                plotLeft, top, plotRight, plotBottom
         let plotWidth, plotHeight = max 1.0 (plotRight - plotLeft), max 1.0 (plotBottom - plotTop)
         (match chart.PlotBackground with
          | FillColor (color, opacity) -> add (PRect (plotLeft, plotTop, plotWidth, plotHeight, Some color, opacity, None, 0.0, 0.0))
@@ -2731,41 +3015,54 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
          | Some (color, strokeWidth, _) -> add (PLine (plotLeft, plotBottom, plotRight, plotBottom, color, strokeWidth, None))
          | None -> ())
         // (Every n-th label where they would run into each other.)
-        let thinned (labels: string list) (spacing: float) (alongAxis: bool) (size: float) : int =
-            let need = if alongAxis then widest labels size + 8.0 else size * 1.15
+        let thinned (style: TextStyle) (labels: string list) (spacing: float) (alongAxis: bool) (size: float) : int =
+            let need = if alongAxis then widest style labels size + 8.0 else size * 1.15
             if spacing <= 0.0 then 1 else max 1 (int (Math.Ceiling (need / spacing)))
+        let below = plotBottom + px 1.5 + lineOf baseSize / 2.0
         if shown primaryValueAxis then
-            let every = thinned valueLabels ((if horizontal then plotWidth else plotHeight) / float (max 1 (valueLabels.Length - 1))) horizontal valueSize
+            let every = thinned valueStyle valueLabels ((if horizontal then plotWidth else plotHeight) / float (max 1 (valueLabels.Length - 1))) horizontal valueSize
             List.zip (ticksOf primaryScale) valueLabels |> List.iteri (fun index (value, text) ->
                 if index % every = 0 then
                     let at = along primaryScale primaryReversed value
-                    if horizontal then add (PText (at, plotBottom + baseSize * 0.85, text, valueSize, valueColor, "middle", false, false, 0.0))
-                    else add (PText (plotLeft - 6.0, at, text, valueSize, valueColor, "end", false, false, 0.0)))
+                    if horizontal then addText valueStyle (PText (at, below, text, valueSize, valueColor, "middle", false, false, 0.0))
+                    else addText valueStyle (PText (plotLeft - px 3.85, at, text, valueSize, valueColor, "end", false, false, 0.0)))
         if secondaryAxis.IsSome && shown secondaryAxis then
-            let every = thinned secondaryLabels (plotHeight / float (max 1 (secondaryLabels.Length - 1))) false valueSize
+            let style = styleOf secondaryAxis
+            let every = thinned style secondaryLabels (plotHeight / float (max 1 (secondaryLabels.Length - 1))) false valueSize
             List.zip (ticksOf secondaryScale) secondaryLabels |> List.iteri (fun index (value, text) ->
-                if index % every = 0 then add (PText (plotRight + 6.0, along secondaryScale secondaryReversed value, text, valueSize, valueColor, "start", false, false, 0.0)))
+                if index % every = 0 then addText style (PText (plotRight + px 3.85, along secondaryScale secondaryReversed value, text, valueSize, valueColor, "start", false, false, 0.0)))
         if isScatter then
             if shown xAxis then
-                let every = thinned xLabels (plotWidth / float (max 1 (xLabels.Length - 1))) true valueSize
+                let size = textSize xStyle 10.0
+                let every = thinned xStyle xLabels (plotWidth / float (max 1 (xLabels.Length - 1))) true size
                 List.zip (ticksOf xScale) xLabels |> List.iteri (fun index (value, text) ->
-                    if index % every = 0 then add (PText (xAt value, plotBottom + baseSize * 0.85, text, valueSize, valueColor, "middle", false, false, 0.0)))
+                    if index % every = 0 then addText xStyle (PText (xAt value, below, text, size, textColor xStyle, "middle", false, false, 0.0)))
         elif shown categoryAxis then
             // (As many labels as fit: every n-th one when they are crowded.)
-            let widestLabel = widest categoryLabels categorySize
+            let widestLabel = widest categoryStyle categoryLabels categorySize
             if horizontal then
                 let every = max 1 (int (Math.Ceiling ((categorySize * 1.15) / band)))
                 // (The labels have the room left of the plot, whatever placed the plot.)
                 let room = max 10.0 (plotLeft - left - 8.0)
                 categories |> Array.iteri (fun index text ->
                     if index % every = 0 then
-                        let text = if textWidth categorySize text > room && text.Length > 4 then text.Substring(0, max 1 (int (float text.Length * room / textWidth categorySize text) - 1)) + "…" else text
-                        add (PText (plotLeft - 6.0, bandStart index + band / 2.0, text, categorySize, categoryColor, "end", false, false, 0.0)))
+                        let long = widthIn categoryStyle categorySize false text
+                        let text = if long > room && text.Length > 4 then text.Substring(0, max 1 (int (float text.Length * room / long) - 1)) + "…" else text
+                        addText categoryStyle (PText (plotLeft - px 3.85, bandStart index + band / 2.0, text, categorySize, categoryColor, "end", false, false, 0.0)))
             else
-                // (Excel lets labels come within a pixel of each other before it leaves some out.)
-                let every = max 1 (int (Math.Ceiling ((widestLabel + 1.0) / band)))
-                categories |> Array.iteri (fun index text ->
-                    if index % every = 0 then add (PText (pointAt index, plotBottom + baseSize * 0.85, text, categorySize, categoryColor, "middle", false, false, 0.0)))
+                match turned with
+                | Some rotation ->
+                    // (Turned labels: their ends at the axis.)
+                    let pitch = lineOf categorySize
+                    let every = if dated.IsSome then 1 else max 1 (int (Math.Ceiling (pitch / band)))
+                    categories |> Array.iteri (fun index text ->
+                        if index % every = 0 && text <> "" then
+                            addText categoryStyle (PText (pointAt index, plotBottom + px 3.0, text, categorySize, categoryColor, (if rotation < 0.0 then "end" else "start"), false, false, rotation)))
+                | None ->
+                    // (Excel lets labels come within a pixel of each other before it leaves some out.)
+                    let every = if dated.IsSome then 1 else max 1 (int (Math.Ceiling ((widestLabel + 1.0) / band)))
+                    categories |> Array.iteri (fun index text ->
+                        if index % every = 0 && text <> "" then addText categoryStyle (PText (pointAt index, below, text, categorySize, categoryColor, "middle", false, false, 0.0)))
         for label in pendingLabels do add label
     { Width = width; Height = height; Items = List.ofSeq items }
 

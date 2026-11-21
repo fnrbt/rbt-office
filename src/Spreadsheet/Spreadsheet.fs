@@ -1049,6 +1049,11 @@ type Spreadsheet(container: Element) as this =
     // draws the cells that came into view or whose data changed, and leaves
     // the rest alone.
     let mutable layers: GridLayers option = None
+    /// The lines Excel draws along the edges of frozen panes (made on first use, in the frozen corner's pane).
+    let mutable freezeLines: (Element * Element) option = None
+    /// The cells Excel's background error checks mark (`ErrorChecks`), for the cells and the ignored checks they
+    /// were found for.
+    let mutable errorMarks : (obj * obj * Map<CellAddress, string>) option = None
     let cellNodes = System.Collections.Generic.Dictionary<float, CellNode>()
     let freeCellNodes = ResizeArray<CellNode>()
     let colHeaderNodes = System.Collections.Generic.Dictionary<int, HeaderNode>()
@@ -4222,6 +4227,22 @@ type Spreadsheet(container: Element) as this =
             setAttribute mark "data-cf-icon-set" draw.Family
             prependChild cell mark
         | None -> ()
+        // Excel's green triangle at the top left of a cell a background error check finds (a number stored as text,
+        // an inconsistent formula ...): 6 px, inside the grid lines.
+        let marks =
+            match errorMarks with
+            | Some (cells, ignored, marks) when obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(ignored, model.IgnoredErrors) -> marks
+            | _ ->
+                let marks = Rbt.Spreadsheet.ErrorChecks.markedCells model.Cells model.IgnoredErrors model.SheetProtected
+                errorMarks <- Some (box model.Cells, box model.IgnoredErrors, marks)
+                marks
+        (match Map.tryFind addr marks with
+         | Some check ->
+            let triangle = createElement "div"
+            setCssText triangle "position:absolute;top:1px;left:1px;width:0;height:0;border-style:solid;border-width:6px 6px 0 0;border-color:#008000 transparent transparent transparent;pointer-events:none"
+            setAttribute triangle "data-error-check" check
+            appendChild cell triangle
+         | None -> ())
         // A marker and a tooltip for a comment or a comment thread.
         let thread = if Map.isEmpty model.Threads then None else Map.tryFind addr model.Threads
         let marker (color: string) (tooltip: string) =
@@ -4368,6 +4389,28 @@ type Spreadsheet(container: Element) as this =
             let frozenCols = max 0 (min colCount model.FrozenCols)
             let frozenH = rowPrefix.[frozenRows]
             let frozenW = colPrefix.[frozenCols]
+            // Excel 2019 draws a line along the edges of frozen panes: a screen pixel of #9B9B9B, across the whole
+            // window (headers too), over the cells - on the grid line between the last frozen row and the next, the
+            // last frozen column and the next (checked on choudhary's and the house-flipping models' sheets).
+            (match layer.Panes with
+             | [| _; _; _; cornerPane |] ->
+                let across, down =
+                    match freezeLines with
+                    | Some lines -> lines
+                    | None ->
+                        let line () =
+                            let element = createElement "div"
+                            setClassName element "spreadsheet-freeze-line"
+                            appendChild cornerPane element
+                            element
+                        let lines = line (), line ()
+                        freezeLines <- Some lines
+                        lines
+                let thin = cssPxFine (1.0 / appliedZoom)
+                let style (shown: bool) (rect: string) = if shown then "position:absolute;background:#9B9B9B;pointer-events:none;z-index:6;" + rect else "display:none"
+                setCssText across (style (frozenRows > 0) ("left:0;top:" + cssPxFine (headerHeight + frozenH) + ";width:" + cssPxFine (containerWidth / appliedZoom + rowHeaderWidth) + ";height:" + thin))
+                setCssText down (style (frozenCols > 0) ("top:0;left:" + cssPxFine (rowHeaderWidth + frozenW) + ";height:" + cssPxFine (containerHeight / appliedZoom + headerHeight) + ";width:" + thin))
+             | _ -> ())
 
             // Everything is drawn again when what the look of a cell depends
             // on, besides its own data, changed. With conditional formats a

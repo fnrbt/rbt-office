@@ -210,6 +210,8 @@ type CellFormat = {
     DataBar: DataBarDraw option
     /// Conditional-formatting icon, drawn at the cell's left (see `IconDraw`).
     IconSet: IconDraw option
+    /// The cell is not locked (`<protection locked="0"/>`): Excel's check of unlocked cells with formulas marks it.
+    Unlocked: bool
 }
 
 /// A font size as Excel keeps it when one is set (Font.Size, the font size box): to a twentieth of a point
@@ -246,6 +248,7 @@ let defaultFormat = {
     HasListDropdown = false
     DataBar = None
     IconSet = None
+    Unlocked = false
 }
 
 /// Cell comment/note
@@ -1499,6 +1502,12 @@ type SpreadsheetModel = {
     /// Search results (cell addresses)
     SearchResults: CellAddress array
 
+    /// The background error checks the file turns off for some cells (`<ignoredErrors>`): `sqref` and checks.
+    IgnoredErrors: (string * string list) list
+
+    /// The file's sheet is protected (`<sheetProtection sheet="1"/>`; kept for the error checks, not enforced).
+    SheetProtected: bool
+
     /// Current search result index
     SearchIndex: int
 
@@ -1744,6 +1753,8 @@ let createEmpty rowCount colCount = {
     Zoom = 1.0
     Spill = Map.empty
     ArrayMarks = Map.empty
+    IgnoredErrors = []
+    SheetProtected = false
     Validations = []
     Macros = ""
     Pivots = []

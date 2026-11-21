@@ -1860,7 +1860,17 @@ checks['grid-text-excel-parity'] = async () => {
     try {
         await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-text-zoom.xlsx')).slice());
         const node = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
-        const textBox = (element) => { const range = document.createRange(); range.selectNodeContents(element); return range.getBoundingClientRect(); };
+        // (The text alone: a cell of a number stored as text has the green triangle of Excel's error check too.)
+        const textBox = (element) => {
+            const range = document.createRange(), walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+                range.selectNodeContents(node);
+                const r = range.getBoundingClientRect();
+                if (r.width > 0) { left = Math.min(left, r.left); right = Math.max(right, r.right); top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom); }
+            }
+            return { left, right, top, bottom, width: right - left, height: bottom - top };
+        };
         const near = (value, expected, slack = 0.75) => Math.abs(value - expected) <= slack ? expected : Math.round(value * 100) / 100;
         const sheets = grid.GetSheetNames();
         const show = async (name) => { grid.SwitchSheet(sheets.indexOf(name)); await frame(); await frame(); };
@@ -1942,6 +1952,54 @@ checks['rows-excel-parity'] = async () => {
         await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-baseline.xlsx')).slice());
         await sheet(0);
         check('cells at the bottom meet at their baseline, centred or at the top only their height', heights(11), [21, 21, 20, 20, 20, 20, 20, 63, 60, 60, 63]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Grid chrome Excel 2019 draws (tools/excel-parity/make-error-check-fixtures.py, checked in Excel with error-probe.vbs and
+// shoot-sheets.ps1): the green triangle of a background error check at a cell's top left - not where <ignoredErrors>
+// says so - and the line along the edges of frozen panes.
+checks['grid-chrome-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const marked = () => [...host.querySelectorAll('[data-error-check]')].map((mark) => {
+        const cell = mark.closest('.spreadsheet-cell');
+        return String.fromCharCode(65 + Number(cell.getAttribute('data-col'))) + (Number(cell.getAttribute('data-row')) + 1) + ' ' + mark.getAttribute('data-error-check');
+    }).sort();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-error-checks.xlsx')).slice());
+        grid.SwitchSheet(0); await frame();
+        check('the cells Excel 2019 marks, and why', marked(), ['A1 numberStoredAsText', 'A10 numberStoredAsText', 'A11 numberStoredAsText', 'A2 numberStoredAsText',
+            'A4 numberStoredAsText', 'A5 numberStoredAsText', 'A6 numberStoredAsText', 'A7 numberStoredAsText', 'A8 numberStoredAsText', 'A9 numberStoredAsText',
+            'B5 formulaRange', 'F10 formula', 'G20 formulaRange', 'J3 formula', 'K1 evalError', 'L1 twoDigitTextYear', 'L2 twoDigitTextYear']);
+        const mark = host.querySelector('[data-error-check]');
+        check('... a green triangle of 6 px inside the grid lines', [getComputedStyle(mark).borderTopColor, getComputedStyle(mark).borderTopWidth, mark.style.top, mark.style.left], ['rgb(0, 128, 0)', '6px', '1px', '1px']);
+        grid.SwitchSheet(1); await frame();
+        check('... none where <ignoredErrors> turns the check off', marked(), []);
+        const shownLines = () => [...host.querySelectorAll('.spreadsheet-freeze-line')].filter((line) => line.style.display !== 'none').map((line) => getComputedStyle(line).backgroundColor);
+        check('no frozen panes, no line', shownLines(), []);
+        grid.FreezeAt(2, 1); await frame();
+        check('frozen panes: a line along each edge, #9B9B9B', shownLines(), ['rgb(155, 155, 155)', 'rgb(155, 155, 155)']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Charts as Excel 2019 draws them (tools/excel-parity/make-chart-fixtures.py, checked in Excel with chart-probe.vbs):
+// the value axes' scales, a date axis, a scatter chart's x values of two columns, a pie's labels, typefaces.
+checks['charts-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-chart-parity.xlsx')).slice());
+        await everyObjectSeen(host);
+        const texts = [...host.querySelectorAll('svg text')].map((t) => t.textContent);
+        check('the scales Excel chooses (0 .. 10 by 5 on a short axis, 44 .. 62, 300,000, x to 150)', ['10', '44', '62', '300,000', '150'].map((t) => texts.includes(t)), [true, true, true, true, true]);
+        check('a date axis labelled every two years', ['2024', '2026', '2032'].map((t) => texts.includes(t)), [true, true, true]);
+        check('pie labels a line a part, broken to a fifth of the chart', [['Two', 'BR/One', 'BA', '14%'].every((t) => texts.includes(t)), texts.some((t) => t.includes('; '))], [true, false]);
+        const faces = [...host.querySelectorAll('svg g[font-family]')].map((g) => g.getAttribute('font-family').split(',')[0]);
+        check('chart text in its typeface (Arial, Segoe UI)', [faces.includes("'Arial'"), faces.includes("'Segoe UI'")], [true, true]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

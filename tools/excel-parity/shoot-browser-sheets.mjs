@@ -46,11 +46,40 @@ try {
         scroller.scrollTop = 0; scroller.scrollLeft = 0; await frame();
         const m = /^([A-Z]+)([0-9]+)$/.exec(cell);
         const col = [...m[1]].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) - 1, row = Number(m[2]) - 1;
-        const at = host.querySelector('.spreadsheet-content').getBoundingClientRect();
-        const target = host.querySelector('.spreadsheet-cell[data-row="' + row + '"][data-col="' + col + '"]');
-        if (target) { const r = target.getBoundingClientRect(); scroller.scrollTop += r.top - at.top; scroller.scrollLeft += r.left - at.left; }
-        grid.SelectCell(1048575, 16383);
-        await frame(); await everyObjectSeen(host); await frame();
+        // (The cell is selected, which scrolls it into view, and the grid scrolled on until it is at the top
+        // left of the scrolling pane - below the column headers, right of the row headers. An empty cell has no
+        // element: the active-cell frame gives its place.)
+        const visible = (sel) => [...host.querySelectorAll(sel)].map((e) => e.getBoundingClientRect()).find((r) => r.width > 0 && r.height > 0);
+        grid.SelectCell(row, col); await frame();
+        // (At a zoom the grid's scroll offsets are not screen pixels: each step learns how far the cell moves.)
+        let kTop = 1, kLeft = 1;
+        for (let i = 0; i < 8; i++) {
+            const active = visible('.spreadsheet-active-cell');
+            if (!active) break;
+            const box = scroller.getBoundingClientRect();
+            const colHeader = visible('.spreadsheet-col-header'), rowHeader = visible('.spreadsheet-row-header');
+            const top = colHeader ? colHeader.bottom : box.top + scroller.clientTop, left = rowHeader ? rowHeader.right : box.left + scroller.clientLeft;
+            const dy = active.top - top, dx = active.left - left;
+            if (Math.abs(dy) < 0.5 && Math.abs(dx) < 0.5) break;
+            const y0 = scroller.scrollTop, x0 = scroller.scrollLeft;
+            scroller.scrollTop += dy * kTop; scroller.scrollLeft += dx * kLeft;
+            await frame();
+            const moved = visible('.spreadsheet-active-cell');
+            if (!moved) break;
+            if (Math.abs(active.top - moved.top) > 0.5) kTop = (scroller.scrollTop - y0) / (active.top - moved.top);
+            if (Math.abs(active.left - moved.left) > 0.5) kLeft = (scroller.scrollLeft - x0) / (active.left - moved.left);
+        }
+        // (Selecting a cell out of sight would scroll the grid away - and, far down, not back to the same rows:
+        // the selection is hidden instead.)
+        const hide = document.createElement('style');
+        hide.textContent = '.spreadsheet-selection,.spreadsheet-active-cell{display:none !important}';
+        host.appendChild(hide);
+        // (Objects in view are laid out as they come into it; everyObjectSeen would scroll the grid back to its top.)
+        const view = scroller.getBoundingClientRect();
+        const pendingInView = () => [...host.querySelectorAll('.spreadsheet-object-pending')].map((e) => e.getBoundingClientRect())
+            .some((r) => r.bottom > view.top && r.top < view.bottom && r.right > view.left && r.left < view.right);
+        for (let i = 0; i < 60 && pendingInView(); i++) await frame();
+        await frame();
         const box = host.querySelector('.spreadsheet-container').getBoundingClientRect();
         return { x: box.left, y: box.top, width: box.width, height: box.height };
     };

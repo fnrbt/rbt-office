@@ -13,6 +13,7 @@
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
+    <Compile Include="ErrorChecks.fs" />
     <Compile Include="Workbook.fs" />
     <Compile Include="Pivot.fs" />
     <Compile Include="FunctionCatalog.fs" />
@@ -39,10 +40,10 @@
     <Compile Include="MacroHost.fs" />
     <Compile Include="MacroProject.fs" />
     <Compile Include="Layout.fs" />
-    <Compile Include="Charts.fs" />
-    <Compile Include="Slicers.fs" />
     <Compile Include="GdiAdvances.fs" />
     <Compile Include="ExcelText.fs" />
+    <Compile Include="Charts.fs" />
+    <Compile Include="Slicers.fs" />
     <Compile Include="Paint.fs" />
     <Compile Include="Png.fs" />
     <Compile Include="XlsxBridge.fs" />

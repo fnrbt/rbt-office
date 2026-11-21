@@ -115,7 +115,7 @@ let pieScene = Charts.layoutChart zooTheme zooData pie 480.0 288.0
 eq "pie: a pie plot" (pie.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.PiePlot ]
 ok "pie: four wedges in four colours, from the centre" (let wedges = paths pieScene in wedges.Length = 4 && (wedges |> List.map snd |> List.distinct).Length = 4 && wedges |> List.forall (fun (d, _) -> d.Contains "A" && d.EndsWith "Z")) (sprintf "%A" (paths pieScene |> List.map snd))
 ok "pie: a legend, when the chart has one, names the categories" (pie.Legend.IsNone || [ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieScene))) (sprintf "%A" (texts pieScene))
-let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None }; Layout = None; Overlay = false; Deleted = Set.empty } } 480.0 288.0
+let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None; Face = None }; Layout = None; Overlay = false; Deleted = Set.empty; EntryStyles = Map.empty } } 480.0 288.0
 ok "pie: with a legend at the right, its entries are the categories" ([ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieWithLegend))) (sprintf "%A" (texts pieWithLegend))
 
 // The area chart and the scatter chart.
@@ -349,6 +349,59 @@ let bareScene = Charts.layoutChart zooTheme noData bare 480.0 288.0
 let titleText = bareScene.Items |> List.tryPick (fun item -> match item with Charts.PText (_, _, "Fleet total", size, _, _, bold, _, _) -> Some (Math.Round size, bold) | _ -> None)
 eq "... its title 10 pt bold" titleText (Some (Math.Round (10.0 * 96.0 / 72.0), true))
 ok "... a smoothed line is a curve" (bareScene.Items |> List.exists (fun item -> match item with Charts.PPath (d, None, _, Some _, _) -> d.Contains " C " | _ -> false)) "no curve"
+
+// ---- Excel 2019: synthetic-chart-parity.xlsx (tools/excel-parity/make-chart-fixtures.py, each chart checked in
+// Excel with chart-probe.vbs and shoot-sheets.ps1; docs/excel-parity-tracker.md "Charts against Excel 2019") ----
+let parityWb, parityBook, parityParts, parityTheme = openBook "test-documents-excel/synthetic-chart-parity.xlsx"
+let parityData = dataOf (parityBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
+let parityChart (number: int) = Charts.parseChart parityTheme (text parityParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get
+/// Every text of a scene, inside a typeface of its own too: (text, x, y, size, colour, bold, turned).
+let rec allTexts (items: Charts.Primitive list) =
+    items |> List.collect (fun item ->
+        match item with
+        | Charts.PText (x, y, value, size, color, _, bold, _, turn) -> [ value, x, y, size, color, bold, turn ]
+        | Charts.PFace (_, inner) -> allTexts inner
+        | _ -> [])
+let faces (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PFace (face, _) -> Some face | _ -> None) |> List.distinct
+let parityTexts (number: int) (w: float) (h: float) = allTexts (Charts.layoutChart parityTheme parityData (parityChart number) w h).Items |> List.map (fun (value, _, _, _, _, _, _) -> value)
+let hasAll (texts: string list) (wanted: string list) (absent: string list) = wanted |> List.forall (fun t -> List.contains t texts) && absent |> List.forall (fun t -> not (List.contains t texts))
+// The value axis: zero an end unless the values are close together (then the lowest less half their spread), 5 %
+// beyond the highest, the step of 1, 2, 5 x 10^n that cuts the axis into no more intervals than lines of its labels
+// fit in the plot area's height less two (or one per 3.8 times their size of its width).
+let colScale = parityTexts 1 480.0 288.0
+ok "Excel 2019: 3, 7, 5, 6 in 480 x 288 px: 0 .. 8 by 1" (hasAll colScale [ "0"; "1"; "7"; "8" ] [ "9"; "10" ]) (sprintf "%A" colScale)
+let colShort = parityTexts 2 480.0 110.0
+ok "Excel 2019: the same 110 px high: 0 .. 10 by 5" (hasAll colShort [ "0"; "5"; "10" ] [ "1"; "2"; "8" ]) (sprintf "%A" colShort)
+let colClose = parityTexts 3 480.0 288.0
+ok "Excel 2019: 50, 60, 55, 52: 44 .. 62 by 2" (hasAll colClose [ "44"; "46"; "62" ] [ "0"; "42"; "64" ]) (sprintf "%A" colClose)
+let colZero = parityTexts 4 480.0 288.0
+ok "Excel 2019: zeros only: 0 .. 1 by 0.1" (hasAll colZero [ "0"; "0.1"; "1" ] [ "1.2" ]) (sprintf "%A" colZero)
+let barWide = parityTexts 5 300.0 200.0
+ok "Excel 2019: bars to 250,000 in 300 px: 0 .. 300,000 by 100,000" (hasAll barWide [ "0"; "100,000"; "300,000" ] [ "50,000"; "250,000" ]) (sprintf "%A" barWide)
+let skip = parityTexts 11 345.0 225.0
+ok "Excel 2019: no values at all: as 0 .. 1 (to 1.2); 59 categories in 345 px: every third label" (hasAll skip [ "1.2"; "1"; "4"; "58" ] [ "2"; "3"; "59" ]) (sprintf "%A" skip)
+// A date axis: a band a month from the first date to the last, a label every two years, turned up.
+let dateScene = Charts.layoutChart parityTheme parityData (parityChart 6) 400.0 300.0
+let dateLabels = allTexts dateScene.Items |> List.filter (fun (_, _, _, _, _, _, turn) -> turn = -90.0) |> List.map (fun (value, _, _, _, _, _, _) -> value)
+eq "Excel 2019: a date axis labelled every two years, turned" dateLabels [ "2024"; "2026"; "2028"; "2030"; "2032" ]
+ok "Excel 2019: ... its line across the whole plot, the 40 rows of \"\" after it no points" (lines dateScene |> List.exists (fun (points, _) -> points.Length = 120 && fst (List.last points) > 360.0)) (sprintf "%A" (lines dateScene |> List.map (fun (points, _) -> points.Length, List.last points)))
+eq "Excel 2019: ... in the axis' typeface" (faces dateScene) [ "Arial" ]
+// A scatter chart's x values of two columns: 1, 2, 3 ...; the axis to the last point drawn, in General.
+let scatterTexts = parityTexts 7 300.0 220.0
+ok "Excel 2019: x values of two columns are the points' places: 0 .. 150 by 50" (hasAll scatterTexts [ "0"; "50"; "100"; "150"; "6.00%" ] [ "200"; "0.00%0" ] && scatterTexts |> List.forall (fun t -> not (t.Contains "000.0"))) (sprintf "%A" scatterTexts)
+// A pie's labels: a line a part, broken to a fifth of the chart's width; Segoe UI Black as Segoe UI bold.
+let parityPie = Charts.layoutChart parityTheme parityData (parityChart 8) 300.0 300.0
+let parityPieTexts = allTexts parityPie.Items
+ok "Excel 2019: pie labels a line a part, broken to fit (Two / BR/One / BA / 14%)" (hasAll (parityPieTexts |> List.map (fun (v, _, _, _, _, _, _) -> v)) [ "Studio"; "14%"; "Two"; "BR/One"; "BA"; "One BR"; "29%" ] [ "Studio; 14%"; "Studio\n14%" ]) (sprintf "%A" parityPieTexts)
+ok "Excel 2019: ... in Segoe UI, bold, black" (faces parityPie = [ "Segoe UI" ] && parityPieTexts |> List.forall (fun (_, _, _, _, color, bold, _) -> bold && color = "#000000")) (sprintf "%A %A" (faces parityPie) parityPieTexts)
+// A legend in a box of its own: its parityEntries share the box's height out evenly, each in its own colour.
+let parityLegendScene = Charts.layoutChart parityTheme parityData (parityChart 10) 450.0 300.0
+let parityEntries = allTexts parityLegendScene.Items |> List.filter (fun (v, _, _, _, _, _, _) -> v = "Taxman" || v = "Tenant" || v = "Investors")
+ok "Excel 2019: legend parityEntries spread evenly over the legend's box, in their own colours, bold"
+    (parityEntries.Length = 3 && (let ys = parityEntries |> List.map (fun (_, _, y, _, _, _, _) -> y) in abs ((ys.[1] - ys.[0]) - (ys.[2] - ys.[1])) < 0.01 && ys.[1] - ys.[0] > 60.0)
+     && (parityEntries |> List.map (fun (_, _, _, _, color, bold, _) -> color, bold)) = [ "#333399", true; "#008000", true; "#800080", true ]) (sprintf "%A" parityEntries)
+let parityPointLabels = allTexts parityLegendScene.Items |> List.filter (fun (v, _, _, _, _, _, _) -> v.EndsWith "%")
+ok "Excel 2019: a point's label of its own colour and weight (c:dLbl)" ((parityPointLabels |> List.map (fun (v, _, _, _, color, bold, _) -> v, color, bold) |> List.sort) = [ "13.30%", "#333399", true; "6.83%", "#800080", true; "79.87%", "#008000", true ]) (sprintf "%A" parityPointLabels)
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -52,6 +52,44 @@ surfaces have actually been checked. It complements
   workbook captures pass through `tools/excel-parity/capture-browser-xlsx.mjs`.
 
 
+## Charts and grid chrome against Excel 2019, 2026-11-21
+
+The 15 charts of the real-estate models (A.CRE's unit-split pies, the house-flipping doughnuts, the investment-property
+calculator's pie, oyabayo's five column charts and two pies, vertex42's mortgage balance over a date axis and its
+interest-rate scatter) against Excel 2019 on the VM (`shoot-sheets.ps1 -KeepZoom`, `chart-probe.vbs`: each chart's
+axes' scales, plot area, labels, legend from COM, and `Chart.Export`), ours from `shoot-browser-sheets.mjs` (which
+now really scrolls to the cell asked for). Each rule then confirmed on charts made in Excel through COM (sweeps of
+axis lengths and fonts) and on synthetic-chart-parity.xlsx (`make-chart-fixtures.py`, 12 charts, checked with
+`chart-probe.vbs` and pictures). Checks: tests/formula/stage52-charts.fsx "Excel 2019:", xlsx-browser
+`charts-excel-parity`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A value axis: zero an end unless the values' spread is at most a sixth of the largest (then the low end is the lowest less half the spread); 5 % of the spread beyond the highest (below the lowest under zero); the step the smallest 1, 2, 5 x 10^n giving no more intervals (ends whole steps) than N; zeros only 0 .. 1; no values as values of 0 .. 1 | 125 COM charts of 25 ranges x 5 heights (50 .. 60 is 44 .. 62 by 2, 100 .. 103 98.5 .. 103.5, -5 .. 20 -10 .. 25), fixture ColScale / ColClose / ColZero / Skip | 50 .. 60 as 50 .. 61; 0 .. 1.1 for no values; the step from the range alone | `Charts.valueScale` |
+| N up the side = floor(plot area's height / (1.2207 x the labels' size)) - 2, at most 10; along the bottom floor(width / (3.8 x size)) | 12,000 COM charts of fonts 8 - 24 pt, every 2 pt of height, then every 0.25 pt about the steps: exact for every font; 22,000 bar charts for widths | always up to 10 intervals | `Charts.axisIntervals` (ColShort 0 .. 10 by 5, BarWide 0 .. 300,000 by 100,000) |
+| The plot area's box 11 pt in from the chart's edges; a title or legend 6 pt in, 11 pt from the plot; legend entries a line apart and 5.85 pt, the box 3 pt round them, a side legend centred on the plot's box; a legend box of the file's own size shares its height out evenly; `c:legendEntry` text looks | layout probe of 4 kinds x 4 sizes x 8 title / legend variants (COM rectangles; the chart-area origin from a picture), PieLegend entries 50.55 pt apart in 151.65 | 6 - 8 px margins, entries bunched | classic layout |
+| A date axis (`c:dateAx` over dates): a band per month (`baseTimeUnit`) from the first date to the last, a label every `majorUnit` `majorTimeUnit` from the first, in its format, turned by `bodyPr rot` | COM: 45292 .. 56219 for vertex42's 360 months; DateLine | the dates as 1,561 text categories: the line in a quarter of the plot | `dated` remap in the classic layout |
+| A scatter's x values that are text, or a range of two columns and rows, are 1, 2, 3 ...; the x axis to the last point drawn, in the x values' format | ScatterText 0 .. 150 by 50; vertex42 0 .. 400 | x of 6,000,000 "%" | `Charts.xValuesOf` |
+| A pie's label without a separator is a line a part, broken at spaces to a fifth of the chart's width; best fit inside the slice when it holds it, else just outside; moved by its manual layout from the series' place; the pie 1.5625 x the labels' size smaller each side for labels that may stand outside; a point's own `c:dLbl` | COM label rectangles of PieLabels / PieOut / A.CRE's two pies ("Two\nBR/One\nBA\n14%", 4 lines) | "Two BR/Two BA; 14%" in one line, cut at the chart's edge | pie labels |
+| Chart text in its typeface (`a:latin`), Segoe UI Black as Segoe UI bold where the weight is missing; measured with GDI's widths | pictures | all Calibri | `PFace`, `Charts.faceWidth` (`ExcelText`) |
+
+Grid chrome (synthetic-error-checks.xlsx, `make-error-check-fixtures.py`, `error-probe.vbs`; xlsx-browser
+`grid-chrome-excel-parity`):
+
+| Rule (Excel 2019) | Evidence | Now |
+| --- | --- | --- |
+| Frozen panes: a screen pixel of #9B9B9B along each frozen edge, across the window and the headers, on the grid line after the last frozen row / column | choudhary's and the house-flipping model's pictures | `.spreadsheet-freeze-line` in the frozen corner's pane |
+| A green triangle (#008000, 6 px legs, inside the grid lines) at the top left of a cell a default check finds: a number stored as text ("1,000", " 12", "12%", "$5", "(7)", "0012" - not a date), a text date of a two-digit year, a formula's error but #N/A, a formula unlike the alike formulas above and below it (else either side of it; none reading another sheet), a total in line after its range that leaves out the number just before it, a formula in an unlocked cell (not on a protected sheet); not where `<ignoredErrors>` says so | the fixture's 17 marks, none on its "Ignored" sheet; Excel's `Range.Errors` over rows 1-80, columns A-AD of the 65 sheets of the 12 models: 5,700 marks, all ours, none more | `ErrorChecks.markedCells` |
+
+Left: chart lines and legend keys are not drawn as wide as Excel's (vertex42's 3 pt balance line); per-point lines of
+pie slices (`c:dPt` `a:ln`) are drawn as the series'; the default text size of a chart that names none is now 10 pt
+(Excel 2019's) - the fixture names its sizes, files Excel writes do too; a category axis' label spacing is still
+our measure (oyabayo's 59 labels every second in Excel at 57 %, every third ours); best fit placement of pie labels is
+an approximation (inside at 0.6 of the radius when the slice holds the label); the error triangle is 6 px whatever the
+zoom (Excel's at other zooms not measured); a table's inconsistent calculated column, data-validation and misleading
+number format checks are not run; the axis rules were measured on Calibri labels (other faces use Calibri's line
+height).
+
 ## Cell text at a zoom, 2026-11-21
 
 The browser grid's cell text against Excel 2019 at 50-200 % (`ExcelText`, `GdiAdvances`, `CellText.NumberFit`).

@@ -492,6 +492,7 @@ module Import =
 
     let private format (s: XlsxReader.CellStyle) : CellFormat =
         { defaultFormat with
+            Unlocked = s.Unlocked
             Bold = s.Bold
             Italic = s.Italic
             Underline = s.Underline
@@ -1232,6 +1233,8 @@ module Import =
                 Threads = threads
                 Spill = spill
                 ArrayMarks = arrayMarks
+                IgnoredErrors = sheet.Extras.IgnoredErrors
+                SheetProtected = sheet.Extras.Protected
                 Pivots = sheet.PivotTables |> List.choose pivotLayout }
             |> withAutoFilter wb sheet
         let model =
