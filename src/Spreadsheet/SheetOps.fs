@@ -1606,15 +1606,19 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
 /// tenths of its font's maximum digit width.
 let mutable openFitMeasure : TextMeasure option = None
 
-/// The heights Excel 2019 gives the rows `fits` says it fits when it opens a file (synthetic-row-fit,
-/// checked in Excel): each row as high as its tallest cell - every cell of the row, an empty one with a
-/// format of its own, one in a hidden column too - at least the sheet's default height. A cell is a line of
-/// its font (`FontMetrics.rowHeightPx`: Calibri 20 is 35 px) - a line break without wrapping does not make
-/// another - a wrapped text as many lines as it takes at its column's width less 3 px a side, text turned by
-/// 90 degrees its length. A row's default style (`RowStyles`) counts as a cell of it. Cells merged with others
-/// count as a line. (`face`, `points`: the Normal font, of a format without its own.) By row, in pixels.
-let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (model: SpreadsheetModel) : Collections.Generic.Dictionary<int, float> =
-    let needed = Collections.Generic.Dictionary<int, float>()
+/// The heights Excel 2019 gives the rows `fitted` (indexes) it fits when it opens a file (synthetic-row-fit,
+/// synthetic-row-merged, probe-fonts: checked in Excel): the fonts of a row meet at their baseline - the row is
+/// as high as the most any of them has above it and the most any has below it (`FontMetrics.lineOf`: a line
+/// of its font, its descent) - the cells aligned at the bottom (the default); a cell centred or at the top is as
+/// high as its text (vertex42's centred Arial 12 and Arial 11 bold: 20 px, at the bottom 21). A cell is a line of its font - a line break without
+/// wrapping does not make another -, a wrapped text as many lines as it takes at its column's width less 3 px a
+/// side, text turned by 90 degrees its length; every cell of the row counts, an empty one with a format of its
+/// own, one in a hidden column too. The row's empty cells are in `baseFonts` (the columns' styles, the Normal
+/// font while a column has none) or, when the row has a style of its own (`RowStyles`), in that. A cell merged
+/// with the cells of other rows counts for nothing; merged with others of its row, a wrapped text counts with
+/// its descent only (Calibri 20: 23 px in a Calibri 11 row), any other a line. (`face`, `points`: the Normal
+/// font, of a format without its own.) By row, in pixels.
+let fitRowsOnOpen (fitted: Collections.Generic.HashSet<int>) (face: string option) (points: float) (baseFonts: CellFormat list) (model: SpreadsheetModel) : Collections.Generic.Dictionary<int, float> =
     // (Excel sets a font at whole pixels - Calibri 11 at 15 px, not 14.67 - so its text is that much wider:
     // the text is measured at that size.)
     let measure : TextMeasure =
@@ -1622,53 +1626,77 @@ let fitRowsOnOpen (fits: int -> bool) (face: string option) (points: float) (mod
             match openFitMeasure with
             | Some measure -> measure
             | None -> fun text fontPt fontFace _ _ -> float text.Length * FontMetrics.maxDigitWidth fontFace fontPt * 0.9
-        fun text fontPt fontFace bold italic -> byPoints text (Math.Round (fontPt * 4.0 / 3.0) * 0.75) fontFace bold italic
-    // (One line of a format, by format: the cells of a style share their format.)
-    let lineOf = Collections.Generic.Dictionary<string, float>()
-    let lineHeight (format: CellFormat) =
+        fun text fontPt fontFace bold italic -> byPoints text (float (FontMetrics.pixelSize fontPt) * 0.75) fontFace bold italic
+    // (A font's line and descent, by font: the cells of a style share their format.)
+    let lineOf = Collections.Generic.Dictionary<string, struct (float * float)>()
+    let fontLine (format: CellFormat) =
         let fontFace = format.FontName |> Option.orElse face
-        let fontPt = format.FontSize |> Option.defaultValue points
-        let key = (defaultArg fontFace "") + "|" + string fontPt
+        let fontPt = defaultArg format.FontSize points
+        let key = (defaultArg fontFace "") + "|" + string fontPt + "|" + string format.Bold + string format.Italic
         match lineOf.TryGetValue key with
-        | true, px -> px
+        | true, known -> known
         | false, _ ->
-            let px = FontMetrics.rowHeightPx fontFace fontPt
-            lineOf.[key] <- px
-            px
-    let raise (row: int) (height: float) =
-        match needed.TryGetValue row with
-        | true, known when known >= height -> ()
-        | _ -> needed.[row] <- height
+            let known = FontMetrics.lineOf fontFace fontPt format.Bold format.Italic
+            lineOf.[key] <- known
+            known
+    // The most above the baseline and below it, by row.
+    let above = Collections.Generic.Dictionary<int, float>()
+    let below = Collections.Generic.Dictionary<int, float>()
+    let raise (row: int) (top: float) (descent: float) =
+        match above.TryGetValue row with
+        | true, known when known >= top -> ()
+        | _ -> above.[row] <- top
+        match below.TryGetValue row with
+        | true, known when known >= descent -> ()
+        | _ -> below.[row] <- descent
+    // (A cell not aligned at the bottom - centred, at the top - is as high as its text, not at the baseline.)
+    let floors = Collections.Generic.Dictionary<int, float>()
+    let atBottom (format: CellFormat) = match format.VerticalAlign with None | Some "bottom" -> true | Some _ -> false
+    let place (format: CellFormat) (row: int) (top: float) (descent: float) =
+        if atBottom format then raise row top descent
+        else
+            match floors.TryGetValue row with
+            | true, known when known >= top + descent -> ()
+            | _ -> floors.[row] <- top + descent
     let hasMerges = not model.MergedCells.IsEmpty
     for KeyValue(addr, data) in model.Cells do
-        if fits addr.Row then
+        if fitted.Contains addr.Row then
             let format = data.Format
-            let line = lineHeight format
-            // (Only a wrapped or turned text is more than a line; merged with others, it is one.)
-            let merged () = hasMerges && (findMergedCell addr model).IsSome
-            let height =
-                match data.Value with
-                | Empty | String "" -> line
-                | _ when not format.WrapText && not (isTurned format) -> line
-                | _ when merged () -> line
-                | _ ->
+            let struct (line, descent) = fontLine format
+            let merge = if hasMerges then findMergedCell addr model else None
+            match merge with
+            | Some merge when merge.EndRow > merge.StartRow -> ()
+            | Some _ when format.WrapText -> place format addr.Row 0.0 descent
+            | _ ->
+                let height =
                     match data.Value with
+                    | Empty | String "" -> line
+                    | _ when merge.IsSome -> line
+                    | _ when not format.WrapText && not (isTurned format) -> line
                     | _ when isTurned format ->
                         let text = shownText model data
                         Math.Ceiling (measure text (defaultArg format.FontSize points) (format.FontName |> Option.orElse face) format.Bold format.Italic) + cellPadY
                     | value when format.WrapText && (match unwrapFormulaValue value with String _ -> true | _ -> false) ->
                         let text = shownText model data
-                        let fontPt = format.FontSize |> Option.defaultValue points
+                        let fontPt = defaultArg format.FontSize points
                         let width = axisSize false addr.Col model - 6.0 - cellIndentPx format
                         let lines = wrappedLineCount (fun part -> measure part fontPt (format.FontName |> Option.orElse face) format.Bold format.Italic) width text
                         float lines * line
                     | _ -> line
-            raise addr.Row height
-    for KeyValue(row, format) in model.RowStyles do
-        if fits row then raise row (lineHeight format)
+                place format addr.Row (height - descent) descent
+    let baseLines = baseFonts |> List.map (fun format -> format, fontLine format)
     let result = Collections.Generic.Dictionary<int, float>()
-    for KeyValue(row, height) in needed do
-        result.[row] <- min maxRowHeightPx (max model.DefaultRowHeight height)
+    for row in fitted do
+        let empty = match Map.tryFind row model.RowStyles with Some format -> [ format, fontLine format ] | None -> baseLines
+        let mutable top = match above.TryGetValue row with | true, top -> top | _ -> 0.0
+        let mutable bottom = match below.TryGetValue row with | true, bottom -> bottom | _ -> 0.0
+        let mutable floor = match floors.TryGetValue row with | true, floor -> floor | _ -> 0.0
+        for format, struct (line, descent) in empty do
+            if atBottom format then
+                top <- max top (line - descent)
+                bottom <- max bottom descent
+            else floor <- max floor line
+        result.[row] <- min maxRowHeightPx (max floor (top + bottom))
     result
 
 /// Apply sizes (index, size) to rows / columns.

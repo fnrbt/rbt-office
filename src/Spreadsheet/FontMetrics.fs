@@ -61,6 +61,64 @@ let maxDigitWidth (face: string option) (points: float) : float =
 let rowHeightPx (face: string option) (points: float) : float =
     lookup (fun (_, _, px) -> px) face points
 
+/// The face of the tables a face is measured as (`entriesOf`'s): its own, its family's, Arial.
+let private tableFace (face: string option) =
+    let key = (defaultArg face "Calibri").Trim().ToLowerInvariant()
+    let key = if key.EndsWith " mt" then key.Substring(0, key.Length - 3) else key
+    if parsed.Value.ContainsKey key then key
+    else
+        match parsed.Value.Keys |> Seq.filter (fun family -> key.StartsWith (family + " ")) |> Seq.sortByDescending (fun family -> family.Length) |> Seq.tryHead with
+        | Some family -> family
+        | None -> "arial"
+
+let private styleKey (bold: bool) (italic: bool) = (if bold then "b" else "") + (if italic then "i" else "")
+
+let private styledDeltas =
+    lazy (
+        FontMetricsData.styled
+        |> List.map (fun (key, text) ->
+            key, text.Split(' ') |> Array.map (fun entry -> let parts = entry.Split(':') in int parts.[0], float parts.[1]) |> dict)
+        |> dict)
+
+let private descentTable = lazy (FontMetricsData.descents |> dict)
+
+let private base36 (c: char) = if c <= '9' then int c - int '0' else int c - int 'a' + 10
+
+/// GDI's descent of a font (tmDescent), in pixels: under 8 points Windows' Small Fonts' (as Excel draws it); a
+/// face GDI does not have, Arial's.
+let descentPx (face: string option) (points: float) (bold: bool) (italic: bool) : float =
+    let px = pixelSize points
+    let key =
+        if points < 8.0 then "small fonts|"
+        else
+            let face = tableFace face
+            let own = face + "|" + styleKey bold italic
+            if descentTable.Value.ContainsKey own then own
+            elif descentTable.Value.ContainsKey (face + "|") then face + "|"
+            else "arial|" + styleKey bold italic
+    match descentTable.Value.TryGetValue key with
+    | true, text ->
+        if px < 6 then float (base36 text.[0])
+        elif px <= 60 then float (base36 text.[px - 6])
+        else Math.Round (float (base36 text.[54]) * float px / 60.0)
+    | false, _ -> Math.Round (float px * 0.21)
+
+/// A font's line in a row and its descent, in pixels: the row of a line of it (a bold or italic one's own where
+/// Excel's differs: Arial 12 bold 21 px, regular 20) and how much of that is below the baseline. The fonts of a
+/// row meet at their baseline (`SheetOps.fitRowsOnOpen`).
+let lineOf (face: string option) (points: float) (bold: bool) (italic: bool) : struct (float * float) =
+    let plain = rowHeightPx face points
+    let line =
+        if not bold && not italic then plain
+        else
+            match styledDeltas.Value.TryGetValue (tableFace face + "|" + styleKey bold italic) with
+            | true, deltas ->
+                (match deltas.TryGetValue (pixelSize points) with
+                 | true, delta -> plain + delta
+                 | false, _ -> plain)
+            | false, _ -> plain
+    struct (line, descentPx face points bold italic)
+
 /// The padding a column has besides its characters, in pixels: 5 for a maximum digit width of 7 or 8, 7 for
 /// 9 to 12 (twice a quarter of it, rounded up, and one).
 let columnPaddingPx (mdw: float) : float = 2.0 * Math.Ceiling (mdw / 4.0) + 1.0
@@ -79,5 +137,7 @@ let columnWidthOfPx (mdw: float) (px: float) : float = px / mdw
 let baseColumnWidthPx (mdw: float) (characters: float) : float =
     Math.Ceiling ((characters * mdw + columnPaddingPx mdw) / 8.0) * 8.0
 
-/// Pixels of a height in points as Excel shows it: whole pixels, cut down (20 pt is 26 px, 15.7 is 20).
-let pointsToRowPx (points: float) : float = Math.Floor (points * 4.0 / 3.0 + 1e-6)
+/// Pixels of a height in points as Excel 2019 shows it (a row's `ht`, a sheet's own default height): whole
+/// pixels of 15 twentieths of a point, cut down - but a height a twentieth of a point short of a pixel is that
+/// pixel (synthetic-row-heights "Custom": 15.65 pt is 20 px, 15.7 is 21; 20.15 is 26, 20.2 is 27; 20 is 26).
+let pointsToRowPx (points: float) : float = Math.Floor ((Math.Floor (points * 20.0 + 0.5) + 1.0) / 15.0)

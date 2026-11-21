@@ -1237,7 +1237,22 @@ module Import =
         let model =
             if fittedRows.Count = 0 then model
             else
-                let fitted = SheetOps.fitRowsOnOpen (fun row -> fittedRows.Contains row) defaultFace defaultPoints model
+                // (The fonts of a row's empty cells: the columns' styles', the Normal font's while a column has none.)
+                let baseFonts =
+                    let styledColumns =
+                        sheet.Columns
+                        |> List.choose (fun column ->
+                            match column.Style with
+                            | Some index when index >= 0 && index < wb.Styles.Length -> Some (column.Index, column.MaxIndex, index)
+                            | _ -> None)
+                        |> List.sortBy (fun (first, _, _) -> first)
+                    let coveredTo = styledColumns |> List.fold (fun reached (first, last, _) -> if first <= reached + 1 then max reached last else reached) 0
+                    let fonts =
+                        styledColumns
+                        |> List.map (fun (_, _, index) -> format wb.Styles.[index])
+                        |> List.distinctBy (fun f -> f.FontName, f.FontSize, f.Bold, f.Italic)
+                    if coveredTo >= 16384 && not fonts.IsEmpty then fonts else defaultFormat :: fonts
+                let fitted = SheetOps.fitRowsOnOpen fittedRows defaultFace defaultPoints baseFonts model
                 let mutable heights = model.RowHeights
                 for row in fittedRows do
                     let thick = match Portable.Dict.tryFind row thickRows with ValueSome edges -> float edges | ValueNone -> 0.0

@@ -69,8 +69,7 @@ numbers in 7 column widths x 12 zooms). Fixture `synthetic-text-zoom.xlsx`
 | A line of text is set in 2 px from the cell's left side and 3 px from its right (the grid line at its right is the cell's), x the zoom | left-, right- and centre-aligned lines of 18 cases at 50-200 % | 5 px each side | style sheet `padding: 3px 3px 3px 2px`; an indent adds to that side; a text overflows when wider than the cell less 5 px |
 | A number at a zoom is fitted to the column on screen (its 100 % pixels x the zoom, rounded): the room is the cell less 5 px x the zoom; a formatted number fits when its text is no wider; a General number takes the longest form whose characters, each a digit wide (a minus sign as itself), fit; else as many `#` as fit in the cell less 5 px (x the zoom from 100 %), `#` measured | `Range.Text` at the sheet's zoom: 816 of 840 cells agree (the rest at 50-70 %, in Small Fonts) | 644 (fitted at 100 %'s digit width whatever the zoom) | `CellText.NumberFit`, `cellDisplayTextFitted`, `Paint.cellLookFitted` (the browser grid only: other callers as before) |
 
-Left: font sizes are whole points in the model (`CellFormat.FontSize` is an int: 10.5 pt is drawn as 10, 7.5 as
-7); General numbers at 50-70 % (Small Fonts) are fitted a little differently by Excel (24 of 840 cells); in Small
+Left: General numbers at 50-70 % (Small Fonts) are fitted a little differently by Excel (24 of 840 cells); in Small
 Fonts the text is drawn 1 px nearer the cell's left side than Excel's bitmap glyphs; the hinted widths come from
 FreeType's GDI-like interpreter, not GDI (all 465 measured cases agree, larger sizes not measured past 32 px);
 the grid's cell edges at a zoom are rounded where they fall (a column of 75 px at 90 % is 67 or 68 px on screen,
@@ -140,14 +139,40 @@ height as pixels x 0.75; widths and heights the user left alone are written as t
 `sizing-excel-parity`: unedited `<col>`s identical, a column set to 45 px is `width="5"` at mdw 9 and reads
 back 45 px).
 
-Left: a row with `x14ac:dyDescent` on the sheet and `defaultRowHeight="30"` keeps rows of one Calibri 11 line at 30 pt in Excel (18 and 12.75 do not: unexplained, not followed); a row mixing fonts is 1 px higher in Excel than the taller font's own line (Arial 12 in a Calibri 11
-sheet: 21 px, ours 20; Arial 10 wrapped in it: 17 n + 1); a row of a wrapped cell whose column has a style
-of a larger font is 3 px higher in Excel (107.25 pt, ours 105); a row whose wrapped cell is merged across
-columns is 26.25 pt in Excel (unexplained; ours a line); text turned 90 degrees fits a few pixels lower than
-Excel (79 px for "Turned text"); how many lines a wrapped text takes follows the browser's measure of the
-text (Excel's GDI widths at whole-pixel font sizes are wider - fitted at Excel's pixel size); a sheet added in
-the editor to a workbook whose Normal font is not 7 px wide writes its widths in 7 px digits; columns hidden
-by a `<col hidden>` to XFD are hidden only for 1024 columns (choudhary shows columns ANF.. that Excel hides).
+Left: a row with `x14ac:dyDescent` on the sheet and `defaultRowHeight="30"` keeps rows of one Calibri 11 line at 30 pt in Excel (18 and 12.75 do not: unexplained, not followed); text turned 90 degrees fits a few pixels lower than Excel (79 px for "Turned text"); a sheet added in the editor to a workbook whose Normal font is not 7 px wide writes its widths in 7 px digits. (Mixed fonts, merged rows, the larger column style under wrapped text, columns hidden to XFD: see "Rows, fonts and hidden axes" below.)
+
+## Rows, fonts and hidden axes against Excel 2019, 2026-11-21
+
+Found on the real-estate models (houseflippingspreadsheet's HOME rows of `ht="15.7" customHeight` 1 px low, rows of a
+bold or a second font 1 px low in vertex42's sheets, choudhary's columns hidden to XFD shown from ANF, the
+investment-property calculator's `zeroHeight` / `defaultColWidth="0"` sheets showing what Excel hides, 10.5 pt drawn
+as 10); each rule then confirmed on generated workbooks opened in Excel 2019 on the VM (`Rows(i).Height`,
+`Columns(i).Hidden`, `AutoFit` of 17,000 cells of 30 faces x 30 sizes x 4 styles in sheets of four Normal fonts,
+GDI's `TEXTMETRIC` of the same fonts). Fixtures: `tools/excel-parity/make-row-height-fixtures.py`
+(synthetic-row-heights, synthetic-hidden-axes, synthetic-row-merged); data and probes:
+`tools/excel-parity/font-metrics/` (`make-font-metrics.py` writes `FontMetricsData.fs`); checks: xlsx-browser
+`rows-excel-parity`, `tests/office-formats/xlsx-bridge.fsx` ("fonts:", "rows:").
+
+| Rule (Excel 2019) | Evidence | Where |
+| --- | --- | --- |
+| A font size is kept to a twentieth of a point (Font.Size 10.3 stays 10.3, 8.33 is 8.35, 10.01 is 10); a file's `sz` as it is | COM: Font.Size of 13 values | `CellFormat.FontSize` a float, `Model.fontSizeAsKept` (SetFontSize, ApplyFormatPatch, VBA Font.Size, the desktop toolbar); written back as read |
+| A font is measured at its pixel size, round(points x 4/3): 8 and 8.5 pt (11 px) have the same maximum digit width and row, 15.5 pt is 16 pt's 28 px | 144 of 144 fractional sizes of 27 faces as the Normal font agree with the integer size of their pixel size (6 Segoe UI Black widths are not Segoe UI's: now a face of its own) | `FontMetrics.pixelSize`, the table by pixel size (`FontMetricsData.regular`, 30 faces) |
+| A row's or default's height in points is shown in whole pixels of 15 twentieths of a point, cut down - a height a twentieth short of a pixel being that pixel: 15.65 pt is 20 px, 15.7 is 21; 20.15 is 26, 20.2 27; 20 is 26, 12.7 17, 409 545 | 59 custom heights, 5 sheets of a default height of their own | `FontMetrics.pointsToRowPx` |
+| Fitting a row on opening, its fonts meet at their baseline: the row is the most any cell has above the baseline plus the most any has below (a font's own line R, its descent D = GDI's `tmDescent`; under 8 pt Small Fonts'); a wrapped text of n lines is n R - D above. Arial 12 (line 20, descent 3) in a Calibri 11 sheet (20, 4): 17 + 4 = 21 px; a column of Calibri 20 under 7 wrapped lines of Calibri 11: 143 px (7 x 20 + 7 - 4) | 10,482 of 10,742 AutoFit rows of 30 faces x 30 sizes x 4 styles in Calibri 11 / Arial 10 / Tahoma 10 sheets (the tallest line alone: 9,279); ColStyle 107.25 / 47.25 / 32.25 pt | `FontMetrics.lineOf`, `SheetOps.fitRowsOnOpen` |
+| Only the cells aligned at the bottom (the default) meet at the baseline; a cell centred or at the top is as high as its own text | synthetic-row-baseline: an empty Arial 12 cell and Arial 11 bold text in an Arial 10 sheet 21 px at the bottom, 20 centred, at the top or mixed (vertex42's rental cash flow); 3 wrapped lines under an empty Calibri 20 cell 63 / 60 / 60 | `fitRowsOnOpen` |
+| A bold or italic font's line is its own (Arial 12 bold 21 px, regular 20; Times New Roman 8 bold 14, regular 15) | the same AutoFit rows in an Arial 6 sheet (the font's own line) | `FontMetricsData.styled` |
+| A fitted row is as low as its fonts' lines - the empty cells' (columns' styles, the Normal font while a column has none) - not the sheet's own default height | FitMin30 (default 30 pt): a row of 8 pt text or none is 15 pt; FitMinCols (every column Calibri 8): 11.25 pt | `XlsxBridge` (the base fonts), `fitRowsOnOpen` |
+| A cell merged across rows counts for nothing; merged across columns, a wrapped text only with its descent (Calibri 20 wrapped in a Calibri 11 row: 23 px), an unwrapped one a line | synthetic-row-merged "Merged" | `fitRowsOnOpen` |
+| `<col hidden>` to XFD hides every column to XFD; `defaultColWidth="0"` hides the columns no `<col>` sizes | ColsToEnd (Columns(16384).Hidden), DefColZero | `XlsxBridge` import (hidden columns to 16384) |
+| `sheetFormatPr zeroHeight="1"`: every row the sheet does not list is hidden, between its rows and past them (StandardHeight 0); a listed row with nothing is at the default, a listed row of no `customHeight` fitted | ZeroHeight: rows 3, 8, 11.. hidden, `<row r="7"/>` 15 pt, `ht="20"` 15 | `XlsxReader.SheetFormat.ZeroHeight`, `XlsxBridge` (DefaultRowHeight 0, `SheetAxes.DefaultRowShownHeight` for Unhide), written back |
+
+The tracker's earlier "a row whose wrapped cell is merged across columns is 26.25 pt in Excel" was a misreading of
+synthetic-row-fit's rows (row 16 is 15 pt in Excel, as ours; 26.25 is row 14's). Excel does not break a wrapped line
+at a no-break space (Nbsp: 4 lines, with spaces 5).
+
+On the 12 real-estate models (rows 1-40, columns 1-20 of 65 sheets, Excel's COM numbers): rows 2595 of 2600 as Excel (before: 2547), columns 1300 of 1300 (before: 1291).
+
+Left: vertex42's Help sheets: rows of wrapped Arial 11 text in an Arial 10 sheet 1-2 px higher in Excel (59 for 3 lines, ours 57; 58 / 39 in the mortgage calculator's) and two of them a line more in Excel (59 / 135, ours 38 / 114: the wrap measure); 260 of the 10,742 AutoFit rows (mostly Roboto, Gill Sans MT, Palatino, Trebuchet MS, Century Gothic and Book Antiqua, whose line has more above or below than GDI's descent says); a face GDI lacks (Roboto, Myriad Pro) has Arial's descent, Aptos its file's; unlisted rows below the default of a sheet with both styled columns and the Normal font keep the tallest line (not the baseline sum: not measured); `x14ac:dyDescent` with a default of 30 pt (rows of 30 pt in Excel) not followed.
 
 ## Excel 2019 checks of 2026-11-10 (0.1.29, branch `sheet/excel-checks`)
 

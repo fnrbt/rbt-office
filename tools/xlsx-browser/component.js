@@ -1892,6 +1892,61 @@ checks['grid-text-excel-parity'] = async () => {
     return lines;
 };
 
+// Rows and columns as Excel 2019 opens them (tools/excel-parity/make-row-height-fixtures.py; every number read from
+// Excel 2019 on the fixtures): a height's pixels, fractional font sizes, the rows of no height of their own a sheet
+// hides (zeroHeight), columns hidden to XFD, a row's fonts meeting at their baseline, merged cells.
+checks['rows-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    const heights = (n) => Array.from({ length: n }, (_, row) => grid.GetRowHeight(row));
+    const sheet = async (index) => { grid.SwitchSheet(index); await frame(); };
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-heights.xlsx')).slice());
+        await sheet(0);
+        const custom = heights(59);
+        check('custom heights 15 .. 15.65 pt are 20 px, 15.7 .. 16 21 (a twentieth short of a pixel is the pixel)', [custom.slice(0, 14).every((h) => h === 20), custom.slice(14, 21).every((h) => h === 21)], [true, true]);
+        check('... 19.5 .. 20.15 pt 26 px, 20.2 .. 20.5 27', [custom.slice(21, 35).every((h) => h === 26), custom.slice(35, 42).every((h) => h === 27)], [true, true]);
+        check('... 12, 12.3, 12.375, 12.5, 12.7, 14.25, 14.4, 15.6, 15.95, 0.75, 1, 2, 30.1, 30.4, 30.6, 30.9, 409 pt', custom.slice(42), [16, 16, 16, 16, 17, 19, 19, 20, 21, 1, 1, 2, 40, 40, 40, 41, 545]);
+        const defaults = [];
+        for (const index of [1, 2, 3, 4, 5]) { await sheet(index); defaults.push(grid.GetRowHeight(1)); }
+        check('a sheet\'s own default of 15.7, 15.95, 20, 16, 14.4 pt', defaults, [21, 21, 26, 21, 19]);
+        await sheet(6);
+        check('fitted rows of a sheet of 30 pt of its own: the fonts\' lines, not the default; the rows past them 40 px', heights(7), [53, 20, 20, 35, 20, 20, 40]);
+        await sheet(7);
+        check('... every column in Calibri 8: 15 px rows, empty or not', heights(7), [53, 15, 20, 35, 15, 15, 21]);
+        await sheet(8);
+        check('fractional sizes: Calibri 10.5 / 7.5 / 13.5 / 9.5 / 11.5, Arial 10.5 / 7.5 / 13.5 / 11.5, Times 10.5 / 13.5, Calibri 15.5, Arial 17.5',
+            heights(13), [20, 20, 24, 20, 20, 20, 20, 23, 20, 20, 23, 28, 29]);
+        check('... a size of 10.5 pt is kept', grid.GetCell(0, 0).format.fontSize, 10.5);
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-hidden-axes.xlsx')).slice());
+        await sheet(0);
+        check('<col min="4" max="16384" hidden>: D .. XFD hidden', [0, 2, 3, 1023, 1045, 4999, 16383].map((col) => grid.GetColumnWidth(col)), [64, 64, 0, 0, 0, 0, 0]);
+        await sheet(1);
+        check('defaultColWidth="0": the columns of no <col> hidden', [0, 2, 3, 100].map((col) => grid.GetColumnWidth(col)), [70, 70, 0, 0]);
+        await sheet(2);
+        check('zeroHeight: the rows not listed hidden, between and past the listed ones', [...heights(12), grid.GetRowHeight(99)], [20, 20, 0, 20, 0, 40, 20, 0, 20, 35, 0, 0, 0]);
+        grid.UnhideRows('3:3'); await frame();
+        check('... a row of them shown again at the default height', grid.GetRowHeight(2), 20);
+        await sheet(3);
+        check('zeroHeight with a default of its own: listed rows of 15.95 pt 21 px, a row of no ht fitted', heights(6), [21, 21, 0, 20, 0, 0]);
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-merged.xlsx')).slice());
+        await sheet(0);
+        check('merged cells: across columns wrapped a line (its descent only), a 20 pt line counts, over three rows nothing',
+            heights(11), [20, 20, 35, 20, 20, 20, 20, 20, 35, 200, 23]);
+        await sheet(1);
+        check('a column of Calibri 20 under wrapped Calibri 11: its descent below the text\'s (7, 3 lines, plain, 2 lines)', heights(4), [143, 63, 35, 43]);
+        await sheet(2);
+        check('... of Calibri 8: no more', heights(4), [140, 60, 20, 40]);
+        await sheet(3);
+        check('wrapped at spaces, not at no-break spaces (5 lines; 4, broken in the words; 4; 3)', heights(4), [100, 80, 80, 60]);
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-row-baseline.xlsx')).slice());
+        await sheet(0);
+        check('cells at the bottom meet at their baseline, centred or at the top only their height', heights(11), [21, 21, 20, 20, 20, 20, 20, 63, 60, 60, 63]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Sizes and theme fills as Excel 2019 shows them (tools/excel-parity/make-sizing-fixtures.py; every number
 // read from Excel 2019 on the fixtures): column widths in the Normal font's maximum digit width, row heights
 // of its font, the rows Excel fits on opening, a row's default style to the last column, a shape's theme fill.

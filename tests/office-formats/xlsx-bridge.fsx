@@ -1114,6 +1114,33 @@ do
     let backFonts = back.Sheets |> List.find (fun sheet -> sheet.Name = "Fonts")
     let backSize row = backFonts.Rows |> List.tryFind (fun r -> r.Index = row + 1) |> Option.bind (fun r -> r.Cells |> List.tryHead) |> Option.bind (fun c -> c.Style) |> Option.bind (fun style -> style.FontSize)
     eq "fonts: written back as they were" [ for row in 0 .. 4 -> backSize row ] [ Some 10.5; Some 7.5; Some 13.5; Some 9.5; Some 11.5 ]
+    let sheetNamed (imported: Bridge.ImportedWorkbook) name = (imported.Sheets |> Array.find (fun sheet -> sheet.Name = name)).Model
+    let heights (model: SpreadsheetModel) n = [ for row in 0 .. n - 1 -> getRowHeight row model ]
+    let custom = heights (sheetNamed imported "Custom") 59
+    eq "rows: heights of their own in Excel's pixels (15.65 pt 20 px, 15.7 21, 20.15 26, 20.2 27, 12.7 17, 409 545)"
+        [ custom.[13]; custom.[14]; custom.[34]; custom.[35]; custom.[46]; custom.[58] ] [ 20.0; 21.0; 26.0; 27.0; 17.0; 545.0 ]
+    eq "rows: a sheet's own default of 15.7, 15.95, 20, 16, 14.4 pt"
+        [ for name in [ "Def157"; "Def1595"; "Def20"; "Def16"; "Def144" ] -> getRowHeight 1 (sheetNamed imported name) ] [ 21.0; 21.0; 26.0; 21.0; 19.0 ]
+    eq "rows: fitted rows are their fonts' lines, not the sheet's own default (30 pt); every column Calibri 8: 15 px"
+        (heights (sheetNamed imported "FitMin30") 7, heights (sheetNamed imported "FitMinCols") 7)
+        ([ 53.0; 20.0; 20.0; 35.0; 20.0; 20.0; 40.0 ], [ 53.0; 15.0; 20.0; 35.0; 15.0; 15.0; 21.0 ])
+    let axes = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-hidden-axes.xlsx")
+    eq "rows: <col hidden> to XFD hides to XFD; defaultColWidth 0 hides the columns of no <col>"
+        ([ for col in [ 2; 3; 1045; 16383 ] -> getColumnWidth col (sheetNamed axes "ColsToEnd") ], [ for col in [ 2; 3; 100 ] -> getColumnWidth col (sheetNamed axes "DefColZero") ])
+        ([ 64.0; 0.0; 0.0; 0.0 ], [ 70.0; 0.0; 0.0 ])
+    let zero = sheetNamed axes "ZeroHeight"
+    eq "rows: zeroHeight hides the rows not listed" (heights zero 12 @ [ getRowHeight 5000 zero ]) [ 20.0; 20.0; 0.0; 20.0; 0.0; 40.0; 20.0; 0.0; 20.0; 35.0; 0.0; 0.0; 0.0 ]
+    eq "rows: ... shown again at the default" (getRowHeight 2 (Ops.unhideAxis true 2 2 zero)) 20.0
+    let zeroBack = reread (Bridge.Export.toWorkbookOut (inputOf axes (modelsOf axes |> Array.map (fun m -> setColumnWidth 0 50.0 m)) Map.empty))
+    ok "rows: ... zeroHeight written back" ((zeroBack.Sheets |> List.find (fun sheet -> sheet.Name = "ZeroHeight")).Format.ZeroHeight) "no zeroHeight"
+    let merged = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-row-merged.xlsx")
+    eq "rows: merged over rows count for nothing, across columns a 20 pt line counts, wrapped its descent"
+        (let m = sheetNamed merged "Merged" in [ for row in [ 2; 3; 4; 5; 6; 10 ] -> getRowHeight row m ]) [ 35.0; 20.0; 20.0; 20.0; 20.0; 23.0 ]
+    eq "rows: a column of Calibri 20 under wrapped Calibri 11: its descent below the text's (3 lines, plain, 2 lines)"
+        (heights (sheetNamed merged "ColStyle") 4 |> List.tail) [ 63.0; 35.0; 43.0 ]
+    let baseline = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-row-baseline.xlsx")
+    eq "rows: cells at the bottom meet at their baseline (Arial 12 and Arial 11 bold: 21 px), centred or at the top only their height (20)"
+        (heights (sheetNamed baseline "Baseline") 11) [ 21.0; 21.0; 20.0; 20.0; 20.0; 20.0; 20.0; 63.0; 60.0; 60.0; 63.0 ]
     eq "fonts: a size set is kept to a twentieth of a point, as Excel keeps it" (List.map fontSizeAsKept [ 10.3; 8.33; 10.01; 10.5 ]) [ 10.3; 8.35; 10.0; 10.5 ]
 
 printfn ""

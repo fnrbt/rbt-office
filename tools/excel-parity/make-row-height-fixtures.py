@@ -17,9 +17,13 @@ tests/office-formats/xlsx-bridge.fsx "rows:"). The helpers are make-sizing-fixtu
   - "DefColZero": `defaultColWidth="0"`: the columns of no `<col>` are hidden.
   - "ZeroHeight": `zeroHeight="1"`: the rows of no `<row>` are hidden - between the listed rows and past them.
   - "ZeroHeightCustom": the same with a default height of its own (15.95 pt) and rows of that height.
-- synthetic-row-merged.xlsx (Calibri 11): rows of merged cells - across columns (wrapped long text, wrapped short
-  text, line breaks, 20 pt text) and across rows (20 pt text over three rows); a column in the style of a larger
-  font under wrapped text.
+- synthetic-row-merged.xlsx (Calibri 11): "Merged": rows of merged cells - across columns (wrapped long text, wrapped
+  short text, line breaks, 20 pt text, wrapped 20 pt text) and across rows (20 pt text over three rows); "ColStyle" /
+  "ColStyleSmall": a column in the style of a larger / smaller font under wrapped text; "Nbsp": wrapped text of
+  no-break spaces (Excel breaks a line at a space, not at a no-break space).
+- synthetic-row-baseline.xlsx (Arial 10): a row's fonts meet at their baseline when aligned at the bottom - an empty
+  Arial 12 cell and Arial 11 bold text, at the bottom, centred, at the top, mixed; wrapped Calibri 11 under an empty
+  Calibri 20 cell, at the bottom, centred, at the top.
 
 Deterministic: run it again and the bytes are the same.
 
@@ -145,3 +149,43 @@ package(os.path.join(OUTDIR, 'synthetic-row-merged.xlsx'), [
     ('ColStyleSmall', sheet(COLSTYLE_ROWS, '<sheetFormatPr defaultRowHeight="15"/>', col(2, 2, 12) + col(4, 4, 9.140625, S_SMALL))),
     ('Nbsp', sheet(NBSP_ROWS, '<sheetFormatPr defaultRowHeight="15"/>', col(2, 2, 12))),
 ], styles(FONTS, xfs=XFS))
+
+# A row's fonts at their baseline, by vertical alignment and with empty cells (vertex42's rows of an empty Arial 12
+# cell and Arial 11 bold text, centred, in an Arial 10 sheet: 20 px in Excel). Workbook of Arial 10; fonts 1 Arial 12,
+# 2 Arial 11 bold, 3 Calibri 20, 4 Calibri 11.
+def aligned(font_id, vertical=None, wrap=False):
+    body = ''.join([f' vertical="{vertical}"' if vertical else '', ' wrapText="1"' if wrap else ''])
+    return (f'<xf numFmtId="0" fontId="{font_id}" fillId="0" borderId="0" xfId="0" applyFont="1"'
+            + (f' applyAlignment="1"><alignment{body}/></xf>' if body else '/>'))
+
+
+BASE_FONTS = [font('Arial', 10), font('Arial', 12), font('Arial', 11, '<b/>'), font('Calibri', 20), font('Calibri', 11)]
+BASE_XFS = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
+            aligned(1), aligned(2), aligned(1, 'center'), aligned(2, 'center'), aligned(1, 'top'),  # 1..5
+            aligned(4, wrap=True), aligned(4, 'center', wrap=True), aligned(4, 'top', wrap=True), aligned(3)]  # 6..9
+A12, A11B, A12C, A11BC, A12T, C11W, C11WC, C11WT, C20 = range(1, 10)
+
+
+def cells(r, *specs):
+    out = ''
+    for col, style, text in specs:
+        out += f'<c r="{col}{r}" s="{style}"/>' if text is None else inline(f'{col}{r}', style, text)
+    return f'<row r="{r}">' + out + '</row>'
+
+
+BASE_ROWS = [
+    cells(1, ('A', A12, None), ('B', A11B, 'bold 11')),            # empty Arial 12 + Arial 11 bold, bottom
+    cells(2, ('A', A12, 'Arial 12'), ('B', A11B, 'bold 11')),       # both text, bottom
+    cells(3, ('A', A12C, None), ('B', A11BC, 'bold 11')),          # vertex42's: empty, centred
+    cells(4, ('A', A12C, 'Arial 12'), ('B', A11BC, 'bold 11')),     # both text, centred
+    cells(5, ('A', A12C, 'Arial 12'), ('B', A11B, 'bold 11')),      # Arial 12 centred, bold bottom
+    cells(6, ('A', A12T, 'Arial 12'), ('B', A11B, 'bold 11')),      # Arial 12 top, bold bottom
+    cells(7, ('A', A12, 'Arial 12'), ('B', A11BC, 'bold 11')),      # Arial 12 bottom, bold centred
+    cells(8, ('B', C11W, 'one&#10;two&#10;three'), ('D', C20, None)),   # 3 lines bottom + empty Calibri 20
+    cells(9, ('B', C11WC, 'one&#10;two&#10;three'), ('D', C20, None)),  # ... centred
+    cells(10, ('B', C11WT, 'one&#10;two&#10;three'), ('D', C20, None)), # ... top
+    cells(11, ('B', C11W, 'one&#10;two&#10;three'), ('D', C20, 'Big')), # ... with text
+]
+package(os.path.join(OUTDIR, 'synthetic-row-baseline.xlsx'), [
+    ('Baseline', sheet(BASE_ROWS, '<sheetFormatPr defaultRowHeight="12.75"/>', selected=True)),
+], styles(BASE_FONTS, xfs=BASE_XFS))
