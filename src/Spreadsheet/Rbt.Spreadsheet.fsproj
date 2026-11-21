@@ -13,6 +13,7 @@
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
+    <Compile Include="ErrorChecks.fs" />
     <Compile Include="Workbook.fs" />
     <Compile Include="Pivot.fs" />
     <Compile Include="FunctionCatalog.fs" />

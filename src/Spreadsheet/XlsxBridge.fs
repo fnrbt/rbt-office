@@ -1232,6 +1232,7 @@ module Import =
                 Threads = threads
                 Spill = spill
                 ArrayMarks = arrayMarks
+                IgnoredErrors = sheet.Extras.IgnoredErrors
                 Pivots = sheet.PivotTables |> List.choose pivotLayout }
             |> withAutoFilter wb sheet
         let model =

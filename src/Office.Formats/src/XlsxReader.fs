@@ -1125,6 +1125,9 @@ type SheetExtras = {
     PivotLocations: (string * string) list
     /// What-if data tables, in file order.
     DataTables: DataTableFormula list
+    /// The background error checks the sheet turns off for some cells (`<ignoredErrors>`): the cells
+    /// (`sqref`) and the checks (`numberStoredAsText`, `formula`, `formulaRange`, `evalError`, ...).
+    IgnoredErrors: (string * string list) list
     /// `<ext>` elements of the sheet's `<extLst>` that name cells of the
     /// sheet (sparkline groups, x14 conditional formats). They are written
     /// back while the sheet's rows and columns are where the file had them.
@@ -1194,7 +1197,7 @@ type SheetExtras = {
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
-      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []
+      SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []; IgnoredErrors = []
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
       SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None }
 
@@ -6040,6 +6043,14 @@ let private autoFilterTagNames = set [ "filter"; "customFilter"; "top10"; "color
 
 /// The sheet's `<autoFilter>` (the one after the rows; a table's is in the
 /// table's own part).
+let private ignoredErrorsOf (sheet: XmlPatch.SourceElement) : (string * string list) list =
+    let checks = [ "evalError"; "twoDigitTextYear"; "numberStoredAsText"; "formula"; "formulaRange"; "unlockedFormula"; "emptyCellReference"; "listDataValidation"; "calculatedColumn" ]
+    Xml.descendants "ignoredError" sheet.Node
+    |> List.choose (fun item ->
+        match Xml.attr "sqref" item with
+        | Some cells -> Some (cells, checks |> List.filter (fun check -> match Xml.attr check item with Some "1" | Some "true" -> true | _ -> false))
+        | None -> None)
+
 let private sheetAutoFilterOf (sheet: XmlPatch.SourceElement) : SheetAutoFilter option =
     match Xml.descendants "autoFilter" sheet.Node |> List.tryHead with
     | None -> None
@@ -6355,6 +6366,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                         TableParts = tablesWithParts |> List.map (fun (table, path) -> table.Name, path)
                         KeptCellExtensions = cellExtensions
                         AutoFilter = (try outline |> Option.bind sheetAutoFilterOf with _ -> None)
+                        IgnoredErrors = (try outline |> Option.map ignoredErrorsOf |> Option.defaultValue [] with _ -> [])
                         PrinterSettingsRelId = outline |> Option.bind pageSetupRelId |> Option.filter (fun id -> Set.contains id keptIds)
                         PivotLocations = pivotLocations
                         SourcePart = Some (sheetPath, sheetRelType)

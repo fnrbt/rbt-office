@@ -1499,6 +1499,9 @@ type SpreadsheetModel = {
     /// Search results (cell addresses)
     SearchResults: CellAddress array
 
+    /// The background error checks the file turns off for some cells (`<ignoredErrors>`): `sqref` and checks.
+    IgnoredErrors: (string * string list) list
+
     /// Current search result index
     SearchIndex: int
 
@@ -1744,6 +1747,7 @@ let createEmpty rowCount colCount = {
     Zoom = 1.0
     Spill = Map.empty
     ArrayMarks = Map.empty
+    IgnoredErrors = []
     Validations = []
     Macros = ""
     Pivots = []
