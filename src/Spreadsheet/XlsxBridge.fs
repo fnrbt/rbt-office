@@ -1038,14 +1038,25 @@ module Import =
             if row.OutlineLevel > 0 then rowLevels <- Map.add index (min 7 row.OutlineLevel) rowLevels
             if row.Collapsed then collapsedRows <- Set.add index collapsedRows
         for column in sheet.Columns do
-            // A range can run to the last column (16384); only the ones near the data matter.
+            // (A range can run to the last column, XFD: Excel hides every one of them - choudhary's columns
+            // from ANF on too. The writer joins them into one `<col>` again.)
             if column.Hidden || column.OutlineLevel > 0 || column.Collapsed then
-                for idx in column.Index .. min column.MaxIndex (column.Index + 1023) do
+                for idx in max 1 column.Index .. min 16384 column.MaxIndex do
                     if column.Hidden then
                         hiddenColSizes <- Map.add (idx - 1) (column.Width |> Option.map columnPx |> Option.defaultValue defaultColPx) hiddenColSizes
                         columnWidths <- Map.add (idx - 1) 0.0 columnWidths
                     if column.OutlineLevel > 0 then colLevels <- Map.add (idx - 1) (min 7 column.OutlineLevel) colLevels
                     if column.Collapsed then collapsedCols <- Set.add (idx - 1) collapsedCols
+        // (`defaultColWidth="0"`: Excel hides every column no `<col>` gives a width - investmentpropertycalculator's
+        // past its last column - shown again at the base width.)
+        if sheet.Format.DefaultColWidth = Some 0.0 then
+            let listed = Array.zeroCreate<bool> 16385
+            for column in sheet.Columns do
+                for idx in max 1 column.Index .. min 16384 column.MaxIndex do listed.[idx] <- true
+            for idx in 1 .. 16384 do
+                if not listed.[idx] then
+                    hiddenColSizes <- Map.add (idx - 1) defaultColPx hiddenColSizes
+                    columnWidths <- Map.add (idx - 1) 0.0 columnWidths
         let axes : SheetAxes =
             if hiddenRowSizes.IsEmpty && hiddenColSizes.IsEmpty && rowLevels.IsEmpty && colLevels.IsEmpty && collapsedRows.IsEmpty && collapsedCols.IsEmpty
                && sheet.View.SummaryBelow && sheet.View.SummaryRight && sheet.View.ShowOutlineSymbols then emptySheetAxes
