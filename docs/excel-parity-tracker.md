@@ -135,6 +135,8 @@ calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#N
   formulas read instead (from nothing, reading order lets an #N/A go round a cycle for good: saopaulo-condos).
   The real-estate model with iterative calculation: 4196 of 4225 cells exact (was 3972), the 29 others near:
   ours starts from nothing, Excel from its own last values.
+- Not reproduced: the formula that closes a cycle, typed in the editor, has the value it was given as it
+  was entered (the editor calculates a typed formula once before the recalculation); Excel's is 0.
 - Not reproduced: a formula with no value in the file (`<f>` without `<v>`) is "" in Excel (so `100+0.1*B1`
   on a cycle is #VALUE!); ours starts it from 0.
 
