@@ -1892,6 +1892,36 @@ checks['grid-text-excel-parity'] = async () => {
     return lines;
 };
 
+// Wrapped text broken into lines where Excel 2019 breaks it on screen (synthetic-wrap-budget, make-wrap-fixture.py,
+// each column's lines read from Excel's pictures): a line fits while it is no wider than the cell on screen less 5 px,
+// in Excel's widths at the zoom (bold Calibri 11 "Releasing Cost", 90 px, one line from a 95-px column).
+checks['wrap-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-wrap-budget.xlsx')).slice());
+        const sheets = grid.GetSheetNames();
+        const linesOf = async (col) => {
+            grid.SelectCell(3, col); await frame();
+            // (The grid keeps the nodes it frees, hidden: the one shown.)
+            const cell = [...host.querySelectorAll(`.spreadsheet-cell[data-row="0"][data-col="${col}"]`)].find((node) => node.style.display !== 'none');
+            return [...(cell?.querySelectorAll(':scope > span') ?? [])].map((span) => span.textContent);
+        };
+        const columns = async (from, to) => { const all = []; for (let col = from; col <= to; col++) all.push(await linesOf(col)); return all; };
+        const repeat = (n, value) => Array.from({ length: n }, () => value);
+        for (const [name, last, ruled] of [
+            ['B100', 18, [...repeat(2, ['Releasing', 'Cost per', 'Unit']), ...repeat(9, ['Releasing', 'Cost per Unit']), ...repeat(7, ['Releasing Cost', 'per Unit'])]],
+            ['R85', 20, [...repeat(12, ['The quick', 'brown fox', 'jumps']), ...repeat(8, ['The quick brown', 'fox jumps'])]],
+            ['R70', 20, [...repeat(17, ['The quick brown', 'fox jumps']), ...repeat(3, ['The quick brown fox', 'jumps'])]],
+        ]) {
+            grid.SwitchSheet(sheets.indexOf(name)); await frame(); await frame();
+            check(`${name}: the lines of each column (a pixel wider each) as Excel draws them`, await columns(1, last), ruled);
+        }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Rows and columns as Excel 2019 opens them (tools/excel-parity/make-row-height-fixtures.py; every number read from
 // Excel 2019 on the fixtures): a height's pixels, fractional font sizes, the rows of no height of their own a sheet
 // hides (zeroHeight), columns hidden to XFD, a row's fonts meeting at their baseline, merged cells.
