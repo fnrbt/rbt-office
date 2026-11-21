@@ -687,7 +687,12 @@ def magazine_feature():
     sec0 = doc.sections[0]
     sec0.different_first_page_header_footer = True
     hp = sec0.header.paragraphs[0]
-    hp.paragraph_format.tab_stops.add_tab_stop(Cm(16.6), alignment=2)
+    # (The Header style's own stops - centre 3.25in, right 6.5in - cleared: the issue goes to the margin.)
+    from docx.shared import Twips
+    from docx.enum.text import WD_TAB_ALIGNMENT
+    hp.paragraph_format.tab_stops.add_tab_stop(Twips(4680), alignment=WD_TAB_ALIGNMENT.CLEAR)
+    hp.paragraph_format.tab_stops.add_tab_stop(Twips(9360), alignment=WD_TAB_ALIGNMENT.CLEAR)
+    hp.paragraph_format.tab_stops.add_tab_stop(Cm(16.6), alignment=WD_TAB_ALIGNMENT.RIGHT)
     r = hp.add_run("Taller, fewer, quieter"); r.font.small_caps = True; r.font.size = Pt(8.5); r.font.color.rgb = RGBColor.from_string(NAVY)
     r = hp.add_run("\tFeature  ·  Issue 15"); r.font.size = Pt(8); r.font.color.rgb = RGBColor.from_string(GREY); r.font.name = "Segoe UI"
     hp._p.get_or_add_pPr().append(parse_xml(f'<w:pBdr {nsdecls("w")}><w:bottom w:val="single" w:sz="4" w:space="4" w:color="{CORAL}"/></w:pBdr>'))
@@ -758,11 +763,15 @@ def magazine_feature():
             for k, v in [("Turbines", "14 old, 6 new"), ("Tip height", "78 m → 200 m"), ("Output per year", "41 GWh → 118 GWh"),
                          ("Homes supplied", "about 33,000"), ("Planning file", "1,100 pages")]:
                 f = para(doc, after=1)
-                f.paragraph_format.tab_stops.add_tab_stop(Cm(6.7), alignment=2, leader=1)
                 r = f.add_run(k + "\t"); r.font.size = Pt(9); r.font.color.rgb = RGBColor.from_string(GREY); r.font.name = "Segoe UI"
                 r = f.add_run(v); r.font.size = Pt(9); r.bold = True; r.font.color.rgb = RGBColor.from_string(NAVY); r.font.name = "Segoe UI"
                 facts.append(f)
             box(facts, sz=4, color=SAND, space=6, fill=SAND)
+            for f in facts:
+                # (A border's space and width lie outside the text: indented by them, the box keeps to the column.)
+                f.paragraph_format.left_indent = f.paragraph_format.right_indent = Pt(6.5)
+            for f in facts[1:]:
+                f.paragraph_format.tab_stops.add_tab_stop(Cm(7.9) - Pt(6.5), alignment=2, leader=1)
             para(doc, after=0).paragraph_format.line_spacing = 0.5
         if i == 8:
             t = doc.add_table(rows=1, cols=3)
