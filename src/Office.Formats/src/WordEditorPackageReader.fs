@@ -263,7 +263,7 @@ let private paragraph styleMap theme images notes numbering styleNumbering level
           IndentLeft = pixels effective.IndentLeft; IndentRight = pixels effective.IndentRight; FirstLineIndent = first
           SpacingBefore = before; SpacingAfter = after; LineSpacing = line; LineSpacingRule = effective.LineRule
           RightTabPosition = pixels effective.RightTabPosition; RightTabLeader = effective.RightTabLeader
-          TabStops = effective.TabStops |> List.choose (fun (position, alignment, leader) -> pixels (Some position) |> Option.map (fun position -> { Position = position; Alignment = alignment; Leader = leader }))
+          TabStops = effective.TabStops |> List.filter (fun (_, alignment, _) -> alignment <> "clear") |> List.choose (fun (position, alignment, leader) -> pixels (Some position) |> Option.map (fun position -> { Position = position; Alignment = alignment; Leader = leader }))
           Rtl = on effective.Rtl; ContextualSpacing = effective.ContextualSpacing
           OverflowPunctuation = effective.OverflowPunctuation
           KeepNext = direct.KeepNext; KeepLines = direct.KeepLines; WidowControl = effective.WidowControl

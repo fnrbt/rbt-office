@@ -507,6 +507,10 @@ type LayoutSettings = {
     /// gives (less, when negative): a section that starts part-way down a page (a continuous break) ends that
     /// page at the bottom of the section the page started in, its own from the next page on (layoutSections).
     FirstPageExtraRoom: float
+    /// The columns the footnotes at a page's foot are set in - each one's left edge from the left
+    /// margin and its width -, empty for one column as wide as the text: a page's notes in a section
+    /// of columns, in Word 2013's layout (noteColumnsOf). Set where a page's notes are reckoned with.
+    NoteColumns: (float * float) list
 }
 
 /// Word 2019 (fixtures hang-punct): punctuation hangs past a line's end in Word 2010's layout
@@ -635,7 +639,8 @@ let documentSettings fontSize lineHeight trailingSpaceFitSafety (doc: Document) 
       CompatibilityMode = doc.PageSetup.CompatibilityMode
       HangingPunctuation = documentHangingPunctuation doc.PageSetup
       SpaceShrink = documentSpaceShrink doc.PageSetup
-      FirstPageExtraRoom = 0.0 }
+      FirstPageExtraRoom = 0.0
+      NoteColumns = [] }
 
 let pageHeight settings = settings.PageHeight
 let pageGap = WordLayout.Page.gap
@@ -1338,15 +1343,6 @@ let private footnotesHeight settings footnotes =
         height <- height + noteHeight settings "footnote" id text
     height
 
-/// The room footnotes take at the foot of a page (Word, tools/word-parity/fixtures/footnote-block.py):
-/// the notes stacked up from the bottom margin - the last one's last line (and
-/// its space after) ends at it - and the separator, a paragraph of its own,
-/// above them; the text may run down to the separator's top.
-let private footnoteReserveHeight settings footnotes =
-    match footnotes with
-    | [] -> 0.0
-    | notes -> footnoteSeparatorHeight settings + footnotesHeight settings notes
-
 /// The continuation notice (footnotes.xml's w:type="continuationNotice") laid
 /// out by itself at the width of the page's text: under the part of a note
 /// that goes on at the next page's foot, as the last line of the page's notes
@@ -1530,6 +1526,90 @@ let private pageFootnoteRecords (settings: LayoutSettings) (pageIndex: int) (not
 let private pageNotePieces settings pageIndex notes =
     pageFootnoteRecords settings pageIndex notes |> List.collect (fun (slot, id, record) -> notePieces slot id record)
 
+/// The columns a page's footnotes are set in when the first of them is referenced in a section of
+/// `columns` (see LayoutSettings.NoteColumns): in Word 2013's layout (compatibility mode 15) the
+/// section's own columns, each at its width - Word 2019, fixtures footnote-columns: the notes of a
+/// page of two columns under them, a 4-line note 2 and 2, a 12-line one 6 and 6 (uneq-*: at each
+/// column's width); the notes of a page whose first note is referenced in a section of one column
+/// across the page (mixed-top, mixed-both). (Word 2010's layout, mode 14 and older, sets each note
+/// at the foot of its reference's column, under a separator of its own: m14-*; not ours.)
+let noteColumnsOf (settings: LayoutSettings) (columns: SectionColumns) : (float * float) list =
+    let n = max 1 columns.Count
+    if settings.CompatibilityMode < 15 || n < 2 then []
+    else
+        let full = settings.Width - settings.PaddingLeft - settings.MarginRight
+        let widths =
+            if columns.Widths.Length = n then columns.Widths
+            else List.init n (fun i -> (full - float (n - 1) * columns.Gap) / float n, (if i < n - 1 then columns.Gap else 0.0))
+        widths
+        |> List.fold (fun (x, acc) (width, gap) -> x + width + gap, (x, width) :: acc) (0.0, [])
+        |> snd
+        |> List.rev
+
+/// The settings a page's notes are laid out with: the width of the first of the columns they are
+/// set in (see NoteColumns), or of the page's text.
+let private noteColumnSettings (settings: LayoutSettings) =
+    match settings.NoteColumns with
+    | (_, width) :: _ :: _ -> { settings with Width = settings.PaddingLeft + width + settings.MarginRight; NoteColumns = [] }
+    | _ -> settings
+
+/// `pieces` set in `count` columns of `room` each, one column after the other as a page's foot
+/// holds them (flowNotePieces: a note's paragraph broken between its lines with widow control):
+/// what each column holds, and what is left. `mustPlace`: the first column holds at least a line.
+let private flowNotePiecesInColumns (count: int) (room: float) (mustPlace: bool) (pieces: NotePiece list) : NotePiece list list * NotePiece list =
+    let columns = ResizeArray<NotePiece list>()
+    let mutable rest = pieces
+    for index in 0 .. count - 1 do
+        if not rest.IsEmpty then
+            let fit, left, _ = flowNotePieces room 0.0 (mustPlace && index = 0) rest
+            columns.Add fit
+            rest <- left
+    List.ofSeq columns, rest
+
+let private columnsHeight (columns: NotePiece list list) =
+    columns |> List.fold (fun height column -> max height (piecesHeight column)) 0.0
+
+/// A page's notes in `count` columns, balanced as the columns of a section that ends on the page are:
+/// as low as the notes, in order, fit in them (Word 2019, fixtures footnote-columns: notes of 1 and 5
+/// lines 3 and 3; three 3-line notes 6 and 3 - a 3-line paragraph is not broken under widow control;
+/// one of 30 lines 15 and 15). The columns and the height of the tallest.
+let private balanceNotePieces (count: int) (pieces: NotePiece list) : NotePiece list list * float =
+    let total = piecesHeight pieces
+    if count <= 1 || pieces.IsEmpty then [ pieces ], total
+    else
+        let fits room = let _, rest = flowNotePiecesInColumns count room false pieces in rest.IsEmpty
+        let mutable low = total / float count - 2.0 * noteFitTolerance
+        let mutable high = total + noteFitTolerance
+        while high - low > 0.01 do
+            let middle = (low + high) / 2.0
+            if fits middle then high <- middle else low <- middle
+        let columns, _ = flowNotePiecesInColumns count high false pieces
+        columns, columnsHeight columns
+
+/// The height a page's own notes take at its foot: stacked (footnotesHeight), or balanced in the
+/// columns they are set in (see NoteColumns).
+let private pageNotesHeight (settings: LayoutSettings) (notes: (string * string) list) =
+    match settings.NoteColumns with
+    | _ :: _ :: _ ->
+        let columnSettings = noteColumnSettings settings
+        match pageNotePieces columnSettings 0 notes with
+        // (Outside a layout pass: an estimate.)
+        | [] -> footnotesHeight columnSettings notes / float settings.NoteColumns.Length
+        | pieces -> snd (balanceNotePieces settings.NoteColumns.Length pieces)
+    | _ -> footnotesHeight settings notes
+
+/// The room footnotes take at the foot of a page (Word, tools/word-parity/fixtures/footnote-block.py):
+/// the notes stacked up from the bottom margin - the last one's last line (and
+/// its space after) ends at it - and the separator, a paragraph of its own,
+/// above them; the text may run down to the separator's top. In columns (see NoteColumns) the
+/// tallest column's notes so, the separator above them all: the text of every column of the page
+/// runs down to it (fixtures footnote-columns one-c2, three-col-c3: the columns without the
+/// reference end there as well).
+let private footnoteReserveHeight settings footnotes =
+    match footnotes with
+    | [] -> 0.0
+    | notes -> footnoteSeparatorHeight settings + pageNotesHeight settings notes
+
 /// The pages whose notes do not all fit at their foot, with where the text of
 /// each ends (the bottom of the text of the line with the reference of the
 /// note broken there): the room its notes have. Word 2019 (fixtures
@@ -1610,7 +1690,7 @@ let private footnoteReserveOnPage settings (footnotesByPage: Map<int, (string * 
                 carry <- max 0.0 (pageOwn + carry - room)
             carry
     if carried <= 0.0 then footnoteReserveHeight settings own
-    else footnoteSeparatorHeight settings + carried + footnotesHeight settings own
+    else footnoteSeparatorHeight settings + carried + pageNotesHeight settings own
 
 /// Whether the notes that go on onto a page from the page before take all of
 /// it (see NoteBreaks): its text goes on on the page after it.
@@ -3193,6 +3273,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
                 over <= 0.5 * room * currentSpaceShrink / restShrink + 0.005
     let mutable floatObstacles = initialObstacles
     let mutable placedBoxes = initialPlacedBoxes
+    // Where the text after a right tab ends - its stop, at the line's end at most (NaN: no such tab on the
+    // line): that text fits up to there, without the fit safety (Word 2019, fixtures tab-merge style-only,
+    // clear: a word set right at a stop at the right margin stays on the line; ours wrapped it).
+    let mutable alignedTabEnd = nan
 
     // A float is "already placed" when the anchor-extended second pass handed
     // us the box this very image run produced in the first pass. Identity is
@@ -3363,6 +3447,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         resizeArrayToList output
 
     let flushLine () =
+        alignedTabEnd <- nan
         if currentSegments.Count > 0 then
             let scale = settings.LineHeight / settings.FontSize
             let mutable hasInlineImage = false
@@ -3534,6 +3619,7 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
         if upto > 0 then measureRange currentDisplayText currentDisplayStyle currentTextStart upto else 0.0
 
     let tabWidth runIndex currentTextStart (currentDisplayText: string) currentDisplayStyle =
+        alignedTabEnd <- nan
         let defaultTab = (floor ((currentX + tabOrigin) / settings.DefaultTabStop) + 1.0) * settings.DefaultTabStop - tabOrigin
         // (Left of a hanging indent, the indent is the next stop unless a custom one comes first.)
         let beforeHangingIndent = hanging && currentX < -0.01
@@ -3542,7 +3628,9 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
             let target = min (stop.Position - tabOrigin) currentLineEnd
             let following () = followingTextWidth runIndex currentTextStart currentDisplayText currentDisplayStyle
             match stop.Alignment with
-            | "right" -> max 0.0 (target - currentX - following ())
+            | "right" ->
+                alignedTabEnd <- target
+                max 0.0 (target - currentX - following ())
             | "center" -> max 0.0 (target - currentX - following () / 2.0)
             | "decimal" -> max 0.0 (target - currentX - followingWidthToDecimal currentTextStart currentDisplayText currentDisplayStyle)
             | _ -> max 0.0 (target - currentX)   // left (default)
@@ -3923,7 +4011,10 @@ let layoutLinesFromIndentWith (textLineFloor: float) (contentLineRatio: float) (
 
                             let fullFitSafety = fitSafety settings settings.InTableCell currentHasMixedTextMetrics
 
-                            let overflows = currentX + fitWidth > lineLimit fullFitSafety || not (squeezeAllowed (currentX + fitWidth))
+                            let overflows =
+                                (currentX + fitWidth > lineLimit fullFitSafety
+                                 && not (not hasTab && currentX + fitWidth <= alignedTabEnd + 0.01))
+                                || not (squeezeAllowed (currentX + fitWidth))
                             // For the strip-skip decision use the visible width (no trailing
                             // whitespace), so a short word like "Float" that fits the strip
                             // but whose trailing space pushes it over still gets placed.
@@ -6268,7 +6359,28 @@ let private placeNoteLayout (slot: string) (noteId: string) (dy: float) (layout:
 /// page: each note as it is laid out by itself (see noteRecordFor), stacked
 /// so that the last ends just above the bottom margin, the way Word stacks
 /// footnotes.
+/// Notes set in columns (see NoteColumns): each column's pieces from `top` down, at its left edge.
+let private placeNoteColumns (settings: LayoutSettings) (top: float) (columns: NotePiece list list) : BlockLayout list =
+    let placed = ResizeArray<BlockLayout>()
+    columns
+    |> List.iteri (fun index pieces ->
+        let dx = match List.tryItem index settings.NoteColumns with Some (x, _) -> x | None -> 0.0
+        let mutable y = top
+        for piece in pieces do
+            for layout in piece.PieceLayouts do
+                placed.Add (placeNoteLayout piece.PieceSlot piece.PieceNote y layout |> shiftBlockX dx)
+            y <- y + piece.PieceHeight)
+    resizeArrayToList placed
+
 let private footnoteLayoutsForPage (settings: LayoutSettings) (pageIndex: int) pageContentBottom (notes: (string * string) list) : BlockLayout list =
+  match settings.NoteColumns with
+  | _ :: _ :: _ ->
+    // In columns: balanced, each column's notes from the top of the tallest (Word 2019, fixtures
+    // footnote-columns two-c1c2: a 1-line note in the second column level with the first's first line).
+    let pieces = pageNotePieces (noteColumnSettings settings) pageIndex notes
+    let columns, height = balanceNotePieces settings.NoteColumns.Length pieces
+    placeNoteColumns settings (pageContentBottom - height) columns
+  | _ ->
     let records = pageFootnoteRecords settings pageIndex notes
     let mutable total = 0.0
     for _, _, record in records do
@@ -6288,6 +6400,16 @@ let private footnoteLayoutsForPage (settings: LayoutSettings) (pageIndex: int) p
 /// page (see flowNotePieces), the continuation notice under the part of a note
 /// that goes on. At least one line stays on the page.
 let private footnoteLayoutsWithCarry (settings: LayoutSettings) (pageIndex: int) pageContentBottom (room: float) (carried: NotePiece list) (notes: (string * string) list) : BlockLayout list * NotePiece list =
+  match settings.NoteColumns with
+  | _ :: _ :: _ ->
+    // In columns: as many as `room` holds in each, balanced when they all fit (Word 2019, fixtures
+    // footnote-columns huge-c1: a 120-line note 48 and 48 lines on its page, the rest 12 and 12 on the next).
+    let count = settings.NoteColumns.Length
+    let pieces = carried @ pageNotePieces (noteColumnSettings settings) pageIndex notes
+    let columns, rest = flowNotePiecesInColumns count room true pieces
+    let columns, height = if rest.IsEmpty then balanceNotePieces count pieces else columns, columnsHeight columns
+    placeNoteColumns settings (pageContentBottom - height) columns, rest
+  | _ ->
     let noticeRecord = continuationNoticeOf settings
     let notice = match noticeRecord with Some record -> record.RecordHeight | None -> 0.0
     let fit, rest, noticeShown = flowNotePieces room notice true (carried @ pageNotePieces settings pageIndex notes)
@@ -6654,10 +6776,15 @@ let private footnoteAreas (slot: string) (memo: ParagraphLayoutMemo option) (bre
         | Some (settings, contentTop, contentBottom) ->
             let maxWidth = settings.Width - settings.PaddingLeft - settings.MarginRight
             let mutable total = 0.0
-            for _, _, record in pageFootnoteRecords settings pageIndex notes do
-                total <- total + record.RecordHeight
-            for piece in carriedIn do
-                total <- total + piece.PieceHeight
+            match settings.NoteColumns with
+            | _ :: _ :: _ ->
+                let pieces = carriedIn @ pageNotePieces (noteColumnSettings settings) pageIndex notes
+                total <- snd (balanceNotePieces settings.NoteColumns.Length pieces)
+            | _ ->
+                for _, _, record in pageFootnoteRecords settings pageIndex notes do
+                    total <- total + record.RecordHeight
+                for piece in carriedIn do
+                    total <- total + piece.PieceHeight
             let separator = footnoteSeparatorHeight settings
             // (Where the pass broke a note, the room under the line with its reference - see NoteBreaks.
             // Elsewhere notes that take less than a third of the page are not looked at further: the
@@ -7942,9 +8069,18 @@ let private sectionEndTakesNoRoom (para: ParagraphBlock) =
 let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (settings: LayoutSettings) (measureText: TextMeasurer) (measureRange: TextRangeMeasurer) (doc: Document) (columns: SectionColumns) (pageTopOf: int -> float) (nonUniform: bool) (startPage: int) (startY: float) (balanced: bool) (collapsesEnd: bool) (initialPrevious: (ParagraphBlock * ParagraphStyle * BlockMetadata * float) option) (initialCounters: Map<string * int, int>) (initialFootnotes: Map<int, (string * string) list>) =
     let styleContext = styleContextForLayout memo doc
     let blocks = List.toArray doc.Blocks
+    // The settings the notes of a page are reckoned with (see NoteColumns): in the section's columns,
+    // but on the page the section starts on when notes of the sections above it are there already -
+    // those of the first section with notes on a page set its notes' columns (`settings` has them).
+    let ownNoteSettings = { settings with NoteColumns = noteColumnsOf settings columns }
+    let startNoteSettings =
+        match initialFootnotes |> Map.tryFind startPage with
+        | Some notes when not notes.IsEmpty -> settings
+        | _ -> ownNoteSettings
+    let notesAt page = if page = startPage then startNoteSettings else ownNoteSettings
     let initialState = {
         CheckCol = 0; CheckPage = startPage; CheckY = startY; CheckCounters = initialCounters; CheckFootnotes = initialFootnotes; CheckNoteBreaks = Map.empty
-        CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage settings initialFootnotes None startPage)
+        CheckReserve = (if initialFootnotes.IsEmpty then 0.0 else footnoteReserveOnPage (notesAt startPage) initialFootnotes None startPage)
         CheckPrevious = initialPrevious; CheckPreviousLayout = None; CheckObstacles = []; CheckPlacedBoxes = []; CheckDropCap = None
     }
     let lastPass = tryPassRecord memo slot settings (Some columns) startPage startY (pageTopOf startPage) (pageTopOf (startPage + 1)) nonUniform balanced collapsesEnd initialState doc
@@ -8006,6 +8142,10 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         else None
 
     let results = ResizeArray<BlockLayout>()
+    // The last page of a balanced section that runs on over its first page, and how high its columns
+    // are to be (set at the end of the flow, which then sets that page again).
+    let mutable balancePage : int option = None
+    let mutable balancePageHeight = 0.0
     let mutable col = 0
     let mutable page = startPage
     let mutable y = startY
@@ -8023,6 +8163,66 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         match notes with
         | [] -> ()
         | _ -> footnotesByPage <- footnotesByPage |> Map.add page (appendNewNotes (pageFootnotes ()) notes)
+    // A page of columns whose notes are set in them (see NoteColumns) is set again when a line brings a
+    // note whose room at the page's foot comes over the text of a column before the line's: with that
+    // room under every column from the first (`presetNotes`) - the text of the columns before goes on
+    // into the line's, the line staying on the page (Word 2019, fixtures footnote-columns bot-c1-k45..47:
+    // a reference in column 1's last lines goes to column 2 with the lines above it that the note's
+    // room takes, two-c1c2-tall2: column 1 ends above column 2's taller notes). When the line is then
+    // no longer on the page, the page is set as it was and ends before the line (`forcedBreaks`:
+    // bot-c2-k90..95 - a reference low in column 2 under a full column 1 starts the next page).
+    let presetNotes = Dictionary<int, (string * string) list>()
+    let conflictLines = Dictionary<int, BlockId * int>()
+    let forcedBreaks = HashSet<string>()
+    let rewinds = Dictionary<int, int>()
+    let mutable rewind : int option = None
+    let forcedKey (p: int) (id: BlockId) (offset: int) = string p + "\u0001" + id + "\u0001" + string offset
+    let withPreset (notes: (string * string) list) =
+        match Portable.Dict.tryFind page presetNotes with
+        | ValueSome preset -> appendNewNotes preset notes
+        | ValueNone -> notes
+    let reserveNotes () =
+        if presetNotes.Count = 0 || not (presetNotes.ContainsKey page) then footnotesByPage
+        else footnotesByPage |> Map.add page (withPreset (pageFootnotes ()))
+    let requestRewind (p: int) (notes: (string * string) list) (line: BlockId * int) =
+        if rewind.IsNone && (match Portable.Dict.tryFind p rewinds with ValueSome count -> count < 3 | ValueNone -> true) then
+            presetNotes.[p] <- notes
+            conflictLines.[p] <- line
+            rewind <- Some p
+    // Where the text of the columns before the current one on its page ends (their lowest line's text).
+    let earlierColumnsBottom () =
+        let pageTop = pageTopOf page
+        let nextTop = pageTopOf (page + 1)
+        // (A line of an earlier column starts left of the middle of the gap before the current one.)
+        let limit = if col <= 0 then System.Double.NegativeInfinity else (columnDx (col - 1) + columnWidth (col - 1) + columnDx col) / 2.0
+        let mutable bottom = System.Double.NegativeInfinity
+        let mutable index = results.Count - 1
+        let mutable scanning = true
+        while scanning && index >= 0 do
+            let layout = results.[index]
+            let mutable above = true
+            for line in layout.Lines do
+                if line.Y + line.Height > pageTop then above <- false
+                if line.Y >= pageTop - 0.5 && line.Y < nextTop then
+                    match line.Segments |> List.tryPick (function TextSegment (_, _, x, _, _) -> Some x | _ -> None) with
+                    | Some x when x < limit -> bottom <- max bottom (line.Y + lineVisibleFitHeight line)
+                    | _ -> ()
+            if above then scanning <- false
+            index <- index - 1
+        bottom
+    // (Before the flow leaves a page: a note set for it whose reference is not on it.)
+    let leavingPage () =
+        if rewind.IsNone && presetNotes.Count > 0 then
+            match Portable.Dict.tryFind page presetNotes with
+            | ValueSome notes ->
+                let actual = pageFootnotes ()
+                if notes |> List.exists (fun (id, _) -> not (actual |> List.exists (fun (other, _) -> other = id))) then
+                    presetNotes.Remove page |> ignore
+                    match Portable.Dict.tryFind page conflictLines with
+                    | ValueSome (id, offset) -> forcedBreaks.Add (forcedKey page id offset) |> ignore
+                    | ValueNone -> ()
+                    rewind <- Some page
+            | ValueNone -> ()
     // First column-row starts at startY; later pages start at their content top.
     let columnTop () =
         match balancedHeight with
@@ -8034,7 +8234,8 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         // in it rather than wrapping back over column 0.
         | Some _ when col >= n - 1 -> System.Double.MaxValue
         | Some bh -> startY + bh
-        | None -> contentBottomAt page - footnoteReserveOnPage settings footnotesByPage None page
+        | None when col < n - 1 && balancePage = Some page -> contentTopAt page + balancePageHeight
+        | None -> contentBottomAt page - footnoteReserveOnPage (notesAt page) (reserveNotes ()) None page
     let atColumnTop () = abs (y - columnTop ()) < 0.5
     // At the start of a section below the text of the one before it (on the page that has that).
     let continuesPage () = page = startPage && col = 0 && startY > contentTopAt startPage + 0.5
@@ -8097,7 +8298,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         col <- col + 1
         if col >= n then
             col <- 0
-            if balancedHeight.IsNone then page <- page + 1
+            if balancedHeight.IsNone then
+                leavingPage ()
+                page <- page + 1
         y <- columnTop ()
         previousParagraph <- None
 
@@ -8109,13 +8312,14 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
         else
             columnPictures <- []
             col <- 0
+            leavingPage ()
             page <- page + 1
             y <- columnTop ()
             previousParagraph <- None
 
     let currentState () = {
         CheckCol = col; CheckPage = page; CheckY = y; CheckCounters = counters; CheckFootnotes = footnotesByPage; CheckNoteBreaks = Map.empty
-        CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage settings footnotesByPage None page)
+        CheckReserve = (if footnotesByPage.IsEmpty then 0.0 else footnoteReserveOnPage (notesAt page) footnotesByPage None page)
         CheckPrevious = previousParagraph; CheckPreviousLayout = None; CheckObstacles = columnPictures; CheckPlacedBoxes = placedShapes; CheckDropCap = pendingDropCap
     }
     let restoreState (state: PassCheckpoint) =
@@ -8267,8 +8471,9 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                 let mutable breakEndsPage = false
                 let fitOf (layout: BlockLayout) =
                     breakEndsPage <- false
-                    let existingNotes = pageFootnotes ()
-                    let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight settings existingNotes
+                    let existingNotes = withPreset (pageFootnotes ())
+                    let existingReserve = if balancedHeight.IsSome then 0.0 else footnoteReserveHeight (notesAt page) existingNotes
+                    let noteColumnsHere = balancedHeight.IsNone && n >= 2 && col > 0 && not (notesAt page).NoteColumns.IsEmpty
                     let mutable fitNotes = existingNotes
                     let mutable fitCount = 0
                     let mutable stillFitting = true
@@ -8279,8 +8484,13 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
                             let candidateNotes = if lineNotes.IsEmpty then fitNotes else appendNewNotes fitNotes lineNotes
                             let extraReserve =
                                 if balancedHeight.IsSome || LanguagePrimitives.PhysicalEquality candidateNotes existingNotes then 0.0
-                                else footnoteReserveHeight settings candidateNotes - existingReserve
-                            if line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
+                                else footnoteReserveHeight (notesAt page) candidateNotes - existingReserve
+                            if forcedBreaks.Count > 0 && forcedBreaks.Contains (forcedKey page para0.Id line.StartOffset) then
+                                stillFitting <- false
+                            elif line.Y + lineVisibleFitHeight line <= colBottom - extraReserve + lineFitTolerance then
+                                if noteColumnsHere && not (LanguagePrimitives.PhysicalEquality candidateNotes fitNotes)
+                                   && earlierColumnsBottom () > colBottom - extraReserve + lineFitTolerance then
+                                    requestRewind page candidateNotes (para0.Id, line.StartOffset)
                                 fitCount <- fitCount + 1
                                 fitNotes <- candidateNotes
                                 // (The line a break ends is the column's last: see lineEndsInBreak.)
@@ -8599,34 +8809,94 @@ let private flowColumnsKept (slot: string) (memo: ParagraphLayoutMemo option) (s
             convergeFrom <- max convergeFrom (if noteLast <= blockPrefix then noteLast else noteLast - indexShift)
         keptEndnotes <- record.PassHasEndnotes
     | _ -> ()
-    let freshFrom = results.Count
-    let keptPrefix = blockIndex
+    let mutable freshFrom = results.Count
+    let mutable keptPrefix = blockIndex
     let mutable keptSuffix = 0
     let mutable freshTo = -1
-    while blockIndex < blocks.Length do
-        let state = currentState ()
-        match lastPass with
-        | Some record when blockIndex >= convergeFrom && samePassState state record.PassCheckpoints.[blockIndex + indexShift] ->
-            // From here on this pass is the last one: its layouts stand.
-            freshTo <- results.Count
-            keptSuffix <- blocks.Length - blockIndex
-            let from = record.PassStarts.[blockIndex + indexShift]
-            let shift = results.Count - from
-            for index in blockIndex + indexShift .. record.PassBlocks.Length - 1 do
-                checkpoints.Add record.PassCheckpoints.[index]
-                starts.Add (record.PassStarts.[index] + shift)
-            for index in from .. record.PassResults.Length - 1 do
-                results.Add record.PassResults.[index]
-            restoreState record.PassCheckpoints.[record.PassBlocks.Length]
-            blockIndex <- blocks.Length
-        | _ ->
-            checkpoints.Add state
-            starts.Add results.Count
-            flowBlock blockIndex
-            blockIndex <- blockIndex + 1
-            match memo with
-            | Some memo when slot <> "" -> memo.MemoBlocksLaidOut <- memo.MemoBlocksLaidOut + 1
-            | _ -> ()
+    // (Run again when a balanced section's last page is to be set again: see balancePage.)
+    let mutable passAgain = true
+    while passAgain do
+        passAgain <- false
+        while blockIndex < blocks.Length do
+            let state = currentState ()
+            match lastPass with
+            | Some record when blockIndex >= convergeFrom && samePassState state record.PassCheckpoints.[blockIndex + indexShift] ->
+                // From here on this pass is the last one: its layouts stand.
+                freshTo <- results.Count
+                keptSuffix <- blocks.Length - blockIndex
+                let from = record.PassStarts.[blockIndex + indexShift]
+                let shift = results.Count - from
+                for index in blockIndex + indexShift .. record.PassBlocks.Length - 1 do
+                    checkpoints.Add record.PassCheckpoints.[index]
+                    starts.Add (record.PassStarts.[index] + shift)
+                for index in from .. record.PassResults.Length - 1 do
+                    results.Add record.PassResults.[index]
+                restoreState record.PassCheckpoints.[record.PassBlocks.Length]
+                blockIndex <- blocks.Length
+            | _ ->
+                checkpoints.Add state
+                starts.Add results.Count
+                flowBlock blockIndex
+                match rewind with
+                | Some p ->
+                    // (Set the page again from the block that starts on the page before it: see presetNotes.)
+                    rewind <- None
+                    rewinds.[p] <- (match Portable.Dict.tryFind p rewinds with ValueSome count -> count + 1 | ValueNone -> 1)
+                    let mutable index = checkpoints.Count - 1
+                    while index > 0 && checkpoints.[index].CheckPage >= p do index <- index - 1
+                    let restart = checkpoints.[index]
+                    results.RemoveRange(starts.[index], results.Count - starts.[index])
+                    checkpoints.RemoveRange(index, checkpoints.Count - index)
+                    starts.RemoveRange(index, starts.Count - index)
+                    restoreState restart
+                    blockIndex <- index
+                    keptPrefix <- min keptPrefix index
+                    freshFrom <- min freshFrom results.Count
+                | None -> blockIndex <- blockIndex + 1
+                match memo with
+                | Some memo when slot <> "" -> memo.MemoBlocksLaidOut <- memo.MemoBlocksLaidOut + 1
+                | _ -> ()
+        // A balanced section that runs on over its first page: the columns of its last page are balanced -
+        // that page is set again with each column but the last as high as the text that came onto the page
+        // divided among them (Word 2019, fixtures footnote-columns balp-120: 24 lines on page 2, 12 and 12;
+        // balp-130: 17 and 17; balp-200: page 3's 8 lines 4 and 4; the showcase magazine-feature's page 2).
+        if balanced && balancedHeight.IsNone && unchangedPass.IsNone && balancePage.IsNone && page > startPage && n >= 2 then
+            let p = page
+            let top = contentTopAt p
+            let bottoms = Array.create n top
+            for layout in results do
+                if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) then
+                    for line in layout.Lines do
+                        if line.Y >= pageTopOf p - 0.5 && line.Y < pageTopOf (p + 1) then
+                            match line.Segments |> List.tryPick (function TextSegment (_, _, x, _, _) -> Some x | _ -> None) with
+                            | Some x ->
+                                let mutable c = 0
+                                while c + 1 < n && x >= columnDx (c + 1) - 0.5 do c <- c + 1
+                                bottoms.[c] <- max bottoms.[c] (line.Y + lineVisibleFitHeight line)
+                            | None -> ()
+            let total = bottoms |> Array.sumBy (fun bottom -> bottom - top)
+            if total > 0.0 then
+                balancePage <- Some p
+                balancePageHeight <- total / float n + 2.0
+                let mutable index = checkpoints.Count - 1
+                while index > 0 && checkpoints.[index].CheckPage >= p do index <- index - 1
+                let restart = checkpoints.[index]
+                results.RemoveRange(starts.[index], results.Count - starts.[index])
+                checkpoints.RemoveRange(index, checkpoints.Count - index)
+                starts.RemoveRange(index, starts.Count - index)
+                restoreState restart
+                blockIndex <- index
+                keptPrefix <- min keptPrefix index
+                freshFrom <- min freshFrom results.Count
+                passAgain <- true
+    // (The section after a balanced last page goes on below its tallest column.)
+    match balancePage with
+    | Some p when page = p ->
+        for layout in results do
+            if not (layout.BlockId.StartsWith footnoteBlockIdPrefix) then
+                for line in layout.Lines do
+                    if line.Y >= pageTopOf p - 0.5 && line.Y < pageTopOf (p + 1) then y <- max y (line.Y + line.Height)
+    | _ -> ()
     match unchangedPass with
     | Some record ->
         match memo with
@@ -8912,6 +9182,8 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
     let mutable started = false
     // Footnotes are per page, and a page can hold several (continuous) sections.
     let mutable footnotesByPage: Map<int, (string * string) list> = Map.empty
+    // The columns each page's notes are set in: those of the first section with notes on it (see NoteColumns).
+    let noteColumnsByPage = Dictionary<int, (float * float) list>()
     let recordPage page (s: LayoutSettings) top =
         while pageTops.Count <= page do pageTops.Add 0.0
         while pageSettings.Count <= page do pageSettings.Add s
@@ -9005,9 +9277,17 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
             else
                 let pageOwner = pageSettings.[currentPage]
                 { secSettings with FirstPageExtraRoom = secSettings.MarginBottom - pageOwner.MarginBottom }
+        // (The notes of the page it starts on as the section that put the first there has them.)
+        let flowSettings =
+            match Portable.Dict.tryFind sectionBase noteColumnsByPage with
+            | ValueSome noteColumns when not ownFootnotes.IsEmpty -> { flowSettings with NoteColumns = noteColumns }
+            | _ -> flowSettings
         let record, ownEndPage, ownEndY, secFootnotes = flowColumnsKept slot memo flowSettings measureText measureRange secDoc secColumns ownTopOf true 0 currentYInPage balanced collapsesEnd previousAtEnd countersAtEnd ownFootnotes
+        let ownNoteColumns = noteColumnsOf secSettings secColumns
         for KeyValue (ownPage, notes) in secFootnotes do
-            footnotesByPage <- footnotesByPage |> Map.add (sectionBase + ownPage) notes
+            let page = sectionBase + ownPage
+            if not notes.IsEmpty && not (noteColumnsByPage.ContainsKey page) then noteColumnsByPage.[page] <- ownNoteColumns
+            footnotesByPage <- footnotesByPage |> Map.add page notes
         let endPage = sectionBase + ownEndPage
         // (On screen a block stands at the document's left margin plus its layout's x: the layouts of a
         // section with a left margin of its own are moved by the difference.)
@@ -9086,6 +9366,7 @@ let private layoutSections (memo: ParagraphLayoutMemo option) (settings: LayoutS
         if pageIndex < 0 || pageIndex > maxPage || pageIndex >= pageSettings.Count then None
         else
             let s = pageSettings.[pageIndex]
+            let s = match Portable.Dict.tryFind pageIndex noteColumnsByPage with ValueSome noteColumns -> { s with NoteColumns = noteColumns } | ValueNone -> s
             Some (s, WordLayout.Page.contentTop s.PaddingTop pageTops.[pageIndex], WordLayout.Page.contentBottom (pageHeight s) s.MarginBottom pageTops.[pageIndex])
     // (The page a point is on: the last that starts above it.)
     let pageOfY (y: float) =
@@ -9214,11 +9495,12 @@ let private layoutDocumentPagesWithMemoInContext (memo: ParagraphLayoutMemo opti
                 for layout in r do
                     bodyBottom <- max bodyBottom (layout.Y + layout.Height)
                 let lastPage = pageIndexForY settings bodyBottom
+                let noteSettings = { settings with NoteColumns = noteColumnsOf settings c }
                 let geometryOf pageIndex =
                     if pageIndex < 0 || pageIndex > lastPage then None
                     else
                         let pageTop = float pageIndex * stride
-                        Some (settings, WordLayout.Page.contentTop settings.PaddingTop pageTop, flowBodyBottom settings pageTop)
+                        Some (noteSettings, WordLayout.Page.contentTop settings.PaddingTop pageTop, flowBodyBottom settings pageTop)
                 let footnotes =
                     footnoteAreas "" None None [ for KeyValue (pageIndex, notes) in footnotesByPage -> pageIndex, notes ] geometryOf (bodyBottoms r (pageIndexForY settings))
                     |> List.collect snd
