@@ -11,7 +11,9 @@ let cell v = { Value = v; Format = defaultFormat; Comment = None }
 // A1:A3 = -100, 50, 60  (cashflow for IRR)
 let model =
     { createEmpty 100 26 with
-        Cells = [ -100.; 50.; 60. ] |> List.mapi (fun i v -> { Row=i; Col=0 }, cell (CellValue.Number v)) |> Map.ofList }
+        Cells = [ -100.; 50.; 60. ] |> List.mapi (fun i v -> { Row=i; Col=0 }, cell (CellValue.Number v)) |> Map.ofList
+                // Z1: a value as a file keeps it (17 digits; a formula's literal keeps 15).
+                |> Map.add { Row = 0; Col = 25 } (cell (CellValue.Number -730662.5893421534)) }
 
 let mutable pass = 0
 let mutable fail = 0
@@ -40,8 +42,8 @@ let exact label f (expected: float) =
     | CellValue.Number g when g = expected -> pass <- pass + 1
     | got -> fail <- fail + 1; printfn "FAIL %-20s %-50s expected %s got %s" label f (expected.ToString "R") (match got with CellValue.Number g -> g.ToString "R" | other -> sprintf "%A" other)
 // FV compounds a whole number of periods by multiplication and divides (factor - 1) by the rate first.
-exact "fv-excel-digits"   "=-0.03*FV(0.025,5,-730662.5893421534)*0.6" -69130.84686587189
-exact "fv-whole-periods"  "=FV(0.025,5,-730662.5893421534)" 3840602.60365955
+exact "fv-excel-digits"   "=-0.03*FV(0.025,5,Z1)*0.6" -69130.84686587189
+exact "fv-whole-periods"  "=FV(0.025,5,Z1)" 3840602.60365955
 approx "fv-fraction-periods" "=FV(0.05,2.5,-100)" ((1.05 ** 2.5 - 1.0) / 0.05 * 100.0)
 approx "fv-zero-rate"     "=FV(0,10,-100,-50)" 1050.0
 approx "fv-with-pv-type"  "=FV(0.06/12,10,-200,-500,1)" 2581.4033740601
