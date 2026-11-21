@@ -1,4 +1,5 @@
 #r "nuget: Fable.Core, 4.3.0"
+#r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.Spreadsheet.dll"
 
 open Rbt.Spreadsheet.Model
@@ -41,7 +42,7 @@ let other = sheetOf [ at 0 0, num 5.0; at 1 0, fml "=Summary!A1+1" ]
 let sheetEntry id name model : Wb.SheetId * Wb.Sheet = id, { Id = id; Name = name; Model = model; Visible = true }
 let wbBare : Wb.Workbook =
     { Sheets = Map.ofList [ sheetEntry "sheet1" "Data" data; sheetEntry "sheet2" "Summary" summary; sheetEntry "sheet3" "Other" other ]
-      SheetOrder = [ "sheet1"; "sheet2"; "sheet3" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      SheetOrder = [ "sheet1"; "sheet2"; "sheet3" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
 let wb0 : Wb.Workbook =
     wbBare
     |> Wb.setDefinedName None "DataTotal" "Data!$A$1:$A$3" None
@@ -235,6 +236,43 @@ do
     eq "3-D: ... undone" (formulas (Wb.undoStructureEdit undo inserted), totals (Wb.undoStructureEdit undo inserted)) (formulas book, totals book)
     let cols, _ = Wb.applyStructureEdit "sheet4" (InsertCols (0, 1)) book
     eq "3-D: columns inserted on the formulas' own sheet, outside the span" (formulaAt "sheet4" 0 1 cols, valueAt "sheet4" 0 1 (calc cols)) ("=SUM(Jan:Mar!B1)", CellValue.Number 111.0)
+
+// ---- another workbook's sheets, as the file keeps them ----------------------------------------
+// `[1]Data!A1`, `'[1]Rates By Year'!C3`: Excel recalculates them from the values xl/externalLinks
+// keeps of the other workbook (it is not open); a sheet whose values could not be read is #REF!.
+do
+    let part (path: string) (xml: string) = path, xml
+    let parts =
+        [ part "[Content_Types].xml" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/externalLinks/externalLink1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.externalLink+xml"/></Types>"""
+          part "_rels/.rels" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"""
+          part "xl/workbook.xml" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Summary" sheetId="1" r:id="rId1"/></sheets><externalReferences><externalReference r:id="rId2"/></externalReferences></workbook>"""
+          part "xl/_rels/workbook.xml.rels" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink" Target="externalLinks/externalLink1.xml"/></Relationships>"""
+          part "xl/worksheets/sheet1.xml" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="str"><f>[1]Data!G5&amp;":"</f><v>Q1:</v></c><c r="B1"><f>'[1]Rates By Year'!C3*2</f><v>2400</v></c><c r="C1"><f>SUM('[1]Rates By Year'!C3:C4)</f><v>2500</v></c><c r="D1"><f>[1]Gone!A1</f><v>0</v></c><c r="E1"><f>IF([1]Data!B2,"yes","no")</f><v>0</v></c><c r="F1"><f>[1]Data!Z99</f><v>0</v></c></row></sheetData></worksheet>"""
+          part "xl/externalLinks/externalLink1.xml" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><externalLink xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><externalBook r:id="rId1"><sheetNames><sheetName val="Data"/><sheetName val="Rates By Year"/><sheetName val="Gone"/></sheetNames><sheetDataSet><sheetData sheetId="0"><row r="2"><cell r="B2" t="b"><v>1</v></cell></row><row r="5"><cell r="G5" t="str"><v>Q1</v></cell></row></sheetData><sheetData sheetId="1"><row r="3"><cell r="C3"><v>1200</v></cell></row><row r="4"><cell r="C4"><v>1300</v></cell></row></sheetData><sheetData sheetId="2" refreshError="1"/></sheetDataSet></externalBook></externalLink>"""
+          part "xl/externalLinks/_rels/externalLink1.xml.rels" """<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLinkPath" Target="Other%20Book.xlsx" TargetMode="External"/></Relationships>""" ]
+    let bytes =
+        use stream = new System.IO.MemoryStream()
+        do
+            use zip = new System.IO.Compression.ZipArchive(stream, System.IO.Compression.ZipArchiveMode.Create, true)
+            for path, xml in parts do
+                use entry = (zip.CreateEntry path).Open()
+                let data = System.Text.Encoding.UTF8.GetBytes(xml: string)
+                entry.Write(data, 0, data.Length)
+        stream.ToArray()
+    let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative bytes |> Option.get)
+    let context = imported.Context
+    eq "the other workbook's sheets the file keeps" (context.External |> Map.toList |> List.map fst) [ "[1]DATA"; "[1]RATES BY YEAR" ]
+    // Every value thrown away and calculated anew.
+    let cleared =
+        { context with
+            Sheets = context.Sheets |> Map.map (fun _ sheet ->
+                let model = resolveSheet sheet.Model
+                { sheet with Model = { model with Cells = model.Cells |> Map.map (fun _ c -> match c.Value with CellValue.Formula (t, _) -> { c with Value = CellValue.Formula (t, CellValue.Empty) } | _ -> c) } }) }
+    let calculated = calc cleared
+    let id = calculated.SheetOrder.Head
+    eq "external references calculated from the kept values"
+        ([ for col in 0 .. 5 -> valueAt id 0 col calculated ])
+        [ CellValue.String "Q1:"; CellValue.Number 2400.0; CellValue.Number 2500.0; CellValue.Error "REF!"; CellValue.String "yes"; CellValue.Number 0.0 ]
 
 printfn "\nSheet tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

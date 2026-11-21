@@ -37,7 +37,7 @@ let table : WB.Table =
 let wb : WB.Workbook =
     { Sheets = Map.ofList [ "sheet1", ({ Id="sheet1"; Name="Sheet1"; Model=model; Visible=true }: WB.Sheet) ]
       SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"
-      Tables = Map.ofList [ "Sales", table ]; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      Tables = Map.ofList [ "Sales", table ]; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
 
 let ctxAt (m: SpreadsheetModel) (cur: CellAddress option) : F.EvalContext =
     { Model = m; Workbook = Some wb; Sheet = Some "sheet1"; CurrentCell = cur }

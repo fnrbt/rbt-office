@@ -142,7 +142,7 @@ ok "indirect-follows-edit" (valueOf 0 0 lag2 = n 71.0 && valueOf 1 0 lag2 = n 14
 // Same through the incremental engine: INDIRECT and OFFSET cells are volatile.
 let wbOf (m: SpreadsheetModel) : Workbook =
     { Sheets = Map.ofList [ "sheet1", { Id = "sheet1"; Name = "Sheet1"; Model = m; Visible = true } ]
-      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      SheetOrder = [ "sheet1" ]; ActiveSheet = "sheet1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
 let incWb0 = wbOf lag1
 match trySingleCellEdit { Sheet = "sheet1"; Cell = at 3 0 } (cell (n 9.0)) incWb0 None with
 | IncrementalApplied (wb, _) ->
@@ -265,6 +265,47 @@ check "blank-eq-zero"      "=E4=0"                            (b true)
 check "blank-eq-empty"     "=E4=\"\""                         (b true)
 check "blank-ne-true"      "=E4=TRUE"                         (b false)
 check "false-eq-blank"     "=FALSE=E4"                        (b true)
+
+// ----- Excel 2019's results (tools/excel-parity/eval-cells.vbs) -------------------------------
+// A formula whose value is an empty cell is 0, and what reads it sees 0, not an empty cell.
+let blankModel =
+    { createEmpty 100 26 with
+        Cells = Map.ofList [ at 0 0, fml "=B9"; at 1 0, fml "=A1=\"\""; at 2 0, fml "=IF(TRUE,B9)"; at 3 0, fml "=A3&\"x\""
+                             at 4 0, fml "=ISBLANK(A1)"; at 5 0, fml "=CONCATENATE(B9,\" \",A1)"; at 6 0, fml "=-MIN(0,5)" ] }
+let blanks = recalcAndSpill None None blankModel
+ok "formula-of-blank-is-0" ([ for r in 0 .. 6 -> valueOf r 0 blanks ] = [ n 0.0; b false; n 0.0; s "0x"; b false; s " 0"; n 0.0 ]) (sprintf "%A" [ for r in 0 .. 6 -> valueOf r 0 blanks ])
+ok "no-negative-zero" (match valueOf 6 0 blanks with CellValue.Number z -> 1.0 / z > 0.0 | _ -> false) ""
+check "blank-direct"        "=B9"                              (n 0.0)
+// The end of a formula's addition: 7 units in the last place of the larger operand are 0, 8 are not;
+// SUM's last addition the same, wherever the SUM is; not inside a function, not a deeper operation.
+let units k = sprintf "(1.5+%d*2^-52)" k
+let off k = n (1.5 - (1.5 + float k * 2.0 ** -52.0))
+check "cancel-7-ulps"       ("=1.5-" + units 7)                (n 0.0)
+check "cancel-8-ulps"       ("=1.5-" + units 8)                (off 8)
+check "cancel-1.9-7-ulps"   "=1.9-(1.9+7*2^-52)"               (n 0.0)
+check "cancel-0+a-b"        ("=0+1.5-" + units 3)              (n 0.0)
+check "cancel-not-in-if"    ("=IF(TRUE,1.5-" + units 3 + ")") (off 3)
+check "cancel-not-times"    ("=1*(1.5-" + units 3 + ")")      (off 3)
+check "cancel-last-op-only" ("=1.5-" + units 3 + "+0")        (off 3)
+check "sum-cancels"         ("=SUM(1.5,-" + units 7 + ")")    (n 0.0)
+check "sum-cancels-inside"  ("=1*SUM(1.5,-" + units 5 + ")")  (n 0.0)
+check "sum-8-ulps"          ("=SUM(1.5,-" + units 8 + ")")    (off 8)
+check "sum-last-addition"   ("=SUM(1.5,-" + units 3 + ",0)")  (off 3)
+check "sum-cancels-last"    ("=SUM(0,1.5,-" + units 3 + ")")  (n 0.0)
+check "cancel-real-sum"     "=SUM(1000000.1,234.567,-(1000000.1+234.567))" (n 0.0)
+// SUMIF / SUMIFS: an error among the cells added is the result; one among those not added is not.
+let sumifModel =
+    { createEmpty 100 26 with
+        Cells = Map.ofList [ at 0 0, cell (n 1.0); at 0 1, cell (n 2.0); at 0 2, cell (n 3.0)
+                             at 1 0, cell (n 10.0); at 1 1, cell (e "DIV/0!"); at 1 2, cell (n 30.0) ] }
+let sumif f = evaluateFormula f sumifModel None
+ok "sumif-error-added"      (sumif "=SUMIF(A1:C1,2,A2:C2)" = e "DIV/0!") (sprintf "%A" (sumif "=SUMIF(A1:C1,2,A2:C2)"))
+ok "sumif-error-not-added"  (sumif "=SUMIF(A1:C1,3,A2:C2)" = n 30.0 && sumif "=SUMIF(A1:C1,1,A2:C2)" = n 10.0) ""
+ok "sumif-all"              (sumif "=SUMIF(A1:C1,\">0\",A2:C2)" = e "DIV/0!") ""
+ok "sumifs-error-added"     (sumif "=SUMIFS(A2:C2,A1:C1,2)" = e "DIV/0!" && sumif "=SUMIFS(A2:C2,A1:C1,\">2\")" = n 30.0) ""
+// What a deleted range leaves, on another sheet: #REF!.
+check "sheet-ref-error"     "='Other Sheet'!#REF!"            (e "REF!")
+check "sheet-ref-error-sum" "=SUM(Other!#REF!)"               (e "REF!")
 
 printfn ""
 printfn "Stage 22 semantics tests: %d passed, %d failed" pass fail

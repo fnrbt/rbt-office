@@ -97,6 +97,54 @@ match evIn lyric "=IRR(E1:E6)", evIn lyric "=NPV(IRR(E1:E6),E2:E6)+E1" with
 | CellValue.Number r, CellValue.Number residual when abs residual < 1e-4 && r > 0.0 && r < 1.0 -> pass <- pass + 1
 | got -> fail <- fail + 1; printfn "FAIL irr-converges %A" got
 
+// ----- Excel 2019's results (tools/excel-parity/eval-cells.vbs) -------------------------------
+// Errors: one in an optional argument is the result; one among IRR's cash flows is #VALUE!.
+let errModel =
+    { createEmpty 100 26 with
+        Cells = Map.ofList [ { Row = 0; Col = 0 }, cell (CellValue.Number -100.0); { Row = 1; Col = 0 }, cell (CellValue.Error "DIV/0!")
+                             { Row = 2; Col = 0 }, cell (CellValue.Number 60.0); { Row = 3; Col = 0 }, cell (CellValue.Number 70.0) ] }
+let evE f = evaluateFormula f errModel None
+let errorIs label f (code: string) =
+    match evE f with
+    | CellValue.Error c when c = code -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-20s %-34s expected #%s got %A" label f code got
+errorIs "irr-error-flow"  "=IRR(A1:A4)"            "VALUE!"
+errorIs "irr-error-guess" "=IRR(A1:A4,A2)"         "DIV/0!"
+errorIs "npv-error"       "=NPV(0.1,A1:A4)"        "DIV/0!"
+errorIs "rate-error-fv"   "=RATE(5,,-100,A2)"      "DIV/0!"
+errorIs "rate-error-pmt"  "=RATE(5,-100,A2)"       "DIV/0!"
+errorIs "fv-error-pv"     "=FV(0.1,5,-100,A2)"     "DIV/0!"
+errorIs "pmt-error-pv"    "=PMT(0.1,5,A2)"         "DIV/0!"
+approxT "rate-empty-args" "=RATE(5,,-100,200,,)"   0.148698354992987 1e-9
+// PMT to the last bit: (1 + r)^n not from 1 + r rounded. 750,000 over 300 months at 7.25% a year:
+// Excel's payment, and the end of its schedule (balance - (payment - interest), 300 times) 2.5e-9.
+exact "pmt-last-bit" "=PMT(0.0725/12,300,750000)" -5421.051480728742
+let schedule =
+    let pmt = match evaluateFormula "=-PMT(0.0725/12,300,750000)" model None with CellValue.Number p -> p | _ -> nan
+    let mutable balance = 750000.0
+    for _ in 1 .. 300 do balance <- balance - (pmt - balance * 0.0725 / 12.0)
+    balance
+if abs (schedule - 2.51657183980569e-09) < 1e-22 then pass <- pass + 1
+else (fail <- fail + 1; printfn "FAIL pmt-schedule-end expected 2.51657183980569E-09 got %.15g" schedule)
+// XIRR of a large outlay and little back soon: a rate just above -1, as Excel's (ROUND(.., 6)),
+// and #NUM! where Excel finds none (the root 1e-13 above -1).
+let xirrModel =
+    let flows = [ -1000000.0; 6000.0; 6000.0; 6000.0; 6000.0; 6000.0; 6000.0; 6000.0 ]
+    let dates = [ 45658.0; 45689.0; 45717.0; 45748.0; 45778.0; 45809.0; 45839.0; 45870.0 ]
+    { createEmpty 100 26 with
+        Cells =
+            (flows |> List.mapi (fun i v -> { Row = i; Col = 0 }, cell (CellValue.Number v)))
+            @ (dates |> List.mapi (fun i v -> { Row = i; Col = 1 }, cell (CellValue.Number v))) |> Map.ofList }
+let xirrRounded k = evaluateFormula (sprintf "=ROUND(XIRR(A1:A%d,B1:B%d),6)" k k) xirrModel None
+let xirrWanted = [ 4, -1.0; 5, -0.999999; 6, -0.999986; 7, -0.999883; 8, -0.999459 ]
+for k, wanted in xirrWanted do
+    match xirrRounded k with
+    | CellValue.Number got when got = wanted -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL xirr-near-minus-1 (%d flows) expected %g got %A" k wanted got
+match evaluateFormula "=XIRR(A1:A3,B1:B3)" xirrModel None with
+| CellValue.Error "NUM!" -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL xirr-too-near-minus-1 expected #NUM! got %A" got
+
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

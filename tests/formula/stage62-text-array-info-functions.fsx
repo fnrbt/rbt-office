@@ -78,7 +78,7 @@ let sheetEntry id name model : Wb.SheetId * Wb.Sheet = id, { Id = id; Name = nam
 open Rbt.Spreadsheet.Workbook
 let wb : Wb.Workbook =
     { Sheets = Map.ofList [ sheetEntry "s1" "Data" first; sheetEntry "s2" "Summary" (sheetOf [ at 0 0, N 5.0 ]); sheetEntry "s3" "My Sheet" (sheetOf []) ]
-      SheetOrder = [ "s1"; "s2"; "s3" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None }
+      SheetOrder = [ "s1"; "s2"; "s3" ]; ActiveSheet = "s1"; Tables = Map.empty; Names = Map.empty; NameInfo = Map.empty; Iteration = None; External = Map.empty }
     |> Wb.setDefinedName None "Total" "Summary!$A$1" None
 let inWb (sheet: string) (formula: string) =
     match parseFormula formula with

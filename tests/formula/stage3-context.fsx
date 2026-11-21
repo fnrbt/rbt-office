@@ -36,6 +36,7 @@ let workbook =
       Tables = Map.empty
       NameInfo = Map.empty
       Iteration = None
+      External = Map.empty
       Names =
         namesOfTriples
             [ None,            "MyCell",    "Sheet2!$A$1"        // single cross-sheet cell

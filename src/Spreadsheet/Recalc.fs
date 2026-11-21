@@ -2157,7 +2157,7 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                         for c in 0 .. nc - 1 do
                                             if not (r = 0 && c = 0) then
                                                 let target = { Row = addr.Row + r; Col = addr.Col + c }
-                                                let next = { Value = arr.[r].[c]; Format = cell.Format; Comment = None }
+                                                let next = { Value = spilledValue arr.[r].[c]; Format = cell.Format; Comment = None }
                                                 let existing = Map.tryFind target cells
                                                 match existing with
                                                 | Some known when known = next -> ()
@@ -2280,6 +2280,72 @@ let rec private run (mode: int) (engine: Engine) (edited: Workbook) (hint: (Shee
                                     valueChanged ()
                                     for reader in node.Outs do
                                         if reader.Order > last then reader.NeedsEval <- true
+                         | None when blocks.ContainsKey index ->
+                            // A circular reference of the references written is one of those read only
+                            // when Excel's calculation follows them: the branch of an IF the values do
+                            // not take is not read (`liveReferences`). The formulas are calculated in
+                            // the order of what they read, that order found again from their new values
+                            // until it stays; those still on a cycle of it show the cycle error.
+                            let last = blocks.[index]
+                            let members = [| for at in index .. last -> order.[at] |]
+                            if members |> Array.forall (fun node -> not node.Spills) then
+                                let n = members.Length
+                                let placeKey (sheet: SheetId) (row: int) (col: int) = sheet + "!" + string row + "," + string col
+                                let place = Dictionary<string, int>()
+                                members |> Array.iteri (fun i node -> place.[placeKey node.Sheet.Id node.Row node.Col] <- i)
+                                let liveDeps (i: int) : int[] =
+                                    let node = members.[i]
+                                    match node.Expr with
+                                    | Some expr when node.IsFormula ->
+                                        let ctx = { Model = modelOf node.Sheet; Workbook = Some workbook; Sheet = Some node.Sheet.Id; CurrentCell = Some { Row = node.Row; Col = node.Col } }
+                                        let deps = HashSet<int>()
+                                        for (sheet, r0, c0, r1, c1) in liveReferences expr ctx do
+                                            let sid = defaultArg sheet node.Sheet.Id
+                                            if int64 (r1 - r0 + 1) * int64 (c1 - c0 + 1) <= int64 n then
+                                                for r in r0 .. r1 do
+                                                    for c in c0 .. c1 do
+                                                        match place.TryGetValue (placeKey sid r c) with
+                                                        | true, j -> deps.Add j |> ignore
+                                                        | _ -> ()
+                                            else
+                                                for j in 0 .. n - 1 do
+                                                    let other = members.[j]
+                                                    if other.Sheet.Id = sid && other.Row >= r0 && other.Row <= r1 && other.Col >= c0 && other.Col <= c1 then deps.Add j |> ignore
+                                        Seq.toArray deps |> Array.sort
+                                    | _ -> [||]
+                                let onCycle = Array.create n false
+                                let mutable graph = Array.init n liveDeps
+                                let mutable sweeps = 0
+                                let mutable going = true
+                                while going do
+                                    sweeps <- sweeps + 1
+                                    let calculation, cycleNow = liveCycleOrder graph
+                                    Array.blit cycleNow 0 onCycle 0 n
+                                    let evaluate (i: int) (forced: CellValue) =
+                                        let node = members.[i]
+                                        if node.IsFormula then
+                                            if sweeps = 1 then evaluated <- evaluated + 1
+                                            evaluations <- evaluations + 1
+                                            let baseline = if node.BaselinePass = pass && pass = firstPass then node.Baseline else Unchecked.defaultof<CellValue>
+                                            let updated = evaluateNode node (modelOf node.Sheet) workbook forced baseline
+                                            if not (isNull (box updated)) then
+                                                valueChanged ()
+                                                setModel node.Sheet updated
+                                    // (Those on a cycle first: what reads one, and catches its error, has it to read.)
+                                    for i in 0 .. n - 1 do if onCycle.[i] then evaluate i (CellValue.Error Err.cycle)
+                                    for i in calculation do evaluate i Unchecked.defaultof<CellValue>
+                                    let next = Array.init n liveDeps
+                                    if next = graph || sweeps >= 8 then going <- false
+                                    else graph <- next
+                                for i in 0 .. n - 1 do
+                                    let node = members.[i]
+                                    node.NeedsEval <- false
+                                    if node.Dynamic then dynamicSeen <- true
+                                    if not onCycle.[i] then
+                                        node.OnCycle <- false
+                                        if node.CyclicPass >= firstPass then
+                                            node.CyclicPass <- 0
+                                            cyclicCount <- cyclicCount - 1
                          | _ -> ())
                         let node = order.[index]
                         let lays = node.NeedsSpill || (node.NeedsEval && node.IsFormula && node.Spills)

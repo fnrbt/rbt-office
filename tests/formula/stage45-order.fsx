@@ -260,5 +260,36 @@ do
     let reaching = grown |> setCells "sheet2" [ at 5 5, Some (formula "=Sheet1!A1*2") ] |> setCells "sheet1" [ at 0 0, Some (formula "=Two!A1+2") ]
     ok "... an edit that reaches the cycle calculates it, whatever the engine knew" (match Recalc.recalculate (Recalc.build grown) reaching None with Some result -> same result (full reaching) | None -> false) ""
 
+// ---- a circular reference only through a branch the calculation does not take ----------------
+// Excel 2019 (tools/excel-parity/eval-cells.vbs): A1 =IF(B1="",5,A2) with A2 =A1 is no circular
+// reference - the IF does not read A2 - and gives 5, 5; nor is =IF(TRUE,7,A3) in A3. With B1 set the
+// IF reads A2: a circular reference (Excel's 0s, our cycle error). The same across sheets, through
+// IFERROR / CHOOSE, and in the per-sheet pass.
+do
+    let wb =
+        three ()
+        |> setCells "sheet1" [ at 0 0, Some (formula "=IF(B1=\"\",5,A2)"); at 1 0, Some (formula "=A1"); at 2 0, Some (formula "=IF(TRUE,7,A3)"); at 3 0, Some (formula "=A2+A3")
+                               at 0 3, Some (formula "=IF(Two!A1>0,Two!A2,1)"); at 0 4, Some (formula "=IFERROR(1,E2)"); at 1 4, Some (formula "=E1+CHOOSE(1,10,E2)") ]
+        |> setCells "sheet2" [ at 0 0, Some (number 0.0); at 1 0, Some (formula "=Sheet1!D1*2") ]
+    let calculated = settledInOne "cycles only through branches not taken" wb
+    eq "a cycle only through the branch not taken is none" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 calculated ]) [ n 5.0; n 5.0; n 7.0; n 12.0 ]
+    eq "... across sheets, through IFERROR and CHOOSE" (valueAt "sheet1" 0 3 calculated, valueAt "sheet2" 1 0 calculated, valueAt "sheet1" 0 4 calculated, valueAt "sheet1" 1 4 calculated) (n 1.0, n 2.0, n 1.0, n 11.0)
+    eq "... the per-sheet pass too" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 (Formula.recalculateWorkbookSettling wb) ]) [ n 5.0; n 5.0; n 7.0; n 12.0 ]
+    // B1 set: the IF reads A2 - a circular reference, and what reads it has its error.
+    let taken = calculated |> setCells "sheet1" [ at 0 1, Some (number 1.0) ]
+    let looped = settledInOne "the branch taken" taken
+    eq "the branch taken makes the cycle" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 looped ]) [ cycle; cycle; n 7.0; cycle ]
+    ok "the incremental engine says the same" (match Recalc.recalculate (Recalc.build calculated) taken None with Some result -> same result looped | None -> false) ""
+    // Two!A1 > 0: D1 reads Two!A2, which reads D1.
+    let across = settledInOne "the cycle across sheets taken" (calculated |> setCells "sheet2" [ at 0 0, Some (number 1.0) ])
+    eq "across sheets, the branch taken" (valueAt "sheet1" 0 3 across, valueAt "sheet2" 1 0 across) (cycle, cycle)
+    // And back: B1 cleared, the values again, incrementally too.
+    let back = looped |> setCells "sheet1" [ at 0 1, None ]
+    eq "the branch left again" ([ for r in 0 .. 3 -> valueAt "sheet1" r 0 (full back) ]) [ n 5.0; n 5.0; n 7.0; n 12.0 ]
+    ok "... incrementally" (match Recalc.recalculate (Recalc.build looped) back None with Some result -> same result (full back) | None -> false) ""
+    // A formula that reads the cycle and catches its error has its own value.
+    let caught = settledInOne "a reader that catches the error" (taken |> setCells "sheet1" [ at 5 0, Some (formula "=IFERROR(A2,-1)") ])
+    eq "a reader of the cycle that catches it" (valueAt "sheet1" 5 0 caught) (n -1.0)
+
 printfn "stage45-order: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
