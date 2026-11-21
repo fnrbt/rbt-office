@@ -94,8 +94,10 @@ Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-v
 - Cancellation to 0 at the end of a formula's addition: a result under 8 units in the last place of
   the larger operand (7 are 0, 8 are not, for any mantissa), was 2^-48 of it. SUM's last addition
   the same, inside any expression (`=1*SUM(..)` too; `=SUM(a,-b,0)` not). Not SUMPRODUCT, not an
-  operation inside a function. `=(a-b)` in parentheses is not 0 in Excel; ours is (no parentheses
-  in the tree): left.
+  operation inside a function. Parentheses around the whole formula are an operation of their own
+  (2026-11-21, 80 shapes with A1 1.5 and B1 3 units above it): `=(A1-B1)`, `=((A1-B1))`, `=( A1-B1 )`,
+  `=(SUM(A1)-B1)` are not 0; `=(A1)-(B1)`, `=(A1*1)-B1`, `=(0.1+0.2)-0.3`, `{=A1-B1}` are, and so is
+  `=(SUM(A1,-B1))` (SUM's own). `Formula.wrappedForms`, marked by the parser.
 - SUMIF / SUMIFS: an error among the cells added is the result.
 - Another workbook's cells (`[1]Sheet!A1`, `'[1]My sheet'!A1`) are what xl/externalLinks keeps of
   them (`Workbook.External`); a sheet with `refreshError` is #REF!. `'Sheet'!#REF!` is #REF!.
