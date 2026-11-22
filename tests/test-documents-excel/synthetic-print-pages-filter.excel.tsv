@@ -1,0 +1,60 @@
+FilterFit	1	setup.orientation	1
+FilterFit	1	setup.paper	1
+FilterFit	1	setup.zoom	False
+FilterFit	1	setup.fitwide	1
+FilterFit	1	setup.fittall	6
+FilterFit	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+FilterFit	1	setup.center	False False
+FilterFit	1	setup.printarea	
+FilterFit	1	setup.titlerows	
+FilterFit	1	setup.titlecols	
+FilterFit	1	setup.order	1
+FilterFit	1	setup.firstpage	-4105
+FilterFit	1	setup.gridlines	True
+FilterFit	1	setup.headings	False
+FilterFit	1	setup.bw	False
+FilterFit	1	setup.draft	False
+FilterFit	1	setup.errors	0
+FilterFit	1	used	$A$1:$D$200
+FilterFit	1	pdf	synthetic-print-pages-filter-1.pdf
+FilterBreaks	2	setup.orientation	1
+FilterBreaks	2	setup.paper	1
+FilterBreaks	2	setup.zoom	100
+FilterBreaks	2	setup.fitwide	1
+FilterBreaks	2	setup.fittall	1
+FilterBreaks	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+FilterBreaks	2	setup.center	False False
+FilterBreaks	2	setup.printarea	
+FilterBreaks	2	setup.titlerows	
+FilterBreaks	2	setup.titlecols	
+FilterBreaks	2	setup.order	1
+FilterBreaks	2	setup.firstpage	-4105
+FilterBreaks	2	setup.gridlines	True
+FilterBreaks	2	setup.headings	False
+FilterBreaks	2	setup.bw	False
+FilterBreaks	2	setup.draft	False
+FilterBreaks	2	setup.errors	0
+FilterBreaks	2	used	$A$1:$D$200
+FilterBreaks	2	pdf	synthetic-print-pages-filter-2.pdf
+HiddenBreaks	3	setup.orientation	1
+HiddenBreaks	3	setup.paper	1
+HiddenBreaks	3	setup.zoom	100
+HiddenBreaks	3	setup.fitwide	1
+HiddenBreaks	3	setup.fittall	1
+HiddenBreaks	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+HiddenBreaks	3	setup.center	False False
+HiddenBreaks	3	setup.printarea	
+HiddenBreaks	3	setup.titlerows	
+HiddenBreaks	3	setup.titlecols	
+HiddenBreaks	3	setup.order	1
+HiddenBreaks	3	setup.firstpage	-4105
+HiddenBreaks	3	setup.gridlines	True
+HiddenBreaks	3	setup.headings	False
+HiddenBreaks	3	setup.bw	False
+HiddenBreaks	3	setup.draft	False
+HiddenBreaks	3	setup.errors	0
+HiddenBreaks	3	used	$A$1:$D$200
+HiddenBreaks	3	pdf	synthetic-print-pages-filter-3.pdf
+FilterFit	1	pages	1
+FilterBreaks	2	pages	1
+HiddenBreaks	3	pages	1

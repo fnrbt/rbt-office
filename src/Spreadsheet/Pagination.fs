@@ -74,8 +74,11 @@ type Pagination = {
 let private colWidthPx (model: SpreadsheetModel) (col: int) : float =
     Map.tryFind col model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth
 
+/// (A row a filter hides prints nothing, as one hidden: houseflipping's "2 REPAIR ESTIMATOR", 1,051 rows hidden in its
+/// AutoFilter's range, fits 1 x 6 pages on 2 in Excel 2019.)
 let private rowHeightPx (model: SpreadsheetModel) (row: int) : float =
-    Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight
+    if isFilterHiddenRow row model then 0.0
+    else Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight
 
 let private rangeSum (sizes: int -> float) (startInc: int) (endInc: int) : float =
     let mutable s = 0.0
@@ -310,6 +313,43 @@ let paginate (model: SpreadsheetModel) : Pagination =
                     result.Add (slice rs re cs ce)
         resizeArrayToList result
     let pages = printRanges |> List.mapi pagesOf |> List.concat
+    // The pages at the end with nothing on them are left out: no cell that prints (`printsCell`) in a row and column
+    // shown, no text running into them, no merged cell that prints, no drawing - the grid's lines do not count, nor
+    // do a page's repeat rows / columns. A page with nothing on it before one with something prints, and "&N" counts
+    // the pages printed (make-print-place-fixture.py: BlankLast's last page and BlankLastTwo's two, BlankLastGrid's
+    // with its gridlines, are not in Excel 2019's PDF; Blank's two in the middle are; acre-property's Summary, its last
+    // page past the text running over from rows above, and dcf-stock-analysis's Financial Model print 7 and 9 pages).
+    let pages =
+        // (Each cell where it is first - most last pages have one; the text running over from cells, measured, only
+        // when that finds nothing: a sheet of 846,241 cells and 3,018 pages.)
+        let spans = ResizeArray<int * int * int * int>()
+        let shown (row: int) (col: int) = rowHeightPx model row > 0.0 && colWidthPx model col > 0.0
+        let printing = ResizeArray<CellAddress * CellData>()
+        for KeyValue(addr, data) in model.Cells do
+            if printsCell data && shown addr.Row addr.Col then
+                printing.Add((addr, data))
+                spans.Add((addr.Row, addr.Row, addr.Col, addr.Col))
+        for merge in model.MergedCells do
+            match Map.tryFind { Row = merge.StartRow; Col = merge.StartCol } model.Cells with
+            | Some data when printsCell data -> spans.Add((merge.StartRow, merge.EndRow, merge.StartCol, merge.EndCol))
+            | _ -> ()
+        for drawing in model.Drawings do
+            let anchor = drawing.Anchor
+            spans.Add((anchor.FromRow, defaultArg anchor.ToRow anchor.FromRow, anchor.FromCol, defaultArg anchor.ToCol anchor.FromCol))
+        let overflows = lazy (
+            let runs = ResizeArray<int * int * int * int>()
+            for (addr, data) in printing do
+                let last = overflowEnd model addr data
+                if last > addr.Col then runs.Add((addr.Row, addr.Row, addr.Col, last))
+            runs)
+        let meets (page: PageSlice) (r0, r1, c0, c1) = r0 <= page.RowEnd && r1 >= page.RowStart && c0 <= page.ColEnd && c1 >= page.ColStart
+        let hasSomething (page: PageSlice) =
+            spans |> Seq.exists (meets page) || overflows.Value |> Seq.exists (meets page)
+        let rec trim (reversed: PageSlice list) =
+            match reversed with
+            | last :: earlier when not earlier.IsEmpty && not (hasSomething last) -> trim earlier
+            | _ -> reversed
+        if pages.Length <= 1 then pages else pages |> List.rev |> trim |> List.rev
 
     let result =
         { Pages = pages

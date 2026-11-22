@@ -514,7 +514,7 @@ let mutable private chartTextFont = "Calibri"
 let private text (s: string) (rect: Rect) (size: float) (color: string) (align: TextAlign) (vAlign: VerticalAlign) : PaintItem =
     DrawText { Text = s; Rect = rect; Color = color; FontSize = size; FontName = Some chartTextFont
                Bold = false; Italic = false; Underline = false; UnderlineDouble = false; Strikethrough = false
-               Align = align; VerticalAlign = vAlign; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Rotation = 0; Clip = None }
+               Align = align; VerticalAlign = vAlign; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Baseline = 0.0; Rotation = 0; Clip = None }
 
 let private axisColor = "#595959"
 let private gridColor = "#D9D9D9"
@@ -840,7 +840,7 @@ let buildSlicer (spec: SlicerSpec) (rect: Rect) : PaintItem list =
       yield DrawText { Text = spec.Caption; Rect = { X = rect.X + 5.0; Y = rect.Y; Width = rect.Width - 10.0; Height = headerH }
                        Color = "#595959"; FontSize = 11.0; FontName = Some spec.Font; Bold = true; Italic = false
                        Underline = false; UnderlineDouble = false; Strikethrough = false
-                       Align = AlignLeft; VerticalAlign = VAlignMiddle; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Rotation = 0; Clip = None }
+                       Align = AlignLeft; VerticalAlign = VAlignMiddle; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Baseline = 0.0; Rotation = 0; Clip = None }
       yield VecPath ([ VMove (rect.X, bodyTop); VLine (rect.X + rect.Width, bodyTop) ], None, Some (border, 1.0))
       for i in 0 .. nItems - 1 do
           let it = spec.Items.[i]

@@ -209,7 +209,8 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
             pagesCounted <- pagesCounted + pagination.Pages.Length
             ok (sprintf "pages: %s / %s" (System.IO.Path.GetFileName file) sheet.Name) (pdfPageCount pdf = max 1 pagination.Pages.Length)
                 (sprintf "the PDF has %d pages, the pagination %d" (pdfPageCount pdf) pagination.Pages.Length)
-            // Every cell of every print area is on exactly one page of its area.
+            // Every cell of every print area is on one page of its area at most, and a cell on none holds nothing (the
+            // pages at the end with nothing on them are left out, as Excel 2019 leaves them).
             let covered =
                 pagination.PrintAreas |> List.mapi (fun index area ->
                     let pages = pagination.Pages |> List.filter (fun page -> page.Area = index)
@@ -217,7 +218,12 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
                     // (The repeat rows / columns print where they are on the pages that begin at or before them.)
                     let rows = area.To.Row - area.From.Row + 1
                     let cols = area.To.Col - area.From.Col + 1
-                    cells = max 0 rows * max 0 cols)
+                    let onPage (addr: CellAddress) = pages |> List.exists (fun page -> addr.Row >= page.RowStart && addr.Row <= page.RowEnd && addr.Col >= page.ColStart && addr.Col <= page.ColEnd)
+                    let leftOut =
+                        sheet.Model.Cells |> Map.exists (fun addr data ->
+                            addr.Row >= area.From.Row && addr.Row <= area.To.Row && addr.Col >= area.From.Col && addr.Col <= area.To.Col
+                            && (match data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true) && not (onPage addr))
+                    cells <= max 0 rows * max 0 cols && (cells = max 0 rows * max 0 cols || not leftOut))
             ok (sprintf "pages: %s / %s cover their areas" (System.IO.Path.GetFileName file) sheet.Name) (List.forall id covered) (sprintf "%A" covered)
 // A landscape sheet is paginated the wider way round, whether its setup holds the paper's size
 // in portrait (a file read by the editor) or already turned (the native runner).
@@ -305,6 +311,33 @@ do
     // A wrapped line fits while no wider than the column less 4.48 px: 15 characters of 6 px (90) in 95 px, not in 94.
     let lines width = textItems width "aaaaaaa bbbbbbb" true |> List.map (fun t -> t.Text)
     ok "print: wrapped at the column less 4.48 px" (lines 95.0 = [ "aaaaaaa bbbbbbb" ] && lines 94.0 = [ "aaaaaaa"; "bbbbbbb" ]) (sprintf "%A / %A" (lines 95.0) (lines 94.0))
+    // The text's inset by the Normal font's widest digit in print: ceil(d / 4) + 4 dots (Excel 2019's PDF of 33
+    // Normal fonts: Calibri 11 16 dots, Calibri 9 14, Calibri 14 19, Cambria 14 21).
+    let inset digit = System.Math.Round (Rbt.Spreadsheet.Paint.printPadXOf { createEmpty 1 1 with PrintDigitWidth = digit } * 6.25, 6)
+    ok "print: the text's inset by the Normal font" ([ 47.0; 38.0; 59.0; 65.0 ] |> List.map inset = [ 16.0; 14.0; 19.0; 21.0 ]) (sprintf "%A" ([ 47.0; 38.0; 59.0; 65.0 ] |> List.map inset))
+    // A format's `_x` at the end / start of the section shown leaves the width of x ("Pads": 0_) 28 dots of Calibri 11).
+    let pads code value = Rbt.Spreadsheet.CellText.widthPads { defaultFormat with NumberFormat = Some code } value
+    ok "print: a format's widths of characters" (pads "0_)" (Number 1.0) = ("", ")") && pads "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\);_(\"$\"* \"-\"??_);_(@_)" (Number -5.0) = ("(", "")
+                                                && pads "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\)" (Number 5.0) = ("(", ")") && pads "0_W_)" (Number 1.0) = ("", "W)")
+                                                && pads "_(@_)" (String "a") = ("(", ")") && pads "[>=100]0_)" (Number 1.0) = ("", "") && pads "0\\)" (Number 1.0) = ("", "")) ""
+    // Rows an AutoFilter hides print nothing (houseflipping's REPAIR ESTIMATOR): synthetic-print-pages-filter, "print pages:" below.
+    // Where a line stands in its cell (synthetic-print-pages-place "Place", Excel's PDF): the text at the bottom of row 3 (30 pt,
+    // Calibri 11 to 20, Arial, Segoe UI, Times, Trebuchet, Tahoma) on one baseline, 51.5 dots above the row's bottom in Excel
+    // (Calibri 20's descent, 7 px, and 1, at 6.05 dots a pixel: 48.4); at the top / in the middle by the font's own metrics.
+    let place =
+        let book = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel", "synthetic-print-pages-place.xlsx")
+        let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes book) |> Option.get)
+        Pagination.withPrintSizes imported.Sheets.[0].Model
+    let viewport : Rbt.Spreadsheet.Layout.Viewport =
+        { ScrollX = 0.0; ScrollY = 0.0; Width = 2000.0; Height = 600.0; HeaderHeight = 0.0; RowHeaderWidth = 0.0
+          Measurer = Some (fun s _ _ _ _ -> 6.0 * float s.Length) }
+    let placed = [ for item in paint place viewport do match item with Rbt.Spreadsheet.Paint.DrawText t when t.Text = "xH" -> yield t | _ -> () ]
+    let rowTop (row: int) = Seq.sum [ for r in 0 .. row - 1 -> Rbt.Spreadsheet.SheetOps.axisSize true r place ]
+    let inRow (row: int) = placed |> List.filter (fun t -> abs (t.Rect.Y - rowTop row) < 0.5)
+    let above (t: Rbt.Spreadsheet.Paint.PaintText) = (t.Rect.Height - t.Baseline) * 6.25
+    let bottoms = inRow 2 |> List.map above
+    ok "print: text at the bottom of a row on one baseline" (bottoms.Length = 8 && bottoms |> List.forall (fun b -> abs (b - bottoms.Head) < 1e-6 && abs (b - 51.5) <= 4.0)) (sprintf "%A" bottoms)
+    ok "print: text at the top and in the middle by the font" (inRow 4 |> List.forall (fun t -> t.Baseline < 0.0) && inRow 3 |> List.forall (fun t -> t.Baseline < 0.0 && t.Baseline > -0.01)) ""
 
 
 // ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break

@@ -39,17 +39,113 @@ let private equalsAtIgnoreCase (value: string) start length (expected: string) =
     length = expected.Length
     && System.String.Compare(value, start, expected, 0, length, System.StringComparison.OrdinalIgnoreCase) = 0
 
+/// The directories fonts are looked for in: RB_WORD_FONT_DIR - one directory or several, separated as PATH is
+/// (`artifacts/fonts/windows:artifacts/fonts/windows-extra`) - then artifacts/fonts/windows from here or two up.
 let private fontDirs () =
     let cwd = System.IO.Directory.GetCurrentDirectory()
     let dirs = System.Collections.Generic.List<string>()
-    for dir in [
-        System.Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR")
+    let configured =
+        match System.Environment.GetEnvironmentVariable("RB_WORD_FONT_DIR") with
+        | null -> []
+        | value -> value.Split(System.IO.Path.PathSeparator) |> List.ofArray
+    for dir in configured @ [
         System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "artifacts/fonts/windows"))
         System.IO.Path.GetFullPath(System.IO.Path.Combine(cwd, "../../artifacts/fonts/windows"))
     ] do
-        if not (System.String.IsNullOrWhiteSpace dir) && System.IO.Directory.Exists dir then
+        if not (System.String.IsNullOrWhiteSpace dir) && System.IO.Directory.Exists dir && not (dirs.Contains dir) then
             dirs.Add dir
     resizeArrayToList dirs
+
+// --- the families of the font files in those directories, as Windows names them -----------------------------
+
+let private u16 (data: byte[]) (at: int) = (int data.[at] <<< 8) ||| int data.[at + 1]
+let private u32 (data: byte[]) (at: int) = (int data.[at] <<< 24) ||| (int data.[at + 1] <<< 16) ||| (int data.[at + 2] <<< 8) ||| int data.[at + 3]
+
+/// A font file's family as GDI knows it (the `name` table's family, name 1, in its Windows US-English record,
+/// else any Windows one, else the Macintosh one), and whether it is bold and italic (OS/2 fsSelection, else
+/// head's macStyle); the first face of a collection. None for what is not a TrueType / OpenType file.
+let private faceOf (data: byte[]) : (string * bool * bool) option =
+    try
+        let start = if data.Length >= 16 && u32 data 0 = 0x74746366 (* ttcf *) then u32 data 12 else 0
+        let tables = u16 data (start + 4)
+        let table (tag: string) =
+            seq { 0 .. tables - 1 }
+            |> Seq.map (fun i -> start + 12 + 16 * i)
+            |> Seq.tryFind (fun record -> System.Text.Encoding.ASCII.GetString(data, record, 4) = tag)
+            |> Option.map (fun record -> u32 data (record + 8))
+        let family =
+            table "name" |> Option.bind (fun at ->
+                let count = u16 data (at + 2)
+                let strings = at + u16 data (at + 4)
+                let records =
+                    [ for i in 0 .. count - 1 do
+                        let r = at + 6 + 12 * i
+                        if u16 data (r + 6) = 1 then yield u16 data r, u16 data (r + 4), u16 data (r + 8), strings + u16 data (r + 10) ]
+                let decode (platform, _, length, offset) =
+                    if platform = 3 then System.Text.Encoding.BigEndianUnicode.GetString(data, offset, length)
+                    else System.Text.Encoding.ASCII.GetString(data, offset, length)
+                records |> List.tryFind (fun (p, lang, _, _) -> p = 3 && lang = 0x409)
+                |> Option.orElse (records |> List.tryFind (fun (p, _, _, _) -> p = 3))
+                |> Option.orElse (records |> List.tryFind (fun (p, _, _, _) -> p = 1))
+                |> Option.map decode)
+        let bold, italic =
+            match table "OS/2" with
+            | Some at -> let selection = u16 data (at + 62) in selection &&& 0x20 <> 0, selection &&& 0x01 <> 0
+            | None ->
+                match table "head" with
+                | Some at -> let style = u16 data (at + 44) in style &&& 1 <> 0, style &&& 2 <> 0
+                | None -> false, false
+        family |> Option.map (fun family -> family.Trim(), bold, italic)
+    with _ -> None
+
+/// The font files of the font directories by family (lower case): each file's path, bold, italic - read
+/// once for a set of directories.
+let private scanned = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<string, (string * bool * bool) list>>()
+let private familyFiles () =
+    let dirs = fontDirs ()
+    let key = System.String.Join("|", dirs)
+    lock scanned (fun () ->
+        match scanned.TryGetValue key with
+        | true, known -> known
+        | _ ->
+            let byFamily = System.Collections.Generic.Dictionary<string, (string * bool * bool) list>()
+            for dir in dirs do
+                for path in System.IO.Directory.GetFiles dir |> Array.sort do
+                    let extension = System.IO.Path.GetExtension(path).ToLowerInvariant()
+                    if extension = ".ttf" || extension = ".otf" || extension = ".ttc" then
+                        let head = try (use stream = System.IO.File.OpenRead path in let buffer = Array.zeroCreate (int (min stream.Length 1048576L)) in stream.Read(buffer, 0, buffer.Length) |> ignore; buffer) with _ -> [||]
+                        // (A name table past the first megabyte: the whole file.)
+                        let face = match faceOf head with Some face -> Some face | None -> (try faceOf (System.IO.File.ReadAllBytes path) with _ -> None)
+                        match face with
+                        | Some (family, bold, italic) ->
+                            let name = family.ToLowerInvariant()
+                            let known = match byFamily.TryGetValue name with | true, files -> files | _ -> []
+                            if not (known |> List.exists (fun (_, b, i) -> b = bold && i = italic)) then
+                                byFamily.[name] <- known @ [ path, bold, italic ]
+                        | None -> ()
+            scanned.[key] <- byFamily
+            byFamily)
+
+/// The file of a family found in the font directories by its own name (Windows': "Segoe UI Black", "Aptos
+/// Narrow", "Tahoma"), for a style: that style's face, else - as Windows makes up a style a family has not got
+/// from one it has - the bold face for bold italic, else the upright face of its weight, else the regular.
+let private scannedFile (fontName: string) (bold: bool) (italic: bool) =
+    match (familyFiles ()).TryGetValue (fontName.Trim().ToLowerInvariant()) with
+    | true, files ->
+        [ bold, italic; bold, false; false, italic; false, false ]
+        |> List.tryPick (fun (b, i) -> files |> List.tryPick (fun (path, fb, fi) -> if fb = b && fi = i then Some path else None))
+        |> Option.orElse (files |> List.tryHead |> Option.map (fun (path, _, _) -> path))
+    | _ -> None
+
+let private scannedCache = System.Collections.Generic.Dictionary<string, Rbt.Renderer.Text.FontData option>()
+let private loadScanned (path: string) =
+    lock scannedCache (fun () ->
+        match scannedCache.TryGetValue path with
+        | true, font -> font
+        | _ ->
+            let font = try Some (Rbt.Renderer.Text.loadFontFile path) with _ -> None
+            scannedCache.[path] <- font
+            font)
 
 /// Map an XLSX font `name val="..."` to a normalized family key: None for a
 /// family we have no TTF set for (see familyKey).
@@ -192,8 +288,15 @@ let private loadVariant family bold italic =
 
 let resolve (fontName: string option) (bold: bool) (italic: bool) =
     let family = familyKey fontName
+    // (A family the font directories have a file of by that name, in it: Segoe UI Black is not Segoe UI, nor
+    // Georgia Times; then the families of the known sets.)
+    let exact = fontName |> Option.filter (System.String.IsNullOrWhiteSpace >> not) |> Option.bind (fun name -> scannedFile name bold italic) |> Option.bind loadScanned
     let font =
-        match loadVariant family bold italic with
+        match exact with
+        | Some font -> Some font
+        | None -> loadVariant family bold italic
+    let font =
+        match font with
         | Some f -> f
         | None ->
             // Family lookup failed — try Calibri before falling back to the
@@ -205,6 +308,7 @@ let resolve (fontName: string option) (bold: bool) (italic: bool) =
 /// Whether a family is one this machine sets text in its own font of (a family of the known sets
 /// whose files - or their Liberation stand-ins - are here); text in another family falls back.
 let hasFamily (fontName: string) =
+    (not (System.String.IsNullOrWhiteSpace fontName) && (scannedFile fontName false false).IsSome) ||
     match knownFamilyKey (Some fontName) with
     | Some family -> (loadVariant family false false).IsSome
     | None -> false
