@@ -189,6 +189,24 @@ let private fitted (size: float) (bold: bool) (width: float) (text: string) : st
             kept <- kept.Substring(0, kept.Length - 1)
         if kept = "" then "" else kept + "…"
 
+/// The width of a slicer's text as Excel 2019 draws it: GDI's advances of the face at 11 pt (15 px), whole pixels.
+let private gdiWidth (face: string) (bold: bool) (text: string) : float =
+    ExcelText.textWidth (fun piece -> runWidth 15.0 bold piece) face bold false 15 false text
+
+/// A slicer's caption or button text in the room Excel 2019 gives it, cut as GDI's end ellipsis cuts it
+/// (build-slicer-cut.vbs: 400 slicers 1 px apart in Calibri and Tw Cen MT): the whole text where it is no wider
+/// than the room; else the most of its characters (spaces kept) followed by three full stops "..." that is
+/// narrower than the room; where even "..." is not, as many of its stops as are; none.
+let slicerFitted (face: string) (bold: bool) (room: float) (text: string) : string =
+    let width = gdiWidth face bold
+    if width text <= room then text
+    else
+        let mutable kept = text
+        while kept.Length > 0 && width (kept + "...") >= room do
+            kept <- kept.Substring(0, kept.Length - 1)
+        if kept <> "" then kept + "..."
+        else [ "..."; ".."; "." ] |> List.tryFind (fun dots -> width dots < room) |> Option.defaultValue ""
+
 /// The lines of a format around a rectangle (each edge in its colour), as primitives.
 let private edges (dxf: Dxf) (x: float) (y: float) (width: float) (height: float) : Primitive list =
     let edge (line: XlsxReader.TableStyleLine option) x1 y1 x2 y2 =
@@ -207,15 +225,17 @@ let private box (dxf: Dxf) (x: float) (y: float) (width: float) (height: float) 
     @ edges dxf x y width height
 
 /// Margins of a slicer, pixels (Excel's are not in the file). Measured on Excel 2019's own pictures of
-/// synthetic-slicers.xlsx and synthetic-slicer-looks.xlsx at 100%: the buttons and the header's line 9 px in
-/// from the frame at the sides (the slicer drawn a pixel wider than its anchor, `objectRect`), the line 27 px
-/// below the top, the first row of buttons 32 px below it, a button's text 8 px into it, its corners rounded
-/// by 2 px.
+/// synthetic-slicers.xlsx, synthetic-slicer-looks.xlsx and synthetic-slicer-cut.xlsx at 100%: the buttons and the
+/// header's line 9 px in from the frame at the left (the slicer drawn a pixel wider than its anchor, `objectRect`)
+/// and 9.67 at the right (between 9.5 and 9.83 by slicers at a third of a pixel and at whole pixels: 8 or 9 px
+/// between the last button and the frame), the line 27 px below the top, the first row of buttons 32 px below it,
+/// columns of buttons 3 px apart, a button's text 8 px into it, its corners rounded by 2 px.
 let private margin = 9.0
+let private rightMargin = 9.67
 let private bottomMargin = 6.0
 let private headerHeight = 30.0
 let private buttonPadding = 8.0
-let private columnGap = 4.0
+let private columnGap = 3.0
 let private rowGap = 3.0
 let private scrollWidth = 10.0
 
@@ -289,8 +309,9 @@ let private headerButtons (width: float) (filtering: bool) : Primitive list =
             yield PRect (multi + 7.0, 8.0 + 5.0 * float k, 9.0, 1.0, Some "#727272", 1.0, None, 0.0, 0.0) ]
     ticks @ clearFilterButton (width - 28.0) 7.0 filtering
 
-/// A slicer for a rectangle of that width and height (pixels), its origin at the top left.
-let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInfo) (width: float) (height: float) : Primitive list =
+/// A slicer for a rectangle of that width and height (pixels), its origin at the top left, its text in a typeface
+/// (the theme's body font, as Excel draws it).
+let slicerItems (face: string) (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInfo) (width: float) (height: float) : Primitive list =
     let buttons = slicerButtons data info
     let header =
         if not info.ShowCaption then []
@@ -298,9 +319,9 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
             let bold = look.Header.Bold |> Option.defaultValue false
             let color = look.Header.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             (match look.Header.Fill with Some fill -> [ PRect (0.0, 0.0, width, headerHeight, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
-            // (The caption stops before the header's buttons.)
-            @ [ PText (margin, headerHeight / 2.0, fitted textSize bold (width - margin - 64.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
-            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 2.0)
+            // (The caption stops before the header's buttons: cut where it is wider than the slicer less 72 px.)
+            @ [ PText (margin, headerHeight / 2.0, slicerFitted face bold (width - 72.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
+            @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (Math.Ceiling (width - rightMargin - 0.5) - margin) (headerHeight - 2.0)
             @ headerButtons width (buttons |> List.exists (fun item -> not item.Selected))
     let top = if info.ShowCaption then headerHeight + 2.0 else bottomMargin
     // (Whole pixels: 241300 EMU, 25.33 px, is 25 in Excel - buttons 28 px apart.)
@@ -310,15 +331,19 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
     let fit = max 1 (int (floor ((height - top - bottomMargin + rowGap) / (buttonHeight + rowGap))))
     let firstRow = min (info.StartItem / columns) (max 0 (rows - fit))
     let scrolls = rows > fit
-    let inner = width - 2.0 * margin - (if scrolls then scrollWidth + columnGap else 0.0)
+    let inner = width - margin - rightMargin - (if scrolls then scrollWidth + columnGap else 0.0)
     let buttonWidth = max 4.0 ((inner - float (columns - 1) * columnGap) / float columns)
+    // (Each button on whole pixels, its edges rounded half down: 108.25-px buttons 108, 108, 109, 108 px wide.)
+    let snap (value: float) = Math.Ceiling (value - 0.5)
     let buttonItems =
         buttons
         |> List.mapi (fun index item -> index, item)
         |> List.filter (fun (index, _) -> index / columns >= firstRow && index / columns < firstRow + fit + 1)
         |> List.collect (fun (index, item) ->
             let row, column = index / columns - firstRow, index % columns
-            let x = margin + float column * (buttonWidth + columnGap)
+            let x0 = float column * (buttonWidth + columnGap)
+            let x = margin + snap x0
+            let buttonWidth = snap (x0 + buttonWidth) - snap x0
             let y = top + float row * (buttonHeight + rowGap)
             let format =
                 match item.Selected, item.HasData with
@@ -337,7 +362,8 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
                 | _ -> None
             (match rounded with Some button -> button | None -> box format x y buttonWidth buttonHeight)
             // (The text at the button's left, as Excel sets it.)
-            @ [ PText (x + buttonPadding, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - buttonPadding - 4.0) item.Label, textSize, hash color, "start", bold, format.Italic |> Option.defaultValue false, 0.0) ])
+            // (Cut where it is wider than the button less 18 px.)
+            @ [ PText (x + buttonPadding, y + buttonHeight / 2.0, slicerFitted face bold (buttonWidth - 18.0) item.Label, textSize, hash color, "start", bold, format.Italic |> Option.defaultValue false, 0.0) ])
     let scrollBar =
         if not scrolls then []
         else
@@ -570,11 +596,20 @@ let timelineItems (look: TimelineLook) (info: XlsxReader.TimelineInfo) (width: f
 /// drawn; the workbook's slicer parts are read when the first one is drawn.
 let drawer (workbook: XlsxReader.Workbook) : string -> string -> ChartData -> float -> float -> Primitive list option =
     let book = lazy (try XlsxReader.SlicerParts.read workbook with _ -> XlsxReader.SlicerParts.empty)
+    // (A slicer's text is in the theme's body font: Tw Cen MT in the e-commerce dashboard, as Excel draws it.)
+    let face =
+        lazy (
+            workbook.Preserved.ThemePath
+            |> Option.bind (fun path -> workbook.Preserved.Parts |> List.tryPick (fun (known, data) -> if known = path then Some data else None))
+            |> Option.bind (fun data -> Map.tryFind "#minorFont" (parseTheme (Text.Encoding.UTF8.GetString data)))
+            |> Option.defaultValue "Calibri")
     fun kind name data width height ->
         match kind with
         | "slicer" ->
             Map.tryFind name book.Value.Slicers
-            |> Option.map (fun info -> slicerItems (slicerLook workbook info.Style) data info width height)
+            |> Option.map (fun info ->
+                let items = slicerItems face.Value (slicerLook workbook info.Style) data info width height
+                if face.Value = "Calibri" then items else [ PFace (face.Value, items) ])
         | "timeslicer" ->
             Map.tryFind name book.Value.Timelines
             |> Option.map (fun info -> timelineItems (timelineLook workbook info.Style) info width height)

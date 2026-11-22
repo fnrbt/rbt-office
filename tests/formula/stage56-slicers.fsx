@@ -37,6 +37,7 @@ let rec flat (items: Charts.Primitive list) : Charts.Primitive list =
                 | Charts.PRect (a, b, w, h, fill, o, stroke, sw, r) -> Charts.PRect (a + x, b + y, w, h, fill, o, stroke, sw, r)
                 | Charts.PText (a, b, value, size, color, anchor, bold, italic, turn) -> Charts.PText (a + x, b + y, value, size, color, anchor, bold, italic, turn)
                 | other -> other)
+        | Charts.PFace (_, inner) -> flat inner
         | other -> [ other ])
 let texts (items: Charts.Primitive list) = flat items |> List.choose (fun item -> match item with Charts.PText (_, _, value, _, _, _, _, _, _) -> Some value | _ -> None)
 /// The buttons drawn: (label, x, y, fill, text colour, bold), the label at the rectangle's left, 8 px in
@@ -122,11 +123,13 @@ match sceneNamed syn drawer synData "Region" 240.0 200.0 with
     | [ (_, x0, y0, _, _, _); (_, x1, y1, _, _, _); (_, x2, y2, _, _, _); (_, x3, y3, _, _, _) ] ->
         ok "... North and South side by side, East and West under them" (y0 = y1 && x0 < x1 && y2 = y3 && y2 > y0 && x2 = x0 && x3 = x1) (sprintf "%A" shown)
         ok "... as high as the slicer says in whole pixels (241300 EMU: 25.33 px, 25 as Excel draws it) with a gap of 3" (abs (y2 - y0 - 28.0) < 0.01) (sprintf "%g" (y2 - y0))
-        // (Excel 2019 at 100%: the buttons 9 px in from the frame at both sides, 4 px apart, the first row
+        // (Excel 2019 at 100%: the buttons 9 px in from the frame at the left and 9.67 at the right, on whole pixels,
+        // 3 px apart - synthetic-slicer-looks.xlsx, synthetic-slicer-cut.xlsx, the e-commerce dashboard -, the first row
         // 32 px below the top, the header's line 27 px below it.)
-        eq "... where Excel puts them: 9 px in from the frame at both sides (synthetic-slicer-looks.xlsx), 4 px apart, 32 px from the top" (x0, x1 + (x1 - x0 - 4.0), y0) (9.0, 231.0, 32.0)
-        ok "... the header's line 27 px down, from 9 px in to 9 px from the right"
-            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (9.0, 27.5, 231.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
+        let widthOf label = flat scene.Items |> List.pick (fun item -> match item with Charts.PRect (x, _, w, _, Some _, _, _, _, _) when x = (if label = 0 then x0 else x1) && w > 16.0 -> Some w | _ -> None)
+        eq "... where Excel puts them: 9 px in from the frame at the left, 9.67 at the right, 3 px apart, 32 px from the top" (x0, x1, x1 + widthOf 1, x0 + widthOf 0 + 3.0, y0) (9.0, 121.0, 230.0, 121.0, 32.0)
+        ok "... the header's line 27 px down, from 9 px in to the buttons' right"
+            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (9.0, 27.5, 230.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
     | _ -> ok "Region: four buttons" false (sprintf "%A" shown)
     eq "... in SlicerStyleLight1 in the theme: selected with data in accent 1 tint 60%, unselected white, selected without data tint 80% in grey text"
         (shown |> List.map (fun (_, _, _, fill, color, _) -> fill, color))
@@ -194,6 +197,52 @@ eq "the header's Clear Filter: a red cross while the slicer filters, grey while 
 
 eq "a name the workbook has no slicer of: None (the frame says what it is)" (drawer "slicer" "Nothing" noData 100.0 100.0) None
 
+// ---- where Excel cuts a slicer's text (tools/excel-parity/build-slicer-cut.vbs: synthetic-slicer-cut.xlsx, Calibri,
+// and synthetic-slicer-cut-twcen.xlsx, the theme's body font Tw Cen MT; one cache shown by 400 slicers 1 px apart, read
+// off Excel 2019's pictures): a button's text where it is no wider than the button less 18 px, else its most characters
+// and "..." narrower than that; the caption likewise in the slicer less 72 px; in the theme's body font, by its GDI widths.
+for file, face, expected in
+        [ "test-documents-excel/synthetic-slicer-cut.xlsx", "Calibri",
+          [ "B1_40", ([ ""; ""; "" ], "")
+            "B1_41", ([ "."; "."; "." ], "")
+            "B1_45", ([ ".."; ".."; ".." ], "")
+            "B1_49", ([ "..."; "..."; "..." ], "")
+            "B1_56", ([ "0..."; "..."; "..." ], "")
+            "B1_70", ([ "000..."; "Ab ..."; "Ce..." ], "")
+            "B1_80", ([ "0000..."; "Ab C..."; "Cent..." ], "C")
+            "B1_81", ([ "0000..."; "Ab C..."; "Central" ], "C")
+            "B2_90", ([ "00000..."; "Ab Cd ..."; "Central" ], "C")
+            "B2_91", ([ "000000..."; "Ab Cd ..."; "Central" ], "C")
+            "B2_92", ([ "00000000"; "Ab Cd ..."; "Central" ], "C")
+            "B2_109", ([ "00000000"; "Ab Cd Efg..."; "Central" ], "C")
+            "B2_110", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "C")
+            "C1_118", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "0000...")
+            "C1_125", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "00000...")
+            "C1_126", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "000000...")
+            "C1_127", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "00000000") ]
+          "test-documents-excel/synthetic-slicer-cut-twcen.xlsx", "Tw Cen MT",
+          [ "B1_78", ([ "0000..."; "Ab C..."; "Cent..." ], ".")
+            "B1_79", ([ "0000..."; "Ab C..."; "Centr..." ], ".")
+            "B1_80", ([ "0000..."; "Ab C..."; "Central" ], "C")
+            "C1_127", ([ "00000000"; "Ab Cd Efghij"; "Central" ], "00000...") ] ] do
+    let _, wb, book = openBook file
+    let draw = Slicers.drawer wb
+    let data = liveData book
+    for name, (labels, caption) in expected do
+        let width = float (int (name.Substring 3)) + 1.0
+        match sceneNamed wb draw data name width 126.0 with
+        | Some scene ->
+            let all = flat scene.Items
+            let shown = buttons scene.Items |> List.map (fun (label, _, _, _, _, _) -> label)
+            let header = all |> List.tryPick (fun item -> match item with Charts.PText (9.0, 15.0, value, _, _, "start", true, _, _) -> Some value | _ -> None)
+            eq (sprintf "%s %s: its buttons and caption as Excel cuts them" (Path.GetFileName file) name) (shown, header) (labels, Some caption)
+            let rec faces (items: Charts.Primitive list) =
+                items |> List.collect (fun item -> match item with Charts.PFace (known, inner) -> known :: faces inner | Charts.PGroup (_, _, _, _, inner) -> faces inner | _ -> [])
+            eq (sprintf "... in %s" face) (faces scene.Items) (if face = "Calibri" then [] else [ face ])
+        | None -> ok (sprintf "%s is drawn" name) false "a placeholder"
+eq "a slicer's text in its room (GDI's widths: Tw Cen MT 'Central' 44 px, 'Centr...' 42)"
+    ([ 44.0; 43.0; 42.0; 41.0 ] |> List.map (fun room -> Slicers.slicerFitted "Tw Cen MT" false room "Central")) [ "Central"; "Centr..."; "Cent..."; "Cent..." ]
+
 // ---- the dashboards' slicers (pivot slicers, a custom style copied from a built-in one) -----------------
 for file, expected in [ "real-world/dashboard-ecommerce-sales.xlsx", [ "Region"; "Region 1"; "Segment"; "Ship Mode"; "Ship Mode 1"; "Year" ]
                         "real-world/dashboard-sales-analysis.xlsx", [ "Category 1"; "Financial Year"; "State 1" ] ] do
@@ -220,6 +269,13 @@ do
             [ for label in [ "Central"; "East"; "South"; "West" ] -> label, Some (tint wb.ThemeColors.[5] 0.59999389629810485) ]
         ok "... side by side" (shown |> List.map (fun (_, _, y, _, _, _) -> y) |> List.distinct |> List.length = 1) (sprintf "%A" shown)
         ok "... under the caption, bold (the style's header)" (flat scene.Items |> List.exists (fun item -> match item with Charts.PText (_, _, "Select Region", _, _, "start", true, _, _) -> true | _ -> false)) (sprintf "%A" (texts scene.Items))
+    | None -> ok "Region 1 is drawn" false "a placeholder"
+    // (Excel 2019's picture of the Dashboard: Region 1's buttons 61 px wide, 3 apart, "Central" in Tw Cen MT cut.)
+    match sceneNamed wb (Slicers.drawer wb) (liveData book) "Region 1" 272.0 64.0 with
+    | Some scene ->
+        let shown = buttons scene.Items
+        eq "... at its size in Excel (271 px): buttons 61 px wide, 3 px apart, \"Central\" cut to \"Centr...\" in Tw Cen MT as Excel shows it"
+            (shown |> List.map (fun (label, x, _, _, _, _) -> label, x)) [ "Centr...", 9.0; "East", 73.0; "South", 137.0; "West", 201.0 ]
     | None -> ok "Region 1 is drawn" false "a placeholder"
 
 // ---- saved: every slicer and timeline part, their relationships and content types, the extension list entries ----
