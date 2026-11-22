@@ -103,6 +103,65 @@ let descentPx (face: string option) (points: float) (bold: bool) (italic: bool) 
         elif px <= 60 then float (base36 text.[px - 6])
         else Math.Round (float (base36 text.[54]) * float px / 60.0)
     | false, _ -> Math.Round (float px * 0.21)
+// Printer baseline levels from GDI TEXTMETRIC at 96 dpi. Only the six face/style families checked against
+// Excel's print PDFs are used here; screen and AutoFit continue to use tmDescent alone. Each character is
+// max(tmDescent, tmInternalLeading) at pixel heights 6..60 (gdi-text-metrics.tsv).
+let private printLevels =
+    lazy (
+        [ "arial|", "1123333333344445556566667777788899999aaaaaabbbccccddddd"
+          "arial|b", "112223333444445555666777777789999999abbbbbbbcccdddddeee"
+          "arial|i", "11333333333455556666666777888889999aaaabbbbbbbdddddddee"
+          "calibri|", "222233334445555666677788889999aaaabbbccccddddeeeffffggg"
+          "calibri|b", "222233334445555666677788889999aaaabbbccccddddeeeffffggg"
+          "calibri|i", "222233334445555666677788889999aaaabbbccccddddeeeffffggg"
+          "segoe ui|", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "segoe ui|b", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "segoe ui|i", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "segoe ui black|", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "segoe ui black|b", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "segoe ui black|i", "2333223455567689888aaaabbbdccccdddeefggggfhhhhiiijijjjl"
+          "times new roman|", "1223233334444555566667777788889999aaaabbbbccccddddeeeee"
+          "times new roman|b", "12332233334445555555666677777888899999aaaabbbbccccccddd"
+          "times new roman|i", "1222233334444555566667777788889999aaaabbbbccccddddeeeee"
+          "trebuchet ms|", "1256556545665566666778888889a99abaabbccccddddefeeeggffh"
+          "trebuchet ms|b", "1256556545665566666778888889a99abaabbccccddddefeeeggffh"
+          "trebuchet ms|i", "1256556545665566666778888889a99abaabbccccddddefeeeggffh" ]
+        |> dict)
+
+/// GDI's printer baseline level (larger of descent and internal leading), in 96-dpi pixels.
+/// Unmeasured families retain the existing descent rather than guessing their print positioning.
+let printLevelPx (face: string option) (points: float) (bold: bool) (italic: bool) =
+    let px = pixelSize points
+    let family = tableFace face
+    let key = family + "|" + styleKey bold italic
+    match printLevels.Value.TryGetValue key with
+    | true, text when px >= 6 && px <= 60 -> float (base36 text.[px - 6])
+    | _ when family = "aptos" || family = "aptos narrow" || family = "aptos display" || family = "lato" ->
+        // These Office/cloud fonts are not installed on the GDI host; Excel uses their Windows ascent/descent.
+        let ascent, descent, em = if family = "lato" then 2233.0, 599.0, 2000.0 else 2068.0, 563.0, 2048.0
+        let rounded units = Math.Floor (units * float px / em + 0.5)
+        let a, d = rounded ascent, rounded descent
+        max d (a + d - float px)
+    | _ -> descentPx face points bold italic
+
+/// The Normal font's 96/600-dpi GDI baseline levels, for Normal sizes measured in Excel 2019's PDFs.
+/// These are *printer* metrics, not row-height scales (the latter do not predict printed baselines).
+let private printNormalLevels =
+    dict [ ("calibri", 15), (4.0, 25.0); ("calibri", 27), (7.0, 45.0); ("calibri", 11), (3.0, 18.0)
+           ("segoe ui", 13), (4.0, 27.0); ("segoe ui", 12), (3.0, 25.0)
+           ("arial", 11), (3.0, 15.0); ("arial", 13), (3.0, 18.0); ("arial", 16), (3.0, 22.0)
+           ("times new roman", 16), (4.0, 24.0); ("cambria", 19), (4.0, 26.0)
+           ("tahoma", 13), (3.0, 17.0)
+           ("aptos narrow", 13), (4.0, 24.0); ("aptos narrow", 15), (4.0, 26.0)
+           ("aptos narrow", 16), (4.0, 28.0); ("aptos", 15), (4.0, 26.0)
+           ("aptos display", 15), (4.0, 26.0); ("lato", 15), (6.0, 39.0) ]
+
+let printNormalLevelsOf (face: string) (points: float) : (float * float) option =
+    let key = face.Trim().ToLowerInvariant(), pixelSize points
+    match printNormalLevels.TryGetValue key with
+    | true, levels -> Some levels
+    | _ -> None
+
 
 /// A font's line in a row and its descent, in pixels: the row of a line of it (a bold or italic one's own where
 /// Excel's differs: Arial 12 bold 21 px, regular 20) and how much of that is below the baseline. The fonts of a

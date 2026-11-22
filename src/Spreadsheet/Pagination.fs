@@ -313,12 +313,9 @@ let paginate (model: SpreadsheetModel) : Pagination =
                     result.Add (slice rs re cs ce)
         resizeArrayToList result
     let pages = printRanges |> List.mapi pagesOf |> List.concat
-    // The pages at the end with nothing on them are left out: no cell that prints (`printsCell`) in a row and column
-    // shown, no text running into them, no merged cell that prints, no drawing - the grid's lines do not count, nor
-    // do a page's repeat rows / columns. A page with nothing on it before one with something prints, and "&N" counts
-    // the pages printed (make-print-place-fixture.py: BlankLast's last page and BlankLastTwo's two, BlankLastGrid's
-    // with its gridlines, are not in Excel 2019's PDF; Blank's two in the middle are; acre-property's Summary, its last
-    // page past the text running over from rows above, and dcf-stock-analysis's Financial Model print 7 and 9 pages).
+    // Trailing pages with no printing cell, overflow, merge or drawing are omitted. An inherited column fill/border
+    // also holds a page when a visible, participating row on that page is in the same absolute 16-row block as a
+    // used cell reaching that column. The style alone never widens the used range or creates a page.
     let pages =
         // (Each cell where it is first - most last pages have one; the text running over from cells, measured, only
         // when that finds nothing: a sheet of 846,241 cells and 3,018 pages.)
@@ -342,9 +339,76 @@ let paginate (model: SpreadsheetModel) : Pagination =
                 let last = overflowEnd model addr data
                 if last > addr.Col then runs.Add((addr.Row, addr.Row, addr.Col, last))
             runs)
+        let inheritedBlocks =
+            model.ColumnStyles
+            |> List.filter (fun style -> printsCell { Value = CellValue.Empty; Format = style.Format; Comment = None })
+        let blockExtents = System.Collections.Generic.Dictionary<int, int>()
+        let participatingRows = System.Collections.Generic.Dictionary<int, int>()
+        if not inheritedBlocks.IsEmpty then
+            let participate row =
+                if rowHeightPx model row > 0.0
+                   && (match Map.tryFind row model.RowStyles with
+                       | Some format -> printsCell { Value = CellValue.Empty; Format = format; Comment = None }
+                       | None -> true) then
+                    let block = row / 16
+                    let bit = 1 <<< (row % 16)
+                    match participatingRows.TryGetValue block with
+                    | true, bits -> participatingRows.[block] <- bits ||| bit
+                    | _ -> participatingRows.[block] <- bit
+            for KeyValue(addr, data) in model.Cells do
+                // An empty cell generated solely by its row's style is not a used cell of its own.
+                if data.Value <> CellValue.Empty
+                   || data.Format <> defaultFormat && Map.tryFind addr.Row model.RowStyles <> Some data.Format then
+                    let block = addr.Row / 16
+                    match blockExtents.TryGetValue block with
+                    | true, last when last >= addr.Col -> ()
+                    | _ -> blockExtents.[block] <- addr.Col
+                    if colWidthPx model addr.Col > 0.0 then participate addr.Row
+            for KeyValue(row, _) in model.RowPoints do participate row
+            for KeyValue(row, _) in model.RowHeights do participate row
+            for KeyValue(row, format) in model.RowStyles do
+                if printsCell { Value = CellValue.Empty; Format = format; Comment = None } then participate row
+        let holdsInherited (page: PageSlice) =
+            let rowInPage block =
+                let firstRow = max page.RowStart (block * 16)
+                let lastRow = min page.RowEnd (block * 16 + 15)
+                let pageBits = ((1 <<< (lastRow - firstRow + 1)) - 1) <<< (firstRow % 16)
+                (match participatingRows.TryGetValue block with
+                 | true, bits -> bits &&& pageBits <> 0
+                 | _ -> false)
+                || (model.MergedCells |> List.exists (fun merge ->
+                    let mutable row = max firstRow merge.StartRow
+                    let last = min lastRow merge.EndRow
+                    let mutable shown = false
+                    while not shown && row <= last do
+                        shown <- rowHeightPx model row > 0.0
+                                 && (match Map.tryFind row model.RowStyles with
+                                     | Some format -> printsCell { Value = CellValue.Empty; Format = format; Comment = None }
+                                     | None -> true)
+                        row <- row + 1
+                    shown && colWidthPx model merge.StartCol > 0.0))
+            inheritedBlocks |> List.exists (fun style ->
+                let mutable visibleCol = max page.ColStart style.First
+                let lastCol = min page.ColEnd style.Last
+                while visibleCol <= lastCol && colWidthPx model visibleCol <= 0.0 do
+                    visibleCol <- visibleCol + 1
+                if visibleCol > lastCol then false
+                else
+                    let mutable block = page.RowStart / 16
+                    let mutable held = false
+                    while not held && block <= page.RowEnd / 16 do
+                        if rowInPage block then
+                            held <-
+                                (match blockExtents.TryGetValue block with
+                                 | true, extent -> extent >= visibleCol
+                                 | _ -> false)
+                                || (model.MergedCells |> List.exists (fun merge ->
+                                    merge.StartRow / 16 <= block && merge.EndRow / 16 >= block && merge.EndCol >= visibleCol))
+                        block <- block + 1
+                    held)
         let meets (page: PageSlice) (r0, r1, c0, c1) = r0 <= page.RowEnd && r1 >= page.RowStart && c0 <= page.ColEnd && c1 >= page.ColStart
         let hasSomething (page: PageSlice) =
-            spans |> Seq.exists (meets page) || overflows.Value |> Seq.exists (meets page)
+            spans |> Seq.exists (meets page) || overflows.Value |> Seq.exists (meets page) || holdsInherited page
         let rec trim (reversed: PageSlice list) =
             match reversed with
             | last :: earlier when not earlier.IsEmpty && not (hasSomething last) -> trim earlier

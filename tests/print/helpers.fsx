@@ -143,6 +143,50 @@ let p5 = Pagination.paginate m5
 ok "pagi-fit-to-one-page" (List.length p5.Pages = 1) (sprintf "pages=%d scale=%f" (List.length p5.Pages) p5.Scale)
 ok "pagi-fit-shrinks-scale" (p5.Scale < 1.0) (sprintf "scale=%f" p5.Scale)
 
+// Excel 2019 blockhold.xlsx: an inherited printable column style can hold a trailing column-page only
+// when a visible, used row on it shares an absolute 16-row block with a used extent reaching that column.
+do
+    let setup =
+        { defaultPageSetup with
+            PageWidth = 600.0; PageHeight = 1100.0; ManualRowBreaks = [ 20; 41 ]
+            Margins = { defaultPageMargins with Top = 0.1; Bottom = 0.1; Left = 0.1; Right = 0.1 } }
+    let x = cell (CellValue.String "x")
+    let addr r c = { Row = r; Col = c }
+    let at r c data = addr r c, data
+    let fill = { defaultFormat with BgColor = Some "#CCCCCC" }
+    let font = { defaultFormat with Bold = true }
+    let style = { First = 10; Last = 10; Format = fill; Source = -1 }
+    let baseCells = Map.ofList [ at 0 0 x; at 1 10 x; at 59 0 x ]
+    let model markRow targetRow =
+        { createEmpty 100 26 with
+            PageSetup = setup; DefaultRowHeight = 20.0; ColumnStyles = [ style ]
+            Cells = baseCells |> Map.add (addr markRow 10) x |> Map.add (addr targetRow 1) x }
+    let held m = Pagination.paginate m |> fun p ->
+        p.Pages |> List.exists (fun page -> page.RowStart = 41 && page.ColStart <= 10 && page.ColEnd >= 10)
+    let check name expected m =
+        let actual = held m
+        ok ("print block: " + name) (actual = expected) (sprintf "held=%b expected=%b" actual expected)
+    check "K32 / B48 misses block" false (model 31 47)
+    check "K33 / B48 shares block" true (model 32 47)
+    check "K39 / B41 before break" false (model 38 40)
+    check "K39 / B42 across break" true (model 38 41)
+    check "K39 / B49 outside block" false (model 38 48)
+    let baseMarked = { model 38 44 with Cells = baseCells |> Map.add (addr 38 10) x }
+    check "no target row" false baseMarked
+    check "custom 15pt target row" true { baseMarked with RowPoints = Map.ofList [ 44, 15.0 ]; RowHeights = Map.ofList [ 44, 20.0 ] }
+    check "hidden target row" false { model 38 44 with RowHeights = Map.ofList [ 44, 0.0 ] }
+    check "hidden source still marks" true { model 38 44 with RowHeights = Map.ofList [ 38, 0.0 ] }
+    check "font-only column is not printable" false { model 38 44 with ColumnStyles = [ { style with Format = font } ] }
+    check "font-formatted source marks" true { baseMarked with Cells = baseMarked.Cells |> Map.add (addr 38 10) { cell CellValue.Empty with Format = font } |> Map.add (addr 44 1) x }
+    check "font-formatted target participates" true { baseMarked with Cells = baseMarked.Cells |> Map.add (addr 44 1) { cell CellValue.Empty with Format = font } }
+    check "formula-empty source marks" true { baseMarked with Cells = baseMarked.Cells |> Map.add (addr 38 10) (cell (CellValue.Formula ("=\"\"", CellValue.String ""))) |> Map.add (addr 44 1) x }
+    check "formula-empty target participates" true { baseMarked with Cells = baseMarked.Cells |> Map.add (addr 44 1) (cell (CellValue.Formula ("=\"\"", CellValue.String ""))) }
+    check "blank merged source marks" true { baseMarked with Cells = Map.add (addr 44 1) x baseCells; MergedCells = [ { StartRow = 38; StartCol = 10; EndRow = 38; EndCol = 11 } ] }
+    check "blank merged target participates" true { baseMarked with MergedCells = [ { StartRow = 44; StartCol = 1; EndRow = 44; EndCol = 2 } ] }
+    check "row font style does not participate" false { baseMarked with RowStyles = Map.ofList [ 44, font ] }
+    check "row font style overrides value" false { model 38 44 with RowStyles = Map.ofList [ 44, font ] }
+    check "row fill style participates" true { baseMarked with RowStyles = Map.ofList [ 44, fill ] }
+
 printfn ""
 // ----- pictures in the PDF -----
 // A picture (PNG / JPEG) is embedded as an image object and drawn over its
@@ -338,6 +382,33 @@ do
     let bottoms = inRow 2 |> List.map above
     ok "print: text at the bottom of a row on one baseline" (bottoms.Length = 8 && bottoms |> List.forall (fun b -> abs (b - bottoms.Head) < 1e-6 && abs (b - 51.5) <= 4.0)) (sprintf "%A" bottoms)
     ok "print: text at the top and in the middle by the font" (inRow 4 |> List.forall (fun t -> t.Baseline < 0.0) && inRow 3 |> List.forall (fun t -> t.Baseline < 0.0 && t.Baseline > -0.01)) ""
+    // Printer GDI's internal leading can exceed descent. At Calibri 11 Normal, n=5 stands 37
+    // dots above the grid, n=7 stands 50; the fonts on a mixed row share that baseline.
+    let level face pt = Rbt.Spreadsheet.FontMetrics.printLevelPx (Some face) pt false false
+    ok "print: GDI internal leading, not screen descent"
+        (level "Segoe UI" 10.0 = 4.0 && level "Trebuchet MS" 10.0 = 5.0
+         && level "Trebuchet MS" 20.0 = 8.0
+         && Rbt.Spreadsheet.FontMetrics.descentPx (Some "Segoe UI") 10.0 false false = 3.0) ""
+    let metricModel =
+        { createEmpty 3 3 with
+            DefaultRowHeight = 60.0; NormalFontName = "Calibri"; NormalFontSize = 11.0
+            Cells =
+                Map.ofList [
+                    { Row = 0; Col = 0 }, { cell (String "metric-a") with Format = { defaultFormat with FontName = Some "Segoe UI"; FontSize = Some 10.0 } }
+                    { Row = 0; Col = 1 }, { cell (String "metric-b") with Format = { defaultFormat with FontName = Some "Trebuchet MS"; FontSize = Some 10.0 } }
+                    { Row = 1; Col = 0 }, { cell (String "metric-c") with Format = { defaultFormat with FontName = Some "Calibri"; FontSize = Some 20.0 } } ] }
+    let metricText =
+        [ for item in Paint.buildPrintPaintItems (0.0, 0.0, 1.0) metricModel viewport do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.Text.StartsWith "metric-" ->
+                yield t.Text, (t.Rect.Height - t.Baseline) * 6.25
+            | _ -> () ] |> Map.ofList
+    ok "print: mixed-font row printer baseline"
+        (metricText.Count = 3
+         && abs (metricText.["metric-a"] - 37.0) < 0.01
+         && abs (metricText.["metric-b"] - 37.0) < 0.01
+         && abs (metricText.["metric-c"] - 50.0) < 0.01)
+        (sprintf "%A" metricText)
 
 
 // ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break

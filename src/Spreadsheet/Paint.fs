@@ -439,14 +439,13 @@ let printPadXOf (model: SpreadsheetModel) =
 [<Literal>]
 let printWrapMargin = 4.48
 
-/// The largest descent (`FontMetrics.lineOf`, screen pixels) of the text at the bottom of its cells, by row: the cells
-/// of a row so aligned meet at one baseline (Excel 2019's PDF). Worked out once for a sheet's cells (the last asked
-/// for: a PDF paints them page by page).
-let private descentsCache : (obj * Dictionary<int, float>) option ref = ref None
-let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
+/// The largest baseline level of bottom-aligned text in a row. Screen uses GDI descent;
+/// print uses max(GDI descent, internal leading), measured at 96 dpi.
+let private descentsCache : (obj * obj * bool * Dictionary<int, float>) option ref = ref None
+let private rowDescentsOf (printing: bool) (model: SpreadsheetModel) : int -> float =
     let descents =
         match descentsCache.Value with
-        | Some (cells, known) when obj.ReferenceEquals(cells, model.Cells) -> known
+        | Some (cells, runs, forPrint, known) when obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(runs, model.RichRuns) && forPrint = printing -> known
         | _ ->
             let known = Dictionary<int, float>()
             // (A cell merged down over other rows holds its text at its block's top left.)
@@ -459,7 +458,9 @@ let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
                 match lines.TryGetValue key with
                 | true, d -> d
                 | _ ->
-                    let struct (_, d) = FontMetrics.lineOf face points bold italic
+                    let d =
+                        if printing then FontMetrics.printLevelPx face points bold italic
+                        else let struct (_, d) = FontMetrics.lineOf face points bold italic in d
                     lines.[key] <- d
                     d
             for KeyValue(addr, data) in model.Cells do
@@ -478,7 +479,7 @@ let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
                     match known.TryGetValue addr.Row with
                     | true, d when d >= most -> ()
                     | _ -> known.[addr.Row] <- most
-            descentsCache.Value <- Some (box model.Cells, known)
+            descentsCache.Value <- Some (box model.Cells, box model.RichRuns, printing, known)
             known
     fun row -> match descents.TryGetValue row with | true, d -> d | _ -> 0.0
 
@@ -486,7 +487,10 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (m
     let visible = visibleRange model viewport
     let padX = printPadXOf model
     let printing = printOffset.IsSome
-    let rowDescent = rowDescentsOf model
+    let normalPrintLevels =
+        if printing then FontMetrics.printNormalLevelsOf model.NormalFontName model.NormalFontSize
+        else None
+    let rowDescent = rowDescentsOf normalPrintLevels.IsSome model
     let cells = visibleCells model viewport
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.
@@ -859,15 +863,10 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (m
                     else [ displayText ]
                 let vAlign = look.VerticalAlign
                 let lineCount = lines.Length
-                // Where Excel 2019 prints each line (make-print-place-fixture.py "Place", the rowunit fixtures: 24 Normal
-                // fonts and 7 cell fonts in rows of 15 - 45 pt, from the grid's lines): at the bottom and in the middle laid
-                // out in the pixels of the screen and scaled as the row is (`PrintRowScale` dots a pixel) - at the bottom,
-                // the baseline (the row's largest descent of its text at the bottom + 1) px above the cell's bottom, every
-                // such cell of the row on that baseline, each line a line of its font (`FontMetrics.lineOf`) above the
-                // one below. At the top and in the middle, whatever the Normal font, by the font's own ascent and descent
-                // at its size: at the top 4.5 dots lower than that (Calibri 11 90.5 dots below the top, Arial 10 79.5,
-                // Segoe UI 10 91.5, under Calibri 11 and Segoe UI 10 alike), in the middle centred. Within a pixel of
-                // Excel's PDF.
+                // Print's bottom baseline is set from the Normal font's printer metrics, not the row's height
+                // scale: 4 + roundHalfUp(n * (p + 8) / (s + 1)) dots above the grid boundary, where n is the
+                // largest 96-dpi GDI baseline level in the row (at least Normal's s), and p its 600-dpi level.
+                // The other alignments and line pitches retain their existing geometry.
                 let lineBaseline =
                     let rowScale = (if model.PrintRowScale > 0.0 then model.PrintRowScale else 6.05) / 6.25
                     let struct (ownLine, ownDescent) = FontMetrics.lineOf format.FontName fontPt format.Bold format.Italic
@@ -877,7 +876,14 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (m
                         else
                             let below = float (lineCount - 1 - i) * ownLine * rowScale
                             match vAlign with
-                            | VAlignBottom -> height - (max ownDescent (rowDescent cell.Address.Row) + 1.0) * rowScale - below
+                            | VAlignBottom ->
+                                match normalPrintLevels with
+                                | Some (screenLevel, printerLevel) ->
+                                    let ownLevel = FontMetrics.printLevelPx format.FontName fontPt format.Bold format.Italic
+                                    let level = max screenLevel (max ownLevel (rowDescent cell.Address.Row))
+                                    let dots = 4.0 + System.Math.Floor (level * (printerLevel + 8.0) / (screenLevel + 1.0) + 0.5)
+                                    height - dots / 6.25 - below
+                                | None -> height - (max ownDescent (rowDescent cell.Address.Row) + 1.0) * rowScale - below
                             | VAlignTop -> -0.72
                             | VAlignMiddle -> -1e-6
                 let richRuns = Map.tryFind cell.Address model.RichRuns
