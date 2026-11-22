@@ -2468,7 +2468,13 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
     let labelColor = colorOf labelStyle "#FFFFFF"
     /// A label's lines no wider than `room`: broken at its spaces, a word too long for a line at its letters.
     let brokenTo (room: float) (label: string) : string list =
-        let fits (value: string) = widthOf labelStyle labelSize false value <= room
+        // (By the face's design advances, as Excel lays a chart's text out: "Osaka" 29.6 px of Calibri 9 pt fits a
+        // ring of 30.25, "0000iii" 32.5 does not.)
+        let ideal (value: string) =
+            match ExcelText.idealWidth (defaultArg (face labelStyle) "Calibri") false false labelSize value with
+            | Some width -> width
+            | None -> widthOf labelStyle labelSize false value
+        let fits (value: string) = ideal value <= room
         let rec letters (word: string) =
             if word = "" then []
             else
@@ -2515,14 +2521,17 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
                 let fill = (match color with Some given -> given | None -> colorAt node)
                 add (PPath (d, Some fill, 1.0, Some lineColor, lineWidth))
                 // (A label along its part's middle radius, reading outwards - turned over on the left half -, broken to
-                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e".)
+                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e"; left out
+                // where its lines and 4.5 pt are longer than the part's arc at its middle radius - build-sunburst-labels.vbs:
+                // two lines of 29.3 px in "Osaka / J" of 37.4 px kept, in "Osaka / I" of 33.6 left out; synthetic-chartex-
+                // looks' "Ameri / ca" (42.3) and "Rome" (20.8) kept, "Italy" (14.8) and "Madri / d" (31.2) left out.)
                 (match labelText node with
                  | Some label when sweep > 0.0 ->
                     let middle = at + sweep / 2.0
                     let lx, ly = point ((inner + outer) / 2.0) middle
-                    let lines = brokenTo (ring + 2.0) label
+                    let lines = brokenTo ring label
                     let arc = sweep * (inner + outer) / 2.0
-                    if not lines.IsEmpty && float lines.Length * labelLine <= arc then
+                    if not lines.IsEmpty && float lines.Length * labelLine + px 4.5 <= arc then
                         let degrees = middle * 180.0 / Math.PI
                         let turn = if degrees > 180.0 then degrees - 270.0 else degrees - 90.0
                         let across = turn * Math.PI / 180.0

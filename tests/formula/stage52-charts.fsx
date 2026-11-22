@@ -641,6 +641,16 @@ ok "Excel 2019: a sunburst of one level: a ring from half the radius (61 of 121 
 ok "Excel 2019: ... of three levels rings of a quarter of the radius, labels along their parts' radius"
     (sunPaths (zooScene 22) |> List.exists (fun (d, _) -> d.Contains "A 30.4") && allTexts (looksExScene 22).Items |> List.exists (fun (v, _, _, _, _, _, t) -> v = "Tokyo" && t < -10.0 && t > -80.0))
     (sprintf "%A" (allTexts (looksExScene 22).Items))
+// Sunburst labels (build-sunburst-labels.vbs: synthetic-sunburst-labels.xlsx; synthetic-chartex-looks' "Sunburst3"; Excel's
+// pictures): broken to the ring by the design advances ("Osaka" 29.6 px whole in a ring of 30.25, "0000iii" 32.5 broken), left
+// out where their lines and 4.5 pt are longer than the part's arc at its middle radius.
+let sunLabels = chartExBook "test-documents-excel/synthetic-sunburst-labels.xlsx"
+ok "Excel 2019: a sunburst label broken by the design advances: Osaka, 0000ii whole; 0000ii / i, Franc / e"
+    (hasAll (exTexts (sunLabels 1)) [ "Osaka"; "0000ii"; "i"; "Franc"; "e"; "Ab Cd" ] [ "Osak"; "0000iii" ]) (sprintf "%A" (exTexts (sunLabels 1)))
+ok "Excel 2019: ... \"Osaka / J\" (37.4 px of arc) .. \"Osaka / L\" kept, \"Osaka / I\" (33.6) and smaller left out"
+    (hasAll (exTexts (sunLabels 4)) [ "Big"; "J"; "K"; "L" ] [ "I"; "H"; "A " ]) (sprintf "%A" (exTexts (sunLabels 4)))
+ok "Excel 2019: ... synthetic-chartex-looks' Sunburst3: Osaka whole, Ameri / ca and Rome kept, Italy and Madri / d left out"
+    (hasAll (exTexts (looksExScene 22)) [ "Osaka"; "Ameri"; "ca"; "Rome"; "Tokyo" ] [ "Osak"; "Italy"; "Madri" ]) (sprintf "%A" (exTexts (looksExScene 22)))
 
 // Chart sheets (chartsheet-probe.ps1 on synthetic-chartsheets.xlsx, a window of 1898 x 787 px): the page less its
 // margins fitted to the window at a whole per cent (Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in
