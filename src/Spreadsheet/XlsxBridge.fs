@@ -82,7 +82,7 @@ let parseRangeClipped (maxRow: int) (maxCol: int) (range: string) : (int * int *
 /// The ranges of an sqref ("A1:A9 C3"), clipped.
 
 /// A pivot table of the reader as the model holds it (see Model.PivotLayout).
-let pivotLayout (pivot: XlsxReader.PivotTable) : PivotLayout option =
+let pivotLayoutStyled (styleElements: string -> TableStyles.TableStyleElement list) (pivot: XlsxReader.PivotTable) : PivotLayout option =
     parseRangeClipped 1048575 16383 pivot.Ref
     |> Option.map (fun (top, left, bottom, right) ->
         let nameOf (index: int) = if index < 0 then "" else (List.tryItem index pivot.CacheFieldNames |> Option.defaultValue "")
@@ -93,7 +93,83 @@ let pivotLayout (pivot: XlsxReader.PivotTable) : PivotLayout option =
           ColumnFields = pivot.ColumnFieldIndexes |> List.map nameOf
           DataFields = pivot.DataFields |> List.map (fun field -> field.Name)
           RowLines = pivot.RowLines |> List.map line
-          ColumnLines = pivot.ColumnLines |> List.map line })
+          ColumnLines = pivot.ColumnLines |> List.map line
+          Style =
+            let elements = pivot.StyleName |> Option.map styleElements |> Option.defaultValue []
+            let rowHeaders, columnHeaders, rowStripes, columnStripes, lastColumn = pivot.StyleOptions
+            Some { Elements = elements; ShowRowHeaders = rowHeaders; ShowColumnHeaders = columnHeaders
+                   ShowRowStripes = rowStripes; ShowColumnStripes = columnStripes; ShowLastColumn = lastColumn
+                   PageFields = pivot.PageFieldCount; RowFieldTabular = pivot.RowFieldTabular
+                   Compact = pivot.Compact; ShowHeaders = pivot.ShowHeaders } })
+
+/// The sparkline groups of a sheet's extensions (`<x14:sparklineGroups>` of its `<extLst>`, kept as text), their
+/// colours resolved against the workbook's theme (12 colours, `<color theme="N">`'s order).
+let sparklineGroupsOf (theme: string array) (extensions: string list) : SparklineGroup list =
+    let kids node = match node with XmlDsl.Element (_, _, children, _) -> children | _ -> []
+    let local (name: string) = match name.IndexOf ':' with -1 -> name | at -> name.Substring(at + 1)
+    let nameOf node = match node with XmlDsl.Element (name, _, _, _) -> local name | _ -> ""
+    let attr (name: string) node =
+        match node with
+        | XmlDsl.Element (_, attrs, _, _) -> attrs |> Map.tryPick (fun key value -> if key = name then Some value else None)
+        | _ -> None
+    let childNamed name node = kids node |> List.tryFind (fun c -> nameOf c = name)
+    let childrenNamed name node = kids node |> List.filter (fun c -> nameOf c = name)
+    let rec textOf node = kids node |> List.map (fun c -> match c with XmlDsl.Text s -> s | other -> textOf other) |> String.concat ""
+    let rec groupsIn node =
+        if nameOf node = "sparklineGroup" then [ node ] else kids node |> List.collect groupsIn
+    let number (text: string) =
+        match Double.TryParse(text, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture) with
+        | true, v -> Some v
+        | _ -> None
+    let colorOf (node: XmlDsl.XmlNode option) (fallback: string) =
+        match node with
+        | Some node ->
+            let tint = attr "tint" node |> Option.bind number |> Option.defaultValue 0.0
+            match attr "rgb" node, attr "theme" node |> Option.bind (fun t -> match Int32.TryParse t with | true, v -> Some v | _ -> None) with
+            | Some rgb, _ when rgb.Length >= 6 -> "#" + (XlsxReader.Xlsx.applyColorTint (rgb.Substring(rgb.Length - 6)) tint).TrimStart('#').ToUpperInvariant()
+            | _, Some index when index >= 0 && index < theme.Length -> "#" + (XlsxReader.Xlsx.applyColorTint theme.[index] tint).TrimStart('#').ToUpperInvariant()
+            | _ -> fallback
+        | None -> fallback
+    [ for xml in extensions do
+        if xml.Contains "sparklineGroup" then
+            let root = try Some (XmlDsl.parse xml) with _ -> None
+            match root with
+            | Some root ->
+                for group in groupsIn root do
+                    let on name = match attr name group with Some ("1" | "true") -> true | _ -> false
+                    let items =
+                        [ for list in childrenNamed "sparklines" group do
+                            for line in childrenNamed "sparkline" list do
+                                match childNamed "f" line |> Option.map textOf, childNamed "sqref" line |> Option.map textOf with
+                                | Some formula, Some sqref ->
+                                    match parseRangeClipped 1048575 16383 (sqref.Trim()) with
+                                    | Some (r, c, _, _) -> yield ({ Row = r; Col = c }, formula.Trim())
+                                    | None -> ()
+                                | _ -> () ]
+                    yield
+                        { Kind = attr "type" group |> Option.defaultValue "line"
+                          SeriesColor = colorOf (childNamed "colorSeries" group) "#376092"
+                          NegativeColor = colorOf (childNamed "colorNegative" group) "#D00000"
+                          AxisColor = colorOf (childNamed "colorAxis" group) "#000000"
+                          MarkersColor = colorOf (childNamed "colorMarkers" group) "#D00000"
+                          FirstColor = colorOf (childNamed "colorFirst" group) "#D00000"
+                          LastColor = colorOf (childNamed "colorLast" group) "#D00000"
+                          HighColor = colorOf (childNamed "colorHigh" group) "#D00000"
+                          LowColor = colorOf (childNamed "colorLow" group) "#D00000"
+                          Markers = on "markers"; High = on "high"; Low = on "low"; First = on "first"; Last = on "last"
+                          Negative = on "negative"; DisplayXAxis = on "displayXAxis"
+                          EmptyAs = attr "displayEmptyCellsAs" group |> Option.defaultValue "zero"
+                          LineWeight = attr "lineWeight" group |> Option.bind number |> Option.defaultValue 0.75
+                          MinAxis = attr "minAxisType" group |> Option.defaultValue "individual"
+                          MaxAxis = attr "maxAxisType" group |> Option.defaultValue "individual"
+                          ManualMin = attr "manualMin" group |> Option.bind number
+                          ManualMax = attr "manualMax" group |> Option.bind number
+                          RightToLeft = on "rightToLeft"
+                          Items = items }
+            | None -> () ]
+
+/// A pivot table of the reader as the model holds it, without its style.
+let pivotLayout (pivot: XlsxReader.PivotTable) : PivotLayout option = pivotLayoutStyled (fun _ -> []) pivot
 let private parseSqref (maxRow: int) (maxCol: int) (sqref: string) =
     sqref.Split([| ' ' |], StringSplitOptions.RemoveEmptyEntries)
     |> Array.choose (parseRangeClipped maxRow maxCol)
@@ -575,7 +651,7 @@ module Import =
         let hex (color: string option) = color |> Option.map (fun value -> "#" + value.TrimStart('#').ToUpperInvariant())
         let line (edge: XlsxReader.TableStyleLine option) : TableStyles.TableLine option =
             edge |> Option.map (fun edge -> { Style = edge.Style; Color = defaultArg (hex edge.Color) "#000000" })
-        match workbook.TableStyles |> List.tryFind (fun style -> style.Name = styleName && style.Table) with
+        match workbook.TableStyles |> List.tryFind (fun style -> style.Name = styleName && (style.Table || style.Pivot)) with
         | Some custom ->
             custom.Elements
             |> List.map (fun element ->
@@ -1249,7 +1325,9 @@ module Import =
                 ArrayMarks = arrayMarks
                 IgnoredErrors = sheet.Extras.IgnoredErrors
                 SheetProtected = sheet.Extras.Protected
-                Pivots = sheet.PivotTables |> List.choose pivotLayout }
+                Pivots = sheet.PivotTables |> List.choose (pivotLayoutStyled (tableStyleElements wb))
+                Sparklines =
+                    sparklineGroupsOf (if wb.ThemeColors.Length >= 10 then wb.ThemeColors else TableStyles.officeTheme) sheet.Extras.KeptCellExtensions }
             |> withAutoFilter wb sheet
         let model =
             if fittedRows.Count = 0 then model

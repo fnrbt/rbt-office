@@ -1,0 +1,1791 @@
+Compact	#	B4:G16	B2:G16	PivotStyleLight16
+Compact	A1		-	False	False	000000	-	-	-	-
+Compact	B1		-	False	False	000000	-	-	-	-
+Compact	C1		-	False	False	000000	-	-	-	-
+Compact	D1		-	False	False	000000	-	-	-	-
+Compact	E1		-	False	False	000000	-	-	-	-
+Compact	F1		-	False	False	000000	-	-	-	-
+Compact	G1		-	False	False	000000	-	-	-	-
+Compact	H1		-	False	False	000000	-	-	-	-
+Compact	A2		-	False	False	000000	-	-	-	-
+Compact	B2	Product	D9E1F2	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	C2	(All)	D9E1F2	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	D2		-	False	False	000000	-	-	-	-
+Compact	E2		-	False	False	000000	-	-	-	-
+Compact	F2		-	False	False	000000	-	-	-	-
+Compact	G2		-	False	False	000000	-	-	-	-
+Compact	H2		-	False	False	000000	-	-	-	-
+Compact	A3		-	False	False	000000	-	-	-	-
+Compact	B3		-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	C3		-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	D3		-	False	False	000000	-	-	-	-
+Compact	E3		-	False	False	000000	-	-	-	-
+Compact	F3		-	False	False	000000	-	-	-	-
+Compact	G3		-	False	False	000000	-	-	-	-
+Compact	H3		-	False	False	000000	-	-	-	-
+Compact	A4		-	False	False	000000	-	-	-	-
+Compact	B4	Sum of Sales	D9E1F2	True	False	000000	-	-	-	-
+Compact	C4	Column Labels	D9E1F2	True	False	000000	-	-	-	-
+Compact	D4		D9E1F2	True	False	000000	-	-	-	-
+Compact	E4		D9E1F2	True	False	000000	-	-	-	-
+Compact	F4		D9E1F2	True	False	000000	-	-	-	-
+Compact	G4		D9E1F2	True	False	000000	-	-	-	-
+Compact	H4		-	False	False	000000	-	-	-	-
+Compact	A5		-	False	False	000000	-	-	-	-
+Compact	B5	Row Labels	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	C5	East	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	D5	North	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	E5	South	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	F5	West	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	G5	Grand Total	D9E1F2	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	H5		-	False	False	000000	-	-	-	-
+Compact	A6		-	False	False	000000	-	-	-	-
+Compact	B6	2023	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	C6	3324	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	D6	4656	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	E6	3588	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	F6	2520	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	G6	14088	-	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Compact	H6		-	False	False	000000	-	-	-	-
+Compact	A7		-	False	False	000000	-	-	-	-
+Compact	B7	Q1	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	C7	633	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	D7	966	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	E7	1299	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	F7	432	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	G7	3330	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	H7		-	False	False	000000	-	-	-	-
+Compact	A8		-	False	False	000000	-	-	-	-
+Compact	B8	Q2	-	False	False	000000	-	-	-	-
+Compact	C8	765	-	False	False	000000	-	-	-	-
+Compact	D8	1098	-	False	False	000000	-	-	-	-
+Compact	E8	1031	-	False	False	000000	-	-	-	-
+Compact	F8	564	-	False	False	000000	-	-	-	-
+Compact	G8	3458	-	False	False	000000	-	-	-	-
+Compact	H8		-	False	False	000000	-	-	-	-
+Compact	A9		-	False	False	000000	-	-	-	-
+Compact	B9	Q3	-	False	False	000000	-	-	-	-
+Compact	C9	897	-	False	False	000000	-	-	-	-
+Compact	D9	1230	-	False	False	000000	-	-	-	-
+Compact	E9	763	-	False	False	000000	-	-	-	-
+Compact	F9	696	-	False	False	000000	-	-	-	-
+Compact	G9	3586	-	False	False	000000	-	-	-	-
+Compact	H9		-	False	False	000000	-	-	-	-
+Compact	A10		-	False	False	000000	-	-	-	-
+Compact	B10	Q4	-	False	False	000000	-	-	-	-
+Compact	C10	1029	-	False	False	000000	-	-	-	-
+Compact	D10	1362	-	False	False	000000	-	-	-	-
+Compact	E10	495	-	False	False	000000	-	-	-	-
+Compact	F10	828	-	False	False	000000	-	-	-	-
+Compact	G10	3714	-	False	False	000000	-	-	-	-
+Compact	H10		-	False	False	000000	-	-	-	-
+Compact	A11		-	False	False	000000	-	-	-	-
+Compact	B11	2024	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	C11	4236	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	D11	2768	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	E11	3300	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	F11	4632	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	G11	14936	-	True	False	000000	-	1/2/8EA9DB	-	-
+Compact	H11		-	False	False	000000	-	-	-	-
+Compact	A12		-	False	False	000000	-	-	-	-
+Compact	B12	Q1	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	C12	1161	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	D12	1094	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	E12	627	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	F12	960	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	G12	3842	-	False	False	000000	1/2/8EA9DB	-	-	-
+Compact	H12		-	False	False	000000	-	-	-	-
+Compact	A13		-	False	False	000000	-	-	-	-
+Compact	B13	Q2	-	False	False	000000	-	-	-	-
+Compact	C13	1293	-	False	False	000000	-	-	-	-
+Compact	D13	426	-	False	False	000000	-	-	-	-
+Compact	E13	759	-	False	False	000000	-	-	-	-
+Compact	F13	1092	-	False	False	000000	-	-	-	-
+Compact	G13	3570	-	False	False	000000	-	-	-	-
+Compact	H13		-	False	False	000000	-	-	-	-
+Compact	A14		-	False	False	000000	-	-	-	-
+Compact	B14	Q3	-	False	False	000000	-	-	-	-
+Compact	C14	1025	-	False	False	000000	-	-	-	-
+Compact	D14	558	-	False	False	000000	-	-	-	-
+Compact	E14	891	-	False	False	000000	-	-	-	-
+Compact	F14	1224	-	False	False	000000	-	-	-	-
+Compact	G14	3698	-	False	False	000000	-	-	-	-
+Compact	H14		-	False	False	000000	-	-	-	-
+Compact	A15		-	False	False	000000	-	-	-	-
+Compact	B15	Q4	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	C15	757	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	D15	690	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	E15	1023	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	F15	1356	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	G15	3826	-	False	False	000000	-	1/2/8EA9DB	-	-
+Compact	H15		-	False	False	000000	-	-	-	-
+Compact	A16		-	False	False	000000	-	-	-	-
+Compact	B16	Grand Total	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	C16	7560	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	D16	7424	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	E16	6888	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	F16	7152	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	G16	29024	D9E1F2	True	False	000000	1/2/8EA9DB	-	-	-
+Compact	H16		-	False	False	000000	-	-	-	-
+Compact	A17		-	False	False	000000	-	-	-	-
+Compact	B17		-	False	False	000000	-	-	-	-
+Compact	C17		-	False	False	000000	-	-	-	-
+Compact	D17		-	False	False	000000	-	-	-	-
+Compact	E17		-	False	False	000000	-	-	-	-
+Compact	F17		-	False	False	000000	-	-	-	-
+Compact	G17		-	False	False	000000	-	-	-	-
+Compact	H17		-	False	False	000000	-	-	-	-
+Banded	#	B4:G16	B2:G16	PivotStyleMedium9
+Banded	A1		-	False	False	000000	-	-	-	-
+Banded	B1		-	False	False	000000	-	-	-	-
+Banded	C1		-	False	False	000000	-	-	-	-
+Banded	D1		-	False	False	000000	-	-	-	-
+Banded	E1		-	False	False	000000	-	-	-	-
+Banded	F1		-	False	False	000000	-	-	-	-
+Banded	G1		-	False	False	000000	-	-	-	-
+Banded	H1		-	False	False	000000	-	-	-	-
+Banded	A2		-	False	False	000000	-	-	-	-
+Banded	B2	Product	D9E1F2	False	False	000000	-	-	-	-
+Banded	C2	(All)	D9E1F2	False	False	000000	-	-	-	-
+Banded	D2		-	False	False	000000	-	-	-	-
+Banded	E2		-	False	False	000000	-	-	-	-
+Banded	F2		-	False	False	000000	-	-	-	-
+Banded	G2		-	False	False	000000	-	-	-	-
+Banded	H2		-	False	False	000000	-	-	-	-
+Banded	A3		-	False	False	000000	-	-	-	-
+Banded	B3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	C3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	D3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	E3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	F3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	G3		-	False	False	000000	-	1/-4138/305496	-	-
+Banded	H3		-	False	False	000000	-	-	-	-
+Banded	A4		-	False	False	000000	-	-	-	-
+Banded	B4	Sum of Sales	4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	C4	Column Labels	4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	D4		4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	E4		4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	F4		4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	G4		4472C4	True	False	FFFFFF	1/-4138/305496	-	-	-
+Banded	H4		-	False	False	000000	-	-	-	-
+Banded	A5		-	False	False	000000	-	-	-	-
+Banded	B5	Row Labels	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	C5	East	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	D5	North	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	E5	South	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	F5	West	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	G5	Grand Total	4472C4	True	False	FFFFFF	-	1/2/8EA9DB	-	-
+Banded	H5		-	False	False	000000	-	-	-	-
+Banded	A6		-	False	False	000000	-	-	-	-
+Banded	B6	2023	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C6	3324	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D6	4656	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E6	3588	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F6	2520	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G6	14088	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H6		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A7		-	False	False	000000	-	-	-	-
+Banded	B7	Q1	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C7	633	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D7	966	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E7	1299	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F7	432	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G7	3330	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H7		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A8		-	False	False	000000	-	-	-	-
+Banded	B8	Q2	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C8	765	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D8	1098	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E8	1031	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F8	564	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G8	3458	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H8		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A9		-	False	False	000000	-	-	-	-
+Banded	B9	Q3	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C9	897	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D9	1230	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E9	763	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F9	696	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G9	3586	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H9		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A10		-	False	False	000000	-	-	-	-
+Banded	B10	Q4	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C10	1029	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D10	1362	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E10	495	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F10	828	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G10	3714	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H10		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A11		-	False	False	000000	-	-	-	-
+Banded	B11	2024	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C11	4236	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D11	2768	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E11	3300	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F11	4632	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G11	14936	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H11		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A12		-	False	False	000000	-	-	-	-
+Banded	B12	Q1	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C12	1161	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D12	1094	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E12	627	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F12	960	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G12	3842	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H12		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A13		-	False	False	000000	-	-	-	-
+Banded	B13	Q2	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C13	1293	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D13	426	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E13	759	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F13	1092	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G13	3570	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H13		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A14		-	False	False	000000	-	-	-	-
+Banded	B14	Q3	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	1/2/8EA9DB
+Banded	C14	1025	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	D14	558	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	E14	891	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	F14	1224	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	G14	3698	-	False	False	000000	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB	1/2/8EA9DB
+Banded	H14		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A15		-	False	False	000000	-	-	-	-
+Banded	B15	Q4	-	False	False	000000	1/2/8EA9DB	1/2/305496	-	1/2/8EA9DB
+Banded	C15	757	-	False	False	000000	1/2/8EA9DB	1/2/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	D15	690	-	False	False	000000	1/2/8EA9DB	1/2/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	E15	1023	-	False	False	000000	1/2/8EA9DB	1/2/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	F15	1356	-	False	False	000000	1/2/8EA9DB	1/2/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	G15	3826	-	False	False	000000	1/2/8EA9DB	1/2/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	H15		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A16		-	False	False	000000	-	-	-	-
+Banded	B16	Grand Total	-	True	False	000000	1/2/305496	1/-4138/305496	-	1/2/8EA9DB
+Banded	C16	7560	-	True	False	000000	1/2/305496	1/-4138/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	D16	7424	-	True	False	000000	1/2/305496	1/-4138/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	E16	6888	-	True	False	000000	1/2/305496	1/-4138/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	F16	7152	-	True	False	000000	1/2/305496	1/-4138/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	G16	29024	-	True	False	000000	1/2/305496	1/-4138/305496	1/2/8EA9DB	1/2/8EA9DB
+Banded	H16		-	False	False	000000	-	-	1/2/8EA9DB	-
+Banded	A17		-	False	False	000000	-	-	-	-
+Banded	B17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	C17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	D17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	E17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	F17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	G17		-	False	False	000000	1/-4138/305496	-	-	-
+Banded	H17		-	False	False	000000	-	-	-	-
+Outline	#	B4:F26	B4:F26	PivotStyleMedium2
+Outline	A3		-	False	False	000000	-	-	-	-
+Outline	B3		-	False	False	000000	-	-	-	-
+Outline	C3		-	False	False	000000	-	-	-	-
+Outline	D3		-	False	False	000000	-	-	-	-
+Outline	E3		-	False	False	000000	-	-	-	-
+Outline	F3		-	False	False	000000	-	-	-	-
+Outline	G3		-	False	False	000000	-	-	-	-
+Outline	A4		-	False	False	000000	-	-	-	-
+Outline	B4	Sum of Sales	305496	True	False	FFFFFF	-	1/2/305496	-	-
+Outline	C4		305496	True	False	FFFFFF	-	1/2/305496	-	-
+Outline	D4	Year	305496	False	False	FFFFFF	-	1/2/305496	-	-
+Outline	E4		305496	False	False	FFFFFF	-	1/2/305496	-	-
+Outline	F4		305496	False	False	FFFFFF	-	1/2/305496	-	-
+Outline	G4		-	False	False	000000	-	-	-	-
+Outline	A5		-	False	False	000000	-	-	-	-
+Outline	B5	Region	305496	False	False	FFFFFF	1/2/305496	1/2/D9E1F2	-	-
+Outline	C5	Product	305496	False	False	FFFFFF	1/2/305496	1/2/D9E1F2	-	-
+Outline	D5	2023	305496	False	False	FFFFFF	1/2/305496	1/2/B4C6E7	-	-
+Outline	E5	2024	305496	False	False	FFFFFF	1/2/305496	1/2/B4C6E7	-	-
+Outline	F5	Grand Total	305496	False	False	FFFFFF	1/2/305496	1/2/D9E1F2	-	-
+Outline	G5		-	False	False	000000	-	-	-	-
+Outline	A6		-	False	False	000000	-	-	-	-
+Outline	B6	East	8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C6		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D6		8EA9DB	False	False	FFFFFF	1/2/B4C6E7	1/2/D9E1F2	-	-
+Outline	E6		8EA9DB	False	False	FFFFFF	1/2/B4C6E7	1/2/D9E1F2	-	-
+Outline	F6		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G6		-	False	False	000000	-	-	-	-
+Outline	A7		-	False	False	000000	-	-	-	-
+Outline	B7		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C7	Apples	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D7	960	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E7	1664	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F7	2624	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G7		-	False	False	000000	-	-	-	-
+Outline	A8		-	False	False	000000	-	-	-	-
+Outline	B8		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C8	Pears	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D8	1108	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E8	1412	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F8	2520	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G8		-	False	False	000000	-	-	-	-
+Outline	A9		-	False	False	000000	-	-	-	-
+Outline	B9		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C9	Plums	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D9	1256	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E9	1160	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F9	2416	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G9		-	False	False	000000	-	-	-	-
+Outline	A10		-	False	False	000000	-	-	-	-
+Outline	B10	East Total	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C10		8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D10	3324	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E10	4236	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F10	7560	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G10		-	False	False	000000	-	-	-	-
+Outline	A11		-	False	False	000000	-	-	-	-
+Outline	B11	North	8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C11		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D11		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E11		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F11		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G11		-	False	False	000000	-	-	-	-
+Outline	A12		-	False	False	000000	-	-	-	-
+Outline	B12		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C12	Apples	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D12	1404	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E12	908	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F12	2312	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G12		-	False	False	000000	-	-	-	-
+Outline	A13		-	False	False	000000	-	-	-	-
+Outline	B13		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C13	Pears	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D13	1552	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E13	1056	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F13	2608	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G13		-	False	False	000000	-	-	-	-
+Outline	A14		-	False	False	000000	-	-	-	-
+Outline	B14		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C14	Plums	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D14	1700	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E14	804	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F14	2504	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G14		-	False	False	000000	-	-	-	-
+Outline	A15		-	False	False	000000	-	-	-	-
+Outline	B15	North Total	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C15		8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D15	4656	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E15	2768	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F15	7424	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G15		-	False	False	000000	-	-	-	-
+Outline	A16		-	False	False	000000	-	-	-	-
+Outline	B16	South	8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C16		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D16		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E16		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F16		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G16		-	False	False	000000	-	-	-	-
+Outline	A17		-	False	False	000000	-	-	-	-
+Outline	B17		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C17	Apples	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D17	1448	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E17	952	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F17	2400	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G17		-	False	False	000000	-	-	-	-
+Outline	A18		-	False	False	000000	-	-	-	-
+Outline	B18		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C18	Pears	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D18	1196	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E18	1100	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F18	2296	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G18		-	False	False	000000	-	-	-	-
+Outline	A19		-	False	False	000000	-	-	-	-
+Outline	B19		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C19	Plums	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D19	944	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E19	1248	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F19	2192	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G19		-	False	False	000000	-	-	-	-
+Outline	A20		-	False	False	000000	-	-	-	-
+Outline	B20	South Total	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C20		8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D20	3588	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E20	3300	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F20	6888	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G20		-	False	False	000000	-	-	-	-
+Outline	A21		-	False	False	000000	-	-	-	-
+Outline	B21	West	8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C21		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D21		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E21		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F21		8EA9DB	False	False	FFFFFF	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G21		-	False	False	000000	-	-	-	-
+Outline	A22		-	False	False	000000	-	-	-	-
+Outline	B22		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C22	Apples	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D22	692	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E22	1396	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F22	2088	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G22		-	False	False	000000	-	-	-	-
+Outline	A23		-	False	False	000000	-	-	-	-
+Outline	B23		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C23	Pears	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D23	840	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E23	1544	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F23	2384	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G23		-	False	False	000000	-	-	-	-
+Outline	A24		-	False	False	000000	-	-	-	-
+Outline	B24		-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	C24	Plums	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	D24	988	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	E24	1692	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	F24	2680	-	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Outline	G24		-	False	False	000000	-	-	-	-
+Outline	A25		-	False	False	000000	-	-	-	-
+Outline	B25	West Total	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	-4119/4/305496	-	-
+Outline	C25		8EA9DB	True	False	FFFFFF	1/2/D9E1F2	-4119/4/305496	-	-
+Outline	D25	2520	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	-4119/4/305496	-	-
+Outline	E25	4632	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	-4119/4/305496	-	-
+Outline	F25	7152	8EA9DB	True	False	FFFFFF	1/2/D9E1F2	-4119/4/305496	-	-
+Outline	G25		-	False	False	000000	-	-	-	-
+Outline	A26		-	False	False	000000	-	-	-	-
+Outline	B26	Grand Total	-	True	False	000000	-4119/4/305496	-	-	-
+Outline	C26		-	True	False	000000	-4119/4/305496	-	-	-
+Outline	D26	14088	-	True	False	000000	-4119/4/305496	-	-	-
+Outline	E26	14936	-	True	False	000000	-4119/4/305496	-	-	-
+Outline	F26	29024	-	True	False	000000	-4119/4/305496	-	-	-
+Outline	G26		-	False	False	000000	-	-	-	-
+Outline	A27		-	False	False	000000	-	-	-	-
+Outline	B27		-	False	False	000000	-	-	-	-
+Outline	C27		-	False	False	000000	-	-	-	-
+Outline	D27		-	False	False	000000	-	-	-	-
+Outline	E27		-	False	False	000000	-	-	-	-
+Outline	F27		-	False	False	000000	-	-	-	-
+Outline	G27		-	False	False	000000	-	-	-	-
+Tabular	#	B4:E21	B4:E21	PivotStyleDark2
+Tabular	A3		-	False	False	000000	-	-	-	-
+Tabular	B3		-	False	False	000000	-	-	-	-
+Tabular	C3		-	False	False	000000	-	-	-	-
+Tabular	D3		-	False	False	000000	-	-	-	-
+Tabular	E3		-	False	False	000000	-	-	-	-
+Tabular	F3		-	False	False	000000	-	-	-	-
+Tabular	A4		-	False	False	000000	-	-	-	-
+Tabular	B4	Region	203764	True	False	FFFFFF	-	1/2/4472C4	-	-
+Tabular	C4	Product	203764	True	False	FFFFFF	-	1/2/4472C4	-	-
+Tabular	D4	Sum of Sales	203764	True	False	FFFFFF	-	1/2/4472C4	-	-
+Tabular	E4	Sum of Units	203764	True	False	FFFFFF	-	1/2/4472C4	-	-
+Tabular	F4		-	False	False	000000	-	-	-	-
+Tabular	A5		-	False	False	000000	-	-	-	-
+Tabular	B5	East	D9E1F2	True	False	000000	1/2/4472C4	1/2/D9E1F2	-	-
+Tabular	C5	Apples	B4C6E7	False	False	000000	1/2/4472C4	1/2/D9E1F2	-	-
+Tabular	D5	2624	B4C6E7	False	False	000000	1/2/4472C4	1/2/D9E1F2	-	-
+Tabular	E5	84	B4C6E7	False	False	000000	1/2/4472C4	1/2/D9E1F2	-	-
+Tabular	F5		-	False	False	000000	-	-	-	-
+Tabular	A6		-	False	False	000000	-	-	-	-
+Tabular	B6		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	C6	Pears	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D6	2520	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E6	108	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F6		-	False	False	000000	-	-	-	-
+Tabular	A7		-	False	False	000000	-	-	-	-
+Tabular	B7		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/8EA9DB	-	-
+Tabular	C7	Plums	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D7	2416	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E7	72	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F7		-	False	False	000000	-	-	-	-
+Tabular	A8		-	False	False	000000	-	-	-	-
+Tabular	B8	East Total	B4C6E7	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Tabular	C8		B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D8	7560	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E8	264	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F8		-	False	False	000000	-	-	-	-
+Tabular	A9		-	False	False	000000	-	-	-	-
+Tabular	B9	North	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/D9E1F2	-	-
+Tabular	C9	Apples	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D9	2312	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E9	76	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F9		-	False	False	000000	-	-	-	-
+Tabular	A10		-	False	False	000000	-	-	-	-
+Tabular	B10		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	C10	Pears	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D10	2608	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E10	100	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F10		-	False	False	000000	-	-	-	-
+Tabular	A11		-	False	False	000000	-	-	-	-
+Tabular	B11		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/8EA9DB	-	-
+Tabular	C11	Plums	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D11	2504	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E11	84	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F11		-	False	False	000000	-	-	-	-
+Tabular	A12		-	False	False	000000	-	-	-	-
+Tabular	B12	North Total	B4C6E7	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Tabular	C12		B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D12	7424	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E12	260	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F12		-	False	False	000000	-	-	-	-
+Tabular	A13		-	False	False	000000	-	-	-	-
+Tabular	B13	South	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/D9E1F2	-	-
+Tabular	C13	Apples	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D13	2400	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E13	68	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F13		-	False	False	000000	-	-	-	-
+Tabular	A14		-	False	False	000000	-	-	-	-
+Tabular	B14		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	C14	Pears	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D14	2296	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E14	92	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F14		-	False	False	000000	-	-	-	-
+Tabular	A15		-	False	False	000000	-	-	-	-
+Tabular	B15		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/8EA9DB	-	-
+Tabular	C15	Plums	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D15	2192	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E15	76	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F15		-	False	False	000000	-	-	-	-
+Tabular	A16		-	False	False	000000	-	-	-	-
+Tabular	B16	South Total	B4C6E7	True	False	000000	1/2/8EA9DB	1/2/8EA9DB	-	-
+Tabular	C16		B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D16	6888	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E16	236	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F16		-	False	False	000000	-	-	-	-
+Tabular	A17		-	False	False	000000	-	-	-	-
+Tabular	B17	West	D9E1F2	True	False	000000	1/2/8EA9DB	1/2/D9E1F2	-	-
+Tabular	C17	Apples	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D17	2088	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E17	100	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F17		-	False	False	000000	-	-	-	-
+Tabular	A18		-	False	False	000000	-	-	-	-
+Tabular	B18		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	C18	Pears	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D18	2384	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E18	84	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F18		-	False	False	000000	-	-	-	-
+Tabular	A19		-	False	False	000000	-	-	-	-
+Tabular	B19		D9E1F2	True	False	000000	1/2/D9E1F2	1/2/8EA9DB	-	-
+Tabular	C19	Plums	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D19	2680	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E19	68	B4C6E7	False	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F19		-	False	False	000000	-	-	-	-
+Tabular	A20		-	False	False	000000	-	-	-	-
+Tabular	B20	West Total	B4C6E7	True	False	000000	1/2/8EA9DB	1/2/D9E1F2	-	-
+Tabular	C20		B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	D20	7152	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	E20	252	B4C6E7	True	False	000000	1/2/D9E1F2	1/2/D9E1F2	-	-
+Tabular	F20		-	False	False	000000	-	-	-	-
+Tabular	A21		-	False	False	000000	-	-	-	-
+Tabular	B21	Grand Total	203764	True	False	FFFFFF	1/2/D9E1F2	-	-	-
+Tabular	C21		203764	True	False	FFFFFF	1/2/D9E1F2	-	-	-
+Tabular	D21	29024	203764	True	False	FFFFFF	1/2/D9E1F2	-	-	-
+Tabular	E21	1012	203764	True	False	FFFFFF	1/2/D9E1F2	-	-	-
+Tabular	F21		-	False	False	000000	-	-	-	-
+Tabular	A22		-	False	False	000000	-	-	-	-
+Tabular	B22		-	False	False	000000	-	-	-	-
+Tabular	C22		-	False	False	000000	-	-	-	-
+Tabular	D22		-	False	False	000000	-	-	-	-
+Tabular	E22		-	False	False	000000	-	-	-	-
+Tabular	F22		-	False	False	000000	-	-	-	-
+Flat	#	B4:C8	B4:C8	PivotStyleLight8
+Flat	A3		-	False	False	000000	-	-	-	-
+Flat	B3		-	False	False	000000	-	-	-	-
+Flat	C3		-	False	False	000000	-	-	-	-
+Flat	D3		-	False	False	000000	-	-	-	-
+Flat	A4		-	False	False	000000	-	-	-	-
+Flat	B4	Row Labels	-	False	False	000000	-	1/2/D9D9D9	-	-
+Flat	C4	Sum of Sales	-	False	False	000000	-	1/2/D9D9D9	-	-
+Flat	D4		-	False	False	000000	-	-	-	-
+Flat	A5		-	False	False	000000	-	-	-	-
+Flat	B5	Apples	-	False	False	000000	1/2/D9D9D9	1/2/D9D9D9	-	-
+Flat	C5	9424	-	False	False	000000	1/2/D9D9D9	1/2/D9D9D9	-	-
+Flat	D5		-	False	False	000000	-	-	-	-
+Flat	A6		-	False	False	000000	-	-	-	-
+Flat	B6	Pears	-	False	False	000000	1/2/D9D9D9	1/2/D9D9D9	-	-
+Flat	C6	9808	-	False	False	000000	1/2/D9D9D9	1/2/D9D9D9	-	-
+Flat	D6		-	False	False	000000	-	-	-	-
+Flat	A7		-	False	False	000000	-	-	-	-
+Flat	B7	Plums	-	False	False	000000	1/2/D9D9D9	1/-4138/808080	-	-
+Flat	C7	9792	-	False	False	000000	1/2/D9D9D9	1/-4138/808080	-	-
+Flat	D7		-	False	False	000000	-	-	-	-
+Flat	A8		-	False	False	000000	-	-	-	1/-4138/808080
+Flat	B8	Grand Total	-	True	False	000000	1/-4138/808080	1/-4138/808080	1/-4138/808080	-
+Flat	C8	29024	-	True	False	000000	1/-4138/808080	1/-4138/808080	-	1/-4138/808080
+Flat	D8		-	False	False	000000	-	-	1/-4138/808080	-
+Flat	A9		-	False	False	000000	-	-	-	-
+Flat	B9		-	False	False	000000	1/-4138/808080	-	-	-
+Flat	C9		-	False	False	000000	1/-4138/808080	-	-	-
+Flat	D9		-	False	False	000000	-	-	-	-
+Deep	#	B4:C69	B2:C69	PivotStyleMedium4
+Deep	A1		-	False	False	000000	-	-	-	-
+Deep	B1		-	False	False	000000	-	1/2/EDEDED	-	-
+Deep	C1		-	False	False	000000	-	1/2/EDEDED	-	-
+Deep	D1		-	False	False	000000	-	-	-	-
+Deep	A2		-	False	False	000000	-	-	-	-
+Deep	B2	Year	-	False	False	000000	1/2/EDEDED	1/2/EDEDED	-	-
+Deep	C2	(All)	-	False	False	000000	1/2/EDEDED	1/2/EDEDED	-	-
+Deep	D2		-	False	False	000000	-	-	-	-
+Deep	A3		-	False	False	000000	-	-	-	-
+Deep	B3		-	False	False	000000	1/2/EDEDED	-	-	-
+Deep	C3		-	False	False	000000	1/2/EDEDED	-	-	-
+Deep	D3		-	False	False	000000	-	-	-	-
+Deep	A4		-	False	False	000000	-	-	-	-
+Deep	B4	Row Labels	7B7B7B	False	False	FFFFFF	-	1/2/7B7B7B	-	-
+Deep	C4	Sum of Sales	7B7B7B	False	False	FFFFFF	-	1/2/7B7B7B	-	-
+Deep	D4		-	False	False	000000	-	-	-	-
+Deep	A5		-	False	False	000000	-	-	-	-
+Deep	B5	East	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	C5	7560	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	D5		-	False	False	000000	-	-	-	-
+Deep	A6		-	False	False	000000	-	-	-	-
+Deep	B6	Apples	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	C6	2624	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	D6		-	False	False	000000	-	-	-	-
+Deep	A7		-	False	False	000000	-	-	-	-
+Deep	B7	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C7	524	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D7		-	False	False	000000	-	-	-	-
+Deep	A8		-	False	False	000000	-	-	-	-
+Deep	B8	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C8	612	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D8		-	False	False	000000	-	-	-	-
+Deep	A9		-	False	False	000000	-	-	-	-
+Deep	B9	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C9	700	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D9		-	False	False	000000	-	-	-	-
+Deep	A10		-	False	False	000000	-	-	-	-
+Deep	B10	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C10	788	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D10		-	False	False	000000	-	-	-	-
+Deep	A11		-	False	False	000000	-	-	-	-
+Deep	B11	Pears	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	C11	2520	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	D11		-	False	False	000000	-	-	-	-
+Deep	A12		-	False	False	000000	-	-	-	-
+Deep	B12	Q1	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	C12	598	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	D12		-	False	False	000000	-	-	-	-
+Deep	A13		-	False	False	000000	-	-	-	-
+Deep	B13	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C13	686	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D13		-	False	False	000000	-	-	-	-
+Deep	A14		-	False	False	000000	-	-	-	-
+Deep	B14	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C14	774	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D14		-	False	False	000000	-	-	-	-
+Deep	A15		-	False	False	000000	-	-	-	-
+Deep	B15	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C15	462	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D15		-	False	False	000000	-	-	-	-
+Deep	A16		-	False	False	000000	-	-	-	-
+Deep	B16	Plums	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C16	2416	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D16		-	False	False	000000	-	-	-	-
+Deep	A17		-	False	False	000000	-	-	-	-
+Deep	B17	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C17	672	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D17		-	False	False	000000	-	-	-	-
+Deep	A18		-	False	False	000000	-	-	-	-
+Deep	B18	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C18	760	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D18		-	False	False	000000	-	-	-	-
+Deep	A19		-	False	False	000000	-	-	-	-
+Deep	B19	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C19	448	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D19		-	False	False	000000	-	-	-	-
+Deep	A20		-	False	False	000000	-	-	-	-
+Deep	B20	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C20	536	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D20		-	False	False	000000	-	-	-	-
+Deep	A21		-	False	False	000000	-	-	-	-
+Deep	B21	North	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	C21	7424	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	D21		-	False	False	000000	-	-	-	-
+Deep	A22		-	False	False	000000	-	-	-	-
+Deep	B22	Apples	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	C22	2312	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	D22		-	False	False	000000	-	-	-	-
+Deep	A23		-	False	False	000000	-	-	-	-
+Deep	B23	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C23	746	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D23		-	False	False	000000	-	-	-	-
+Deep	A24		-	False	False	000000	-	-	-	-
+Deep	B24	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C24	434	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D24		-	False	False	000000	-	-	-	-
+Deep	A25		-	False	False	000000	-	-	-	-
+Deep	B25	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C25	522	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D25		-	False	False	000000	-	-	-	-
+Deep	A26		-	False	False	000000	-	-	-	-
+Deep	B26	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C26	610	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D26		-	False	False	000000	-	-	-	-
+Deep	A27		-	False	False	000000	-	-	-	-
+Deep	B27	Pears	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	C27	2608	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	D27		-	False	False	000000	-	-	-	-
+Deep	A28		-	False	False	000000	-	-	-	-
+Deep	B28	Q1	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	C28	820	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	D28		-	False	False	000000	-	-	-	-
+Deep	A29		-	False	False	000000	-	-	-	-
+Deep	B29	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C29	508	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D29		-	False	False	000000	-	-	-	-
+Deep	A30		-	False	False	000000	-	-	-	-
+Deep	B30	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C30	596	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D30		-	False	False	000000	-	-	-	-
+Deep	A31		-	False	False	000000	-	-	-	-
+Deep	B31	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C31	684	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D31		-	False	False	000000	-	-	-	-
+Deep	A32		-	False	False	000000	-	-	-	-
+Deep	B32	Plums	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C32	2504	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D32		-	False	False	000000	-	-	-	-
+Deep	A33		-	False	False	000000	-	-	-	-
+Deep	B33	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C33	494	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D33		-	False	False	000000	-	-	-	-
+Deep	A34		-	False	False	000000	-	-	-	-
+Deep	B34	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C34	582	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D34		-	False	False	000000	-	-	-	-
+Deep	A35		-	False	False	000000	-	-	-	-
+Deep	B35	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C35	670	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D35		-	False	False	000000	-	-	-	-
+Deep	A36		-	False	False	000000	-	-	-	-
+Deep	B36	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C36	758	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D36		-	False	False	000000	-	-	-	-
+Deep	A37		-	False	False	000000	-	-	-	-
+Deep	B37	South	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	C37	6888	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	D37		-	False	False	000000	-	-	-	-
+Deep	A38		-	False	False	000000	-	-	-	-
+Deep	B38	Apples	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	C38	2400	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	D38		-	False	False	000000	-	-	-	-
+Deep	A39		-	False	False	000000	-	-	-	-
+Deep	B39	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C39	568	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D39		-	False	False	000000	-	-	-	-
+Deep	A40		-	False	False	000000	-	-	-	-
+Deep	B40	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C40	656	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D40		-	False	False	000000	-	-	-	-
+Deep	A41		-	False	False	000000	-	-	-	-
+Deep	B41	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C41	744	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D41		-	False	False	000000	-	-	-	-
+Deep	A42		-	False	False	000000	-	-	-	-
+Deep	B42	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C42	432	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D42		-	False	False	000000	-	-	-	-
+Deep	A43		-	False	False	000000	-	-	-	-
+Deep	B43	Pears	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	C43	2296	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	D43		-	False	False	000000	-	-	-	-
+Deep	A44		-	False	False	000000	-	-	-	-
+Deep	B44	Q1	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	C44	642	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	D44		-	False	False	000000	-	-	-	-
+Deep	A45		-	False	False	000000	-	-	-	-
+Deep	B45	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C45	730	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D45		-	False	False	000000	-	-	-	-
+Deep	A46		-	False	False	000000	-	-	-	-
+Deep	B46	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C46	418	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D46		-	False	False	000000	-	-	-	-
+Deep	A47		-	False	False	000000	-	-	-	-
+Deep	B47	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C47	506	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D47		-	False	False	000000	-	-	-	-
+Deep	A48		-	False	False	000000	-	-	-	-
+Deep	B48	Plums	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C48	2192	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D48		-	False	False	000000	-	-	-	-
+Deep	A49		-	False	False	000000	-	-	-	-
+Deep	B49	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C49	716	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D49		-	False	False	000000	-	-	-	-
+Deep	A50		-	False	False	000000	-	-	-	-
+Deep	B50	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C50	404	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D50		-	False	False	000000	-	-	-	-
+Deep	A51		-	False	False	000000	-	-	-	-
+Deep	B51	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C51	492	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D51		-	False	False	000000	-	-	-	-
+Deep	A52		-	False	False	000000	-	-	-	-
+Deep	B52	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C52	580	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D52		-	False	False	000000	-	-	-	-
+Deep	A53		-	False	False	000000	-	-	-	-
+Deep	B53	West	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	C53	7152	C9C9C9	False	False	FFFFFF	1/2/7B7B7B	1/2/EDEDED	-	-
+Deep	D53		-	False	False	000000	-	-	-	-
+Deep	A54		-	False	False	000000	-	-	-	-
+Deep	B54	Apples	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	C54	2088	EDEDED	False	False	000000	1/2/EDEDED	1/2/7B7B7B	-	-
+Deep	D54		-	False	False	000000	-	-	-	-
+Deep	A55		-	False	False	000000	-	-	-	-
+Deep	B55	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C55	390	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D55		-	False	False	000000	-	-	-	-
+Deep	A56		-	False	False	000000	-	-	-	-
+Deep	B56	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C56	478	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D56		-	False	False	000000	-	-	-	-
+Deep	A57		-	False	False	000000	-	-	-	-
+Deep	B57	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C57	566	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D57		-	False	False	000000	-	-	-	-
+Deep	A58		-	False	False	000000	-	-	-	-
+Deep	B58	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C58	654	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D58		-	False	False	000000	-	-	-	-
+Deep	A59		-	False	False	000000	-	-	-	-
+Deep	B59	Pears	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	C59	2384	EDEDED	False	False	000000	1/2/7B7B7B	1/2/A5A5A5	-	-
+Deep	D59		-	False	False	000000	-	-	-	-
+Deep	A60		-	False	False	000000	-	-	-	-
+Deep	B60	Q1	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	C60	464	-	False	False	000000	1/2/A5A5A5	1/2/7B7B7B	-	-
+Deep	D60		-	False	False	000000	-	-	-	-
+Deep	A61		-	False	False	000000	-	-	-	-
+Deep	B61	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C61	552	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D61		-	False	False	000000	-	-	-	-
+Deep	A62		-	False	False	000000	-	-	-	-
+Deep	B62	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C62	640	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D62		-	False	False	000000	-	-	-	-
+Deep	A63		-	False	False	000000	-	-	-	-
+Deep	B63	Q4	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C63	728	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D63		-	False	False	000000	-	-	-	-
+Deep	A64		-	False	False	000000	-	-	-	-
+Deep	B64	Plums	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C64	2680	EDEDED	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D64		-	False	False	000000	-	-	-	-
+Deep	A65		-	False	False	000000	-	-	-	-
+Deep	B65	Q1	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C65	538	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D65		-	False	False	000000	-	-	-	-
+Deep	A66		-	False	False	000000	-	-	-	-
+Deep	B66	Q2	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C66	626	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D66		-	False	False	000000	-	-	-	-
+Deep	A67		-	False	False	000000	-	-	-	-
+Deep	B67	Q3	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	C67	714	-	False	False	000000	1/2/7B7B7B	1/2/7B7B7B	-	-
+Deep	D67		-	False	False	000000	-	-	-	-
+Deep	A68		-	False	False	000000	-	-	-	-
+Deep	B68	Q4	-	False	False	000000	1/2/7B7B7B	-4119/4/7B7B7B	-	-
+Deep	C68	802	-	False	False	000000	1/2/7B7B7B	-4119/4/7B7B7B	-	-
+Deep	D68		-	False	False	000000	-	-	-	-
+Deep	A69		-	False	False	000000	-	-	-	-
+Deep	B69	Grand Total	-	True	False	000000	-4119/4/7B7B7B	1/2/7B7B7B	-	-
+Deep	C69	29024	-	True	False	000000	-4119/4/7B7B7B	1/2/7B7B7B	-	-
+Deep	D69		-	False	False	000000	-	-	-	-
+Deep	A70		-	False	False	000000	-	-	-	-
+Deep	B70		-	False	False	000000	1/2/7B7B7B	-	-	-
+Deep	C70		-	False	False	000000	1/2/7B7B7B	-	-	-
+Deep	D70		-	False	False	000000	-	-	-	-
+ColDeep	#	B4:M11	B4:M11	PivotStyleMedium14
+ColDeep	A3		-	False	False	000000	-	-	-	-
+ColDeep	B3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	C3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	D3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	E3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	F3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	G3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	H3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	I3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	J3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	K3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	L3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	M3		-	False	False	000000	-	1/-4138/548235	-	-
+ColDeep	N3		-	False	False	000000	-	-	-	-
+ColDeep	A4		-	False	False	000000	-	-	-	-
+ColDeep	B4	Sum of Sales	70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	C4	Column Labels	70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	D4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	E4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	F4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	G4		70AD47	True	False	FFFFFF	1/-4138/548235	1/-4138/C6E0B4	-	-
+ColDeep	H4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	I4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	J4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	K4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	L4		70AD47	True	False	FFFFFF	1/-4138/548235	1/-4138/C6E0B4	-	-
+ColDeep	M4		70AD47	True	False	FFFFFF	1/-4138/548235	-	-	-
+ColDeep	N4		-	False	False	000000	-	-	-	-
+ColDeep	A5		-	False	False	000000	-	-	-	-
+ColDeep	B5		70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	C5	2023	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	D5		70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	E5		70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	F5		70AD47	True	False	FFFFFF	-	-	-	1/-4138/C6E0B4
+ColDeep	G5	2023 Total	70AD47	True	False	000000	1/-4138/C6E0B4	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H5	2024	70AD47	True	False	FFFFFF	-	-	1/-4138/C6E0B4	-
+ColDeep	I5		70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	J5		70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	K5		70AD47	True	False	FFFFFF	-	-	-	1/-4138/C6E0B4
+ColDeep	L5	2024 Total	70AD47	True	False	000000	1/-4138/C6E0B4	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M5	Grand Total	70AD47	True	False	FFFFFF	-	-	1/-4138/C6E0B4	-
+ColDeep	N5		-	False	False	000000	-	-	-	-
+ColDeep	A6		-	False	False	000000	-	-	-	-
+ColDeep	B6	Row Labels	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	C6	Q1	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	D6	Q2	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	E6	Q3	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	F6	Q4	70AD47	True	False	FFFFFF	-	-	-	1/-4138/C6E0B4
+ColDeep	G6		70AD47	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H6	Q1	70AD47	True	False	FFFFFF	-	-	1/-4138/C6E0B4	-
+ColDeep	I6	Q2	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	J6	Q3	70AD47	True	False	FFFFFF	-	-	-	-
+ColDeep	K6	Q4	70AD47	True	False	FFFFFF	-	-	-	1/-4138/C6E0B4
+ColDeep	L6		70AD47	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M6		70AD47	True	False	FFFFFF	-	-	1/-4138/C6E0B4	-
+ColDeep	N6		-	False	False	000000	-	-	-	-
+ColDeep	A7		-	False	False	000000	-	-	-	-
+ColDeep	B7	East	-	False	False	000000	-	-	-	1/2/A9D08E
+ColDeep	C7	633	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	D7	765	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	E7	897	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	F7	1029	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	G7	3324	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H7	1161	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	I7	1293	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	J7	1025	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	K7	757	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	L7	4236	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M7	7560	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	N7		-	False	False	000000	-	-	1/2/A9D08E	-
+ColDeep	A8		-	False	False	000000	-	-	-	-
+ColDeep	B8	North	-	False	False	000000	-	-	-	1/2/A9D08E
+ColDeep	C8	966	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	D8	1098	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	E8	1230	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	F8	1362	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	G8	4656	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H8	1094	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	I8	426	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	J8	558	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	K8	690	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	L8	2768	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M8	7424	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	N8		-	False	False	000000	-	-	1/2/A9D08E	-
+ColDeep	A9		-	False	False	000000	-	-	-	-
+ColDeep	B9	South	-	False	False	000000	-	-	-	1/2/A9D08E
+ColDeep	C9	1299	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	D9	1031	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	E9	763	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	F9	495	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	G9	3588	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H9	627	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	I9	759	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	J9	891	-	False	False	000000	-	-	1/2/A9D08E	1/2/A9D08E
+ColDeep	K9	1023	-	False	False	000000	-	-	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	L9	3300	-	True	False	000000	-	-	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M9	6888	-	False	False	000000	-	-	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	N9		-	False	False	000000	-	-	1/2/A9D08E	-
+ColDeep	A10		-	False	False	000000	-	-	-	-
+ColDeep	B10	West	-	False	False	000000	-	1/2/548235	-	1/2/A9D08E
+ColDeep	C10	432	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	D10	564	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	E10	696	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	F10	828	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	G10	2520	-	True	False	000000	-	1/2/548235	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H10	960	-	False	False	000000	-	1/2/548235	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	I10	1092	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	J10	1224	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	K10	1356	-	False	False	000000	-	1/2/548235	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	L10	4632	-	True	False	000000	-	1/2/548235	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M10	7152	-	False	False	000000	-	1/2/548235	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	N10		-	False	False	000000	-	-	1/2/A9D08E	-
+ColDeep	A11		-	False	False	000000	-	-	-	-
+ColDeep	B11	Grand Total	-	True	False	000000	1/2/548235	1/-4138/548235	-	1/2/A9D08E
+ColDeep	C11	3330	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	D11	3458	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	E11	3586	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	F11	3714	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	G11	14088	-	True	False	000000	1/2/548235	1/-4138/548235	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	H11	3842	-	True	False	000000	1/2/548235	1/-4138/548235	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	I11	3570	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	J11	3698	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/2/A9D08E
+ColDeep	K11	3826	-	True	False	000000	1/2/548235	1/-4138/548235	1/2/A9D08E	1/-4138/C6E0B4
+ColDeep	L11	14936	-	True	False	000000	1/2/548235	1/-4138/548235	1/-4138/C6E0B4	1/-4138/C6E0B4
+ColDeep	M11	29024	-	True	False	000000	1/2/548235	1/-4138/548235	1/-4138/C6E0B4	1/2/A9D08E
+ColDeep	N11		-	False	False	000000	-	-	1/2/A9D08E	-
+ColDeep	A12		-	False	False	000000	-	-	-	-
+ColDeep	B12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	C12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	D12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	E12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	F12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	G12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	H12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	I12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	J12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	K12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	L12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	M12		-	False	False	000000	1/-4138/548235	-	-	-
+ColDeep	N12		-	False	False	000000	-	-	-	-
+Dark7	#	B4:G16	B4:G16	PivotStyleDark7
+Dark7	A3		-	False	False	000000	-	-	-	-
+Dark7	B3		-	False	False	000000	-	-	-	-
+Dark7	C3		-	False	False	000000	-	-	-	-
+Dark7	D3		-	False	False	000000	-	-	-	-
+Dark7	E3		-	False	False	000000	-	-	-	-
+Dark7	F3		-	False	False	000000	-	-	-	-
+Dark7	G3		-	False	False	000000	-	-	-	-
+Dark7	H3		-	False	False	000000	-	-	-	-
+Dark7	A4		-	False	False	000000	-	-	-	-
+Dark7	B4	Sum of Sales	375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	C4	Column Labels	375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	D4		375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	E4		375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	F4		375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	G4		375623	True	False	FFFFFF	-	1/2/375623	-	-
+Dark7	H4		-	False	False	000000	-	-	-	-
+Dark7	A5		-	False	False	000000	-	-	-	-
+Dark7	B5	Row Labels	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	C5	East	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	D5	North	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	E5	South	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	F5	West	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	G5	Grand Total	375623	True	False	FFFFFF	1/2/375623	1/2/70AD47	-	-
+Dark7	H5		-	False	False	000000	-	-	-	-
+Dark7	A6		-	False	False	000000	-	-	-	-
+Dark7	B6	2023	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	C6	3324	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	D6	4656	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	E6	3588	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	F6	2520	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	G6	14088	E2EFDA	True	False	000000	1/2/70AD47	1/2/A9D08E	-	-
+Dark7	H6		-	False	False	000000	-	-	-	-
+Dark7	A7		-	False	False	000000	-	-	-	-
+Dark7	B7	Q1	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	C7	633	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	D7	966	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	E7	1299	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	F7	432	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	G7	3330	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	H7		-	False	False	000000	-	-	-	-
+Dark7	A8		-	False	False	000000	-	-	-	-
+Dark7	B8	Q2	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	C8	765	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	D8	1098	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	E8	1031	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	F8	564	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	G8	3458	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	H8		-	False	False	000000	-	-	-	-
+Dark7	A9		-	False	False	000000	-	-	-	-
+Dark7	B9	Q3	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	C9	897	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	D9	1230	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	E9	763	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	F9	696	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	G9	3586	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	H9		-	False	False	000000	-	-	-	-
+Dark7	A10		-	False	False	000000	-	-	-	-
+Dark7	B10	Q4	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	C10	1029	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	D10	1362	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	E10	495	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	F10	828	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	G10	3714	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/A9D08E	-	-
+Dark7	H10		-	False	False	000000	-	-	-	-
+Dark7	A11		-	False	False	000000	-	-	-	-
+Dark7	B11	2024	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	C11	4236	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	D11	2768	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	E11	3300	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	F11	4632	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	G11	14936	E2EFDA	True	False	000000	1/2/A9D08E	1/2/A9D08E	-	-
+Dark7	H11		-	False	False	000000	-	-	-	-
+Dark7	A12		-	False	False	000000	-	-	-	-
+Dark7	B12	Q1	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	C12	1161	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	D12	1094	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	E12	627	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	F12	960	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	G12	3842	C6E0B4	False	False	000000	1/2/A9D08E	1/2/E2EFDA	-	-
+Dark7	H12		-	False	False	000000	-	-	-	-
+Dark7	A13		-	False	False	000000	-	-	-	-
+Dark7	B13	Q2	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	C13	1293	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	D13	426	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	E13	759	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	F13	1092	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	G13	3570	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	H13		-	False	False	000000	-	-	-	-
+Dark7	A14		-	False	False	000000	-	-	-	-
+Dark7	B14	Q3	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	C14	1025	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	D14	558	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	E14	891	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	F14	1224	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	G14	3698	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	H14		-	False	False	000000	-	-	-	-
+Dark7	A15		-	False	False	000000	-	-	-	-
+Dark7	B15	Q4	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	C15	757	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	D15	690	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	E15	1023	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	F15	1356	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	G15	3826	C6E0B4	False	False	000000	1/2/E2EFDA	1/2/E2EFDA	-	-
+Dark7	H15		-	False	False	000000	-	-	-	-
+Dark7	A16		-	False	False	000000	-	-	-	-
+Dark7	B16	Grand Total	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	C16	7560	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	D16	7424	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	E16	6888	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	F16	7152	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	G16	29024	375623	True	False	FFFFFF	1/2/E2EFDA	-	-	-
+Dark7	H16		-	False	False	000000	-	-	-	-
+Dark7	A17		-	False	False	000000	-	-	-	-
+Dark7	B17		-	False	False	000000	-	-	-	-
+Dark7	C17		-	False	False	000000	-	-	-	-
+Dark7	D17		-	False	False	000000	-	-	-	-
+Dark7	E17		-	False	False	000000	-	-	-	-
+Dark7	F17		-	False	False	000000	-	-	-	-
+Dark7	G17		-	False	False	000000	-	-	-	-
+Dark7	H17		-	False	False	000000	-	-	-	-
+Light1	#	B4:G16	B2:G16	PivotStyleLight1
+Light1	A1		-	False	False	000000	-	-	-	-
+Light1	B1		-	False	False	000000	-	1/2/808080	-	-
+Light1	C1		-	False	False	000000	-	1/2/808080	-	-
+Light1	D1		-	False	False	000000	-	-	-	-
+Light1	E1		-	False	False	000000	-	-	-	-
+Light1	F1		-	False	False	000000	-	-	-	-
+Light1	G1		-	False	False	000000	-	-	-	-
+Light1	H1		-	False	False	000000	-	-	-	-
+Light1	A2		-	False	False	000000	-	-	-	-
+Light1	B2	Product	-	False	False	000000	1/2/808080	1/2/808080	-	-
+Light1	C2	(All)	-	False	False	000000	1/2/808080	1/2/808080	-	-
+Light1	D2		-	False	False	000000	-	-	-	-
+Light1	E2		-	False	False	000000	-	-	-	-
+Light1	F2		-	False	False	000000	-	-	-	-
+Light1	G2		-	False	False	000000	-	-	-	-
+Light1	H2		-	False	False	000000	-	-	-	-
+Light1	A3		-	False	False	000000	-	-	-	-
+Light1	B3		-	False	False	000000	1/2/808080	1/2/808080	-	-
+Light1	C3		-	False	False	000000	1/2/808080	1/2/808080	-	-
+Light1	D3		-	False	False	000000	-	1/2/808080	-	-
+Light1	E3		-	False	False	000000	-	1/2/808080	-	-
+Light1	F3		-	False	False	000000	-	1/2/808080	-	-
+Light1	G3		-	False	False	000000	-	1/2/808080	-	-
+Light1	H3		-	False	False	000000	-	-	-	-
+Light1	A4		-	False	False	000000	-	-	-	-
+Light1	B4	Sum of Sales	-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	C4	Column Labels	-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	D4		-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	E4		-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	F4		-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	G4		-	True	False	000000	1/2/808080	1/2/D9D9D9	-	-
+Light1	H4		-	False	False	000000	-	-	-	-
+Light1	A5		-	False	False	000000	-	-	-	-
+Light1	B5	Row Labels	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	C5	East	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	D5	North	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	E5	South	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	F5	West	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	G5	Grand Total	-	True	False	000000	1/2/D9D9D9	1/2/808080	-	-
+Light1	H5		-	False	False	000000	-	-	-	-
+Light1	A6		-	False	False	000000	-	-	-	-
+Light1	B6	2023	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	C6	3324	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	D6	4656	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	E6	3588	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	F6	2520	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	G6	14088	D9D9D9	True	False	000000	1/2/808080	1/2/A6A6A6	-	-
+Light1	H6		-	False	False	000000	-	-	-	-
+Light1	A7		-	False	False	000000	-	-	-	-
+Light1	B7	Q1	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C7	633	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D7	966	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E7	1299	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F7	432	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G7	3330	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H7		-	False	False	000000	-	-	-	-
+Light1	A8		-	False	False	000000	-	-	-	-
+Light1	B8	Q2	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C8	765	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D8	1098	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E8	1031	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F8	564	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G8	3458	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H8		-	False	False	000000	-	-	-	-
+Light1	A9		-	False	False	000000	-	-	-	-
+Light1	B9	Q3	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C9	897	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D9	1230	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E9	763	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F9	696	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G9	3586	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H9		-	False	False	000000	-	-	-	-
+Light1	A10		-	False	False	000000	-	-	-	-
+Light1	B10	Q4	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C10	1029	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D10	1362	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E10	495	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F10	828	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G10	3714	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H10		-	False	False	000000	-	-	-	-
+Light1	A11		-	False	False	000000	-	-	-	-
+Light1	B11	2024	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C11	4236	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D11	2768	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E11	3300	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F11	4632	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G11	14936	-	True	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H11		-	False	False	000000	-	-	-	-
+Light1	A12		-	False	False	000000	-	-	-	-
+Light1	B12	Q1	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C12	1161	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D12	1094	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E12	627	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F12	960	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G12	3842	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H12		-	False	False	000000	-	-	-	-
+Light1	A13		-	False	False	000000	-	-	-	-
+Light1	B13	Q2	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C13	1293	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D13	426	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E13	759	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F13	1092	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G13	3570	-	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H13		-	False	False	000000	-	-	-	-
+Light1	A14		-	False	False	000000	-	-	-	-
+Light1	B14	Q3	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	C14	1025	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	D14	558	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	E14	891	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	F14	1224	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	G14	3698	D9D9D9	False	False	000000	1/2/A6A6A6	1/2/A6A6A6	-	-
+Light1	H14		-	False	False	000000	-	-	-	-
+Light1	A15		-	False	False	000000	-	-	-	-
+Light1	B15	Q4	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	C15	757	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	D15	690	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	E15	1023	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	F15	1356	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	G15	3826	-	False	False	000000	1/2/A6A6A6	1/2/808080	-	-
+Light1	H15		-	False	False	000000	-	-	-	-
+Light1	A16		-	False	False	000000	-	-	-	-
+Light1	B16	Grand Total	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	C16	7560	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	D16	7424	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	E16	6888	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	F16	7152	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	G16	29024	FFFFFF	True	False	000000	1/2/808080	1/2/808080	-	-
+Light1	H16		-	False	False	000000	-	-	-	-
+Light1	A17		-	False	False	000000	-	-	-	-
+Light1	B17		-	False	False	000000	1/2/808080	-	-	-
+Light1	C17		-	False	False	000000	1/2/808080	-	-	-
+Light1	D17		-	False	False	000000	1/2/808080	-	-	-
+Light1	E17		-	False	False	000000	1/2/808080	-	-	-
+Light1	F17		-	False	False	000000	1/2/808080	-	-	-
+Light1	G17		-	False	False	000000	1/2/808080	-	-	-
+Light1	H17		-	False	False	000000	-	-	-	-
+Light20	#	B4:F22	B4:F22	PivotStyleLight20
+Light20	A3		-	False	False	000000	-	-	-	-
+Light20	B3		-	False	False	000000	-	-	-	-
+Light20	C3		-	False	False	000000	-	-	-	-
+Light20	D3		-	False	False	000000	-	-	-	-
+Light20	E3		-	False	False	000000	-	-	-	-
+Light20	F3		-	False	False	000000	-	-	-	-
+Light20	G3		-	False	False	000000	-	-	-	-
+Light20	A4		-	False	False	000000	-	-	-	-
+Light20	B4	Sum of Sales	DDEBF7	True	False	000000	-	-	-	-
+Light20	C4		DDEBF7	True	False	000000	-	-	-	-
+Light20	D4	Year	DDEBF7	True	False	000000	-	-	-	-
+Light20	E4		DDEBF7	True	False	000000	-	-	-	-
+Light20	F4		DDEBF7	True	False	000000	-	-	-	-
+Light20	G4		-	False	False	000000	-	-	-	-
+Light20	A5		-	False	False	000000	-	-	-	-
+Light20	B5	Region	DDEBF7	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	C5	Product	DDEBF7	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	D5	2023	DDEBF7	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	E5	2024	DDEBF7	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	F5	Grand Total	DDEBF7	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	G5		-	False	False	000000	-	-	-	-
+Light20	A6		-	False	False	000000	-	-	-	-
+Light20	B6	East	-	True	False	000000	1/2/9BC2E6	1/2/9BC2E6	-	-
+Light20	C6		-	True	False	000000	1/2/9BC2E6	1/2/9BC2E6	-	-
+Light20	D6	3324	-	True	False	000000	1/2/9BC2E6	1/2/9BC2E6	-	-
+Light20	E6	4236	-	True	False	000000	1/2/9BC2E6	1/2/9BC2E6	-	-
+Light20	F6	7560	-	True	False	000000	1/2/9BC2E6	1/2/9BC2E6	-	-
+Light20	G6		-	False	False	000000	-	-	-	-
+Light20	A7		-	False	False	000000	-	-	-	-
+Light20	B7		-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	C7	Apples	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	D7	960	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	E7	1664	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	F7	2624	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	G7		-	False	False	000000	-	-	-	-
+Light20	A8		-	False	False	000000	-	-	-	-
+Light20	B8		-	False	False	000000	-	-	-	-
+Light20	C8	Pears	-	False	False	000000	-	-	-	-
+Light20	D8	1108	-	False	False	000000	-	-	-	-
+Light20	E8	1412	-	False	False	000000	-	-	-	-
+Light20	F8	2520	-	False	False	000000	-	-	-	-
+Light20	G8		-	False	False	000000	-	-	-	-
+Light20	A9		-	False	False	000000	-	-	-	-
+Light20	B9		-	False	False	000000	-	-	-	-
+Light20	C9	Plums	-	False	False	000000	-	-	-	-
+Light20	D9	1256	-	False	False	000000	-	-	-	-
+Light20	E9	1160	-	False	False	000000	-	-	-	-
+Light20	F9	2416	-	False	False	000000	-	-	-	-
+Light20	G9		-	False	False	000000	-	-	-	-
+Light20	A10		-	False	False	000000	-	-	-	-
+Light20	B10	North	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	C10		-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	D10	4656	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	E10	2768	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	F10	7424	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	G10		-	False	False	000000	-	-	-	-
+Light20	A11		-	False	False	000000	-	-	-	-
+Light20	B11		-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	C11	Apples	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	D11	1404	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	E11	908	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	F11	2312	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	G11		-	False	False	000000	-	-	-	-
+Light20	A12		-	False	False	000000	-	-	-	-
+Light20	B12		-	False	False	000000	-	-	-	-
+Light20	C12	Pears	-	False	False	000000	-	-	-	-
+Light20	D12	1552	-	False	False	000000	-	-	-	-
+Light20	E12	1056	-	False	False	000000	-	-	-	-
+Light20	F12	2608	-	False	False	000000	-	-	-	-
+Light20	G12		-	False	False	000000	-	-	-	-
+Light20	A13		-	False	False	000000	-	-	-	-
+Light20	B13		-	False	False	000000	-	-	-	-
+Light20	C13	Plums	-	False	False	000000	-	-	-	-
+Light20	D13	1700	-	False	False	000000	-	-	-	-
+Light20	E13	804	-	False	False	000000	-	-	-	-
+Light20	F13	2504	-	False	False	000000	-	-	-	-
+Light20	G13		-	False	False	000000	-	-	-	-
+Light20	A14		-	False	False	000000	-	-	-	-
+Light20	B14	South	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	C14		-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	D14	3588	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	E14	3300	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	F14	6888	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	G14		-	False	False	000000	-	-	-	-
+Light20	A15		-	False	False	000000	-	-	-	-
+Light20	B15		-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	C15	Apples	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	D15	1448	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	E15	952	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	F15	2400	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	G15		-	False	False	000000	-	-	-	-
+Light20	A16		-	False	False	000000	-	-	-	-
+Light20	B16		-	False	False	000000	-	-	-	-
+Light20	C16	Pears	-	False	False	000000	-	-	-	-
+Light20	D16	1196	-	False	False	000000	-	-	-	-
+Light20	E16	1100	-	False	False	000000	-	-	-	-
+Light20	F16	2296	-	False	False	000000	-	-	-	-
+Light20	G16		-	False	False	000000	-	-	-	-
+Light20	A17		-	False	False	000000	-	-	-	-
+Light20	B17		-	False	False	000000	-	-	-	-
+Light20	C17	Plums	-	False	False	000000	-	-	-	-
+Light20	D17	944	-	False	False	000000	-	-	-	-
+Light20	E17	1248	-	False	False	000000	-	-	-	-
+Light20	F17	2192	-	False	False	000000	-	-	-	-
+Light20	G17		-	False	False	000000	-	-	-	-
+Light20	A18		-	False	False	000000	-	-	-	-
+Light20	B18	West	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	C18		-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	D18	2520	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	E18	4632	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	F18	7152	-	True	False	000000	-	1/2/9BC2E6	-	-
+Light20	G18		-	False	False	000000	-	-	-	-
+Light20	A19		-	False	False	000000	-	-	-	-
+Light20	B19		-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	C19	Apples	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	D19	692	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	E19	1396	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	F19	2088	-	False	False	000000	1/2/9BC2E6	-	-	-
+Light20	G19		-	False	False	000000	-	-	-	-
+Light20	A20		-	False	False	000000	-	-	-	-
+Light20	B20		-	False	False	000000	-	-	-	-
+Light20	C20	Pears	-	False	False	000000	-	-	-	-
+Light20	D20	840	-	False	False	000000	-	-	-	-
+Light20	E20	1544	-	False	False	000000	-	-	-	-
+Light20	F20	2384	-	False	False	000000	-	-	-	-
+Light20	G20		-	False	False	000000	-	-	-	-
+Light20	A21		-	False	False	000000	-	-	-	-
+Light20	B21		-	False	False	000000	-	1/2/9BC2E6	-	-
+Light20	C21	Plums	-	False	False	000000	-	1/2/9BC2E6	-	-
+Light20	D21	988	-	False	False	000000	-	1/2/9BC2E6	-	-
+Light20	E21	1692	-	False	False	000000	-	1/2/9BC2E6	-	-
+Light20	F21	2680	-	False	False	000000	-	1/2/9BC2E6	-	-
+Light20	G21		-	False	False	000000	-	-	-	-
+Light20	A22		-	False	False	000000	-	-	-	-
+Light20	B22	Grand Total	DDEBF7	True	False	000000	1/2/9BC2E6	-	-	-
+Light20	C22		DDEBF7	True	False	000000	1/2/9BC2E6	-	-	-
+Light20	D22	14088	DDEBF7	True	False	000000	1/2/9BC2E6	-	-	-
+Light20	E22	14936	DDEBF7	True	False	000000	1/2/9BC2E6	-	-	-
+Light20	F22	29024	DDEBF7	True	False	000000	1/2/9BC2E6	-	-	-
+Light20	G22		-	False	False	000000	-	-	-	-
+Light20	A23		-	False	False	000000	-	-	-	-
+Light20	B23		-	False	False	000000	-	-	-	-
+Light20	C23		-	False	False	000000	-	-	-	-
+Light20	D23		-	False	False	000000	-	-	-	-
+Light20	E23		-	False	False	000000	-	-	-	-
+Light20	F23		-	False	False	000000	-	-	-	-
+Light20	G23		-	False	False	000000	-	-	-	-
+Medium28	#	B4:L17	B4:L17	PivotStyleMedium28
+Medium28	A3		-	False	False	000000	-	-	-	-
+Medium28	B3		-	False	False	000000	-	-	-	-
+Medium28	C3		-	False	False	000000	-	-	-	-
+Medium28	D3		-	False	False	000000	-	-	-	-
+Medium28	E3		-	False	False	000000	-	-	-	-
+Medium28	F3		-	False	False	000000	-	-	-	-
+Medium28	G3		-	False	False	000000	-	-	-	-
+Medium28	H3		-	False	False	000000	-	-	-	-
+Medium28	I3		-	False	False	000000	-	-	-	-
+Medium28	J3		-	False	False	000000	-	-	-	-
+Medium28	K3		-	False	False	000000	-	-	-	-
+Medium28	L3		-	False	False	000000	-	-	-	-
+Medium28	M3		-	False	False	000000	-	-	-	-
+Medium28	A4		-	False	False	000000	-	-	-	-
+Medium28	B4		C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C4	Column Labels	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L4		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M4		-	False	False	000000	-	-	-	-
+Medium28	A5		-	False	False	000000	-	-	-	-
+Medium28	B5		C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C5	East	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D5		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E5	North	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F5		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G5	South	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H5		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I5	West	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J5		E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K5	Total Sum of Sales	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L5	Total Sum of Units	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M5		-	False	False	000000	-	-	-	-
+Medium28	A6		-	False	False	000000	-	-	-	-
+Medium28	B6	Row Labels	C6E0B4	True	False	548235	-	1/2/FFFFFF	-	1/2/FFFFFF
+Medium28	C6	Sum of Sales	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D6	Sum of Units	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E6	Sum of Sales	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F6	Sum of Units	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G6	Sum of Sales	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H6	Sum of Units	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I6	Sum of Sales	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J6	Sum of Units	E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K6		E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L6		E2EFDA	True	False	548235	-	1/2/FFFFFF	1/2/FFFFFF	-
+Medium28	M6		-	False	False	000000	-	-	-	-
+Medium28	A7		-	False	False	000000	-	-	-	-
+Medium28	B7	2023	C6E0B4	True	False	000000	1/2/FFFFFF	-	-	1/2/FFFFFF
+Medium28	C7	3324	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D7	128	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E7	4656	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F7	136	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G7	3588	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H7	124	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I7	2520	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J7	132	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K7	14088	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L7	520	E2EFDA	True	False	000000	1/2/FFFFFF	-	1/2/FFFFFF	-
+Medium28	M7		-	False	False	000000	-	-	-	-
+Medium28	A8		-	False	False	000000	-	-	-	-
+Medium28	B8	Q1	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C8	633	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D8	40	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E8	966	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F8	37	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G8	1299	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H8	34	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I8	432	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J8	31	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K8	3330	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L8	142	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M8		-	False	False	000000	-	-	-	-
+Medium28	A9		-	False	False	000000	-	-	-	-
+Medium28	B9	Q2	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C9	765	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D9	28	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E9	1098	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F9	25	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G9	1031	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H9	22	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I9	564	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J9	39	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K9	3458	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L9	114	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M9		-	False	False	000000	-	-	-	-
+Medium28	A10		-	False	False	000000	-	-	-	-
+Medium28	B10	Q3	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C10	897	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D10	36	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E10	1230	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F10	33	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G10	763	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H10	30	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I10	696	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J10	27	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K10	3586	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L10	126	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M10		-	False	False	000000	-	-	-	-
+Medium28	A11		-	False	False	000000	-	-	-	-
+Medium28	B11	Q4	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C11	1029	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D11	24	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E11	1362	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F11	41	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G11	495	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H11	38	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I11	828	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J11	35	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K11	3714	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L11	138	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M11		-	False	False	000000	-	-	-	-
+Medium28	A12		-	False	False	000000	-	-	-	-
+Medium28	B12	2024	C6E0B4	True	False	000000	-	-	-	1/2/FFFFFF
+Medium28	C12	4236	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D12	136	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E12	2768	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F12	124	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G12	3300	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H12	112	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I12	4632	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J12	120	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K12	14936	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L12	492	E2EFDA	True	False	000000	-	-	1/2/FFFFFF	-
+Medium28	M12		-	False	False	000000	-	-	-	-
+Medium28	A13		-	False	False	000000	-	-	-	-
+Medium28	B13	Q1	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C13	1161	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D13	32	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E13	1094	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F13	29	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G13	627	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H13	26	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I13	960	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J13	23	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K13	3842	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L13	110	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M13		-	False	False	000000	-	-	-	-
+Medium28	A14		-	False	False	000000	-	-	-	-
+Medium28	B14	Q2	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C14	1293	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D14	40	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E14	426	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F14	37	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G14	759	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H14	34	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I14	1092	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J14	31	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K14	3570	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L14	142	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M14		-	False	False	000000	-	-	-	-
+Medium28	A15		-	False	False	000000	-	-	-	-
+Medium28	B15	Q3	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C15	1025	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D15	28	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E15	558	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F15	25	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G15	891	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H15	22	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I15	1224	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J15	39	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K15	3698	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L15	114	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M15		-	False	False	000000	-	-	-	-
+Medium28	A16		-	False	False	000000	-	-	-	-
+Medium28	B16	Q4	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C16	757	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D16	36	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E16	690	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F16	33	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G16	1023	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H16	30	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I16	1356	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J16	27	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K16	3826	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L16	126	E2EFDA	False	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M16		-	False	False	000000	-	-	-	-
+Medium28	A17		-	False	False	000000	-	-	-	-
+Medium28	B17	Grand Total	C6E0B4	True	False	548235	-	-	-	1/2/FFFFFF
+Medium28	C17	7560	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	D17	264	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	E17	7424	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	F17	260	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	G17	6888	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	H17	236	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	I17	7152	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	J17	252	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	K17	29024	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	1/2/FFFFFF
+Medium28	L17	1012	E2EFDA	True	False	548235	-	-	1/2/FFFFFF	-
+Medium28	M17		-	False	False	000000	-	-	-	-
+Medium28	A18		-	False	False	000000	-	-	-	-
+Medium28	B18		-	False	False	000000	-	-	-	-
+Medium28	C18		-	False	False	000000	-	-	-	-
+Medium28	D18		-	False	False	000000	-	-	-	-
+Medium28	E18		-	False	False	000000	-	-	-	-
+Medium28	F18		-	False	False	000000	-	-	-	-
+Medium28	G18		-	False	False	000000	-	-	-	-
+Medium28	H18		-	False	False	000000	-	-	-	-
+Medium28	I18		-	False	False	000000	-	-	-	-
+Medium28	J18		-	False	False	000000	-	-	-	-
+Medium28	K18		-	False	False	000000	-	-	-	-
+Medium28	L18		-	False	False	000000	-	-	-	-
+Medium28	M18		-	False	False	000000	-	-	-	-
+Dark12	#	B4:H16	B2:H16	PivotStyleDark12
+Dark12	A1		-	False	False	000000	-	-	-	-
+Dark12	B1		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	C1		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	D1		-	False	False	000000	-	-	-	-
+Dark12	E1		-	False	False	000000	-	-	-	-
+Dark12	F1		-	False	False	000000	-	-	-	-
+Dark12	G1		-	False	False	000000	-	-	-	-
+Dark12	H1		-	False	False	000000	-	-	-	-
+Dark12	I1		-	False	False	000000	-	-	-	-
+Dark12	A2		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B2	Product	FFF2CC	False	False	000000	1/-4138/808080	1/-4138/808080	1/-4138/808080	-
+Dark12	C2	(All)	FFF2CC	False	False	000000	1/-4138/808080	1/-4138/808080	-	1/-4138/808080
+Dark12	D2		-	False	False	000000	-	-	1/-4138/808080	-
+Dark12	E2		-	False	False	000000	-	-	-	-
+Dark12	F2		-	False	False	000000	-	-	-	-
+Dark12	G2		-	False	False	000000	-	-	-	-
+Dark12	H2		-	False	False	000000	-	-	-	-
+Dark12	I2		-	False	False	000000	-	-	-	-
+Dark12	A3		-	False	False	000000	-	-	-	-
+Dark12	B3		-	False	False	000000	1/-4138/808080	1/-4138/808080	-	-
+Dark12	C3		-	False	False	000000	1/-4138/808080	1/-4138/808080	-	-
+Dark12	D3		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	E3		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	F3		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	G3		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	H3		-	False	False	000000	-	1/-4138/808080	-	-
+Dark12	I3		-	False	False	000000	-	-	-	-
+Dark12	A4		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B4	Sum of Sales	404040	True	False	FFFFFF	1/-4138/808080	-	1/-4138/808080	-
+Dark12	C4		404040	True	False	FFFFFF	1/-4138/808080	-	-	-
+Dark12	D4	Region	404040	True	False	FFFFFF	1/-4138/808080	-	-	-
+Dark12	E4		404040	True	False	FFFFFF	1/-4138/808080	-	-	-
+Dark12	F4		404040	True	False	FFFFFF	1/-4138/808080	-	-	-
+Dark12	G4		404040	True	False	FFFFFF	1/-4138/808080	-	-	-
+Dark12	H4		404040	True	False	FFFFFF	1/-4138/808080	-	-	1/-4138/808080
+Dark12	I4		-	False	False	000000	-	-	1/-4138/808080	-
+Dark12	A5		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B5	Year	404040	True	False	FFFFFF	-	-	1/-4138/808080	-
+Dark12	C5	Quarter	404040	True	False	FFFFFF	-	-	-	-
+Dark12	D5	East	404040	True	False	FFFFFF	-	-	-	-
+Dark12	E5	North	404040	True	False	FFFFFF	-	-	-	-
+Dark12	F5	South	404040	True	False	FFFFFF	-	-	-	-
+Dark12	G5	West	404040	True	False	FFFFFF	-	-	-	-
+Dark12	H5	Grand Total	404040	True	False	FFFFFF	-	-	-	1/-4138/808080
+Dark12	I5		-	False	False	000000	-	-	1/-4138/808080	-
+Dark12	A6		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B6	2023	FFE699	True	False	000000	-	1/2/FFE699	1/-4138/808080	-
+Dark12	C6	Q1	FFF2CC	False	False	000000	-	1/2/FFE699	-	1/2/FFD966
+Dark12	D6	633	FFF2CC	False	False	000000	-	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E6	966	FFF2CC	False	False	000000	-	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F6	1299	FFF2CC	False	False	000000	-	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G6	432	FFF2CC	False	False	000000	-	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H6	3330	FFF2CC	False	False	000000	-	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I6		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A7		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B7		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/-4138/808080	-
+Dark12	C7	Q2	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D7	765	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E7	1098	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F7	1031	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G7	564	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H7	3458	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I7		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A8		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B8		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/-4138/808080	-
+Dark12	C8	Q3	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D8	897	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E8	1230	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F8	763	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G8	696	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H8	3586	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I8		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A9		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B9		FFE699	True	False	000000	1/2/FFE699	1/-4138/FFF2CC	1/-4138/808080	-
+Dark12	C9	Q4	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D9	1029	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E9	1362	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F9	495	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G9	828	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H9	3714	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I9		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A10		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B10	2023 Total	FFE699	True	False	000000	1/-4138/FFF2CC	1/2/FFE699	1/-4138/808080	-
+Dark12	C10		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D10	3324	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E10	4656	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F10	3588	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G10	2520	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H10	14088	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I10		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A11		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B11	2024	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/-4138/808080	-
+Dark12	C11	Q1	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D11	1161	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E11	1094	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F11	627	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G11	960	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H11	3842	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I11		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A12		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B12		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/-4138/808080	-
+Dark12	C12	Q2	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D12	1293	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E12	426	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F12	759	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G12	1092	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H12	3570	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I12		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A13		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B13		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/-4138/808080	-
+Dark12	C13	Q3	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D13	1025	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E13	558	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F13	891	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G13	1224	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H13	3698	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I13		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A14		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B14		FFE699	True	False	000000	1/2/FFE699	1/-4138/FFF2CC	1/-4138/808080	-
+Dark12	C14	Q4	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D14	757	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E14	690	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F14	1023	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G14	1356	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H14	3826	FFF2CC	False	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I14		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A15		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B15	2024 Total	FFE699	True	False	000000	1/-4138/FFF2CC	1/2/FFE699	1/-4138/808080	-
+Dark12	C15		FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	-	1/2/FFD966
+Dark12	D15	4236	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	E15	2768	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	F15	3300	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	G15	4632	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	H15	14936	FFE699	True	False	000000	1/2/FFE699	1/2/FFE699	1/2/FFD966	1/2/FFD966
+Dark12	I15		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A16		-	False	False	000000	-	-	-	1/-4138/808080
+Dark12	B16	Grand Total	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/-4138/808080	-
+Dark12	C16		404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	-	1/2/FFD966
+Dark12	D16	7560	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/2/FFD966	1/2/FFD966
+Dark12	E16	7424	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/2/FFD966	1/2/FFD966
+Dark12	F16	6888	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/2/FFD966	1/2/FFD966
+Dark12	G16	7152	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/2/FFD966	1/2/FFD966
+Dark12	H16	29024	404040	True	False	FFFFFF	1/2/FFE699	1/-4138/808080	1/2/FFD966	1/2/FFD966
+Dark12	I16		-	False	False	000000	-	-	1/2/FFD966	-
+Dark12	A17		-	False	False	000000	-	-	-	-
+Dark12	B17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	C17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	D17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	E17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	F17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	G17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	H17		-	False	False	000000	1/-4138/808080	-	-	-
+Dark12	I17		-	False	False	000000	-	-	-	-

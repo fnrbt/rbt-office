@@ -98,6 +98,9 @@ stages=(
     stage61-financial-functions
     stage62-text-array-info-functions
     stage63-macro-showcase
+    stage64-pivot-styles
+    stage65-sparklines
+    stage66-icon-sets
     numbertext
 )
 
@@ -107,6 +110,10 @@ required=(
     tests/test-documents-excel/synthetic-table-styles.xlsx
     tests/test-documents-excel/synthetic-chartex.xlsx
     tests/test-documents-excel/synthetic-slicers.xlsx
+    tests/test-documents-excel/synthetic-sparkline-looks.xlsx
+    tests/test-documents-excel/synthetic-icon-sets.xlsx
+    tests/test-documents-excel/synthetic-pivot-styles.xlsx
+    tests/test-documents-excel/synthetic-pivot-styles.excel.tsv
     tests/real-world/chart-zoo.xlsx
     tests/real-world/dashboard-sales-analysis.xlsx
     tests/real-world/dashboard-ecommerce-sales.xlsx

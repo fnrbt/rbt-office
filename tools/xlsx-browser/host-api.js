@@ -823,7 +823,9 @@ checks['lazy-sheets'] = async () => {
         note(`dashboard (11 MB): ImportXlsx ${lazyTime.toFixed(0)} ms, every sheet converted up front ${eagerTime.toFixed(0)} ms`);
         check('opening converts less than everything (faster than converting every sheet)', lazyTime < eagerTime * 0.8, true);
         const names = grid.GetSheetNames(), data = names.indexOf('Data'), shownIndex = grid.GetActiveSheetIndex();
-        check('only the sheet on display is converted', names.map((_, i) => grid.IsSheetLoaded(i)), names.map((_, i) => i === shownIndex));
+        // (The sheet on display draws its sparklines from 'Sparklines Pivot', which is converted for them.)
+        const sparkSource = names.indexOf('Sparklines Pivot');
+        check('only the sheet on display (and the sheet its sparklines read) is converted', names.map((_, i) => grid.IsSheetLoaded(i)), names.map((_, i) => i === shownIndex || i === sparkSource));
         check('an opened workbook is unmodified', grid.IsModified(), false);
         // An edit converts the sheets that hold formulas (they are recalculated) and the sheets
         // the formulas that are evaluated read - no other.
@@ -835,7 +837,7 @@ checks['lazy-sheets'] = async () => {
             const loaded = names.map((_, i) => probe.grid.IsSheetLoaded(i));
             note('sheets: ' + names.map((name, i) => `${i} ${name}${formulas[i] ? ' (' + formulas[i] + ' formulas)' : ''}${loaded[i] ? ' [loaded]' : ''}`).join(', '));
             check('a text typed where nothing reads it converts no sheet (the dependency graph reads the formulas of unconverted sheets off the file)',
-                names.filter((_, i) => loaded[i] && i !== shownIndex), []);
+                names.filter((_, i) => loaded[i] && i !== shownIndex && i !== sparkSource), []);
             check('and it was recalculated incrementally, with the formulas of every sheet in the graph',
                 [probe.grid.GetRecalcStats().Kind, probe.grid.GetRecalcStats().Formulas], ['incremental', formulas.reduce((a, b) => a + b, 0)]);
             probe.close();

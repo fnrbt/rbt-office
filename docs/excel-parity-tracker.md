@@ -308,6 +308,54 @@ two-line header of 28.8 pt fitted to three lines, every row below 14.7 pt lower)
 Arial, Cambria, Times New Roman, Verdana: Aptos Narrow, Tahoma, Arial MT are set in Calibri - oyabayo and
 acre-property 4 pt across), the columns AutoFit left (above).
 
+## Rich grid objects: pivot styles, sparklines, icon sets, data bars against Excel 2019, 2026-11-22
+
+The objects "fancy" templates are made of, against Excel 2019 on the VM: the dashboards' pivot tables and sparklines
+(dashboard-sales-analysis, -ecommerce-sales), synthetic-condformat, synthetic-slicers, synthetic-sparklines, and
+fixtures made in Excel by VBS (`probe-on-vm.sh`; pictures with `shoot-sheets.ps1`, ours with
+`shoot-browser-sheets.mjs`): `build-pivot-styles.vbs` (synthetic-pivot-styles.xlsx, 12 pivot tables in 12 styles,
+with Excel's `DisplayFormat` of every cell around each in synthetic-pivot-styles.excel.tsv),
+`probe-pivot-style-order.vbs` (which element of a pivot style covers which cell, which wins where two meet),
+`build-sparklines.vbs` (synthetic-sparkline-looks.xlsx, 19 cases in cells of 200 x 40 px), `build-icon-sets.vbs`
+(synthetic-icon-sets.xlsx: the 20 icon sets, reversed, icons only, centred, a tall row, 4 kinds of data bar).
+Checks: tests/formula stage64-pivot-styles, stage65-sparklines, stage66-icon-sets.
+
+Ranked by how far off we were: (1) pivot tables drew no style at all - no fills, bold, lines, buttons - on every
+pivot of the dashboards (16 and 30), and marked their text row labels with error triangles; (2) sparklines were not
+drawn (the sales dashboard's 24); (3) icon sets were characters of a 10-px font (a traffic light a 4-px dot);
+(4) form controls (check boxes, option buttons, combo / list boxes, spinners, scroll bars, group boxes, buttons:
+legacy VML and ctrlProps) are not drawn at all - none in the corpus or the real-estate models but
+houseflipping's 5 zero-height filter drops (not shown by Excel either); (5) data bars 1-2 px off, their gradient
+and right-to-left lengths; (6) slicers: Excel's header icons (multi-select, clear filter), item order, no-data look,
+the timeline's caption ("Mar - Dec 2012", ours "Mar 2012 - Dec 2012") and scroll bar; (7) table styles: already at
+parity (0 of 272 cells, 2026-11-10).
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A pivot table is drawn in its style (`<pivotTableStyleInfo>`): the built-in PivotStyleLight1-28 / Medium1-28 / Dark1-28 are presetTableStyles.xml's, whose pivot styles number their dxfs from 0 (table styles from 1) | `DisplayFormat` of the 1,779 cells of synthetic-pivot-styles.xlsx (Light16's header fill #D9E1F2, bold, a bottom line #8EA9DB) | plain cells | `TableStyles.pivotPresets` (`make-table-style-presets.py --pivot`), `Model.pivotCellEntry`, `Layout.styleEntryAt` |
+| The parts: the whole table and its page fields' cells; the header rows (to the first data row) when column headers are on; the row-label columns from the table's top when row headers are on; the first header cell (the header rows but the last, the label columns); banded rows (every line, the grand total too) and columns (every data column, the grand total too); a row subheading for each line of an outer item (compact / outline: the whole line; tabular: the item's label column down its lines); column subheadings in the column-item rows; subtotal rows; subtotal columns from the first column-item row; the grand total row; the grand total column (when the last column is on); page field labels / values | the 12 pivot tables: compact, outline, tabular, page fields, subtotals at the top / bottom, 2 and 3 row levels, 2 column levels, stripes, headers off | - | `TableStyles.pivotBlocks` |
+| Fills and fonts are laid in this order (a later one wins): whole table, column stripes, page fields, row stripes, first column, header row, first header cell, subtotal columns, column subheadings, blank rows, subtotal rows, row subheadings, grand total column, grand total row | `probe-pivot-style-order.vbs`: every two of the 25 elements that fill one cell, alone, in 3 pivot tables: no contradiction | - | `pivotOrder` |
+| Lines do not follow one order: an edge between rows shows the top line of the block below it, unless the block above is the header row or its bottom line is heavier; either beats a line between a block's rows | the same probe's edges (180 of 417 edge-or-inside pairs go to the inside line - by side, not by element); Deep (a stripe's top over the subheading above), Tabular (the header's bottom over the subheading below), Dark12 (a medium subheading bottom over a thin stripe top) | - | `pivotLooks`: 1,779 of 1,779 cells as Excel |
+| A pivot table's buttons: a drop-down (17 px, 1 px inside the cell's bottom right, grey edge #A6ACB3, white to #EFF2F7, a 7-px arrow) on each page field's value, "Row Labels" / "Column Labels" in compact form, each field's caption otherwise (not the Values field); a +/- (9 px, cut corners, edges #AAB5C9 / #8A9EBF, #EBEDED to #D8D8D8, a 5-px #3D4E7C minus) 5 px right of the grid line, centred down, before the label of an item with items under it; the label 14 px right (in compact form every item label) | pictures of the 12 pivot tables (Compact: the box at x 94-102 of a column from 89, "2023" from 106) | none | `Model.pivotButtons`, the grid's `drawCell` (the web grid only; Excel prints none) |
+| No error-check marks inside a pivot table | the sales dashboard's "2016" / "2017" (text) unmarked | green triangles | the grid's marks |
+| A sparkline's plot is the cell from 3 px right of its left grid line to 2 px left of its right one, rows 5 .. h - 4; n points at the middles of n slots; a column its slot less 15 % a side; the scale from the lowest value to the highest (or the group's, or custom); a column from 0 (or the scale's end nearer 0), its top the pixel row its value falls in, an eighth down (ColMany 7 of 1..12 at 19.09: row 19); all-positive data: the lowest a 1-px line; win / loss: a win the upper half (rows 5-20), a loss the lower; empty cells break the line (gap), are 0 or are spanned; the line its weight rounded to pixels (0.75 pt 1 px, 2.25 pt 2 px); markers 4 px; first / last / high / low / negative points in their colours | Excel's picture of synthetic-sparkline-looks.xlsx: every column edge of 4 column cases within a pixel, line ends within a pixel; the sales dashboard's 24 | not drawn | `Sparklines.marks` / `svg`, `XlsxBridge.sparklineGroupsOf`, data from any sheet (a lazily read sheet is read for it) |
+| An icon is a 16 x 16 picture 2 px right of the left grid line, 2 px above the bottom one (top / centre: as the value), Excel's flat colours: red #D65532, amber #EAC282, green #68A490, grey #808080, dark #505050, blue #4A7DB1, light #B3B3B3, each with a darker edge | Excel's picture of synthetic-icon-sets.xlsx (every icon's box 2-17 x 3-18 of a 20-px row; 23-38 of a 40-px one) | a 10-px character, other colours | `ConditionalFormatting.iconSvg` (the web grid; the painter still draws characters) |
+| A data bar runs from 2 px right of the left grid line to 2 px short of the right one, 2 px in from top and bottom | the 4 bar rows of synthetic-icon-sets.xlsx (a full bar of a 64-px column: pixels 2 .. 61) | 1 .. 63 | the grid's bar room |
+
+Found, not matched: form controls are not drawn (nothing read of `ctrlProps` / VML `x:ClientData` but notes);
+ActiveX placeholders not drawn; a data-validation list's arrow (Excel: only beside the selected cell; ours: the
+painter draws it on every such cell in PNG / PDF); icon pictures are drawn to Excel's size and colours, not
+pixel for pixel (arrows' and flags' shapes), the canvas / PDF painter still draws characters, a left-aligned text
+is not moved past its icon; data bars: Excel 2010+'s gradient fades to a light tint of the colour (ours to white),
+the right-to-left bars of synthetic-icon-sets.xlsx are 2-6 px longer than Excel's, the bar of the lowest value
+under "lowest value" is empty in Excel (ours: Excel 2007's minimum length); colour scales not re-measured;
+sparklines: a date axis, hidden cells, columns of 7 in 200 px off by a pixel at 2 edges (Excel's sub-pixel
+rounding), the line's anti-aliasing (ours bleeds a pixel above a peak), sparklines are not moved by inserted rows
+(drawn where the file put them); the +/- of a collapsed item is drawn from the lines (an item without lines
+under it shows +), pivot buttons do not respond to clicks, compact-form indents of 2+ levels are the cell's
+indent (Excel's ~12 px a level, ours ~10); pivot tables without `pivotTableStyleInfo` / with custom styles
+are read but not compared with Excel; slicer details (6 above).
+
 ## Formula oracle on real-world models, 2026-11-21
 
 Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel
@@ -554,8 +602,8 @@ Rendered the sales-analysis Dashboard sheet: the new chart pipeline already
 draws several charts in-place (bar "Sales By Category/Manager", line "Sales By
 Chain"). Slicers are drawn since the merge after 0.1.28 (caption, buttons in their
 columns, selected / no-data looks from the slicer style; see the roadmap's
-backlog for what is approximated). NOT yet rendered: in-cell
-sparklines, images/logos; pivot tables show as cached cell values (OK).
+backlog for what is approximated). Since 2026-11-22 the in-cell sparklines and the pivot tables' styles and
+buttons are drawn ("Rich grid objects" above); NOT yet rendered: images/logos.
 Reaching parity needs: sparklines, image embedding, and
 chart-position/layout polish. Not started — flagged as the big next goal.
 

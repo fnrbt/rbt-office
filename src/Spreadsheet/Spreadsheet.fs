@@ -1453,6 +1453,50 @@ type Spreadsheet(container: Element) as this =
                 block)
           Display = (fun cell -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 cell.Format cell.Value)
           Format = (fun code value -> SpreadsheetCellText.formatNumberWithCodeIn model.Date1904 code value) }
+    /// The values a sparkline's data formula (`'Sheet 2'!B2:H2`, a sheet's own cells without a name) names, one a
+    /// cell (None an empty or non-numeric one).
+    let sparklineValues (formula: string) : float option array =
+        let bang = formula.LastIndexOf '!'
+        let sheet, reference =
+            if bang < 0 then sheetNames.[activeSheetIndex], formula
+            else
+                let name = formula.Substring(0, bang).Trim()
+                (if name.StartsWith "'" && name.EndsWith "'" && name.Length >= 2 then name.Substring(1, name.Length - 2).Replace("''", "'") else name),
+                formula.Substring(bang + 1)
+        // (A sheet not converted yet - read lazily - is converted for it, as a linked picture's.)
+        match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(sheet, System.StringComparison.OrdinalIgnoreCase)) with
+        | Some index when index <> activeSheetIndex && isDeferredSheet sheets.[index] -> convertInPlace index
+        | _ -> ()
+        match SheetOps.tryParseRange (reference.Replace("$", "")) with
+        | Some range when (range.To.Row - range.From.Row + 1) * (range.To.Col - range.From.Col + 1) <= 4096 ->
+            match chartBlock sheet range.From.Row range.From.Col range.To.Row range.To.Col with
+            | Some rows ->
+                [| for row in rows do
+                     for cell in row do
+                         match cell |> Option.map (fun c -> unwrapFormulaValue c.Value) with
+                         | Some (CellValue.Number v) -> yield Some v
+                         | _ -> yield None |]
+            | None -> [||]
+        | _ -> [||]
+    /// The sparkline in a cell of the active sheet: its group, its values, and its vertical scale (its own lowest and
+    /// highest value, the group's, or the group's own numbers).
+    let sparklineIn (addr: CellAddress) : (SparklineGroup * float option array * (float * float)) option =
+        model.Sparklines
+        |> List.tryPick (fun group ->
+            group.Items
+            |> List.tryFind (fun (at, _) -> at = addr)
+            |> Option.bind (fun (_, formula) ->
+                let values = sparklineValues formula
+                let own = Rbt.Spreadsheet.Sparklines.range values
+                let all () = group.Items |> List.choose (fun (_, f) -> Rbt.Spreadsheet.Sparklines.range (sparklineValues f))
+                let pick (kind: string) (manual: float option) (ofOwn: float * float -> float) (ofAll: (float * float) list -> float) =
+                    match kind, manual with
+                    | "custom", Some v -> Some v
+                    | "group", _ -> (match all () with [] -> None | ranges -> Some (ofAll ranges))
+                    | _ -> own |> Option.map ofOwn
+                match pick group.MinAxis group.ManualMin fst (List.map fst >> List.min), pick group.MaxAxis group.ManualMax snd (List.map snd >> List.max) with
+                | Some low, Some high when values.Length > 0 -> Some (group, values, (low, high))
+                | _ -> None))
     /// Whether a block a chart read holds the cells it held then.
     let chartBlockStands (name: string, r0: int, c0: int, r1: int, c1: int, cells: CellData option [] []) : bool =
         match chartBlock name r0 c0 r1 c1 with
@@ -3699,6 +3743,12 @@ type Spreadsheet(container: Element) as this =
         let look =
             SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0 } : SpreadsheetCellText.NumberFit)) model row col cellData
                 (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
+        // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019).
+        let pivotButton = if model.Pivots.IsEmpty then None else pivotButtonAt model row col
+        let look =
+            match pivotButton with
+            | Some (PivotToggle _ | PivotLabel) when look.IndentRight = 0.0 -> { look with IndentLeft = look.IndentLeft + 14.0 }
+            | _ -> look
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -3869,7 +3919,7 @@ type Spreadsheet(container: Element) as this =
         let aboveRaw, leftRaw, cornerRaw = cellAt above col, cellAt row before, cellAt above before
         // The look of a neighbour's table, for the edges the cell shares with it.
         let lookOf (r: int) (c: int) : TableLookEntry option =
-            if model.Tables.IsEmpty || r < 0 || c < 0 then None else SpreadsheetLayout.tableEntryAt model.Tables r c
+            if (model.Tables.IsEmpty && model.Pivots.IsEmpty) || r < 0 || c < 0 then None else SpreadsheetLayout.styleEntryAt model r c
         let aboveLook, leftLook, cornerLook = lookOf above col, lookOf row before, lookOf above before
         let plainSheet = model.MergedCells.IsEmpty
         // (Without merged cells an edge follows from the two cells' formats - each with its table's look
@@ -3975,13 +4025,12 @@ type Spreadsheet(container: Element) as this =
         let mutable barDraw : DataBarDraw option = None
         match look.DataBar with
         | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
-            // A plain bar from the left edge, behind the text, two pixels in from the cell's top and
-            // bottom as Excel draws it (the painter's too).
+            // A plain bar, behind the text, two pixels in from the cell's grid lines all round as Excel draws it.
             let percent = int (System.Math.Round (draw.To * 100.0))
             add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
             add "background-repeat" "no-repeat"
-            add "background-position" "0 2px"
-            add "background-size" "100% calc(100% - 4px)"
+            add "background-position" "2px 2px"
+            add "background-size" "calc(100% - 4px) calc(100% - 4px)"
             bar <- percent
         | Some draw ->
             // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
@@ -4238,23 +4287,33 @@ type Spreadsheet(container: Element) as this =
                  + ";z-index:-1;pointer-events:none")
             setAttribute fill "data-cf-bar-from" (percent draw.From)
             setAttribute fill "data-cf-bar-color" draw.Color
-            if draw.To > draw.From then appendChild cell fill
+            // (The bar's room: from 2 px right of the cell's left grid line to 2 px short of its right one - a full bar
+            // in a 64-px column is pixels 2 .. 61, as Excel 2019 draws it.)
+            let room = createElement "div"
+            setClassName room "spreadsheet-cf-bar-room"
+            setCssText room "position:absolute;left:2px;right:2px;top:0;bottom:0;z-index:-1;pointer-events:none"
+            appendChild cell room
+            if draw.To > draw.From then appendChild room fill
             match draw.Axis with
             | Some (at, color) ->
                 let axis = createElement "div"
                 setClassName axis "spreadsheet-cf-axis"
                 setCssText axis ("position:absolute;top:0;bottom:0;left:" + percent at + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
-                appendChild cell axis
+                appendChild room axis
             | None -> ()
         | None -> ()
         match icon with
         | Some draw ->
-            // The icon as a character in the colour of the real one (arrows, flags, marks, lights).
-            let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph draw.Family draw.Index
+            // The icon, 16 px, 2 px right of the cell's left grid line, 2 px above its bottom one (centred / at the
+            // top: as the value), whatever the alignment of the value (Excel 2019).
             let mark = createElement "span"
-            setTextContent mark glyph
-            // (At the cell's left, whatever the alignment of its value, as Excel draws it.)
-            setCssText mark ("float:left;color:" + color + ";margin-right:3px;font-size:10px")
+            setInnerHtml mark (Rbt.Spreadsheet.ConditionalFormatting.iconSvg draw.Family draw.Index)
+            let iconTop =
+                match look.VerticalAlign with
+                | SpreadsheetPaint.VAlignTop -> 3.0
+                | SpreadsheetPaint.VAlignMiddle -> System.Math.Floor((h - 16.0) / 2.0) + 1.0
+                | _ -> h - 17.0
+            setCssText mark ("position:absolute;left:2px;top:" + string iconTop + "px;width:16px;height:16px;line-height:0;pointer-events:none")
             setAttribute mark "data-cf-icon" (string draw.Index)
             setAttribute mark "data-cf-icon-set" draw.Family
             prependChild cell mark
@@ -4266,6 +4325,13 @@ type Spreadsheet(container: Element) as this =
             | Some (cells, ignored, marks) when obj.ReferenceEquals(cells, model.Cells) && obj.ReferenceEquals(ignored, model.IgnoredErrors) -> marks
             | _ ->
                 let marks = Rbt.Spreadsheet.ErrorChecks.markedCells model.Cells model.IgnoredErrors model.SheetProtected
+                // (Excel marks nothing in a pivot table: the dashboards' "2016" row labels are text, unmarked.)
+                let marks =
+                    if model.Pivots.IsEmpty then marks
+                    else
+                        marks |> Map.filter (fun at _ ->
+                            not (model.Pivots |> List.exists (fun pivot ->
+                                at.Row >= pivot.Top && at.Row <= pivot.Bottom && at.Col >= pivot.Left && at.Col <= pivot.Right)))
                 errorMarks <- Some (box model.Cells, box model.IgnoredErrors, marks)
                 marks
         (match Map.tryFind addr marks with
@@ -4275,6 +4341,47 @@ type Spreadsheet(container: Element) as this =
             setAttribute triangle "data-error-check" check
             appendChild cell triangle
          | None -> ())
+        // A pivot table's buttons as Excel 2019 draws them (not pressed: a picture): a field's drop-down, a box of
+        // 17 px a pixel inside the cell's bottom right corner, grey edged, white going light grey, a 7-px arrow; an
+        // item's +/-, a box of 9 px with cut corners 5 px from the cell's left, centred down it, a 5-px minus (and bar).
+        (match pivotButton with
+         | Some PivotDropdown ->
+            let button = createElement "div"
+            setCssText button
+                ("position:absolute;right:1px;bottom:1px;width:17px;height:17px;box-sizing:border-box;border:1px solid #A6ACB3;"
+                 + "background:linear-gradient(180deg,#FEFFFF 0%,#FAFBFC 45%,#F3F5F9 50%,#EFF2F7 100%);pointer-events:none")
+            setAttribute button "data-pivot-button" "dropdown"
+            let arrow = createElement "div"
+            setCssText arrow "position:absolute;left:4px;top:6px;width:0;height:0;border-style:solid;border-width:4px 3.5px 0 3.5px;border-color:#6E7073 transparent transparent transparent"
+            appendChild button arrow
+            appendChild cell button
+         | Some (PivotToggle expanded) ->
+            let box = createElement "div"
+            setCssText box
+                ("position:absolute;left:" + string (4.0 + max 0.0 (look.IndentLeft - 14.0)) + "px;top:calc(50% - 5px);width:9px;height:9px;box-sizing:border-box;border:1px solid;"
+                 + "border-color:#AAB5C9 #8A9EBF #8A9EBF #AAB5C9;border-radius:1px;background:linear-gradient(135deg,#EBEDED 0%,#D8D8D8 100%);pointer-events:none")
+            setAttribute box "data-pivot-button" (if expanded then "collapse" else "expand")
+            let bar = createElement "div"
+            setCssText bar "position:absolute;left:1px;top:3px;width:5px;height:1px;background:#3D4E7C"
+            appendChild box bar
+            if not expanded then
+                let stem = createElement "div"
+                setCssText stem "position:absolute;left:3px;top:1px;width:1px;height:5px;background:#3D4E7C"
+                appendChild box stem
+            appendChild cell box
+         | _ -> ())
+        // A sparkline (`Sparklines.marks`): an SVG of the cell's size over it.
+        if not model.Sparklines.IsEmpty then
+            match sparklineIn addr with
+            | Some (group, values, scale) ->
+                let marks = Rbt.Spreadsheet.Sparklines.marks group values scale w h
+                if not marks.IsEmpty then
+                    let frame = createElement "div"
+                    setCssText frame "position:absolute;left:0;top:0;pointer-events:none;line-height:0"
+                    setAttribute frame "data-sparkline" group.Kind
+                    setInnerHtml frame (Rbt.Spreadsheet.Sparklines.svg w h marks)
+                    appendChild cell frame
+            | None -> ()
         // A marker and a tooltip for a comment or a comment thread.
         let thread = if Map.isEmpty model.Threads then None else Map.tryFind addr model.Threads
         let marker (color: string) (tooltip: string) =

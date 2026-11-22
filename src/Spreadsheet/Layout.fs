@@ -297,6 +297,15 @@ let tableEntryAt (tables: Table list) (row: int) (col: int) : TableLookEntry opt
     | [ table ] -> tableCellEntry table row col
     | _ -> tables |> List.tryPick (fun table -> tableCellEntry table row col)
 
+/// The look a table's or a pivot table's style gives a cell (`tableEntryAt`, `Model.pivotCellEntry`).
+let styleEntryAt (model: SpreadsheetModel) (row: int) (col: int) : TableLookEntry option =
+    match (if model.Tables.IsEmpty then None else tableEntryAt model.Tables row col) with
+    | Some entry -> Some entry
+    | None ->
+        match model.Pivots with
+        | [] -> None
+        | pivots -> pivots |> List.tryPick (fun pivot -> pivotCellEntry pivot row col)
+
 /// The edge two cells share, from what each holds and the look of its table: each cell's own line
 /// for the edge, else its table's line there; the stronger of the two (`resolveSharedBorder`); with
 /// neither, a grid line - unless the sheet shows none, or a fill of either cell (its own or its
@@ -366,7 +375,7 @@ let private sharedEdge (model: SpreadsheetModel) (firstRow: int) (firstCol: int)
     if inside then EdgeInside
     elif model.MergedCells.IsEmpty then
         let at (present: bool) (row: int) (col: int) = if present then SheetOps.shownCell model { Row = row; Col = col } else None
-        let lookAt (present: bool) (row: int) (col: int) = if present then tableEntryAt model.Tables row col else None
+        let lookAt (present: bool) (row: int) (col: int) = if present then styleEntryAt model row col else None
         edgeBetween model.ShowGridLines (at hasFirst firstRow firstCol) (lookAt hasFirst firstRow firstCol)
                     (at hasSecond secondRow secondCol) (lookAt hasSecond secondRow secondCol) horizontal hasFirst
     else
@@ -374,7 +383,7 @@ let private sharedEdge (model: SpreadsheetModel) (firstRow: int) (firstCol: int)
         // cells - but its first cell's fill.)
         let side (present: bool) (row: int) (col: int) (pick: CellFormat -> BorderStyle option) =
             if present then borderFormatAt model row col |> Option.bind pick else None
-        let lookAt (present: bool) (row: int) (col: int) = if present then tableEntryAt model.Tables row col else None
+        let lookAt (present: bool) (row: int) (col: int) = if present then styleEntryAt model row col else None
         let firstLook, secondLook = lookAt hasFirst firstRow firstCol, lookAt hasSecond secondRow secondCol
         let line (own: BorderStyle option) (look: TableLookEntry option) (pick: TableLookEntry -> BorderStyle option) =
             match own, look with
