@@ -4296,12 +4296,16 @@ type Spreadsheet(container: Element) as this =
         | None -> ()
         match icon with
         | Some draw ->
-            // The icon as a character in the colour of the real one (arrows, flags, marks, lights).
-            let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph draw.Family draw.Index
+            // The icon, 16 px, 2 px right of the cell's left grid line, 2 px above its bottom one (centred / at the
+            // top: as the value), whatever the alignment of the value (Excel 2019).
             let mark = createElement "span"
-            setTextContent mark glyph
-            // (At the cell's left, whatever the alignment of its value, as Excel draws it.)
-            setCssText mark ("float:left;color:" + color + ";margin-right:3px;font-size:10px")
+            setInnerHtml mark (Rbt.Spreadsheet.ConditionalFormatting.iconSvg draw.Family draw.Index)
+            let iconTop =
+                match look.VerticalAlign with
+                | SpreadsheetPaint.VAlignTop -> 3.0
+                | SpreadsheetPaint.VAlignMiddle -> System.Math.Floor((h - 16.0) / 2.0) + 1.0
+                | _ -> h - 17.0
+            setCssText mark ("position:absolute;left:2px;top:" + string iconTop + "px;width:16px;height:16px;line-height:0;pointer-events:none")
             setAttribute mark "data-cf-icon" (string draw.Index)
             setAttribute mark "data-cf-icon-set" draw.Family
             prependChild cell mark
