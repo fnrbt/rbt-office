@@ -1851,7 +1851,23 @@ checks['slicers-in-grid'] = async () => {
         check('Report: the two slicers and the timeline are drawn, none a labelled frame', [!!region, !!product, !!timeline, labels()], [true, true, true, []]);
         if (region) check('Region: its caption and a button an item, no data last', textsOf(region), ['Region', 'North', 'South', 'East', 'West']);
         if (product) check('Product 2: in its custom style (orange buttons)', [...product.querySelectorAll('svg rect')].filter((rect) => rect.getAttribute('fill') === '#FFC000').length, 3);
-        if (timeline) check('the timeline: its caption, level, months', ['Date', 'MONTHS ▾', 'JAN', 'MAR'].every((text) => textsOf(timeline).includes(text)), true);
+        if (timeline) check('the timeline: its caption, level, months', ['Date', 'MONTHS', 'JAN', 'MAR'].every((text) => textsOf(timeline).includes(text)), true);
+        if (timeline) {
+            // As Excel 2019 draws it (synthetic-slicers.xlsx and make-timeline-variants.py's copies, Excel's pictures):
+            // months 1.6 px a day from 7 px in, a pixel between blocks; the strip cut 10 px from the right; no fill
+            // of its own in a custom style; the Clear Filter button's red cross; a white thumb framed #C4C4C4 as long
+            // as the shown part of the bounds (255 px of 529), the selection light green beside it.
+            const rects = [...timeline.querySelectorAll('svg rect')];
+            const num = (r, a) => Math.round(Number(r.getAttribute(a)) * 10) / 10;
+            const blocks = rects.filter((r) => /70ad47/i.test(r.getAttribute('fill') ?? '')).map((r) => [num(r, 'x'), num(r, 'width')]);
+            check('timeline: the selected months\' blocks where Excel has them (Mar - Dec, x and width)', blocks,
+                [[103, 48], [152, 47], [200, 49], [250, 47], [298, 48], [347, 49], [397, 47], [445, 49], [495, 47], [543, 48]]);
+            check('timeline: no fill of its own (a custom style without one)', rects.filter((r) => num(r, 'x') === 0 && num(r, 'y') === 0 && r.getAttribute('fill') === '#FFFFFF').length, 0);
+            check('timeline: the Clear Filter button\'s red cross', [...timeline.querySelectorAll('svg line')].filter((l) => l.getAttribute('stroke') === '#D65532').length, 2);
+            const thumb = rects.find((r) => r.getAttribute('stroke') === '#C4C4C4' && num(r, 'width') > 100);
+            check('timeline: the thumb 255 px from 23 px in, the selection beside it', [thumb && num(thumb, 'x'), thumb && num(thumb, 'width'),
+                rects.filter((r) => num(r, 'height') === 7).map((r) => [num(r, 'x'), num(r, 'width'), r.getAttribute('fill')])], [23.5, 254, [[66, 222, '#E3EFDB']]]);
+        }
         await shoot('synthetic-slicers Report');
         check('drawing them changes nothing: unmodified, exported as the file', [grid.IsModified(), (await grid.ExportXlsx()).length === original.length], [false, true]);
         grid.SwitchSheet(grid.GetSheetNames().indexOf('Data')); await frame();

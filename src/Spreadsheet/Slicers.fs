@@ -261,6 +261,19 @@ let slicerButtons (data: ChartData) (info: XlsxReader.SlicerInfo) : XlsxReader.S
 /// of the slicer's right edge, 6 / 7 px down): Multi-Select (three ticks, each before a line) and Clear Filter
 /// (a funnel with a red cross while the slicer filters - some item not selected -, all in light grey while it
 /// does not). Their pixels are Excel's, without the anti-aliasing.
+/// The Clear Filter button of a slicer's or timeline's header, its funnel's top left at x, y: a grey funnel with a red
+/// cross while the object filters, all light grey while it does not (Excel 2019).
+let private clearFilterButton (x: float) (y: float) (filtering: bool) : Primitive list =
+    let funnel = [ "xxxxxxxxxxx"; "xxxxxxxxxxx"; ".xxxxxxxxx."; "..xxxxxxx.."; "...xxxxx..."; "....xxx...."; "....xx....."; "....x......"; "....x......"; "....x......"; "....xxx...." ]
+    let gray, red = (if filtering then "#727272", "#D65532" else "#B0ADB0", "#B0ADB0")
+    (funnel
+     |> List.mapi (fun j row ->
+        row |> Seq.mapi (fun i c -> i, c) |> Seq.filter (fun (_, c) -> c = 'x')
+        |> Seq.map (fun (i, _) -> PRect (x + float i, y + float j, 1.0, 1.0, Some gray, 1.0, None, 0.0, 0.0)) |> List.ofSeq)
+     |> List.concat)
+    @ [ PLine (x + 7.0, y + 7.5, x + 13.5, y + 14.0, red, 1.6, None)
+        PLine (x + 13.5, y + 7.5, x + 7.0, y + 14.0, red, 1.6, None) ]
+
 let private headerButtons (width: float) (filtering: bool) : Primitive list =
     let pixels (x0: float) (y0: float) (rows: string list) (color: string) =
         rows
@@ -274,13 +287,7 @@ let private headerButtons (width: float) (filtering: bool) : Primitive list =
         [ for k in 0 .. 2 do
             yield! pixels multi (6.0 + 5.0 * float k) tick "#727272"
             yield PRect (multi + 7.0, 8.0 + 5.0 * float k, 9.0, 1.0, Some "#727272", 1.0, None, 0.0, 0.0) ]
-    let clear = width - 28.0
-    let funnel = [ "xxxxxxxxxxx"; "xxxxxxxxxxx"; ".xxxxxxxxx."; "..xxxxxxx.."; "...xxxxx..."; "....xxx...."; "....xx....."; "....x......"; "....x......"; "....x......"; "....xxx...." ]
-    let gray, red = (if filtering then "#727272", "#D65532" else "#B0ADB0", "#B0ADB0")
-    ticks
-    @ pixels clear 7.0 funnel gray
-    @ [ PLine (clear + 7.0, 14.5, clear + 13.5, 21.0, red, 1.6, None)
-        PLine (clear + 13.5, 14.5, clear + 7.0, 21.0, red, 1.6, None) ]
+    ticks @ clearFilterButton (width - 28.0) 7.0 filtering
 
 /// A slicer for a rectangle of that width and height (pixels), its origin at the top left.
 let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInfo) (width: float) (height: float) : Primitive list =
@@ -403,16 +410,37 @@ let selectionText (info: XlsxReader.TimelineInfo) : string =
             elif y0 = y1 then sprintf "%s - %s %d" (month m0) (month m1) y0
             else sprintf "%s %d - %s %d" (month m0) y0 (month m1) y1
 
-/// Where a timeline's parts are, pixels from its top left - measured on Excel 2019's own picture of
-/// synthetic-slicers.xlsx at 100% (a month 48.5 px wide; its label at its left, above its block).
+/// Where a timeline's parts are, pixels from its top left - measured on Excel 2019's own pictures of
+/// synthetic-slicers.xlsx and its variants (make-timeline-variants.py) at 100 %: the caption (Calibri 11), the
+/// selection label (Calibri 10) and the level (Calibri 9), the larger periods' and the periods' labels (Calibri 9)
+/// with the tops of their capitals at 8, 36, 59 and 80 px; the blocks 17 px high from 95; the scroll bar 16 px
+/// high from 119.
 let private timelinePad = 8.0
-let private captionY = 12.0
-let private selectionY = 40.0
-let private largerY = 63.0
-let private periodY = 84.0
-let private blockY = 96.0
-let private blockHeight = 16.0
-let private timelineScrollY = 118.0
+let private captionY = 13.0
+let private selectionY = 41.0
+let private largerY = 64.0
+let private periodY = 85.0
+let private blockY = 95.0
+let private blockHeight = 17.0
+let private timelineScrollY = 119.0
+
+/// How far a period's block starts from where the timeline is scrolled to (pixels; Excel 2019): months by their
+/// days, 1.6 px a day (a month of 30 days 48 px, of 31 days 49 or 50: blocks at 7 + floor(days x 1.6)); quarters by
+/// their days too, 0.3771 px a day (34 or 35 px); a year 54 px; a day 30 px. From 7 px in.
+let private periodLeft (level: int) (first: DateTime) (starts: DateTime) (offset: int) : float =
+    match level with
+    | 0 -> 7.0 + 54.0 * float offset
+    | 3 -> 7.0 + 30.0 * float offset
+    | 1 -> 7.0 + Math.Floor ((starts - first).TotalDays * 0.3771 + 1e-9)
+    | _ -> 7.0 + Math.Floor ((starts - first).TotalDays * 1.6 + 1e-9)
+
+/// Pixels a day at a timeline's level (`periodLeft`).
+let private pixelsPerDay (level: int) =
+    match level with
+    | 0 -> 54.0 / 365.25
+    | 3 -> 30.0
+    | 1 -> 0.3771
+    | _ -> 1.6
 
 /// A timeline for a rectangle (see the module's notes for what is simplified).
 let timelineItems (look: TimelineLook) (info: XlsxReader.TimelineInfo) (width: float) (height: float) : Primitive list =
@@ -421,58 +449,121 @@ let timelineItems (look: TimelineLook) (info: XlsxReader.TimelineInfo) (width: f
     let lift = (if info.ShowHeader then 0.0 else 26.0) + (if info.ShowSelectionLabel || info.ShowTimeLevel then 0.0 else 24.0)
     let header =
         if not info.ShowHeader then []
-        else [ PText (timelinePad, captionY, fitted textSize false (width - 2.0 * timelinePad) info.Caption, textSize, color look.Header, "start", look.Header.Bold |> Option.defaultValue false, false, 0.0) ]
+        else
+            [ PText (timelinePad, captionY, fitted textSize false (width - 2.0 * timelinePad - 30.0) info.Caption, textSize, color look.Header, "start", look.Header.Bold |> Option.defaultValue false, false, 0.0) ]
+            // The Clear Filter button at the header's right, 25 px in: a red cross while a period is picked (Excel 2019).
+            @ clearFilterButton (width - 25.0) 5.0 info.Selection.IsSome
     let labels =
         if not (info.ShowSelectionLabel || info.ShowTimeLevel) then []
         else
             let y = selectionY - (if info.ShowHeader then 0.0 else 26.0)
             (if info.ShowSelectionLabel then [ PText (timelinePad, y, selectionText info, 10.0 * 96.0 / 72.0, color look.SelectionLabel, "start", false, false, 0.0) ] else [])
             @ (if info.ShowTimeLevel then
-                [ PText (width - timelinePad - 2.0, y, (match info.Level with 0 -> "YEARS" | 1 -> "QUARTERS" | 3 -> "DAYS" | _ -> "MONTHS") + " ▾", 12.0, color look.TimeLevel, "end", false, false, 0.0) ]
+                // (The level's name ends 26 px in from the right; its arrow is a light grey 7-px triangle after it.)
+                let top = y - 3.0
+                [ PText (width - 26.0, y, (match info.Level with 0 -> "YEARS" | 1 -> "QUARTERS" | 3 -> "DAYS" | _ -> "MONTHS"), 12.0, color look.TimeLevel, "end", false, false, 0.0)
+                  PPolyline ([ width - 19.0, top; width - 12.0, top; width - 15.5, top + 3.5 ], Some "#B2B2B2", 1.0, None, 0.0, None) ]
                else [])
-    let periodWidth = match info.Level with 0 -> 64.0 | 1 -> 64.0 | 3 -> 24.0 | _ -> 48.5
     let first =
         info.ScrollPosition
         |> Option.orElse (info.Bounds |> Option.map fst)
         |> Option.orElse (info.Selection |> Option.map fst)
         |> Option.defaultValue (DateTime.Today.Year, 1, 1)
-    let count = max 1 (int (ceil ((width - 2.0 * timelinePad) / periodWidth)))
+    // A selection that starts out of sight of where the timeline is scrolled to is shown in the middle of the strip:
+    // the strip starts round((periods shown - periods selected) / 2) periods before it (Excel 2019: Mar 5 - 20 2012 at
+    // the day level from Mar 4, Mar 28 - Apr 3 from Mar 22, a day from 9 days before).
+    let first =
+        match info.Selection with
+        | Some (selFrom, selUntil) ->
+            let date ((y: int), (m: int), (d: int)) = DateTime(y, m, d)
+            let shownDays = (width - 16.0) / pixelsPerDay info.Level
+            if (date selFrom - date first).TotalDays >= 0.0 && (date selFrom - date first).TotalDays < shownDays then first
+            else
+                let periodOf (y, m, d) = match info.Level with 0 -> y | 1 -> y * 4 + (m - 1) / 3 | 3 -> int (date (y, m, d) - DateTime(2000, 1, 1)).TotalDays | _ -> y * 12 + m - 1
+                let perPeriod = match info.Level with 0 -> 54.0 | 1 -> 34.4 | 3 -> 30.0 | _ -> 48.7
+                let selected = periodOf selUntil - periodOf selFrom + 1
+                let back = max 0 (int (Math.Round (((width - 16.0) / perPeriod - float selected) / 2.0, MidpointRounding.AwayFromZero)))
+                let s0, _, _, _ = periodAt info.Level selFrom 0
+                let start, _, _, _ = periodAt info.Level s0 -back
+                start
+        | None -> first
+    let firstDate = let y, m, d = first in DateTime(y, m, d)
     let upperY, lowerY, bandY = largerY - lift, periodY - lift, blockY - lift
+    // (The periods that start before the strip's right end, 10 px in.)
     let periods =
-        [ for offset in 0 .. count - 1 do
+        [ let mutable offset = 0
+          let mutable go = true
+          while go && offset < 1000 do
             let starts, ends, label, larger = periodAt info.Level first offset
-            let x = timelinePad + float offset * periodWidth
-            let selected =
-                match info.Selection with
-                | Some (from, until) -> dateKey starts <= dateKey until && dateKey ends >= dateKey from
-                | None -> true
-            let block = if selected then look.SelectedTimeBlock else look.UnselectedTimeBlock
-            // (A fill is a colour or a gradient: a colour of a format is written without its #.)
-            let fill = block.Fill |> Option.map (fun fill -> if fill.StartsWith "gradient(" then fill else hash fill)
-            yield PRect (x, bandY, periodWidth - 1.0, blockHeight, fill, 1.0, None, 0.0, 0.0)
-            yield PText (x + 1.0, lowerY, label, 12.0, color look.PeriodLabel2, "start", false, false, 0.0)
-            if larger <> "" then yield PText (x + 1.0, upperY, larger, 12.0, color look.PeriodLabel1, "start", false, false, 0.0) ]
+            let startDate = let y, m, d = starts in DateTime(y, m, d)
+            let x = periodLeft info.Level firstDate startDate offset
+            // (Only the periods of the cache's bounds: a timeline of 2012 - 2013 at the quarter level shows 8.)
+            let pastBounds = match info.Bounds with Some (_, (y1, m1, d1)) -> startDate >= DateTime(y1, m1, d1) | None -> false
+            if x >= width - 10.0 || pastBounds then go <- false
+            else
+                let nextStart, _, _, _ = periodAt info.Level first (offset + 1)
+                let next = periodLeft info.Level firstDate (let y, m, d = nextStart in DateTime(y, m, d)) (offset + 1)
+                let selected =
+                    match info.Selection with
+                    | Some (from, until) -> dateKey starts <= dateKey until && dateKey ends >= dateKey from
+                    | None -> true
+                let block = if selected then look.SelectedTimeBlock else look.UnselectedTimeBlock
+                // (A fill is a colour or a gradient: a colour of a format is written without its #. A pixel
+                // between blocks.)
+                let fill = block.Fill |> Option.map (fun fill -> if fill.StartsWith "gradient(" then fill else hash fill)
+                yield PRect (x, bandY, next - x - 1.0, blockHeight, fill, 1.0, None, 0.0, 0.0)
+                yield PText (x + 1.0, lowerY, label, 12.0, color look.PeriodLabel2, "start", false, false, 0.0)
+                if larger <> "" then yield PText (x + 1.0, upperY, larger, 12.0, color look.PeriodLabel1, "start", false, false, 0.0)
+                offset <- offset + 1 ]
+    // The scroll bar (Excel 2019): no track; a white button with a grey arrow at either end (15 px wide, 7 px in from
+    // the left and 9 from the right) and a white thumb between them, framed #C4C4C4, as long as the part of the
+    // bounds the strip shows, where it is scrolled to.
     let scrollBar =
         if not info.ShowHorizontalScrollbar then []
         else
             let y = timelineScrollY - lift
-            let total =
+            // (In from the anchor's right side: the timeline is drawn a pixel wider than its anchor, `objectRect`.)
+            let width = width - 1.0
+            let frame (x: float) (w: float) = PRect (x + 0.5, y + 0.5, w - 1.0, 15.0, Some "#FFFFFF", 1.0, Some "#C4C4C4", 1.0, 0.0)
+            let trackStart, trackEnd = 23.0, width - 25.0
+            let track = max 1.0 (trackEnd - trackStart + 1.0)
+            let span, at, mark =
                 match info.Bounds with
-                | Some ((y0, m0, _), (y1, m1, _)) ->
-                    match info.Level with
-                    | 0 -> y1 - y0 + 1
-                    | 1 -> (y1 * 4 + (m1 - 1) / 3) - (y0 * 4 + (m0 - 1) / 3) + 1
-                    | 3 -> (y1 - y0 + 1) * 366
-                    | _ -> (y1 * 12 + m1) - (y0 * 12 + m0) + 1
-                | None -> count
-            let track = width - 2.0 * timelinePad
-            let share = min 1.0 (float count / float (max 1 total))
-            [ PRect (timelinePad, y, track, 12.0, Some "#F0F0F0", 1.0, Some "#CDCDCD", 1.0, 0.0)
-              PRect (timelinePad + 14.0, y + 2.0, max 12.0 ((track - 28.0) * share), 8.0, Some "#C1C1C1", 1.0, None, 0.0, 0.0) ]
-    (match look.Whole.Fill with Some fill -> [ PRect (0.0, 0.0, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [ PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0) ])
+                | Some (b0, b1) ->
+                    let d0 = let y, m, d = b0 in DateTime(y, m, d)
+                    let d1 = let y, m, d = b1 in DateTime(y, m, d)
+                    let days = max 1.0 (d1 - d0).TotalDays
+                    let shown = (width - 16.0) / pixelsPerDay info.Level
+                    let place (date: DateTime) = trackStart + Math.Floor (track * max 0.0 (min 1.0 ((date - d0).TotalDays / days)))
+                    // The selected days on the track, 7 px high in its middle, in the selected blocks' colour 80 % of
+                    // the way to white (#70AD47: #E3F0DB) - under the thumb, seen beside it.
+                    let mark =
+                        match info.Selection, look.SelectedTimeBlock.Fill with
+                        | Some ((y0, m0, dd0), (y1, m1, dd1)), Some fill ->
+                            let hex = let found = System.Text.RegularExpressions.Regex.Match(fill, "[0-9A-Fa-f]{6}") in if found.Success then found.Value else "70AD47"
+                            let channel (i: int) = let v = Convert.ToInt32 (hex.Substring (i, 2), 16) in int (Math.Ceiling (float v + float (255 - v) * 0.8))
+                            let light = sprintf "#%02X%02X%02X" (channel 0) (channel 2) (channel 4)
+                            let x0 = place (DateTime(y0, m0, dd0))
+                            let x1 = place (DateTime(y1, m1, dd1).AddDays 1.0)
+                            if x1 > x0 then [ PRect (x0, y + 4.0, x1 - x0 + 1.0, 7.0, Some light, 1.0, None, 0.0, 0.0) ] else []
+                        | _ -> []
+                    min 1.0 (shown / days), max 0.0 (min 1.0 ((firstDate - d0).TotalDays / days)), mark
+                | None -> 1.0, 0.0, []
+            // (No thumb where the strip shows all of the bounds.)
+            let thumb = min track (Math.Floor (track * span) + 2.0)
+            let thumbX = min (trackEnd + 1.0 - thumb) (trackStart + Math.Floor (track * at))
+            mark
+            @ [ frame 7.0 15.0
+                PPolyline ([ 17.0, y + 4.0; 17.0, y + 12.0; 12.5, y + 8.0 ], Some "#787775", 1.0, None, 0.0, None)
+                frame (width - 23.0) 15.0
+                PPolyline ([ width - 18.0, y + 4.0; width - 18.0, y + 12.0; width - 13.5, y + 8.0 ], Some "#787775", 1.0, None, 0.0, None)
+                if span < 1.0 then frame thumbX thumb ]
+    // (A style without a fill of its own - a custom one - leaves the cells under the timeline showing.)
+    (match look.Whole.Fill with Some fill -> [ PRect (0.0, 0.0, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
     @ header
     @ labels
-    @ [ PGroup (0.0, 0.0, width, height, periods @ scrollBar) ]
+    @ [ PGroup (0.0, 0.0, width - 10.0, height, periods) ]
+    @ scrollBar
     @ edges look.Whole 0.0 0.0 width height
 
 /// What a drawing's `DrawingParts.Slicer` is for a workbook: a slicer or timeline of it by kind and name,

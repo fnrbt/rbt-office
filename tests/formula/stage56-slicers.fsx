@@ -151,13 +151,14 @@ match sceneNamed syn drawer synData "Date" 600.0 140.0 with
 | Some scene ->
     let shown = texts scene.Items
     ok "the timeline: caption, selection in words, level, years and months"
-        ([ "Date"; "Mar - Dec 2012"; "MONTHS ▾"; "2012"; "JAN"; "FEB"; "MAR"; "DEC"; "2013" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
+        ([ "Date"; "Mar - Dec 2012"; "MONTHS"; "2012"; "JAN"; "FEB"; "MAR"; "DEC" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
     let blocks =
-        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, _, _, _) when w > 40.0 && w < 50.0 && h = 16.0 -> Some (x, y, fill) | _ -> None) |> List.sortBy (fun (x, _, _) -> x)
-    // (Excel 2019: a month 48.5 px wide; the custom style has only selectedTimeBlock, so the others have no fill.)
-    eq "... a block a month from January 2012, 48.5 px apart: March to December in the custom style's green, the others without a fill"
-        (blocks |> List.truncate 13 |> List.map (fun (_, _, fill) -> fill), blocks |> List.pairwise |> List.map (fun ((a, _, _), (b, _, _)) -> b - a) |> List.distinct)
-        ([ None; None ] @ List.replicate 10 (Some ("#" + theme.[9])) @ [ None ], [ 48.5 ])
+        flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, _, _, _) when h = 17.0 -> Some (x, y, fill) | _ -> None) |> List.sortBy (fun (x, _, _) -> x)
+    // (Excel 2019: months 1.6 px a day from 7 px in - Jan 7, Feb 56, Mar 103 ... Dec 543; the custom style has only
+    // selectedTimeBlock, so the others have no fill.)
+    eq "... a block a month from January 2012 where Excel puts it: March to December in the custom style's green, the others without a fill"
+        (blocks |> List.map (fun (_, _, fill) -> fill), blocks |> List.map (fun (x, _, _) -> x))
+        ([ None; None ] @ List.replicate 10 (Some ("#" + theme.[9])), [ 7.0; 56.0; 103.0; 152.0; 200.0; 250.0; 298.0; 347.0; 397.0; 445.0; 495.0; 543.0 ])
     let labelAt (value: string) = flat scene.Items |> List.tryPick (fun item -> match item with Charts.PText (x, y, known, _, _, anchor, _, _, _) when known = value -> Some (x, y, anchor) | _ -> None)
     eq "... a month's label at its block's left, above it (as Excel), the year above that"
         (match labelAt "MAR", labelAt "2012", blocks |> List.tryItem 2 with
