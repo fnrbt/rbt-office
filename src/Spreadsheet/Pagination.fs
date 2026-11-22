@@ -74,8 +74,11 @@ type Pagination = {
 let private colWidthPx (model: SpreadsheetModel) (col: int) : float =
     Map.tryFind col model.ColumnWidths |> Option.defaultValue model.DefaultColumnWidth
 
+/// (A row a filter hides prints nothing, as one hidden: houseflipping's "2 REPAIR ESTIMATOR", 1,051 rows hidden in its
+/// AutoFilter's range, fits 1 x 6 pages on 2 in Excel 2019.)
 let private rowHeightPx (model: SpreadsheetModel) (row: int) : float =
-    Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight
+    if isFilterHiddenRow row model then 0.0
+    else Map.tryFind row model.RowHeights |> Option.defaultValue model.DefaultRowHeight
 
 let private rangeSum (sizes: int -> float) (startInc: int) (endInc: int) : float =
     let mutable s = 0.0

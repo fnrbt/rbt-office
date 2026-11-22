@@ -38,6 +38,10 @@ XFS = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>']
 # Style 7 (a date, d-mmm-yy), only in the sets that use it (the others' bytes as they were probed).
 DATE_XF = '<xf numFmtId="15" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+# Styles 8 - 13 of the bestfit-figures sets: #,##0; "$"#,##0; #,##0_);(#,##0); 0.0%; 0.00; d-mmm-yy.
+FIGURE_NUMFMTS = ('<numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/>'
+                  '<numFmt numFmtId="165" formatCode="#,##0_);\\(#,##0\\)"/><numFmt numFmtId="166" formatCode="0.0%"/></numFmts>')
+FIGURE_XFS = [f'<xf numFmtId="{n}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' for n in (3, 164, 165, 166, 2, 15)]
 
 
 def col_letter(c):
@@ -55,8 +59,9 @@ def block(r0, c0, r1, c1, style=0):
 
 def sheet(name, cells, cols=None, heights=None, setup='<pageSetup paperSize="1" orientation="portrait"/>',
           options='<printOptions gridLines="1"/>', margins=None, breaks='', names=None, fmt='', merges=None, rowstyles=None,
-          colstyles=None):
+          colstyles=None, hidden=None, autofilter=''):
     return dict(name=name, cells=cells, cols=cols or {}, heights=heights or {}, setup=setup, options=options,
+                hidden=hidden or set(), autofilter=autofilter,
                 merges=merges or [], rowstyles=rowstyles or {}, colstyles=colstyles or {},
                 margins=margins or '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>',
                 breaks=breaks, names=names or [], fmt=fmt)
@@ -139,6 +144,58 @@ def sets():
                                                                     (2, 5, 1, 0), (2, 6, 44317, 7), (2, 7, 44317, 7), (2, 8, 1.5, 0), (2, 9, 1.5, 0)],
               cols=bf),
     ]
+    # How wide a column Excel's AutoFit left (`bestFit`) prints: such columns of widths 1 to 25 with nothing in them,
+    # a text, a number; numbers of 1 to 14 figures in narrow and default ones; dates and formats; bold; each set
+    # beside one of the same widths without the flag. An "x" in A and past the last column.
+    bw = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 25]
+    land = dict(setup='<pageSetup paperSize="1" orientation="landscape"/>',
+                margins='<pageMargins left="0.25" right="0.25" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>')
+
+    def swept(name, widths, content, flag=True):
+        cells = [(1, 1, 'x', 0), (1, len(widths) + 2, 'x', 0)]
+        for i, w in enumerate(widths):
+            v = content(i, w)
+            if v is not None:
+                cells.append((2, i + 2) + (v if isinstance(v, tuple) else (v, 0)))
+        return sheet(name, cells, cols={i + 2: ((w, 'bestFit') if flag else w) for i, w in enumerate(widths)}, **land)
+    figures = '123456789012345'
+    out['bestfit-sweep'] = [
+        swept('Empty', bw, lambda i, w: None),
+        swept('EmptyPlain', bw, lambda i, w: None, flag=False),
+        swept('Text', bw, lambda i, w: 'x'),
+        swept('TextLong', bw, lambda i, w: 'The quick brown fox'),
+        swept('One', bw, lambda i, w: 1),
+        swept('OnePlain', bw, lambda i, w: 1, flag=False),
+        swept('Figures3', [3] * 14, lambda i, w: int(figures[:i + 1])),
+        swept('Figures8', [8.43] * 14, lambda i, w: int(figures[:i + 1])),
+        swept('Figures3Plain', [3] * 14, lambda i, w: int(figures[:i + 1]), flag=False),
+        swept('Fixed2', [3, 5, 8, 12] * 3, lambda i, w: (1234.5 * 10 ** (i // 4), 5)),
+        swept('Dates', [3, 5, 8, 9.5546875, 12], lambda i, w: (44317, 7)),
+        swept('Bold', bw, lambda i, w: ('x', 3)),
+        swept('Halves', [4.5, 5.5, 6.25, 7.75, 8.86, 9.14, 10.71, 13.29], lambda i, w: 'x'),
+    ]
+    # The width a number needs in a column AutoFit left: columns of one character, each with a General number of 1 to
+    # 11 figures; numbers in formats (8 - 13: #,##0, "$"#,##0, #,##0_);(#,##0) of a negative, 0.0%, 0.00, d-mmm-yy)
+    # and letters as text. For `bestfit-figures-<face><size>` (the Normal font).
+    fmts = [(1234567, 8), (12345, 9), (-1234567, 10), (0.125, 11), (1.5, 12), (44317, 13), (-12, 10), (999, 8),
+            (1234567890, 8), (0.5, 11), (100, 9)]
+    out['bestfit-figures'] = [
+        swept('General', [1] * 11, lambda i, w: int(figures[:i + 1])),
+        swept('Formats', [1] * len(fmts), lambda i, w: fmts[i]),
+        swept('Wide', [12] * 6, lambda i, w: [1, 12345, 'x', (1234567, 8), (0.125, 11), 99999999][i]),
+        swept('Letters', [1] * 8, lambda i, w: int('1' * (i + 1)) if i < 4 else int('8' * (i - 3))),
+    ]
+    # Rows hidden in an AutoFilter's range by a filter of no criteria (its buttons hidden, as houseflipping's REPAIR
+    # ESTIMATOR): fit to a page wide and 6 tall, and broken by height.
+    hide = set(range(12, 181))
+    af = ('<autoFilter ref="A1:D200"><filterColumn colId="0" showButton="0"/><filterColumn colId="2" showButton="0"/>'
+          '</autoFilter>')
+    out['filter'] = [
+        sheet('FilterFit', block(1, 1, 200, 4), hidden=hide, autofilter=af, fmt=FIT,
+              setup='<pageSetup paperSize="1" orientation="portrait" fitToWidth="1" fitToHeight="6"/>'),
+        sheet('FilterBreaks', block(1, 1, 200, 4), hidden=hide, autofilter=af),
+        sheet('HiddenBreaks', block(1, 1, 200, 4), hidden=hide),
+    ]
     # A row of the Normal font as it prints: 60 rows of the default height (and gridlines), for `rowunit-<face><size>`.
     out['rowunit'] = [sheet('Rows', [(r, 1, f'r{r}', 0) for r in range(1, 61)])]
     return out
@@ -159,7 +216,12 @@ NORMAL = {'widths-arial12': ('widths', 'Arial', 12), 'widths-calibri12': ('width
           'heights-arial12': ('heights', 'Arial', 12), 'heights-cambria14': ('heights', 'Cambria', 14),
           'heights-aptosnarrow11': ('heights', 'Aptos Narrow', 11), 'heights-aptos11': ('heights', 'Aptos', 11),
           'heights-arial8': ('heights', 'Arial', 8), 'heights-calibri10': ('heights', 'Calibri', 10),
-          'widths-aptosnarrow11': ('widths', 'Aptos Narrow', 11)}
+          'widths-aptosnarrow11': ('widths', 'Aptos Narrow', 11),
+          'bestfit-sweep-arial10': ('bestfit-sweep', 'Arial', 10), 'bestfit-sweep-calibri14': ('bestfit-sweep', 'Calibri', 14)}
+BESTFIT_FONTS = [('Calibri', 11), ('Calibri', 9), ('Calibri', 10), ('Calibri', 12), ('Calibri', 16), ('Calibri', 20),
+                 ('Arial', 8), ('Arial', 10), ('Arial', 12), ('Arial', 14), ('Times New Roman', 12), ('Verdana', 10),
+                 ('Segoe UI Black', 11), ('Aptos Narrow', 11), ('Tahoma', 10)]
+NORMAL.update({f'bestfit-figures-{f.lower().replace(" ", "")}{z}': ('bestfit-figures', f, z) for f, z in BESTFIT_FONTS})
 NORMAL.update({f'rowunit-{f.lower().replace(" ", "")}{z}': ('rowunit', f, z) for f, z in ROWUNIT_FONTS})
 
 
@@ -169,9 +231,9 @@ def build(out, which):
         which, face, size = NORMAL[which]
         fonts = [f'<sz val="{size}"/><name val="{face}"/><family val="2"/>', f'<b/><sz val="{size}"/><name val="{face}"/><family val="2"/>']
     sheets = sets()[which]
-    xfs = XFS + ([DATE_XF] if which == 'bestfit' else [])
+    xfs = XFS + ([DATE_XF] if which.startswith('bestfit') else []) + (FIGURE_XFS if which.startswith('bestfit-figures') else [])
     styles = DECL + (
-        f'<styleSheet xmlns="{MAIN}">'
+        f'<styleSheet xmlns="{MAIN}">' + (FIGURE_NUMFMTS if which.startswith('bestfit-figures') else '') +
         f'<fonts count="{len(fonts)}">' + ''.join(f'<font>{f}</font>' for f in fonts) + '</fonts>'
         f'<fills count="{len(FILLS)}">' + ''.join(FILLS) + '</fills>'
         f'<borders count="{len(BORDERS)}">' + ''.join(BORDERS) + '</borders>'
@@ -188,6 +250,8 @@ def build(out, which):
         xml_rows = []
         for r in sorted(rows):
             ht = f' ht="{sh["heights"][r]}" customHeight="1"' if r in sh['heights'] else ''
+            if r in sh.get('hidden', ()):
+                ht += ' hidden="1"'
             if r in sh['rowstyles']:
                 ht += f' s="{sh["rowstyles"][r]}" customFormat="1"'
             cs = []
@@ -215,7 +279,7 @@ def build(out, which):
             merges = f'<mergeCells count="{len(sh["merges"])}">' + ''.join(f'<mergeCell ref="{m}"/>' for m in sh['merges']) + '</mergeCells>'
         parts.append(DECL + (
             f'<worksheet xmlns="{MAIN}" xmlns:r="{REL}">{sh["fmt"]}<sheetViews><sheetView{" tabSelected=\"1\"" if i == 0 else ""} workbookViewId="0"/></sheetViews>'
-            f'<sheetFormatPr defaultRowHeight="15"/>{cols}<sheetData>{"".join(xml_rows)}</sheetData>{merges}'
+            f'<sheetFormatPr defaultRowHeight="15"/>{cols}<sheetData>{"".join(xml_rows)}</sheetData>{sh.get("autofilter", "")}{merges}'
             f'{sh["options"]}{sh["margins"]}{sh["setup"]}{sh["breaks"]}</worksheet>'))
     names = ''.join(f'<definedName name="{n}" localSheetId="{i}">{escape(v)}</definedName>'
                     for i, sh in enumerate(sheets) for n, v in sh['names'])
