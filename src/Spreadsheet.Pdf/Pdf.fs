@@ -1335,7 +1335,16 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     float widthUnits / float ttf.UnitsPerEm * fontPt * 96.0 / 72.0
                 if text.Length = 0 then 0.0
                 elif List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf text then
-                    scaleWidth primaryTtf text
+                    // Excel prints at 600 dpi: the font as high as a whole number of dots (11 pt is 92, 11.04 pt in its
+                    // PDF), each character a whole number of dots wide (make-print-text-fixture.py: Calibri 11's 10
+                    // zeros 56.36 pt, 470 dots). Surrogate pairs and the like as a whole.
+                    let dots = System.Math.Round (fontPt * 600.0 / 72.0)
+                    if text |> Seq.exists System.Char.IsSurrogate then scaleWidth primaryTtf text
+                    else
+                        let mutable total = 0.0
+                        for c in text do
+                            total <- total + System.Math.Round (float (PdfFont.getTextWidth primaryTtf (string c)) / float primaryTtf.UnitsPerEm * dots)
+                        total * 96.0 / 600.0
                 else
                     let mutable total = 0.0
                     for (face, s) in segmentMixedByFont (primaryFace, primaryTtf) options.CjkFallback tryGetParsedFace bold text do

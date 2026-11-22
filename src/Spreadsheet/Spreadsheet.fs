@@ -248,34 +248,6 @@ let private excelLetterSpacing (zoom: float) (text: string) (fontPt: float) (fon
         let spacing = (excelTextWidth zoom text fontPt fontName bold italic - drawn) / float text.Length
         if abs spacing < 0.005 then 0.0 else spacing
 
-/// The lines Excel breaks a wrapped cell's text into on screen (checked in Excel 2019 on generated cells,
-/// synthetic-wrap-budget.xlsx: Calibri 11 and bold, Arial 10 and 11, at 100 %, 85 % and 70 %): its own
-/// line breaks kept, then as many words on a line as fit - a line fits while it is no wider (`measure`,
-/// screen pixels at the zoom: `excelTextWidth`) than `room`, the cell's width on screen less 5 px (bold
-/// Calibri 11 "Releasing Cost", 90 px, is one line in a column of 95 px, two in one of 94). A word wider
-/// than a line is broken between its characters.
-let private excelWrapLines (measure: string -> float) (room: float) (text: string) : string list =
-    [ for paragraph in text.Replace("\r\n", "\n").Split('\n') do
-        let words = paragraph.Split(' ')
-        let mutable line = ""
-        let mutable started = false
-        let lines = ResizeArray<string>()
-        for word in words do
-            let candidate = if started then line + " " + word else word
-            if not started || measure candidate <= room then
-                line <- candidate
-                started <- true
-            else
-                lines.Add line
-                line <- word
-            // A word (or the line it starts) wider than the room is broken between its characters.
-            while line.Length > 1 && measure line > room && not (line.Contains " ") do
-                let mutable cut = line.Length - 1
-                while cut > 1 && measure (line.Substring(0, cut)) > room do cut <- cut - 1
-                lines.Add (line.Substring(0, cut))
-                line <- line.Substring cut
-        lines.Add line
-        yield! lines ]
 
 /// Call `f` whenever the document's fonts finish loading (a face added to the page and loaded once
 /// a text asks for it); gives what stops it.
@@ -3793,7 +3765,7 @@ type Spreadsheet(container: Element) as this =
             // (Its own line breaks are kept.)
             add "white-space" "pre-line"
             add "word-wrap" "break-word"
-            // (The lines are broken where Excel breaks them, `excelWrapLines` below - a line no wider
+            // (The lines are broken where Excel breaks them, `CellText.excelWrapLines` below - a line no wider
             // than the cell less 5 px; text the browser wraps itself - justified, rich - within 3 px a side.)
             if look.IndentLeft = 0.0 then add "padding-left" "3px"
             if look.IndentRight = 0.0 then add "padding-right" "3px"
@@ -4016,7 +3988,7 @@ type Spreadsheet(container: Element) as this =
         // line (`excelLetterSpacing`), unless the text is drawn smaller to fit below.
         let mutable spacing = excelLetterSpacing zoom displayText look.FontSize look.FontName look.Bold look.Italic / zoom
         let mutable squeezed = false
-        // Wrapped text is broken into lines where Excel breaks it (`excelWrapLines`), each line drawn as
+        // Wrapped text is broken into lines where Excel breaks it (`CellText.excelWrapLines`), each line drawn as
         // wide as Excel draws it; not text that is justified or distributed, rich text, turned text.
         let wrappedLines =
             if look.Wrap && displayText <> "" && look.Rotation = 0
@@ -4024,7 +3996,7 @@ type Spreadsheet(container: Element) as this =
                && (model.RichRuns.IsEmpty || not (Map.containsKey addr model.RichRuns)) then
                 let screen = System.Math.Floor (w * zoom + 0.5)
                 let room = screen - 5.0 - (look.IndentLeft + look.IndentRight) * zoom
-                let lines = excelWrapLines (fun text -> excelTextWidth zoom text look.FontSize look.FontName look.Bold look.Italic) room displayText
+                let lines = CellText.excelWrapLines (fun text -> excelTextWidth zoom text look.FontSize look.FontName look.Bold look.Italic) room displayText
                 spacing <- 0.0
                 Some lines
             else None
