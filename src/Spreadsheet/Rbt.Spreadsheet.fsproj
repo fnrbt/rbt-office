@@ -13,7 +13,6 @@
     <Compile Include="GdiAdvances.fs" />
     <Compile Include="ExcelText.fs" />
     <Compile Include="Model.fs" />
-    <Compile Include="Sparklines.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
     <Compile Include="ErrorChecks.fs" />
@@ -35,6 +34,7 @@
     <Compile Include="Recalc.fs" />
     <Compile Include="ConditionalFormatting.fs" />
     <Compile Include="SheetOps.fs" />
+    <Compile Include="Sparklines.fs" />
     <Compile Include="ChartAuthoring.fs" />
     <Compile Include="Session.fs" />
     <Compile Include="MacroApi.fs" />

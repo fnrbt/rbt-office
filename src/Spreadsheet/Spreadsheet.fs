@@ -1501,50 +1501,18 @@ type Spreadsheet(container: Element) as this =
                 block)
           Display = (fun cell -> SpreadsheetCellText.cellDisplayTextIn model.Date1904 None 1.0e6 cell.Format cell.Value)
           Format = (fun code value -> SpreadsheetCellText.formatNumberWithCodeIn model.Date1904 code value) }
-    /// The values a sparkline's data formula (`'Sheet 2'!B2:H2`, a sheet's own cells without a name) names, one a
-    /// cell (None an empty or non-numeric one).
-    let sparklineValues (formula: string) : float option array =
-        let bang = formula.LastIndexOf '!'
-        let sheet, reference =
-            if bang < 0 then sheetNames.[activeSheetIndex], formula
-            else
-                let name = formula.Substring(0, bang).Trim()
-                (if name.StartsWith "'" && name.EndsWith "'" && name.Length >= 2 then name.Substring(1, name.Length - 2).Replace("''", "'") else name),
-                formula.Substring(bang + 1)
-        // (A sheet not converted yet - read lazily - is converted for it, as a linked picture's.)
-        match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(sheet, System.StringComparison.OrdinalIgnoreCase)) with
-        | Some index when index <> activeSheetIndex && isDeferredSheet sheets.[index] -> convertInPlace index
-        | _ -> ()
-        match SheetOps.tryParseRange (reference.Replace("$", "")) with
-        | Some range when (range.To.Row - range.From.Row + 1) * (range.To.Col - range.From.Col + 1) <= 4096 ->
-            match chartBlock sheet range.From.Row range.From.Col range.To.Row range.To.Col with
-            | Some rows ->
-                [| for row in rows do
-                     for cell in row do
-                         match cell |> Option.map (fun c -> unwrapFormulaValue c.Value) with
-                         | Some (CellValue.Number v) -> yield Some v
-                         | _ -> yield None |]
-            | None -> [||]
-        | _ -> [||]
-    /// The sparkline in a cell of the active sheet: its group, its values, and its vertical scale (its own lowest and
-    /// highest value, the group's, or the group's own numbers).
-    let sparklineIn (addr: CellAddress) : (SparklineGroup * float option array * (float * float)) option =
-        model.Sparklines
-        |> List.tryPick (fun group ->
-            group.Items
-            |> List.tryFind (fun (at, _) -> at = addr)
-            |> Option.bind (fun (_, formula) ->
-                let values = sparklineValues formula
-                let own = Rbt.Spreadsheet.Sparklines.range values
-                let all () = group.Items |> List.choose (fun (_, f) -> Rbt.Spreadsheet.Sparklines.range (sparklineValues f))
-                let pick (kind: string) (manual: float option) (ofOwn: float * float -> float) (ofAll: (float * float) list -> float) =
-                    match kind, manual with
-                    | "custom", Some v -> Some v
-                    | "group", _ -> (match all () with [] -> None | ranges -> Some (ofAll ranges))
-                    | _ -> own |> Option.map ofOwn
-                match pick group.MinAxis group.ManualMin fst (List.map fst >> List.min), pick group.MaxAxis group.ManualMax snd (List.map snd >> List.max) with
-                | Some low, Some high when values.Length > 0 -> Some (group, values, (low, high))
-                | _ -> None))
+    /// The same range lookup and group scaling as static paint and PDF.
+    let sparklineSourceFor (onSheet: int) : Rbt.Spreadsheet.Sparklines.Source =
+        fun sheet ->
+            let name = sheet |> Option.defaultValue sheetNames.[onSheet]
+            match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
+            | None -> None
+            | Some index ->
+                if index <> activeSheetIndex && isDeferredSheet sheets.[index] then convertInPlace index
+                let data = if index = activeSheetIndex then model else sheets.[index]
+                Some (fun row col -> getCell { Row = row; Col = col } data)
+    let sparklineIn (addr: CellAddress) =
+        Rbt.Spreadsheet.Sparklines.inCell (sparklineSourceFor activeSheetIndex) model.Sparklines addr
     /// Whether a block a chart read holds the cells it held then.
     let chartBlockStands (name: string, r0: int, c0: int, r1: int, c1: int, cells: CellData option [] []) : bool =
         match chartBlock name r0 c0 r1 c1 with
@@ -1974,7 +1942,11 @@ type Spreadsheet(container: Element) as this =
                     | SpreadsheetPaint.VClose -> canvasClosePath ctx
                 (match fill with Some c -> canvasFillPath ctx c | None -> ())
                 (match stroke with Some (c, w) -> canvasStrokePath ctx c w | None -> ())
-            | SpreadsheetPaint.Clipped (_, children) -> children |> List.iter drawVec
+            | SpreadsheetPaint.Clipped (rect, children) ->
+                canvasSave ctx
+                canvasClipRect ctx rect.X rect.Y rect.Width rect.Height
+                children |> List.iter drawVec
+                canvasRestore ctx
             | SpreadsheetPaint.VecGroup ((a, b, c, d, e, f), children) ->
                 canvasSave ctx
                 canvasTransform ctx a b c d e f
@@ -1983,7 +1955,7 @@ type Spreadsheet(container: Element) as this =
             | SpreadsheetPaint.FillRect (r, col) -> canvasFillRect ctx r.X r.Y r.Width r.Height col
             | SpreadsheetPaint.StrokeRect (r, col, w) -> canvasStrokeRect ctx r.X r.Y r.Width r.Height col w
             | _ -> ()
-        for painted in SpreadsheetPaint.buildViewportPaintItems model viewport do
+        for painted in SpreadsheetPaint.buildViewportPaintItemsWithSource (sparklineSourceFor activeSheetIndex) model viewport do
             // viewportClipFor narrows BodyZone to the area past the frozen
             // rows/cols so the body paint can't bleed into the pinned bands.
             let clip = SpreadsheetLayout.viewportClipFor model viewport painted.Zone
@@ -8782,7 +8754,13 @@ type Spreadsheet(container: Element) as this =
                 with error ->
                     reportError "drawing" (box error)
                     None
-            sheet, sheetNames.[index], SpreadsheetPaint.drawingOverlays sceneOf (Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes sheet)
+            let printed = Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes sheet
+            let overlays =
+                SpreadsheetPaint.drawingOverlays sceneOf printed
+                @ SpreadsheetPaint.sparklineOverlays (sparklineSourceFor index) sheet printed
+            // The shared cell painter also draws same-sheet marks. PDF uses
+            // overlays so nonactive and cross-sheet sources remain available.
+            { sheet with Sparklines = [] }, sheetNames.[index], overlays
         let chosen =
             match what with
             | "sheet" ->

@@ -237,7 +237,7 @@ let parseAllCharts (xlsxPath: string) : ChartPlacement list =
         |> List.ofSeq
     | _ -> []
 
-// ---- sparklines ----------------------------------------------------------
+// ---- cell-reference lookup for pivot locations ---------------------------
 
 let private colIndex0 (letters: string) =
     (letters |> Seq.fold (fun acc ch -> acc * 26 + (int (Char.ToUpper ch) - int 'A' + 1)) 0) - 1
@@ -246,97 +246,6 @@ let private parseRef (r: string) =
     let letters = r |> Seq.takeWhile Char.IsLetter |> Seq.toArray |> System.String
     let digits = r |> Seq.skipWhile Char.IsLetter |> Seq.toArray |> System.String
     (int digits - 1), colIndex0 letters
-
-/// Sheets in document (tab) order as (display name, "xl/worksheets/sheetN.xml")
-/// pairs, resolved through workbook.xml + its rels.
-let private sheetsInOrder (zip: ZipArchive) : (string * string) list =
-    match readEntry zip "xl/workbook.xml", readEntry zip "xl/_rels/workbook.xml.rels" with
-    | Some wb, Some rels ->
-        let relMap =
-            descendants "Relationship" (XDocument.Parse rels).Root
-            |> Seq.choose (fun r ->
-                match attr "Id" r, attr "Target" r with
-                | Some id, Some t -> Some (id, "xl/" + t.Replace("/xl/", "").TrimStart('/'))
-                | _ -> None)
-            |> Map.ofSeq
-        descendants "sheet" (XDocument.Parse wb).Root
-        |> Seq.choose (fun s ->
-            match attr "name" s, relId s |> Option.bind (fun id -> Map.tryFind id relMap) with
-            | Some name, Some file -> Some (name, file)
-            | _ -> None)
-        |> List.ofSeq
-    | _ -> []
-
-/// Numeric values of a single-row/column range, read from a sheet's XML.
-let private readRange (zip: ZipArchive) (sheetFile: string) (range: string) : float list =
-    match readEntry zip sheetFile with
-    | None -> []
-    | Some xml ->
-        let cells =
-            descendants "c" (XDocument.Parse xml).Root
-            |> Seq.choose (fun c ->
-                match attr "r" c, firstDesc "v" c with
-                | Some r, Some v -> Some (r, pf v.Value)
-                | _ -> None)
-            |> Map.ofSeq
-        match range.Split(':') with
-        | [| a; b |] ->
-            let r1, c1 = parseRef a
-            let r2, c2 = parseRef b
-            [ for r in (min r1 r2) .. (max r1 r2) do
-                for c in (min c1 c2) .. (max c1 c2) ->
-                    Map.tryFind (sprintf "%c%d" (char (int 'A' + c)) (r + 1)) cells ]
-            |> List.choose id
-        | _ -> []
-
-type SparkType = Line | Column | WinLoss
-type Sparkline =
-    { Row: int; Col: int; Values: float list
-      Color: string; NegColor: string; Type: SparkType }
-
-/// Parse the x14 sparkline groups on the sheet at `sheetIndex` (tab order),
-/// resolving each line's data range (which may live on another sheet). Honors
-/// the group `type` (line / column / stacked=win-loss) and the series +
-/// negative colors.
-let parseSparklines (xlsxPath: string) (sheetIndex: int) : Sparkline list =
-    use fs = File.OpenRead xlsxPath
-    use zip = new ZipArchive(fs, ZipArchiveMode.Read)
-    let sheets = sheetsInOrder zip
-    let fileMap = Map.ofList sheets
-    let accents = parseTheme zip
-    // Resolve an x14 color element (rgb="FFRRGGBB" or theme index) to #RRGGBB.
-    let colorOf (el: XElement option) (fallback: string) =
-        match el with
-        | Some cs ->
-            match attr "rgb" cs with
-            | Some hex when hex.Length = 8 -> "#" + hex.Substring 2
-            | _ ->
-                match attr "theme" cs |> Option.map int with
-                | Some i when i >= 4 && i - 4 < List.length accents -> List.item (i - 4) accents
-                | _ -> fallback
-        | None -> fallback
-    match sheets |> List.tryItem sheetIndex |> Option.bind (fun (_, f) -> readEntry zip f) with
-    | None -> []
-    | Some xml ->
-        [ for g in descendants "sparklineGroup" (XDocument.Parse xml).Root do
-            let color = colorOf (firstDesc "colorSeries" g) "#376092"
-            let negColor = colorOf (firstDesc "colorNegative" g) "#D00000"
-            let typ =
-                match attr "type" g with
-                | Some "column" -> Column
-                | Some "stacked" -> WinLoss
-                | _ -> Line
-            for sp in descendants "sparkline" g do
-                match firstDesc "f" sp, firstDesc "sqref" sp with
-                | Some fe, Some sq ->
-                    let row, col = parseRef sq.Value
-                    match fe.Value.Split('!') with     // "'Sheet Name'!B38:Y38"
-                    | [| sheetPart; rng |] ->
-                        match Map.tryFind (sheetPart.Trim('\'')) fileMap with
-                        | Some sf -> yield { Row = row; Col = col; Values = readRange zip sf rng; Color = color; NegColor = negColor; Type = typ }
-                        | None -> ()
-                    | _ -> ()
-                | _ -> () ]
 
 // ---- pivot tables (recompute from the cache) ------------------------------
 
@@ -763,54 +672,6 @@ let buildChart (spec: ChartSpec) (w: float) (h: float) : PaintItem list =
     | "scatter" -> buildScatterChart spec w h
     | "pie" -> buildPieChart spec w h
     | _ -> buildColumnChart spec w h
-
-/// Draw a sparkline inside its cell rect (Excel insets ~2px). Line scales the
-/// series between min and max; Column draws bars from a zero baseline
-/// (negatives below, in the negative color); WinLoss draws equal up/down bars.
-let buildSparkline (sp: Sparkline) (rect: Rect) : PaintItem list =
-    let values = sp.Values
-    let n = List.length values
-    let pad = 2.0
-    let x0, y0 = rect.X + pad, rect.Y + pad
-    let w, h = rect.Width - 2.0 * pad, rect.Height - 2.0 * pad
-    if n = 0 then [] else
-    match sp.Type with
-    | Line ->
-        if n < 2 then [] else
-        let lo, hi = List.min values, List.max values
-        let span = if hi - lo < 1e-9 then 1.0 else hi - lo
-        let pt i v = x0 + (float i / float (n - 1)) * w, y0 + h - ((v - lo) / span) * h
-        let segs = values |> List.mapi (fun i v -> let x, y = pt i v in if i = 0 then VMove (x, y) else VLine (x, y))
-        [ VecPath (segs, None, Some (sp.Color, 1.0)) ]
-    | Column ->
-        // Zero baseline always in view; bar heights scale to the data extent.
-        let lo = min 0.0 (List.min values)
-        let hi = max 0.0 (List.max values)
-        let span = if hi - lo < 1e-9 then 1.0 else hi - lo
-        let yOf v = y0 + h - ((v - lo) / span) * h
-        let zeroY = yOf 0.0
-        let slot = w / float n
-        let bw = max 1.0 (slot * 0.7)
-        [ for i in 0 .. n - 1 do
-            let v = List.item i values
-            let cx = x0 + (float i + 0.5) * slot
-            let yv = yOf v
-            let bh = abs (yv - zeroY)
-            if bh > 0.1 then
-                yield FillRect ({ X = cx - bw / 2.0; Y = min zeroY yv; Width = bw; Height = bh },
-                                (if v < 0.0 then sp.NegColor else sp.Color)) ]
-    | WinLoss ->
-        // Equal up (win) / down (loss) bars about the midline; zeros are blank.
-        let slot = w / float n
-        let bw = max 1.0 (slot * 0.7)
-        let midY = y0 + h / 2.0
-        let bh = h * 0.4
-        [ for i in 0 .. n - 1 do
-            let v = List.item i values
-            let cx = x0 + (float i + 0.5) * slot
-            if v <> 0.0 then
-                yield FillRect ({ X = cx - bw / 2.0; Y = (if v > 0.0 then midY - bh else midY); Width = bw; Height = bh },
-                                (if v < 0.0 then sp.NegColor else sp.Color)) ]
 
 /// Render a slicer: outer box, caption header, and a grid of item buttons
 /// (selected = white, filtered-out = grey).

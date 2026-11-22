@@ -6,6 +6,9 @@
 open Rbt.Spreadsheet.Model
 open Rbt.Spreadsheet.Pdf
 
+module Icons = Rbt.Spreadsheet.ConditionalFormatting
+module Painter = Rbt.Spreadsheet.Paint
+
 let mutable pass = 0
 let mutable fail = 0
 let ok label cond detail =
@@ -451,6 +454,73 @@ do
     ok "print: the grid 0.48 pt inside the margins" (text.Contains "50.88 " && text.Contains (sprintf "%g " (792.0 - 54.48))) ""
     ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
 
+
+// ----- Icon and sparkline artwork shared by DOM, native raster and PDF -----
+do
+    let rect : Rbt.Spreadsheet.Layout.Rect = { X = 100.0; Y = 20.0; Width = 75.0; Height = 30.0 }
+    let arrow = Painter.iconPaintItems "3Arrows" 2 rect Painter.VAlignBottom
+    let hasArrow =
+        match arrow with
+        | [ Painter.VecGroup ((_,_,_,_,x,y), [Painter.VecPath (segments,Some _,Some _)]) ] ->
+            x = 102.0 && y = 33.0 && segments.Length >= 7
+        | _ -> false
+    ok "icons: 16px paths at Excel's gutter" hasArrow (sprintf "%A" arrow)
+    ok "icons: half star clips same artwork"
+        (match Painter.iconPaintItems "3Stars" 1 rect Painter.VAlignMiddle with
+         | [ Painter.VecGroup (_, [_;Painter.Clipped (_,[_])]) ] -> true
+         | _ -> false)
+        (Icons.iconSvg "3Stars" 1)
+    let addr = { Row = 2; Col = 3 }
+    let group : SparklineGroup =
+        { Kind = "line"; SeriesColor = "#376092"; NegativeColor = "#FF0000"; AxisColor = "#000000"
+          MarkersColor = "#000000"; FirstColor = "#000000"; LastColor = "#000000"
+          HighColor = "#000000"; LowColor = "#000000"; Markers = false; High = false
+          Low = false; First = false; Last = false; Negative = false; DisplayXAxis = false
+          EmptyAs = "gap"; LineWeight = 1.0; MinAxis = "individual"; MaxAxis = "individual"
+          ManualMin = None; ManualMax = None; RightToLeft = false
+          Items = [addr, "'Sheet ''B'''!$A$1:$C$1"] }
+    let source : Rbt.Spreadsheet.Sparklines.Source =
+        fun name ->
+            if name = Some "Sheet 'B'" then
+                Some (fun row col ->
+                    if row = 0 && col <> 1 then Some (cell (Number (float (col+1)))) else None)
+            else None
+    let resolved = Rbt.Spreadsheet.Sparklines.inCell source [group] addr
+    ok "sparklines: quoted cross-sheet, gaps"
+        (match resolved with Some (_,v,(lo,hi)) -> v = [|Some 1.0;None;Some 3.0|] && lo = 1.0 && hi = 3.0 | _ -> false)
+        (sprintf "%A" resolved)
+    let grouped =
+        { group with MinAxis = "group"; MaxAxis = "group"
+                     Items = group.Items @ [{ Row = 3; Col = 3 }, "'Sheet ''B'''!$A$2:$C$2"] }
+    let groupSource : Rbt.Spreadsheet.Sparklines.Source =
+        fun name ->
+            if name = Some "Sheet 'B'" then
+                let own = source name |> Option.get
+                Some (fun row col ->
+                    if row = 0 then own row col
+                    elif row = 1 then Some (cell (Number (if col = 0 then -4.0 else 9.0)))
+                    else None)
+            else None
+    ok "sparklines: group bounds"
+        (match Rbt.Spreadsheet.Sparklines.inCell groupSource [grouped] addr with
+         | Some (_,_,(lo,hi)) -> lo = -4.0 && hi = 9.0
+         | _ -> false)
+        "group scaling includes other destinations' source data"
+    let model = { createEmpty 5 5 with Sparklines = [{ group with Markers = true }] }
+    let viewport : Rbt.Spreadsheet.Layout.Viewport =
+        { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
+          HeaderHeight = 0.0; RowHeaderWidth = 0.0; Measurer = None }
+    ok "sparklines: unpopulated destination"
+        (Painter.sparklineCellItems source model viewport |> List.length = 1
+         && Painter.sparklineOverlays source model model |> List.length = 1)
+        "a blank cell still carries its sparkline in PNG and PDF"
+    let printed = setColumnWidth addr.Col (2.0 * getColumnWidth addr.Col model) model
+    ok "sparklines: screen artwork scaled for PDF"
+        (match Painter.sparklineOverlays source model printed with
+         | [(_,_,_,_,w,_,[Painter.VecGroup ((sx,_,_,_,_,_),_)])] ->
+             w = getColumnWidth addr.Col printed && sx = 2.0
+         | _ -> false)
+        "PDF scales the screen-cell picture across the printed column"
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

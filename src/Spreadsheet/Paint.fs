@@ -482,6 +482,62 @@ let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
             known
     fun row -> match descents.TryGetValue row with | true, d -> d | _ -> 0.0
 
+/// Place the same 16-pixel paths the browser's icon SVG uses, without
+/// reparsing SVG (or rasterizing it at PDF resolution).
+let iconPaintItems (family: string) (index: int) (rect: Rect) (align: VerticalAlign) : PaintItem list =
+    let top =
+        match align with
+        | VAlignTop -> 3.0
+        | VAlignMiddle -> System.Math.Floor((rect.Height - 16.0) / 2.0) + 1.0
+        | VAlignBottom -> rect.Height - 17.0
+    let x, y = rect.X + 2.0, rect.Y + top
+    let toSeg = function
+        | Rbt.Spreadsheet.ConditionalFormatting.IconMove (a,b) -> VMove (a,b)
+        | Rbt.Spreadsheet.ConditionalFormatting.IconLine (a,b) -> VLine (a,b)
+        | Rbt.Spreadsheet.ConditionalFormatting.IconCurve (a,b,c,d,e,f) -> VCubic (a,b,c,d,e,f)
+        | Rbt.Spreadsheet.ConditionalFormatting.IconClose -> VClose
+    let parts =
+        [for part in Rbt.Spreadsheet.ConditionalFormatting.iconArtwork family index do
+            let mark = VecPath (part.Segments |> List.map toSeg, part.Fill, part.Stroke)
+            yield if part.ClipLeft then Clipped ({ X = 0.0; Y = 0.0; Width = 8.0; Height = 16.0 }, [mark]) else mark]
+    [VecGroup ((1.0,0.0,0.0,1.0,x,y),parts)]
+
+/// Convert a sparkline's shared cell-relative marks into renderer-neutral
+/// paths. Geometry is calculated once regardless of the target renderer.
+let sparklinePaintItems (group: SparklineGroup) (values: float option array) (scale: float * float) (rect: Rect) : PaintItem list =
+    let dot x y r color =
+        let k = 0.5522847498307936 * r
+        VecPath ([VMove(x+r,y); VCubic(x+r,y+k,x+k,y+r,x,y+r); VCubic(x-k,y+r,x-r,y+k,x-r,y)
+                  VCubic(x-r,y-k,x-k,y-r,x,y-r); VCubic(x+k,y-r,x+r,y-k,x+r,y); VClose],Some color,None)
+    let parts =
+        [for mark in Rbt.Spreadsheet.Sparklines.marks group values scale rect.Width rect.Height do
+            match mark with
+            | Rbt.Spreadsheet.Sparklines.SparkPath (points,color,width) ->
+                match points with
+                | (x,y)::tail -> yield VecPath (VMove(x,y)::[for a,b in tail -> VLine(a,b)],None,Some(color,width))
+                | [] -> ()
+            | Rbt.Spreadsheet.Sparklines.SparkBar (x,y,w,h,color) ->
+                yield FillRect ({ X=x; Y=y; Width=w; Height=h },color)
+            | Rbt.Spreadsheet.Sparklines.SparkDot (x,y,r,color) -> yield dot x y r color]
+    if List.isEmpty parts then [] else [VecGroup ((1.0,0.0,0.0,1.0,rect.X,rect.Y),parts)]
+
+/// Sparse sparkline destinations are not necessarily cells in model.Cells.
+/// Iterate their location references rather than the populated-cell list.
+let sparklineCellItems (source: Rbt.Spreadsheet.Sparklines.Source) (model: SpreadsheetModel) (viewport: Viewport) : (ViewportZone * PaintItem) list =
+    if model.Sparklines.IsEmpty then []
+    else
+        let visible = visibleRange model viewport
+        [for group in model.Sparklines do
+            for addr, _ in group.Items do
+                if addr.Row >= visible.StartRow && addr.Row < visible.EndRowExclusive
+                   && addr.Col >= visible.StartCol && addr.Col < visible.EndColExclusive then
+                    match Rbt.Spreadsheet.Sparklines.inCell source [group] addr with
+                    | Some (_,values,scale) ->
+                        let rect = cellRect model viewport addr.Row addr.Col
+                        for item in sparklinePaintItems group values scale rect do
+                            yield zoneForCell model addr.Row addr.Col,item
+                    | None -> ()]
+
 let private buildCellPaintItems (printOffset: (float * float * float) option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
     let padX = printPadXOf model
@@ -1085,30 +1141,12 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (m
                     let leftX = rightX - (triSize - float k)
                     yield zone, GridLine (leftX, topY + float k + 0.5, rightX, topY + float k + 0.5, color, 1.0)
 
-        // Pass 7: conditional-formatting icon-set indicator. The renderer
-        // has no icon artwork or circle primitive, so approximate with a
-        // small filled square in a low→high color (red → amber → green
-        // for a 3-set; interpolated for 4/5-sets). It conveys the same
-        // low/mid/high signal the real icons do. Drawn in the 16 px
-        // gutter the text was already indented past.
+        // Pass 6: Excel's 16-pixel icon, 2 px inside the left cell edge.
         for (cell, look, zone) in states do
-            let format = look.Format
-            match format.IconSet with
-            | Some icon when icon.Count > 1 ->
-                // The icon's colour, and its shape where the set is one of
-                // arrows or triangles (up for the highest, down for the lowest).
-                let glyph, color = Rbt.Spreadsheet.ConditionalFormatting.iconGlyph icon.Family icon.Index
-                let sz = 9.0
-                let iconX = cell.Rect.X + 3.0
-                let iconY = cell.Rect.Y + cell.Rect.Height / 2.0 - sz / 2.0
-                match glyph with
-                | "\u2191" | "\u25B2" ->
-                    yield zone, VecPath ([ VMove (iconX, iconY + sz); VLine (iconX + sz / 2.0, iconY); VLine (iconX + sz, iconY + sz); VClose ], Some color, None)
-                | "\u2193" | "\u25BC" ->
-                    yield zone, VecPath ([ VMove (iconX, iconY); VLine (iconX + sz, iconY); VLine (iconX + sz / 2.0, iconY + sz); VClose ], Some color, None)
-                | "\u2192" | "\u25AC" ->
-                    yield zone, FillRect ({ X = iconX; Y = iconY + sz / 2.0 - 1.5; Width = sz; Height = 3.0 }, color)
-                | _ -> yield zone, FillRect ({ X = iconX; Y = iconY; Width = sz; Height = sz }, color)
+            match look.Format.IconSet with
+            | Some icon when icon.Count > 1 && cell.Rect.Width > 0.0 && cell.Rect.Height > 0.0 ->
+                for part in iconPaintItems icon.Family icon.Index cell.Rect look.VerticalAlign do
+                    yield zone, part
             | _ -> ()
     ]
     // Text that runs over the cells beside its own (its clip is that run of
@@ -1365,6 +1403,24 @@ let drawingOverlays (sceneOf: string -> float -> float -> Rbt.Spreadsheet.Charts
             yield (drawing.Anchor.FromRow, drawing.Anchor.FromCol, drawing.Anchor.FromOffsetX, drawing.Anchor.FromOffsetY, rect.Width, rect.Height, items)
         | _ -> () ]
 
+/// Excel snapshots a sparkline in its screen cell, then stretches that
+/// picture to the cell's printed width/height. Resolve the marks in screen
+/// pixels first, and apply the same scale when placing the PDF overlay.
+let sparklineOverlays (source: Rbt.Spreadsheet.Sparklines.Source) (screen: SpreadsheetModel) (printed: SpreadsheetModel) : (int * int * float * float * float * float * PaintItem list) list =
+    [for group in screen.Sparklines do
+        for addr, _ in group.Items do
+            match Rbt.Spreadsheet.Sparklines.inCell source [group] addr with
+            | Some (_,values,scale) ->
+                let sw, sh = getColumnWidth addr.Col screen, getRowHeight addr.Row screen
+                let pw, ph = getColumnWidth addr.Col printed, getRowHeight addr.Row printed
+                if sw > 0.0 && sh > 0.0 && pw > 0.0 && ph > 0.0 then
+                    let rect = { X = 0.0; Y = 0.0; Width = sw; Height = sh }
+                    let artwork = sparklinePaintItems group values scale rect
+                    if not artwork.IsEmpty then
+                        yield addr.Row,addr.Col,0.0,0.0,pw,ph,
+                              [VecGroup ((pw/sw,0.0,0.0,ph/sh,0.0,0.0),artwork)]
+            | None -> ()]
+
 let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : PaintItem list =
     if model.Drawings.IsEmpty then []
     else
@@ -1377,7 +1433,7 @@ let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : Pain
                     yield DrawImage (placed, { ContentType = contentType; Data = data; Label = drawingLabel drawing })
                 | KeptObject _ -> yield! drawingFrameItems placed (drawingLabel drawing) ]
 
-let private buildStaticPaintItems printing (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+let private buildStaticPaintItems printing (source: Rbt.Spreadsheet.Sparklines.Source option) (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> applyFilterRowHeights
     [
         yield FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff")
@@ -1386,6 +1442,11 @@ let private buildStaticPaintItems printing (model: SpreadsheetModel) (viewport: 
         // absolute cell coordinates because ScrollX/Y are zero.
         for (_zone, item) in buildCellPaintItems printing model viewport do
             yield item
+        match source with
+        | Some source ->
+            for (_zone, item) in sparklineCellItems source model viewport do
+                yield item
+        | None -> ()
         // Pictures and placeholders for kept objects float over the cells.
         yield! buildDrawingPaintItems model viewport
         // Freeze divider lines on top of cell strokes but under any
@@ -1395,10 +1456,14 @@ let private buildStaticPaintItems printing (model: SpreadsheetModel) (viewport: 
         yield! buildFreezeDividerItems model viewport
     ]
 /// Paint a static screen snapshot, retaining screen border geometry.
-let buildPaintItems model viewport = buildStaticPaintItems None model viewport
+let buildPaintItemsWithSource source model viewport = buildStaticPaintItems None (Some source) model viewport
 
-/// Paint a print slice using printer-dot border geometry.
-let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some offset) model viewport
+/// Paint a print slice using printer-dot border geometry. Workbook sparkline overlays are supplied separately.
+let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some offset) None model viewport
+
+
+let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport) =
+    buildPaintItemsWithSource (Rbt.Spreadsheet.Sparklines.modelSource model) model viewport
 
 
 let private translatePaintItem viewport zone item =
@@ -1434,7 +1499,7 @@ let private translatePaintItem viewport zone item =
     | DrawImage (rect, image) -> DrawImage (tx rect, image)
     | Clipped _ -> item
 
-let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
+let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source) (model: SpreadsheetModel) (viewport: Viewport): ViewportPaintItem list =
     let model = model |> applyFilterRowHeights
     [
         yield { Zone = CornerZone
@@ -1504,6 +1569,8 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
 
         for (zone, item) in buildCellPaintItems None model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
+        for (zone, item) in sparklineCellItems source model viewport do
+            yield { Zone = zone; Item = translatePaintItem viewport zone item }
 
         // Drawing objects float over the cells and scroll with the body.
         for item in buildDrawingPaintItems model viewport do
@@ -1527,3 +1594,6 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                     FrozenColsZone
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
     ]
+
+let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport) =
+    buildViewportPaintItemsWithSource (Rbt.Spreadsheet.Sparklines.modelSource model) model viewport
