@@ -139,6 +139,42 @@ legend entries sit 1.5 pt further in than Excel's in a boxed legend; chartEx (wa
 chart sheets were not compared again (the probes read ChartObjects; the VM's Excel is stopped by other runs that kill
 it by name, so long probes are run in short pieces).
 
+## chartEx, chart sheets, colours and legends against Excel 2019, 2026-11-22
+
+The newer chart kinds (chartEx: histogram, Pareto, box and whisker, treemap, sunburst; waterfall and funnel again),
+chart sheets, and what the round above left. Fixtures made by Excel itself through COM on the VM
+(`build-chartex-zoo.vbs` -> synthetic-chartex-zoo.xlsx, 25 charts; `make-chartex-looks.py` -> synthetic-chartex-looks.xlsx,
+the same with what COM cannot set written into the parts; `chartsheet-probe.ps1` -> synthetic-chartsheets.xlsx;
+`make-chart-fixtures.py` -> synthetic-chart-colors.xlsx), each checked on Excel's pictures (Chart.Export, the window
+through PrintWindow) and COM (`chartex-treemap-probe.vbs`: the points' rectangles of 160 treemaps; `legacy-chart-probe.vbs`).
+Ours drawn with `render-charts.fsx` + `shoot-svgs.mjs`. Checks: stage52 "Excel 2019: chartEx", "chart sheet",
+"automatic colours", "shape's text"; stage55; xlsx-browser `charts-excel-parity`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A histogram's bins: from the least value (or the underflow), Scott's width - 3.5 x the sample standard deviation / n^(1/3) - to two significant digits, as many as reach the greatest; a set width or count; bins closed on the right `[a, b]`, `(a, b]` (`intervalClosed="l"`: `[a, b)` .. `[a, b]`), under- and overflow bins `≤ 100` / `> 800`, the last regular bin ending at the overflow; text categories a bar each (their values' sum) | 8 data sets of 5 - 200 values (100 values: 12.654 -> 13, `[11.87, 24.87]` .. `(76.87, 89.87]`; 183.1 -> 180; 0.304 -> 0.3; 5 values one bin `[2, 97]`), "HistCount", "HistWidth", "Hist2" | placeholder | `histogramBins` |
+| A Pareto chart: the bins from the most to the least, their running share a 2.25 pt line of the second accent on a 0 - 100 % axis at the right | "Pareto", "ParetoBins" (`(44.2, 61.2]` first) | placeholder | `classicOfChartEx` |
+| Box and whisker: quartiles QUARTILE.EXC's (`exclusive`) or .INC's; whiskers to the farthest values within 1.5 x the box; the mean's x, the points inside and outside (what a part that says nothing shows); the box and its lines the series' colour 80 % (#365B9D); a category's boxes side by side in the band less its gap (gapWidth 1: half a band) | "BoxCat", "BoxTwo" / "BoxInclusive" (1 .. 9, 30: 2.75 .. 8.25 / 3.25 .. 7.75, COM's boxes 0.818 the height) | placeholder | `boxFiguresOf`, `BoxesPlot` |
+| chartEx layout: the plot's box 6 pt in, 8 pt below the title (4.5 pt from the top), value labels 7.5 pt from their axis, category labels 6.5 pt below; text #595959, the title 14 pt not bold, labels 9 pt; axis lines and gridlines #D9D9D9, the frame #D9D9D9; a title that says nothing "Chart Title"; bars of a histogram touching, a pixel of white between | pictures of the zoo (Hist5: plot 28 .. 471 px, top gridline 42, labels 269 px) | classic margins (11 pt) | `ChartEx` layout constants |
+| A treemap: a strip at a time along the shorter side (a column where the rectangle is at least as wide as high), as many in it as bring the strip's smallest rectangle's width / height nearer 1 - not squarify's longer / shorter; each node's children in its rectangle, largest first; colours by the outer level's first row (the colours part: accents, then 60 % darker - the seventh #264478 -, ...); 1.5 pt white round each | `chartex-treemap-probe.vbs`: 160 of 160 flat treemaps (40 sets x 4 sizes; squarify's rule 128); the zoo's three treemaps | placeholder | `squarify`, `chartExColor` |
+| A treemap's labels: a tile's at its bottom left, the outer level's name at its top left over its children (`overlapping`) or in a grey banner #A6A6A6 a line high above them (`banner`); "A, 50" for a name and a value | "Treemap", "Treemap3", "TreemapFlat" of synthetic-chartex-looks | - | `layoutHierarchyChartEx` |
+| A sunburst: a hole and rings each the radius / (levels + 1), from twelve o'clock clockwise, largest first, children within their parent; labels along their part's middle radius, turned over on the left half, broken to the ring's width | "Sunburst" / "Sunburst3" / "SunburstFlat" (121 px: holes of 30, 40, 61) | placeholder | `layoutHierarchyChartEx` |
+| A waterfall's legend: squares 5.25 pt, text 5.25 pt after, 6.5 pt between; the plot 80 .. 257 px of 288 | "WaterNeg" (gridlines 80, 116, 151, 186, 222, 257) | legend 3 px high, plot 77 .. 260 | `layoutPlottedChartEx` |
+| A chart sheet: no cells; a grey window #F6F6F6; the page less its margins (Letter landscape, a chart sheet's default; 0.7 / 0.75 in) fitted to the window at a whole per cent when `zoomToFit` (Excel's default) - the page's fit, not the chart's -, else `zoomScale`; the page in the middle of the window, the chart in the middle of the page | `chartsheet-probe.ps1`: Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in 149 % in 1898 x 787 px; pandas-chartsheet 117 %; the chart at 415 px, 5 px down | the chart over an empty grid at 100 % | `chartSheetView`, `chartSheetPlacement`, `.spreadsheet-chartsheet` |
+| A chart of Excel's old API (`Charts.Add`, `ChartObjects.Add`: a part naming a chart style, no look of its own): title 18 pt bold, text 10 pt, gridlines, axes and frame #898989 | `legacy-chart-probe.vbs` (COM: 18, 10, #898989), the chart sheets' pictures | 10 pt title, black lines | parse defaults (`plain`) |
+| More than six series that state no colour: each round of six a shade or tint in linear light of the accents, round p of n series (p - q / 2) x 1.4 / (q + 2) from them, q = n / 6 whole | synthetic-chart-colors (7, 12, 13, 18, 19, 24, 25, 30, 36 series through COM: 7 -> 0.767 shades then tints #3B64AD / #8FA2D4; 12 -> 0.65 shades then the accents), each within a unit of 255 | the first six the accents, then lighter | `autoColorOf` |
+| Text in a shape and a legend's entries laid out by the face's design advances (no hinting) | e-commerce "Most Sold" 59.7 px (GDI 61) on a line in Excel's box of 60 px; "LegendBottom" 172 .. 309 px (ours 174 .. 305, was 166 .. 313) | GDI's hinted widths | `ExcelText.idealWidth` |
+| A legend's entries 5.85 pt apart in a row, square keys 0.55 of the text's size (4.94 pt at 9 pt), a side legend's entries 1.5 pt further in than its padding | COM's LegendKey / LegendEntry of "LegendRight" / "LegendBottom", pictures (keys 7 px in from the box) | 8 pt apart, 0.6, 5 px in | legend |
+
+Left: a Pareto chart's plot is about 6 px wider than Excel's (Excel leaves more room at both sides when there is a second
+axis); a box chart of one category draws its gridlines to the chart's right edge in Excel (ours stop at the plot); the box
+chart's points are 5 px circles (not measured); sunburst labels that do not fit their part are left out (Excel draws them
+broken or clipped: "Osaka" fits in Excel, ours "Osak / a"); a treemap's banner text 2 px low; map charts stay
+placeholders; the chartEx layout constants were measured at 360 x 216 pt only. A chart sheet's chart is the file's size
+(the drawing's `absoluteAnchor`; Excel recomputes it from the printer: 682.05 x 495.5 pt for 682.4 x 493.9); Excel's
+selection handles are not drawn; a chart sheet prints as before (Pagination is another branch's). Flat and broken category
+labels at bands under a pixel, marker shadows (styles 25 - 32) and the lighter markers of 41 - 48 were not taken up.
+
 ## Cell text at a zoom, 2026-11-21
 
 The browser grid's cell text against Excel 2019 at 50-200 % (`ExcelText`, `GdiAdvances`, `CellText.NumberFit`).
