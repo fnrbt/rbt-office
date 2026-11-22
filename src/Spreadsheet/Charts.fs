@@ -931,7 +931,7 @@ let private titleRuns (theme: ThemeColors) (title: XmlDsl.XmlNode) : (string * T
                 | _ -> None))
     | None -> []
 
-let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
+let private axisOf (theme: ThemeColors) (plain: string) (node: XmlDsl.XmlNode) : Axis option =
     let kind =
         match nameOf node with
         | "catAx" -> Some "cat"
@@ -959,8 +959,8 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
                 match child "spPr" lines |> Option.bind (strokeOf theme) with
                 | Some stroke -> stroke
                 // (Without a line of their own, Excel 2019 draws them black: the files it writes
-                // always give one, as light grey.)
-                | None -> { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None })
+                // always give one, as light grey. `plain`: a part of a chart style's, below.)
+                | None -> { Paint = FillColor (plain, 1.0); Width = 1.0; Dash = None })
           Title = child "title" node |> Option.bind titleText
           TitleStyle = child "title" node |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
           TitleRuns = child "title" node |> Option.map (titleRuns theme) |> Option.defaultValue []
@@ -969,7 +969,7 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
           Line =
             match child "spPr" node with
             | Some shape -> strokeOf theme shape
-            | None -> Some { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None }
+            | None -> Some { Paint = FillColor (plain, 1.0); Width = 1.0; Dash = None }
           LabelsShown = valOf "tickLblPos" node <> Some "none"
           CrossesId = valOf "crossAx" node
           OnTicks = valOf "crossBetween" node = Some "midCat"
@@ -1329,6 +1329,11 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                         name.EndsWith "Chart" && (plotOf theme item).IsNone)
                 if known.IsEmpty || unknown then None
                 else
+                    // (A part that names a chart style - `c:style`, as Excel's own old API writes one: Charts.Add, ChartObjects.Add -
+                    // and no look of its own: Excel 2019 draws its lines and frame #898989, its title 18 pt bold, its text 10 pt
+                    // - legacy-chart-probe.vbs, synthetic-chartsheets.xlsx. One that names no style - openpyxl's - black lines.)
+                    let styled = kids space |> List.collect flattened |> List.exists (fun item -> nameOf item = "style")
+                    let plain = if styled then "#898989" else "#000000"
                     let shape = child "spPr" space
                     let pivot = (child "pivotSource" space).IsSome
                     let limit (reference: DataRef option) =
@@ -1348,11 +1353,13 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                                             BubbleSizes = limit series.BubbleSizes })
                                 { plot with Series = series })
                     Some { Title = child "title" chart |> Option.bind titleText
-                           TitleStyle = child "title" chart |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
+                           TitleStyle =
+                             child "title" chart |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
+                             |> fun style -> if styled && (child "txPr" space).IsNone then { style with Size = style.Size |> Option.orElse (Some 18.0) } else style
                            TitleRuns = child "title" chart |> Option.map (titleRuns theme) |> Option.defaultValue []
                            AutoTitleDeleted = isOn (valOf "autoTitleDeleted" chart) false || (child "title" chart).IsNone
                            Plots = plots
-                           Axes = items |> List.choose (axisOf theme)
+                           Axes = items |> List.choose (axisOf theme plain)
                            Legend =
                              child "legend" chart
                              |> Option.map (fun legend ->
@@ -1377,7 +1384,7 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                            Border =
                              match shape with
                              | Some shape -> strokeOf theme shape
-                             | None -> Some { Paint = FillColor ("#868686", 1.0); Width = 1.0; Dash = None }
+                             | None -> Some { Paint = FillColor ((if styled then "#898989" else "#868686"), 1.0); Width = 1.0; Dash = None }
                            PlotBackground = child "spPr" area |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                            PlotBorder = child "spPr" area |> Option.bind (strokeOf theme)
                            TextStyle = textPropsOf theme space
@@ -4633,3 +4640,49 @@ let chartSheets (chart: Chart) : string list =
     |> List.choose (fun source -> source.Formula |> Option.bind parseAreas)
     |> List.collect (fun areas -> areas |> List.map (fun (sheet, _, _, _, _) -> sheet))
     |> List.distinct
+
+// ---------------------------------------------------------------------------
+// Chart sheets
+// ---------------------------------------------------------------------------
+
+/// How a chart sheet is shown (its part's `sheetView`) and the page it prints on (`pageSetup`, `pageMargins`).
+type ChartSheetView = {
+    /// The chart's page fitted to the window (`zoomToFit`, what Excel writes for a chart sheet by default).
+    ZoomToFit: bool
+    /// The zoom otherwise (`zoomScale`), in per cent.
+    ZoomScale: float
+    /// The page less its margins, in points.
+    PageWidth: float
+    PageHeight: float
+}
+
+/// A chart sheet's view from its part: a page of Letter (`paperSize`), landscape unless it says portrait (a chart
+/// sheet's default), less margins of 0.7 in left and right and 0.75 in top and bottom unless it names its own.
+let chartSheetView (xml: string) : ChartSheetView =
+    let root = try Some (XmlDsl.parse xml) with _ -> None
+    let find (name: string) = root |> Option.bind (fun node -> descendants name node |> List.tryHead)
+    let view = find "sheetView"
+    let setup = find "pageSetup"
+    let margins = find "pageMargins"
+    let margin (name: string) (otherwise: float) = margins |> Option.bind (attr name) |> Option.bind number |> Option.defaultValue otherwise
+    let paperWidth, paperHeight = paperSizePoints (setup |> Option.bind (attr "paperSize") |> Option.bind number |> Option.map int |> Option.defaultValue 1)
+    let portrait = (setup |> Option.bind (attr "orientation")) = Some "portrait"
+    let pageWidth, pageHeight = if portrait then paperWidth, paperHeight else paperHeight, paperWidth
+    { ZoomToFit = isOn (view |> Option.bind (attr "zoomToFit")) false
+      ZoomScale = view |> Option.bind (attr "zoomScale") |> Option.bind number |> Option.filter (fun zoom -> zoom >= 10.0) |> Option.defaultValue 100.0
+      PageWidth = max 1.0 (pageWidth - 72.0 * (margin "left" 0.7 + margin "right" 0.7))
+      PageHeight = max 1.0 (pageHeight - 72.0 * (margin "top" 0.75 + margin "bottom" 0.75)) }
+
+/// Where Excel 2019 shows a chart sheet's chart of `chartWidth` x `chartHeight` px (at 100 %) in a window of
+/// `windowWidth` x `windowHeight` px: the zoom, the chart's left and top. Fitted to the window (`zoomToFit`), the zoom
+/// is the whole per cent at which the page less its margins fits it; the page is centred in the window, the chart in
+/// the page (chartsheet-probe.ps1: Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in 149 % in a
+/// window of 1898 x 787 px - each the page's fit, not the chart's -; the chart at 415 px of 1898, 5 px down).
+let chartSheetPlacement (view: ChartSheetView) (windowWidth: float) (windowHeight: float) (chartWidth: float) (chartHeight: float) : float * float * float =
+    let pageWidth, pageHeight = view.PageWidth * 4.0 / 3.0, view.PageHeight * 4.0 / 3.0
+    let zoom =
+        if view.ZoomToFit then max 0.1 (Math.Floor (100.0 * min (windowWidth / pageWidth) (windowHeight / pageHeight) + 1e-9) / 100.0)
+        else view.ZoomScale / 100.0
+    let left = max 0.0 ((windowWidth - pageWidth * zoom) / 2.0) + (pageWidth - chartWidth) * zoom / 2.0
+    let top = max 0.0 ((windowHeight - pageHeight * zoom) / 2.0) + (pageHeight - chartHeight) * zoom / 2.0
+    zoom, max 0.0 left, max 0.0 top

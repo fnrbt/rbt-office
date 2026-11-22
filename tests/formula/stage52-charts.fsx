@@ -628,5 +628,29 @@ ok "Excel 2019: ... of three levels rings of a quarter of the radius, labels alo
     (sunPaths (zooScene 22) |> List.exists (fun (d, _) -> d.Contains "A 30.4") && allTexts (looksExScene 22).Items |> List.exists (fun (v, _, _, _, _, _, t) -> v = "Tokyo" && t < -10.0 && t > -80.0))
     (sprintf "%A" (allTexts (looksExScene 22).Items))
 
+// Chart sheets (chartsheet-probe.ps1 on synthetic-chartsheets.xlsx, a window of 1898 x 787 px): the page less its
+// margins fitted to the window at a whole per cent (Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in
+// 149 %), the chart in the middle of the page.
+let sheetView (setup: string) = Charts.chartSheetView (sprintf "<chartsheet><sheetViews><sheetView zoomScale=\"111\" zoomToFit=\"1\"/></sheetViews>%s</chartsheet>" setup)
+let fitted (setup: string) (chartW: float) (chartH: float) = Charts.chartSheetPlacement (sheetView setup) 1898.0 787.0 chartW chartH
+ok "Excel 2019: a chart sheet's page fitted to its window: Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in 149 %"
+    ([ fitted "" 909.4 660.7; fitted "<pageSetup orientation=\"portrait\"/>" 670.9 901.2; fitted "<pageSetup paperSize=\"9\" orientation=\"landscape\"/>" 976.9 638.0
+       fitted "<pageMargins left=\"2\" right=\"2\" top=\"1.5\" bottom=\"1.5\" header=\"0.3\" footer=\"0.3\"/>" 661.1 517.5 ]
+     |> List.map (fun (zoom, _, _) -> Math.Round (zoom * 100.0)) = [ 117.0; 86.0; 121.0; 149.0 ])
+    (sprintf "%A" (fitted "" 909.4 660.7))
+ok "Excel 2019: ... the chart in the middle of the page, the page of the window (Excel: 415 px, 5 px down)"
+    (let _, left, top = fitted "" 909.4 660.7 in abs (left - 417.0) < 3.0 && abs (top - 5.6) < 2.0) (sprintf "%A" (fitted "" 909.4 660.7))
+ok "Excel 2019: ... a chart sheet not fitted to its window at its own zoom" ((let zoom, _, _ = Charts.chartSheetPlacement (Charts.chartSheetView "<chartsheet><sheetViews><sheetView zoomScale=\"119\"/></sheetViews></chartsheet>") 1898.0 787.0 909.0 660.0 in zoom) = 1.19) ""
+// A chart of Excel's old API (ChartObjects.Add, Charts.Add: a part naming a chart style and no look): its title 18 pt
+// bold, lines and frame #898989 (legacy-chart-probe.vbs).
+let legacyWb, legacyBook, legacyParts, legacyTheme = openBook "test-documents-excel/synthetic-chartsheets.xlsx"
+let legacy = Charts.parseChart legacyTheme (text legacyParts.["xl/charts/chart1.xml"]) |> Option.get
+let legacyScene = Charts.layoutChart legacyTheme noData legacy 909.0 660.0
+ok "Excel 2019: a chart of the old API: its title 18 pt bold, its gridlines and frame #898989"
+    (allTexts legacyScene.Items |> List.exists (fun (v, _, _, size, _, bold, _) -> v = "Landscape" && abs (size - 24.0) < 0.01 && bold)
+     && legacy.Axes |> List.exists (fun axis -> axis.Gridlines |> Option.exists (fun g -> g.Paint = Charts.FillColor ("#898989", 1.0)))
+     && legacy.Border |> Option.exists (fun b -> b.Paint = Charts.FillColor ("#898989", 1.0)))
+    (sprintf "%A" (allTexts legacyScene.Items |> List.truncate 3))
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

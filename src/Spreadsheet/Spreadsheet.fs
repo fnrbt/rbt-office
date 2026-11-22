@@ -1053,6 +1053,9 @@ type Spreadsheet(container: Element) as this =
     let mutable layers: GridLayers option = None
     /// The lines Excel draws along the edges of frozen panes (made on first use, in the frozen corner's pane).
     let mutable freezeLines: (Element * Element) option = None
+    /// A chart sheet's view over the grid (see renderChartSheet), and what it was last drawn for.
+    let mutable chartSheetLayer: Element option = None
+    let mutable chartSheetDrawn = ""
     /// The cells Excel's background error checks mark (`ErrorChecks`), for the cells and the ignored checks they
     /// were found for.
     let mutable errorMarks : (obj * obj * Map<CellAddress, string>) option = None
@@ -4926,6 +4929,7 @@ type Spreadsheet(container: Element) as this =
                 let y = if pane = 1 || pane = 3 then 0.0 else dy
                 setStyle node "transform" (sprintf "translate(%.2fpx,%.2fpx)" x y)
         renderPictureFrame content
+        renderChartSheet ()
 
     /// The page break preview (`viewMode`): every page the sheet prints on (`paginatePrinted`,
     /// what the PDF export lays out and `GetPrintPages` reports) that is in view is a frame over
@@ -4994,6 +4998,56 @@ type Spreadsheet(container: Element) as this =
     /// The frame around the selected picture, with its eight handles. While
     /// the picture is dragged, the frame and the picture are where the drag
     /// has them (the model changes when the mouse is released).
+    /// A chart sheet as Excel 2019 shows one: no cells, a grey window (#F6F6F6), its chart in the middle of its page
+    /// fitted to the window (`zoomToFit`, a chart sheet's default) or at its zoom (`Charts.chartSheetPlacement`).
+    and renderChartSheet () =
+        match gridContainer with
+        | Some grid when sheetKindAt activeSheetIndex = "chartsheet" ->
+            let host = parentOf grid
+            let layer =
+                match chartSheetLayer with
+                | Some layer when not (isNull (box (parentOf layer))) && isChildOf layer host -> layer
+                | _ ->
+                    let layer = createElement "div"
+                    setClassName layer "spreadsheet-chartsheet"
+                    appendChild host layer
+                    chartSheetLayer <- Some layer
+                    chartSheetDrawn <- ""
+                    layer
+            // (Over the whole grid, headers too: in screen pixels, whatever the sheet's own zoom.)
+            let width, height = getClientWidth grid, getClientHeight grid
+            setCssText layer (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;background:#F6F6F6;overflow:hidden;z-index:1000"
+                                (getBoundingLeft grid - getBoundingLeft host) (getBoundingTop grid - getBoundingTop host) width height)
+            let view =
+                match xlsxSource, model.SourceSheet with
+                | Some source, Some origin when origin.Book = source.Id ->
+                    source.Workbook.Sheets |> List.tryItem origin.Sheet
+                    |> Option.bind (fun sheet -> sheet.Extras.SourcePart)
+                    |> Option.bind (fun (path, _) -> source.Workbook.Preserved.SourceParts |> List.tryFind (fun (known, _) -> known = path))
+                    |> Option.map (fun (_, bytes) -> SpreadsheetCharts.chartSheetView (System.Text.Encoding.UTF8.GetString bytes))
+                | _ -> None
+                |> Option.defaultValue (SpreadsheetCharts.chartSheetView "")
+            match model.Drawings |> List.tryFind (fun drawing -> match drawing.Content with KeptObject _ -> true | Picture _ -> false) with
+            | Some ({ Content = KeptObject (_, xml) } as drawing) ->
+                let rect = SpreadsheetLayout.drawingRect model drawing
+                let zoom, left, top = SpreadsheetCharts.chartSheetPlacement view width height rect.Width rect.Height
+                let key = sprintf "%d|%d|%.0f|%.0f|%g|%g|%g" activeSheetIndex drawing.Id rect.Width rect.Height zoom left top
+                if key <> chartSheetDrawn then
+                    match drawingSvg drawing xml rect.Width rect.Height with
+                    | Some (svg, _) ->
+                        chartSheetDrawn <- key
+                        setInnerHtml layer
+                            (sprintf "<div style=\"position:absolute;left:%.1fpx;top:%.1fpx;width:%.1fpx;height:%.1fpx;transform:scale(%g);transform-origin:0 0;background:#FFFFFF\">%s</div>"
+                                left top rect.Width rect.Height zoom svg)
+                    | None -> ()
+            | _ -> ()
+        | _ ->
+            match chartSheetLayer with
+            | Some layer ->
+                setStyle layer "display" "none"
+                chartSheetDrawn <- ""
+            | None -> ()
+
     and renderPictureFrame (content: Element) =
         let selected =
             match selectedPicture with
