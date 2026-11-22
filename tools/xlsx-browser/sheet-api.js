@@ -3592,10 +3592,10 @@ checks['api-recalc-order'] = async () => {
         // A circular reference across two sheets.
         both((grid) => { grid.EnterText(0, 3, '=Two!D1+1'); grid.EnterText(1, 3, '=D1*2'); grid.EnterText(2, 3, '=1+1'); grid.SwitchSheet(1); grid.EnterText(0, 3, '=Sheet1!D1+1'); grid.SwitchSheet(0); });
         now = shown('Sheet1!D1:D3');
-        // (The formula typed last has the value it was given when typed - Excel's 0 is left: the editor
-        // calculates a formula once as it is entered, before the recalculation.)
+        // Excel 2019: the freshly entered cycle-closing formula has no cached
+        // result and shows zero; existing cycle cells and their readers retain theirs.
         check('a formula that reads itself through another sheet: not calculated, the values they had, what reads them too, others calculated',
-            [now.kind, now.same, now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], ['incremental', true, ['1', '2', '2'], '2']);
+            [now.kind, now.same, now.rows.map((row) => row[0]), texts(incremental.grid, 'Two!D1')[0][0]], ['incremental', true, ['1', '2', '2'], '0']);
         both((grid) => grid.EnterText(5, 0, '7'));
         check('an edit beside the cycle is incremental', [shown('Sheet1!A6:A6').kind, texts(incremental.grid, 'Sheet1!D1')[0][0]], ['incremental', '1']);
         both((grid) => { grid.SwitchSheet(1); grid.EnterText(0, 3, '4'); grid.SwitchSheet(0); });
@@ -3606,7 +3606,7 @@ checks['api-recalc-order'] = async () => {
         const grid = incremental.grid;
         check('iterative calculation is off in a new workbook', grid.GetIterativeCalculation(), { enabled: false, maxIterations: 100, maxChange: 0.001 });
         grid.EnterText(0, 5, '1000'); grid.EnterText(0, 6, '=F1+Two!F1'); grid.SwitchSheet(1); grid.EnterText(0, 5, '=Sheet1!G1*0.1'); grid.SwitchSheet(0);
-        check('a loan and its interest without it: not calculated (the total as it was, the interest as typed)', [grid.GetCell(0, 6).value, grid.GetRange('Two!F1')[0][0].value], [1000, 100]);
+        check('a loan and its interest without it: not calculated (the total as it was, the new interest zero)', [grid.GetCell(0, 6).value, grid.GetRange('Two!F1')[0][0].value], [1000, 0]);
         const revision = grid.GetRevision();
         let changes = 0;
         const off = grid.OnChange(() => changes++);
