@@ -481,6 +481,11 @@ let private observeResize (el: Element) (callback: unit -> unit): unit -> unit =
 [<Emit("($0.parentNode ? $0.parentNode.removeChild($0) : undefined)")>]
 let private detach (el: Element): unit = jsNative
 
+/// The room of a cell's data bar, pixels: from 2 px right of the cell's left grid line to 2 px short of its right one
+/// - 61 px of a 64-px column, as Excel 2019 draws a full bar (synthetic-data-bars.xlsx: 456 .. 516 between the lines
+/// at 454 and 518); a bar is a whole number of pixels of it (25 % 15 px, 50 % 31, 75 % 46).
+let private dataBarRoom (cellWidth: float) = max 0.0 (cellWidth - 3.0)
+
 [<Emit("$0.addEventListener($1, $2)")>]
 let private addListenerRaw (target: Element) (eventName: string) (handler: obj): unit = jsNative
 
@@ -4134,13 +4139,14 @@ type Spreadsheet(container: Element) as this =
         let mutable barDraw : DataBarDraw option = None
         match look.DataBar with
         | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
-            // A plain bar, behind the text, two pixels in from the cell's grid lines all round as Excel draws it.
-            let percent = int (System.Math.Round (draw.To * 100.0))
-            add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
+            // A plain bar, behind the text, in the bar's room (`dataBarRoom`), whole pixels long as Excel draws it.
+            let room = dataBarRoom w
+            let length = System.Math.Floor (draw.To * room + 0.5)
+            add "background-image" ("linear-gradient(" + draw.Color + "," + draw.Color + ")")
             add "background-repeat" "no-repeat"
             add "background-position" "2px 2px"
-            add "background-size" "calc(100% - 4px) calc(100% - 4px)"
-            bar <- percent
+            add "background-size" (string length + "px calc(100% - 4px)")
+            bar <- int (System.Math.Round (draw.To * 100.0))
         | Some draw ->
             // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
             bar <- int (System.Math.Round ((draw.To - draw.From) * 100.0))
@@ -4385,29 +4391,51 @@ type Spreadsheet(container: Element) as this =
         match barDraw with
         | Some draw ->
             let percent (fraction: float) = string (System.Math.Round (fraction * 10000.0) / 100.0) + "%"
+            let roomWidth = dataBarRoom w
+            let at (fraction: float) = System.Math.Floor (fraction * roomWidth + 0.5)
+            // (With an axis - a dashed line on its pixel, floor of its place - a negative bar ends at the pixel before
+            // it and a positive one starts at the pixel after it: synthetic-data-bars.xlsx's axis 32 px right of the
+            // grid line, -2 to 31, 2 from 33.)
+            let axisPx = draw.Axis |> Option.map (fun (axis, _) -> axis, System.Math.Floor (axis * roomWidth))
+            // (Without one a bar is its length in whole pixels from where it grows: a bar right to left of 50 % is the
+            // room's last 31 px, as its first 31 left to right.)
+            let left, right =
+                match axisPx with
+                | Some (axis, px) ->
+                    (if abs (draw.From - axis) < 1e-9 then px + 1.0 else at draw.From), (if abs (draw.To - axis) < 1e-9 then px else at draw.To)
+                | None ->
+                    let length = at (draw.To - draw.From)
+                    if draw.FadeRight then at draw.From, at draw.From + length
+                    else at draw.To - length, at draw.To
             let fill = createElement "div"
             setClassName fill "spreadsheet-cf-bar"
+            // (A gradient fades from the bar's colour to 85 % of the way to white at its far end, each channel - not to
+            // white: synthetic-data-bars.xlsx, six colours in Excel 2019 - each pixel the colour at its left edge.)
             let background =
-                if draw.Gradient then "linear-gradient(to " + (if draw.FadeRight then "right" else "left") + ", " + draw.Color + ", #FFFFFF)"
+                if draw.Gradient then
+                    "linear-gradient(to " + (if draw.FadeRight then "right" else "left") + ", " + draw.Color + " 0.5px, "
+                    + Rbt.Spreadsheet.ConditionalFormatting.dataBarFadeColor draw.Color + " calc(100% + 0.5px))"
                 else draw.Color
             setCssText fill
-                ("position:absolute;box-sizing:border-box;top:2px;bottom:2px;left:" + percent draw.From + ";width:" + percent (draw.To - draw.From)
-                 + ";background:" + background + (match draw.Border with Some line -> ";border:1px solid " + line | None -> "")
+                ("position:absolute;box-sizing:border-box;top:2px;bottom:2px;left:" + string left + "px;width:" + string (max 0.0 (right - left))
+                 + "px;background:" + background + (match draw.Border with Some line -> ";border:1px solid " + line | None -> "")
                  + ";z-index:-1;pointer-events:none")
             setAttribute fill "data-cf-bar-from" (percent draw.From)
+            setAttribute fill "data-cf-bar-width" (percent (draw.To - draw.From))
             setAttribute fill "data-cf-bar-color" draw.Color
-            // (The bar's room: from 2 px right of the cell's left grid line to 2 px short of its right one - a full bar
-            // in a 64-px column is pixels 2 .. 61, as Excel 2019 draws it.)
+            // (The bar's room, `dataBarRoom`.)
             let room = createElement "div"
             setClassName room "spreadsheet-cf-bar-room"
-            setCssText room "position:absolute;left:2px;right:2px;top:0;bottom:0;z-index:-1;pointer-events:none"
+            setCssText room ("position:absolute;left:2px;width:" + string roomWidth + "px;top:0;bottom:0;z-index:-1;pointer-events:none")
             appendChild cell room
             if draw.To > draw.From then appendChild room fill
             match draw.Axis with
             | Some (at, color) ->
                 let axis = createElement "div"
                 setClassName axis "spreadsheet-cf-axis"
-                setCssText axis ("position:absolute;top:0;bottom:0;left:" + percent at + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
+                let axisLeft = match axisPx with Some (_, px) -> string px + "px" | None -> percent at
+                setAttribute axis "data-cf-axis" (percent at)
+                setCssText axis ("position:absolute;top:0;bottom:0;left:" + axisLeft + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
                 appendChild room axis
             | None -> ()
         | None -> ()

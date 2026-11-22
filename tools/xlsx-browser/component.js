@@ -2315,3 +2315,29 @@ checks['controls-excel-parity'] = async () => {
     close();
     return lines;
 };
+
+// Data bars as Excel 2019 draws them (tools/excel-parity/build-data-bars.vbs: synthetic-data-bars.xlsx, checked with
+// shoot-sheets.ps1): a bar's room 61 px of a 64-px column from 2 px right of the left grid line, a bar a whole number of
+// pixels of it (from where it grows), a gradient fading to 85 % of the way to white, an axis on a pixel of its own.
+checks['databars-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const bar = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-bar`);
+    const room = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-bar-room`);
+    const extent = (row, col) => { const b = bar(row, col); return b ? [parseFloat(b.style.left), parseFloat(b.style.width)] : null; };
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-data-bars.xlsx')).slice());
+        await frame();
+        check('the room of a 64-px column: 61 px from 2 px in', [room(0, 2)?.style.left, room(0, 2)?.style.width], ['2px', '61px']);
+        check('gradient bars of 1 .. 5: none, 15, 31, 46, 61 px from the left (25 % 15.25, 50 % 30.5, 75 % 45.75)', [1, 2, 3, 4, 5].map((col) => extent(0, col)), [null, [0, 15], [0, 31], [0, 46], [0, 61]]);
+        check('... fading from #638EC6 to #E8EEF6 (85 % to white), #FF0000 to #FFD9D9, #000080 to #D9D9EC',
+            [0, 1, 4].map((row) => (getComputedStyle(bar(row, 5)).backgroundImage.match(/rgb\([^)]*\)/g) || []).join(' ')),
+            ['rgb(99, 142, 198) rgb(232, 238, 246)', 'rgb(255, 0, 0) rgb(255, 217, 217)', 'rgb(0, 0, 128) rgb(217, 217, 236)']);
+        check('right to left: the same lengths from the right end', [2, 3, 4, 5].map((col) => extent(6, col)), [[46, 15], [30, 31], [15, 46], [0, 61]]);
+        const axisAt = (row, col) => parseFloat(host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-axis`)?.style.left);
+        check('-2 .. 2 with an automatic axis: the axis 30 px in (32 right of the grid line), -2 up to it, 2 from the pixel after it',
+            [axisAt(7, 1), extent(7, 1), extent(7, 5)], [30, [0, 30], [31, 30]]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
