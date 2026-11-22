@@ -4200,6 +4200,7 @@ type Spreadsheet(container: Element) as this =
                     setTextContent cell ""
                     for line in lines do
                         let span = createElement "span"
+                        setClassName span "spreadsheet-line"
                         setTextContent span line
                         let lineSpacing = excelLetterSpacing zoom line look.FontSize look.FontName look.Bold look.Italic / zoom
                         setCssText span ("display:block;white-space:pre" + (if lineSpacing = 0.0 then "" else ";letter-spacing:" + cssPxFine lineSpacing))
