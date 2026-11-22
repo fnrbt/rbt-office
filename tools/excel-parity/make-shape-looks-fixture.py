@@ -17,6 +17,7 @@ things a dashboard's cards are made of, each checked against Excel 2019's pictur
   height) with arrowheads of each kind and size, a slanting one; an ellipse and a flow chart connector with a
   3-pt light line; a shape with the theme's third effect (a shadow) and one whose empty effect list overrides it;
   a shape of no fill, no line and no text (nothing is drawn).
+- "Hidden": rows 4-8 hidden; two-cell shapes all in hidden rows, from a shown row into hidden ones, across them.
 
 Deterministic: run it again and the bytes are the same.
 
@@ -223,7 +224,22 @@ LINE_SHAPES.append(anchor(1100, 380, 100, 60, shape(84, 'Empty', 1100, 380, 100,
 ROUNDS_DRAWING = DECL + f'<xdr:wsDr xmlns:xdr="{XDR}" xmlns:a="{A}">' + ''.join(ROUND_SHAPES + WIDTH_SHAPES + [GROUP, SINGLE] + LINE_SHAPES) + '</xdr:wsDr>'
 ROUNDS_SHEET = sheet([], drawing=True)
 
-SHEETS = [('Links', LINKS_SHEET, LINKS_DRAWING), ('Colors', COLORS_SHEET, None), ('Rounds', ROUNDS_SHEET, ROUNDS_DRAWING), ('Data', DATA_SHEET, None)]
+# "Hidden": rows 4-8 hidden (1-based); shapes anchored two-cell from row to row, their offsets as the file has them
+# (pixels): all in hidden rows; from a shown row into hidden ones; across the hidden rows from shown to shown.
+def cell_anchor(c0, r0, dy0, c1, r1, dy1, body):
+    return (f'<xdr:twoCellAnchor><xdr:from><xdr:col>{c0}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r0}</xdr:row><xdr:rowOff>{dy0 * EMU}</xdr:rowOff></xdr:from>'
+            f'<xdr:to><xdr:col>{c1}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r1}</xdr:row><xdr:rowOff>{dy1 * EMU}</xdr:rowOff></xdr:to>'
+            + body + '<xdr:clientData/></xdr:twoCellAnchor>')
+
+
+HIDDEN_SHAPES = [cell_anchor(1, 4, 14, 3, 6, 12, shape(90, 'All hidden', 64, 80, 128, 40, fill='4472C4', line='000000')),
+                 cell_anchor(4, 1, 5, 6, 5, 10, shape(91, 'Into hidden', 256, 25, 128, 80, fill='ED7D31', line='000000')),
+                 cell_anchor(7, 2, 5, 9, 9, 10, shape(92, 'Across hidden', 448, 45, 128, 150, fill='A5A5A5', line='000000'))]
+HIDDEN_DRAWING = DECL + f'<xdr:wsDr xmlns:xdr="{XDR}" xmlns:a="{A}">' + ''.join(HIDDEN_SHAPES) + '</xdr:wsDr>'
+HIDDEN_SHEET = sheet([f'<row r="{r}" ht="15" hidden="1" customHeight="1"/>' for r in range(4, 9)], drawing=True)
+
+SHEETS = [('Links', LINKS_SHEET, LINKS_DRAWING), ('Colors', COLORS_SHEET, None), ('Rounds', ROUNDS_SHEET, ROUNDS_DRAWING), ('Data', DATA_SHEET, None),
+          ('Hidden', HIDDEN_SHEET, HIDDEN_DRAWING)]
 CT = ('<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
       '<Default Extension="xml" ContentType="application/xml"/>'

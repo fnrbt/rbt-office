@@ -2542,6 +2542,9 @@ checks['shape-looks-excel-parity'] = async () => {
         const tip = frames().filter((item) => item.querySelector('line'))[0].querySelector('polygon').getAttribute('points').split(' ').map((p) => p.split(',').map(Number));
         check('... a 1-pt line\'s med / lg triangle: 8 px wide, 13.3 long (5 x 2 pt), its tip at the line\'s end',
             [Math.round(Math.abs(tip[1][1] - tip[2][1]) * 10) / 10, Math.round((tip[0][0] - tip[1][0]) * 10) / 10, tip[0][0]], [8, 13.3, 240]);
+        grid.SwitchSheet(4); await frame(); await everyObjectSeen(host);
+        check('rows 4-8 hidden: a shape all in them not shown; one into them ends where they are (35 px: 26.25 pt), one across them 45 px (33.75 pt)',
+            frames().map((item) => parseFloat(item.style.height)), [35, 45]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

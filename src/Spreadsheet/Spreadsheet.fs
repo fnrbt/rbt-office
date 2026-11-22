@@ -5258,11 +5258,20 @@ type Spreadsheet(container: Element) as this =
                         drawingNodes.Add node
                     else
                         // One part per pane the drawing reaches: a box that cuts
-                        // the drawing to the pane's share of it.
+                        // the drawing to the pane's share of it - with room around it where the
+                        // drawing ends in the pane, for what a shape draws past its rectangle (half its
+                        // outline, its shadow; a line of no height all of it).
+                        let spill = match drawing.Content with KeptObject (_, xml) -> SpreadsheetCharts.objectSpills xml | _ -> false
+                        let margin = if spill then 16.0 else 0.0
                         for pane in 0 .. 3 do
                             let x0, x1 = if pane >= 2 then rect.X, min right frozenW else max rect.X frozenW, right
                             let y0, y1 = if pane = 1 || pane = 3 then rect.Y, min bottom frozenH else max rect.Y frozenH, bottom
-                            if x1 - x0 > 0.0 && y1 - y0 > 0.0 then
+                            let reaches (low: float) (high: float) (size: float) = high - low > 0.0 || (spill && size < 1.0 && high - low = 0.0)
+                            if reaches x0 x1 rect.Width && reaches y0 y1 rect.Height then
+                                let x0 = if x0 = rect.X then x0 - margin else x0
+                                let x1 = if x1 = right then x1 + margin else x1
+                                let y0 = if y0 = rect.Y then y0 - margin else y0
+                                let y1 = if y1 = bottom then y1 + margin else y1
                                 let part = createElement "div"
                                 setClassName part "spreadsheet-drawing-part"
                                 setAttribute part "data-drawing-id" (string drawing.Id)
