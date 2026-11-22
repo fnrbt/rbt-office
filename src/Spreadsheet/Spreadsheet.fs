@@ -1583,6 +1583,8 @@ type Spreadsheet(container: Element) as this =
                         match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(sheet, System.StringComparison.OrdinalIgnoreCase)), SheetOps.tryParseRange (reference.Substring(bang + 1)) with
                         | Some index, Some range when (range.To.Row - range.From.Row + 1) * (range.To.Col - range.From.Col + 1) <= 10000 -> Some (index, range)
                         | _ -> None
+    /// (The clip paths of linked pictures' text, numbered across the page's pictures.)
+    let cameraClips = ref 0
     /// A linked picture as SVG: the cells of its range as they are now - fills, lines, text in their
     /// fonts and colours, the grid lines of a sheet that shows them -, stretched to the picture, as
     /// Excel draws it (acre-apartment's "Property Return Metrics" box: a picture of 'Raw Data'!B4:D11
@@ -1638,10 +1640,29 @@ type Spreadsheet(container: Element) as this =
                                 | SpreadsheetPaint.VAlignTop -> y + 2.0 + fontPx * 0.95
                                 | SpreadsheetPaint.VAlignMiddle -> y + spanH / 2.0 + fontPx * 0.35
                                 | SpreadsheetPaint.VAlignBottom -> y + spanH - 4.0
-                            texts.Append(sprintf "<text x=\"%s\" y=\"%s\" text-anchor=\"%s\" font-family=\"%s\" font-size=\"%s\" fill=\"%s\"%s%s>%s</text>"
+                            // (Cut where the grid cuts it, as Excel's picture shows it - synthetic-missing-font.xlsx's
+                            // pictures of two cells of text: the first cut at the second: text runs on over the empty
+                            // cells beside it on the side it is aligned to, a number and wrapped text keep to their cell.)
+                            let empty (column: int) =
+                                column >= c0 && column <= c1 && (findMergedCell { Row = r; Col = column } source).IsNone
+                                && (match getCell { Row = r; Col = column } source with
+                                    | Some data -> (match data.Value with CellValue.Empty | CellValue.String "" -> true | _ -> false)
+                                    | None -> true)
+                            let spills = not look.Wrap && (match look.Value with CellValue.String _ -> true | _ -> false)
+                            let lastCol = match merge with Some m -> min c1 m.EndCol | None -> c
+                            let mutable fromCol, toCol = c, lastCol
+                            if spills && anchor <> "end" then
+                                while empty (toCol + 1) do toCol <- toCol + 1
+                            if spills && anchor <> "start" then
+                                while empty (fromCol - 1) do fromCol <- fromCol - 1
+                            cameraClips.Value <- cameraClips.Value + 1
+                            let clipId = sprintf "rbt-camera-clip-%d" cameraClips.Value
+                            texts.Append(sprintf "<clipPath id=\"%s\"><rect x=\"%s\" y=\"%s\" width=\"%s\" height=\"%s\"/></clipPath>"
+                                            clipId (number (left fromCol)) (number y) (number (left (toCol + 1) - left fromCol)) (number spanH)) |> ignore
+                            texts.Append(sprintf "<text x=\"%s\" y=\"%s\" text-anchor=\"%s\" font-family=\"%s\" font-size=\"%s\" fill=\"%s\"%s%s clip-path=\"url(#%s)\">%s</text>"
                                             (number tx) (number baseline) anchor (htmlEscape (cellFontFamily look.FontName)) (number fontPx) (htmlEscape (defaultArg look.TextColor "#000000"))
                                             (if look.Bold then " font-weight=\"bold\"" else "") (if look.Italic then " font-style=\"italic\"" else "")
-                                            (htmlEscape look.Text)) |> ignore
+                                            clipId (htmlEscape look.Text)) |> ignore
                     // The lines of the cell's top and left edges, and of the range's right and bottom ones.
                     if w > 0.0 && h > 0.0 then
                         line x y (x + w) y (SpreadsheetLayout.edgeAbove source r c)
@@ -1671,7 +1692,8 @@ type Spreadsheet(container: Element) as this =
                 let seen = ResizeArray<string * int * int * int * int * CellData option [] []>()
                 // A chartEx chart (a waterfall, a funnel) keeps no copy of its data in its part: a sheet it
                 // reads that is not converted yet is converted, and the chart drawn again with its cells
-                // (a classic chart draws its cache until then).
+                // (a classic chart draws its cache until then). So does a table's slicer, whose buttons are
+                // its column's values (synthetic-slicer-cut.xlsx: slicers of a table on another sheet).
                 let mutable uncached = false
                 let reading =
                     { parts with
@@ -1680,7 +1702,10 @@ type Spreadsheet(container: Element) as this =
                             (match chart with
                              | Some read when read.Plots |> List.exists SpreadsheetCharts.isChartExPlot -> uncached <- true
                              | _ -> ())
-                            chart) }
+                            chart)
+                        Slicer = (fun kind name data width height ->
+                            uncached <- true
+                            parts.Slicer kind name data width height) }
                 chartLayouts <- chartLayouts + 1
                 let first = SpreadsheetCharts.objectScene reading (chartDataReading seen) xml width height
                 let pending =

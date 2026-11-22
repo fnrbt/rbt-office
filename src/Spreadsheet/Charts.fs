@@ -548,6 +548,31 @@ type BoxFigures = {
     Outside: float list
 }
 
+/// A region of a map chart's geography cache: its name, and its outline as rings of (latitude, longitude).
+type MapRegion = { RegionName: string; Outline: (float * float) [] list }
+
+/// What a map chart (`regionMap`) draws from its part: the regions of its geography cache (`cx:geoCache`) - the
+/// divisions of the country its data names, with or without data -, its colour scale (`cx:valueColors`: two or three
+/// colours) and the data provider's credits.
+type RegionMap = {
+    /// What the cache holds, read when the map is first drawn (a cache can be megabytes).
+    Cache: Lazy<MapCache>
+    MinColor: string
+    MidColor: string option
+    MaxColor: string
+    /// Whether the part gives the colours (a scale of its own, a colour of the series): else they are the chart's colour
+    /// style's first colour's (`withUserShapes`), in this theme.
+    OwnColors: bool
+    Theme: ThemeColors
+    /// The regions' outlines' colour (the series' line).
+    Borders: string
+    Attribution: string
+}
+
+/// A map chart's geography cache read: the regions it has an outline of - the divisions of the country its data names -,
+/// that country ("United States": Alaska and Hawaii in insets), the data provider's credits.
+and MapCache = { Regions: MapRegion list; Country: string option; Copyrights: string list; Aliases: Map<string, string> }
+
 type PlotKind =
     | BarPlot
     | LinePlot
@@ -575,7 +600,9 @@ type PlotKind =
     | TreemapPlot of parentLabels: string
     /// A chartEx sunburst: its categories' levels as rings, the outer level's parts within their parent's.
     | SunburstPlot
-    /// A chartEx chart of a kind that is not drawn (`layoutId`: "regionMap", ...): a placeholder.
+    /// A chartEx filled map (`regionMap`): the regions its geography cache holds, its categories' coloured by their values.
+    | RegionMapPlot of RegionMap
+    /// A chartEx chart of a kind that is not drawn: a placeholder.
     | UndrawnPlot of layoutId: string
 
 type Plot = {
@@ -1126,14 +1153,157 @@ let private undrawnChartEx (layoutId: string) (title: XmlDsl.XmlNode option) (se
       Axes = []; Legend = None; Background = FillAuto; Border = None; PlotBackground = FillNone; PlotBorder = None; TextStyle = noTextStyle
       RoundedCorners = false; Date1904 = false; TitleLayout = None; TitleOverlay = false; PlotLayout = None; Style = 2; UserShapes = None; ChartEx = true }
 
+/// The points of a ring of a map chart's geography cache (`pcaRings`): Bing Maps' point compression - each point the
+/// change of latitude and longitude from the one before in 1e-5 degrees, zigzagged, paired (Cantor) and written five
+/// bits a character, low first, a character of 32 and more saying another follows.
+let decodeMapRing (text: string) : (float * float) [] =
+    let alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+    let points = ResizeArray<float * float>()
+    let mutable index = 0
+    // (In floats, whole numbers all - exact to 2^53 -: the same in .NET and in the browser.)
+    let mutable latitude = 0.0
+    let mutable longitude = 0.0
+    let mutable failed = false
+    while index < text.Length && not failed do
+        let mutable n = 0.0
+        let mutable unit = 1.0
+        let mutable more = true
+        while more do
+            if index >= text.Length then
+                failed <- true
+                more <- false
+            else
+                let b = alphabet.IndexOf text.[index]
+                index <- index + 1
+                if b < 0 then
+                    failed <- true
+                    more <- false
+                else
+                    n <- n + float (b &&& 31) * unit
+                    unit <- unit * 32.0
+                    more <- b >= 32
+        if not failed then
+            let mutable diagonal = Math.Floor ((Math.Sqrt (8.0 * n + 5.0) - 1.0) / 2.0)
+            if diagonal * (diagonal + 1.0) / 2.0 > n then diagonal <- diagonal - 1.0
+            let rest = n - diagonal * (diagonal + 1.0) / 2.0
+            let zig (value: float) = if value % 2.0 = 0.0 then value / 2.0 else -(value + 1.0) / 2.0
+            longitude <- longitude + zig (diagonal - rest)
+            latitude <- latitude + zig rest
+            points.Add (latitude * 1e-5, longitude * 1e-5)
+    points.ToArray()
+
+/// A map chart's geography cache read (`cx:geoCache`: base64 of deflated XML): every region it has an outline of, the
+/// country the regions are divisions of, the provider's credits; its colours from the series (`cx:valueColors`).
+let private mapCacheOf (binary: string) : MapCache =
+    let cache =
+        try Text.Encoding.UTF8.GetString (Inflate.raw (Convert.FromBase64String (Text.RegularExpressions.Regex.Replace (binary, "\\s", ""))))
+        with _ -> ""
+    let attribute (name: string) (tag: string) =
+        let found = Text.RegularExpressions.Regex.Match (tag, "\\b" + name + "=\"([^\"]*)\"")
+        if found.Success then Some (found.Groups.[1].Value.Replace("&amp;", "&").Replace("&apos;", "'").Replace("&quot;", "\"")) else None
+    let regions =
+        Text.RegularExpressions.Regex.Matches (cache, "<cx:geoData ([^>]*)>([\\s\\S]*?)</cx:geoData>")
+        |> Seq.cast<Text.RegularExpressions.Match>
+        |> Seq.choose (fun found ->
+            let name = attribute "entityName" found.Groups.[1].Value
+            let rings =
+                Text.RegularExpressions.Regex.Matches (found.Groups.[2].Value, "pcaRings=\"([^\"]*)\"")
+                |> Seq.cast<Text.RegularExpressions.Match>
+                // (A polygon's rings: their count, then each ring.)
+                |> Seq.collect (fun ring -> ring.Groups.[1].Value.Split(',') |> Array.skip 1 |> Array.map decodeMapRing)
+                |> Seq.filter (fun points -> points.Length >= 3)
+                |> List.ofSeq
+            name |> Option.map (fun name -> { RegionName = name; Outline = rings }))
+        |> List.ofSeq
+    // (The country: the entity whose divisions the cache lists - `geoChildEntitiesQuery` -, its name from its own entry.)
+    let country =
+        let query = Text.RegularExpressions.Regex.Match (cache, "<cx:geoChildEntitiesQuery entityId=\"([^\"]*)\"")
+        if not query.Success then None
+        else
+            let id = query.Groups.[1].Value
+            Text.RegularExpressions.Regex.Matches (cache, "<cx:geoData ([^>]*)>")
+            |> Seq.cast<Text.RegularExpressions.Match>
+            |> Seq.tryPick (fun found -> if attribute "entityId" found.Groups.[1].Value = Some id then attribute "entityName" found.Groups.[1].Value else None)
+    let children =
+        Text.RegularExpressions.Regex.Matches (cache, "<cx:geoHierarchyEntity ([^>]*)/>")
+        |> Seq.cast<Text.RegularExpressions.Match>
+        |> Seq.choose (fun found -> attribute "entityName" found.Groups.[1].Value)
+        |> Set.ofSeq
+    let copyrights =
+        Text.RegularExpressions.Regex.Matches (cache, "<cx:copyright>([^<]*)</cx:copyright>")
+        |> Seq.cast<Text.RegularExpressions.Match>
+        |> Seq.map (fun found -> found.Groups.[1].Value)
+        |> Seq.distinct |> List.ofSeq
+    // (What a category asked for and the region the provider found: "NSW" - adminDistrict1 - is New South Wales.)
+    let aliases =
+        Text.RegularExpressions.Regex.Matches (cache, "<cx:geoLocationQuery ([^>]*)/>\\s*<cx:geoLocations>\\s*<cx:geoLocation ([^>]*)>")
+        |> Seq.cast<Text.RegularExpressions.Match>
+        |> Seq.collect (fun found ->
+            match attribute "entityName" found.Groups.[2].Value with
+            | Some name ->
+                Text.RegularExpressions.Regex.Matches (found.Groups.[1].Value, "(\\w+)=\"([^\"]*)\"")
+                |> Seq.cast<Text.RegularExpressions.Match>
+                |> Seq.filter (fun pair -> pair.Groups.[1].Value <> "entityType" && pair.Groups.[1].Value <> "countryRegion")
+                |> Seq.map (fun pair -> pair.Groups.[2].Value.Trim().ToLowerInvariant(), name)
+            | None -> Seq.empty)
+        |> Map.ofSeq
+    { // (The country's divisions where the cache lists them, else every region but the country.)
+      Regions = regions |> List.filter (fun region -> (if children.IsEmpty then Some region.RegionName <> country else children.Contains region.RegionName) && not region.Outline.IsEmpty)
+      Country = country
+      Copyrights = List.rev copyrights
+      Aliases = aliases }
+
+/// Excel 2019's own two colours of a map from a colour: 80 % lighter (lumMod 20 %, lumOff 80 %) and 75 % of it.
+let private mapScaleOf (color: string) : string * string =
+    let lumOf (modulate: float) (offset: float) =
+        let h, s, l = hslOf (rgbOf (color.TrimStart '#'))
+        let r, g, b = rgbOfHsl (h, s, min 1.0 (l * modulate + offset))
+        "#" + hex2 r + hex2 g + hex2 b
+    lumOf 0.2 0.8, lumOf 0.75 0.0
+
+/// What a map chart's series (`regionMap`) says of it: its geography cache (`binary`: the base64 text, read when first
+/// drawn), its colour scale, the provider's line.
+let private regionMapOf (theme: ThemeColors) (series: XmlDsl.XmlNode option) (binary: unit -> string) : RegionMap =
+    let geography = series |> Option.bind (path [ "layoutPr"; "geography" ])
+    // (A scale of the part's own - `cx:valueColors`: the e-commerce dashboard's "Sales by State", min, mid, max, the mid at
+    // the middle of the values ($ 229.30K of 0.92K .. 457.69K), Excel's picture -; else Excel 2019's own two colours of the
+    // chart's colour style's first (`withUserShapes`) or the first accent: 80 % lighter (lumMod 20 %, lumOff 80 %) to 75 % of
+    // it - the "Map Chart" sheet's #D2EFFA to #1482AC of #1CADE4 -, each region in proportion in sRGB: New York's 310.88K
+    // #51A5C5, Texas' #8CC7DD.)
+    let scale = series |> Option.bind (child "valueColors")
+    let colorIn (name: string) =
+        scale |> Option.bind (child name) |> Option.bind (kids >> List.tryFind (fun node -> nameOf node <> "")) |> Option.bind (colorOfNode theme) |> Option.map fst
+    let count = series |> Option.bind (child "valueColorPositions") |> Option.bind (attr "count") |> Option.bind number |> Option.defaultValue 2.0
+    // (The series' line: the regions' outlines - the dashboard's light blue, accent1 -, else white.)
+    let line =
+        series |> Option.bind (child "spPr") |> Option.bind (child "ln") |> Option.bind (child "solidFill")
+        |> Option.bind (kids >> List.tryFind (fun node -> nameOf node <> ""))
+        |> Option.bind (colorOfNode theme) |> Option.map fst
+    let low, high = mapScaleOf ("#" + (Map.tryFind "accent1" theme |> Option.defaultValue "4472C4"))
+    { Cache = lazy (mapCacheOf (binary ()))
+      MinColor = colorIn "minColor" |> Option.defaultValue low
+      MidColor = (if count >= 3.0 then colorIn "midColor" else None)
+      MaxColor = colorIn "maxColor" |> Option.defaultValue high
+      OwnColors = scale.IsSome
+      Theme = theme
+      Borders = line |> Option.defaultValue "#FFFFFF"
+      Attribution = geography |> Option.bind (attr "attribution") |> Option.defaultValue "" }
+
 /// A chartEx part read: a waterfall or a funnel as a chart of one plot, any other kind a chart that
 /// is drawn as a placeholder. `names` resolves the defined names its data refers to.
 let private parseChartEx (names: string -> string option) (theme: ThemeColors) (xml: string) : Chart option =
     match chartExOutline xml with
     | None, _, _ -> None
-    | Some layoutId, title, seriesName when not (List.contains layoutId [ "waterfall"; "funnel"; "clusteredColumn"; "boxWhisker"; "treemap"; "sunburst" ]) ->
+    | Some layoutId, title, seriesName when not (List.contains layoutId [ "waterfall"; "funnel"; "clusteredColumn"; "boxWhisker"; "treemap"; "sunburst"; "regionMap" ]) ->
         Some (undrawnChartEx layoutId title seriesName)
     | Some layoutId, title, seriesName ->
+        // (A map's geography cache - megabytes of base64: dashboard-sales-analysis' 8 MB - is cut out before the part is
+        // parsed, and read only when the map is drawn.)
+        let xml, binary =
+            let opening = xml.IndexOf("<cx:binary>", StringComparison.Ordinal)
+            let closing = if opening < 0 then -1 else xml.IndexOf("</cx:binary>", opening, StringComparison.Ordinal)
+            if closing < 0 then xml, (fun () -> "")
+            else xml.Substring(0, opening) + xml.Substring(closing + "</cx:binary>".Length), (fun () -> xml.Substring(opening + "<cx:binary>".Length, closing - opening - "<cx:binary>".Length))
         let root = XmlDsl.parse (spacesKept xml)
         match child "chart" root with
         | None -> None
@@ -1177,7 +1347,7 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                             | Some text -> { reference with Strings = Map.ofList [ 0, text ]; Count = max 1 reference.Count }
                             | None -> reference)
                       Categories = dim "strDim" [ "cat" ] |> Option.orElse (dim "numDim" [ "cat" ])
-                      Values = dim "numDim" [ "val"; "size"; "" ]
+                      Values = dim "numDim" [ "val"; "size"; "colorVal"; "" ]
                       XValues = None
                       Fill = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                       Line = shape |> Option.bind (strokeOf theme)
@@ -1230,6 +1400,7 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                 | "treemap" ->
                     TreemapPlot (first |> Option.bind (path [ "layoutPr"; "parentLabelLayout" ]) |> Option.bind (attr "val") |> Option.defaultValue "overlapping")
                 | "sunburst" -> SunburstPlot
+                | "regionMap" -> RegionMapPlot (regionMapOf theme first binary)
                 | _ -> WaterfallPlot (subtotals, connectors)
             let axes =
                 area |> Option.map (childrenNamed "axis") |> Option.defaultValue []
@@ -2493,7 +2664,13 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
     let labelColor = colorOf labelStyle "#FFFFFF"
     /// A label's lines no wider than `room`: broken at its spaces, a word too long for a line at its letters.
     let brokenTo (room: float) (label: string) : string list =
-        let fits (value: string) = widthOf labelStyle labelSize false value <= room
+        // (By the face's design advances, as Excel lays a chart's text out: "Osaka" 29.6 px of Calibri 9 pt fits a
+        // ring of 30.25, "0000iii" 32.5 does not.)
+        let ideal (value: string) =
+            match ExcelText.idealWidth (defaultArg (face labelStyle) "Calibri") false false labelSize value with
+            | Some width -> width
+            | None -> widthOf labelStyle labelSize false value
+        let fits (value: string) = ideal value <= room
         let rec letters (word: string) =
             if word = "" then []
             else
@@ -2540,14 +2717,17 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
                 let fill = (match color with Some given -> given | None -> colorAt node)
                 add (PPath (d, Some fill, 1.0, Some lineColor, lineWidth))
                 // (A label along its part's middle radius, reading outwards - turned over on the left half -, broken to
-                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e".)
+                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e"; left out
+                // where its lines and 4.5 pt are longer than the part's arc at its middle radius - build-sunburst-labels.vbs:
+                // two lines of 29.3 px in "Osaka / J" of 37.4 px kept, in "Osaka / I" of 33.6 left out; synthetic-chartex-
+                // looks' "Ameri / ca" (42.3) and "Rome" (20.8) kept, "Italy" (14.8) and "Madri / d" (31.2) left out.)
                 (match labelText node with
                  | Some label when sweep > 0.0 ->
                     let middle = at + sweep / 2.0
                     let lx, ly = point ((inner + outer) / 2.0) middle
-                    let lines = brokenTo (ring + 2.0) label
+                    let lines = brokenTo ring label
                     let arc = sweep * (inner + outer) / 2.0
-                    if not lines.IsEmpty && float lines.Length * labelLine <= arc then
+                    if not lines.IsEmpty && float lines.Length * labelLine + px 4.5 <= arc then
                         let degrees = middle * 180.0 / Math.PI
                         let turn = if degrees > 180.0 then degrees - 270.0 else degrees - 90.0
                         let across = turn * Math.PI / 180.0
@@ -2593,11 +2773,184 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
     | _ -> ()
     { Width = width; Height = height; Items = List.ofSeq items }
 
-/// The scene of a chartEx chart: a waterfall, a funnel, a treemap, a sunburst, or a placeholder that says what a
-/// chart of another kind is, with its title.
+/// An equal-area conic projection of two standard parallels (radians), as d3's `geoConicEqualArea`: (x, y) up.
+let private conicEqualArea (parallel1: float) (parallel2: float) : float -> float -> float * float =
+    let sy0 = Math.Sin parallel1
+    let n = (sy0 + Math.Sin parallel2) / 2.0
+    let c = 1.0 + sy0 * (2.0 * n - sy0)
+    let r0 = Math.Sqrt c / n
+    fun (lambda: float) (phi: float) ->
+        let r = Math.Sqrt (max 0.0 (c - 2.0 * n * Math.Sin phi)) / n
+        r * Math.Sin (lambda * n), r0 - r * Math.Cos (lambda * n)
+
+/// Where a map chart puts a point (latitude, longitude, degrees) of a region, before it is fitted to the plot (y down):
+/// the United States as Excel 2019 draws them - an Albers equal-area map of the lower 48, Alaska at 0.35 of the scale
+/// below its west and Hawaii beside it (d3's `geoAlbersUsa`) -; another country by Mercator's projection.
+let private mapProjection (country: string option) (region: string) : float * float -> float * float =
+    let radians (degrees: float) = degrees * Math.PI / 180.0
+    let conic (rotate: float) (centerLon: float) (centerLat: float) (p1: float) (p2: float) (scale: float) (dx: float) (dy: float) =
+        let raw = conicEqualArea (radians p1) (radians p2)
+        let wrap (degrees: float) = let d = (degrees + 180.0) % 360.0 in (if d < 0.0 then d + 360.0 else d) - 180.0
+        let cx, cy = raw (radians centerLon) (radians centerLat)
+        fun (lat: float, lon: float) ->
+            let x, y = raw (radians (wrap (lon + rotate))) (radians lat)
+            dx + scale * (x - cx), dy - scale * (y - cy)
+    match country with
+    | Some "United States" ->
+        match region with
+        | "Alaska" -> conic 154.0 -2.0 58.5 55.0 65.0 0.35 -0.307 0.201
+        | "Hawaii" -> conic 157.0 -3.0 19.9 8.0 18.0 1.0 -0.205 0.212
+        | _ -> conic 96.0 -0.6 38.7 29.5 45.5 1.0 0.0 0.0
+    | _ -> fun (lat: float, lon: float) -> radians lon, -Math.Log (Math.Tan (Math.PI / 4.0 + radians (max -85.0 (min 85.0 lat)) / 2.0))
+
+/// The scene of a chartEx filled map (`regionMap`) from its geography cache, as Excel 2019 draws it without asking Bing
+/// (dashboard-ecommerce-sales' "Map Chart" and "Sales by State"): its title, the regions fitted to the plot left of the
+/// legend - those of the data in the colour their value has on the scale (min, mid, max: in proportion between them),
+/// the others light grey, white between -, the legend at the right (the series' name, a bar of the scale, its ends'
+/// values), the provider's credits under the map at its right.
+let private layoutRegionMapChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (map: RegionMap) (width: float) (height: float) : Scene =
+    let items = ResizeArray<Primitive>()
+    let add (item: Primitive) = items.Add item
+    let face (style: TextStyle) = (over style chart.TextStyle).Face |> Option.orElse (Map.tryFind "#minorFont" theme)
+    let sizeOf (style: TextStyle) (otherwise: float) = px ((over style chart.TextStyle).Size |> Option.defaultValue otherwise)
+    let colorOf (style: TextStyle) (otherwise: string) = (over style chart.TextStyle).Color |> Option.defaultValue otherwise
+    let text (style: TextStyle) (item: Primitive) = match face style with Some name when name <> "Calibri" -> add (PFace (name, [ item ])) | _ -> add item
+    let widthOf (style: TextStyle) (size: float) (value: string) = faceWidth (face style) size false value
+    (match chart.Background with
+     | FillColor (color, opacity) -> add (PRect (0.0, 0.0, width, height, Some color, opacity, None, 0.0, 0.0))
+     | FillAuto -> add (PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0))
+     | FillNone -> ())
+    (match strokeColor chart.Border with
+     | Some (color, strokeWidth, _) -> add (PRect (strokeWidth / 2.0, strokeWidth / 2.0, width - strokeWidth, height - strokeWidth, None, 1.0, Some color, strokeWidth, 0.0))
+     | None -> ())
+    let mutable top = px 6.0
+    (match (if chart.AutoTitleDeleted then None else chart.Title) with
+     | Some title ->
+        let size = sizeOf chart.TitleStyle 14.0
+        let bold = chart.TitleStyle.Bold |> Option.defaultValue false
+        let line = lineIn (face chart.TitleStyle) size
+        let mutable y = px 4.5 + px 1.5
+        for part in title.Split('\n') do
+            text chart.TitleStyle (PText (width / 2.0, y + line / 2.0, part, size, colorOf chart.TitleStyle "#595959", "middle", bold, false, 0.0))
+            y <- y + line
+        if not chart.TitleOverlay then top <- y + px 1.5 + px 3.0
+     | None -> ())
+    let series = plot.Series |> List.tryHead
+    let names = series |> Option.map (fun series -> textsOf data series.Categories) |> Option.defaultValue [||]
+    let values = series |> Option.map (fun series -> numbersOf data series.Values) |> Option.defaultValue [||]
+    // (Categories of several columns - country and state: dashboard-sales-analysis' 'Map Pivot'!A4:B11 - name a point by
+    // the last; a name as the provider found it - "NSW": New South Wales.)
+    let names =
+        if values.Length > 0 && names.Length > values.Length && names.Length % values.Length = 0 then
+            let columns = names.Length / values.Length
+            Array.init values.Length (fun row -> names.[row * columns + columns - 1])
+        else names
+    let cache = map.Cache.Value
+    let valueOf =
+        Array.zip (names |> Array.truncate values.Length) (values |> Array.truncate names.Length)
+        |> Array.choose (fun (name, value) ->
+            let key = name.Trim().ToLowerInvariant()
+            let key = match Map.tryFind key cache.Aliases with Some found -> found.ToLowerInvariant() | None -> key
+            value |> Option.map (fun value -> key, value))
+        |> Array.distinctBy fst
+        |> dict
+    let known = valueOf.Values |> List.ofSeq
+    let low, high = (if known.IsEmpty then 0.0, 1.0 else List.min known, List.max known)
+    let mix (a: string) (b: string) (share: float) =
+        let r1, g1, b1 = rgbOf (a.TrimStart '#')
+        let r2, g2, b2 = rgbOf (b.TrimStart '#')
+        "#" + hex2 (r1 + (r2 - r1) * share) + hex2 (g1 + (g2 - g1) * share) + hex2 (b1 + (b2 - b1) * share)
+    let colorAt (value: float) =
+        let share = if high > low then (value - low) / (high - low) else 1.0
+        match map.MidColor with
+        | Some mid when share < 0.5 -> mix map.MinColor mid (share * 2.0)
+        | Some mid -> mix mid map.MaxColor ((share - 0.5) * 2.0)
+        | None -> mix map.MinColor map.MaxColor share
+    // The legend at the right: the series' name, then a bar of the scale (the largest value at its top) with its ends'
+    // values beside it (Excel 2019's "Map Chart", 536 x 286 px: "Sales" 8 px below the plot's top, the bar 27 px below it, 84 high and
+    // 6 wide, 6 px in, its values in 7.5 pt 8 px after it ("$ 457.69K" 44 px of Tw Cen MT), the block 24 px from the right edge).
+    let legendStyle = chart.Legend |> Option.map (fun legend -> legend.Style) |> Option.defaultValue noTextStyle
+    let legendSize = sizeOf legendStyle 9.0
+    let valueSize = sizeOf legendStyle 7.5
+    let legendColor = colorOf legendStyle "#595959"
+    let format (value: float) =
+        match series |> Option.bind (fun series -> formatCodeOf data series.Values) with
+        | Some code -> (try data.Format code value with _ -> generalNumber value)
+        | None -> generalNumber value
+    let right =
+        match chart.Legend, series with
+        | Some legend, Some series when not known.IsEmpty && legend.Position = "r" ->
+            let title = series.Name |> Option.bind (fun name -> name.Strings |> Map.tryFind 0) |> Option.defaultValue ""
+            let ends = [ format high; format low ]
+            let barWidth = 6.0
+            let block = max (widthOf legendStyle legendSize title) (6.0 + barWidth + 8.0 + (ends |> List.map (widthOf legendStyle valueSize) |> List.max))
+            let left = width - 24.0 - block
+            text legendStyle (PText (left, top + 8.0, title, legendSize, legendColor, "start", false, false, 0.0))
+            // (84 px where there is room: the dashboard's map of 150 px 72 px, to 18 px above its bottom.)
+            let barTop = top + 27.0
+            let barHeight = max 20.0 (min 84.0 (height - barTop - 18.0))
+            let bar =
+                let stops =
+                    match map.MidColor with
+                    | Some mid -> sprintf "0 %s 1;0.5 %s 1;1 %s 1" map.MaxColor mid map.MinColor
+                    | None -> sprintf "0 %s 1;1 %s 1" map.MaxColor map.MinColor
+                "gradient(90;" + stops + ")"
+            add (PRect (left + 6.0, barTop, barWidth, barHeight, Some bar, 1.0, None, 0.0, 0.0))
+            text legendStyle (PText (left + 6.0 + barWidth + 8.0, barTop, ends.[0], valueSize, legendColor, "start", false, false, 0.0))
+            // (Three colours: the largest and the middle value - the e-commerce dashboard's "$ 457.69K", "$ 229.30K", Excel's picture.)
+            match map.MidColor with
+            | Some _ -> text legendStyle (PText (left + 6.0 + barWidth + 8.0, barTop + barHeight / 2.0, format ((low + high) / 2.0), valueSize, legendColor, "start", false, false, 0.0))
+            | None -> text legendStyle (PText (left + 6.0 + barWidth + 8.0, barTop + barHeight, ends.[1], valueSize, legendColor, "start", false, false, 0.0))
+            left - px 6.0
+        | _ -> width - px 6.0
+    // The regions projected, fitted to the plot keeping their shape, in its middle.
+    let projected =
+        map.Cache.Value.Regions |> List.map (fun region ->
+            let project = mapProjection map.Cache.Value.Country region.RegionName
+            region, region.Outline |> List.map (Array.map project))
+    let points = projected |> List.collect snd |> Array.concat
+    if points.Length > 0 then
+        let x0, x1 = points |> Array.minBy fst |> fst, points |> Array.maxBy fst |> fst
+        let y0, y1 = points |> Array.minBy snd |> snd, points |> Array.maxBy snd |> snd
+        let boxLeft, boxTop = px 6.0, top
+        let boxWidth, boxHeight = max 1.0 (right - boxLeft), max 1.0 (height - px 6.0 - top)
+        let scale = min (boxWidth / max 1e-9 (x1 - x0)) (boxHeight / max 1e-9 (y1 - y0))
+        let offsetX = boxLeft + (boxWidth - scale * (x1 - x0)) / 2.0
+        let offsetY = boxTop + (boxHeight - scale * (y1 - y0)) / 2.0
+        let n (value: float) = (Math.Round (value * 10.0) / 10.0).ToString(Globalization.CultureInfo.InvariantCulture)
+        for region, rings in projected do
+            let d =
+                rings
+                // (A point within half a pixel of the last one kept is left out - the caches' outlines are of metres -, and
+                // a ring of under a pixel across with it.)
+                |> List.choose (fun ring ->
+                    let kept = ResizeArray<float * float>()
+                    for x, y in ring do
+                        let px, py = offsetX + scale * (x - x0), offsetY + scale * (y - y0)
+                        if kept.Count = 0 || (let lx, ly = kept.[kept.Count - 1] in abs (px - lx) + abs (py - ly) >= 0.5) then kept.Add (px, py)
+                    if kept.Count < 3 then None
+                    else Some ((kept |> Seq.mapi (fun index (x, y) -> (if index = 0 then "M " else "L ") + n x + " " + n y) |> String.concat " ") + " Z"))
+                |> String.concat " "
+            let fill =
+                match valueOf.TryGetValue (region.RegionName.ToLowerInvariant()) with
+                | true, value -> colorAt value
+                | _ -> "#E0E0E0"
+            add (PPath (d, Some fill, 1.0, Some map.Borders, 0.75))
+        // The provider's credits, right-aligned under the map's right edge.
+        let creditSize = px 5.25
+        let creditRight = offsetX + scale * (x1 - x0)
+        let credits = [ map.Attribution; (if map.Cache.Value.Copyrights.IsEmpty then "" else "© " + String.concat ", " map.Cache.Value.Copyrights) ] |> List.filter (fun line -> line <> "")
+        credits |> List.iteri (fun index line ->
+            let y = height - px 6.0 - float (credits.Length - index) * creditSize * 1.25 + creditSize * 0.6
+            text legendStyle (PText (creditRight, y, line, creditSize, "#595959", "end", false, false, 0.0)))
+    { Width = width; Height = height; Items = List.ofSeq items }
+
+/// The scene of a chartEx chart: a waterfall, a funnel, a treemap, a sunburst, a filled map, or a placeholder that says
+/// what a chart of another kind is, with its title.
 let private layoutChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (width: float) (height: float) : Scene =
     match plot.Kind with
     | UndrawnPlot layoutId -> layoutUndrawnChartEx layoutId chart width height
+    | RegionMapPlot map -> layoutRegionMapChartEx theme data chart plot map width height
     | TreemapPlot _ | SunburstPlot -> layoutHierarchyChartEx theme data chart plot width height
     | _ -> layoutPlottedChartEx theme data chart plot width height
 
@@ -2785,12 +3138,13 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     // the chart's edges, a title or a legend 6 pt in, and 11 pt between them and the plot area.)
     let edge, gap = px 6.0, px 11.0
     // (A chartEx chart - a histogram, a box and whisker chart - is laid out tighter: its title 4.5 pt from the top, its
-    // plot area's box 6 pt in from the chart's edges and 8 pt below a title, its labels 7.5 pt from a value axis and
-    // 6.5 pt below the categories' - Excel 2019's pictures of synthetic-chartex-zoo, 360 x 216 pt.)
+    // plot area's box 6 pt in from the chart's edges and 8 pt below a title, its labels' GDI widths 6 pt from a value
+    // axis and 6.5 pt below the categories' - Excel 2019's pictures of synthetic-chartex-zoo, 360 x 216 pt, and of
+    // build-pareto-layout.vbs' Pareto charts of labels 1 to 7 figures wide: their plots from 36, 42, 49 .. 67 px.)
     let margin = if chart.ChartEx then px 6.0 else gap
     let gap = if chart.ChartEx then px 8.0 else gap
     let edge = if chart.ChartEx then px 4.5 else edge
-    let valueGap, categoryGap = (if chart.ChartEx then px 7.5, px 6.5 else px 3.85, px 1.5)
+    let valueGap, categoryGap = (if chart.ChartEx then px 6.0, px 6.5 else px 3.85, px 1.5)
     let mutable top = margin
     (match title with
      | Some text ->
@@ -2913,8 +3267,13 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         match chart.Legend with
         | Some legend when not legend.Deleted.IsEmpty -> all |> List.indexed |> List.filter (fun (index, _) -> not (Set.contains index legend.Deleted)) |> List.map snd
         | _ -> all
-    let mutable left = margin
-    let mutable right = width - margin
+    // (A chartEx chart with a second value axis - a Pareto chart's running share - keeps 12 pt at its sides, not 6:
+    // build-pareto-layout.vbs, Excel 2019's pictures of Pareto charts whose labels are 1 to 7 figures wide - the left
+    // labels from 17 px, the right ones to 462 of 480, whatever their widths.)
+    let sideMargin =
+        if chart.ChartEx && chart.Plots |> List.exists (fun plot -> plot.AxisIds |> List.contains "2") then px 12.0 else margin
+    let mutable left = sideMargin
+    let mutable right = width - sideMargin
     let mutable bottom = height - margin
     (match chart.Legend with
      | Some legend when not legendEntries.IsEmpty ->
@@ -4161,7 +4520,7 @@ let private classicOfChartEx (theme: ThemeColors) (data: ChartData) (chart: Char
 /// its data.
 let isChartExPlot (plot: Plot) : bool =
     match plot.Kind with
-    | WaterfallPlot _ | FunnelPlot | HistogramPlot _ | BoxWhiskerPlot _ | TreemapPlot _ | SunburstPlot | UndrawnPlot _ -> true
+    | WaterfallPlot _ | FunnelPlot | HistogramPlot _ | BoxWhiskerPlot _ | TreemapPlot _ | SunburstPlot | RegionMapPlot _ | UndrawnPlot _ -> true
     | _ -> false
 
 let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
@@ -4762,7 +5121,8 @@ let objectScene (parts: DrawingParts) (data: ChartData) (anchorXml: string) (wid
     with _ -> None
 
 /// A chart part's shapes (`c:userShapes`): the XML of the drawing part its relationships (`partText` of a path)
-/// name as its `chartUserShapes`, in the chart.
+/// name as its `chartUserShapes`, in the chart; and a filled map's colours from its colour style (`chartColorStyle`) where its part
+/// gives none.
 let withUserShapes (partText: string -> string option) (chartPath: string) (chart: Chart) : Chart =
     let found =
         partText (PartPath.relationshipsOf chartPath)
@@ -4772,8 +5132,31 @@ let withUserShapes (partText: string -> string option) (chartPath: string) (char
             |> List.tryFind (fun rel -> (attr "Type" rel |> Option.defaultValue "").EndsWith "/chartUserShapes" && attr "TargetMode" rel <> Some "External")
             |> Option.bind (attr "Target"))
         |> Option.bind (fun target -> partText (ZipInterop.resolveTarget (PartPath.directory chartPath) target))
-    match found with
-    | Some xml -> { chart with UserShapes = Some xml }
+    let chart = match found with Some xml -> { chart with UserShapes = Some xml } | None -> chart
+    // (A filled map whose part gives no colours is in its colour style's first colour - `cs:colorStyle`, the chart's
+    // relationship: dashboard-sales-analysis' "dk1", Excel's picture black to #CCCCCC; the e-commerce dashboard's maps'
+    // "accent1".)
+    let styleColor =
+        partText (PartPath.relationshipsOf chartPath)
+        |> Option.bind (fun xml -> try Some (XmlDsl.parse xml) with _ -> None)
+        |> Option.bind (fun rels ->
+            kids rels
+            |> List.tryFind (fun rel -> (attr "Type" rel |> Option.defaultValue "").EndsWith "/chartColorStyle" && attr "TargetMode" rel <> Some "External")
+            |> Option.bind (attr "Target"))
+        |> Option.bind (fun target -> partText (ZipInterop.resolveTarget (PartPath.directory chartPath) target))
+        |> Option.bind (fun xml -> try Some (XmlDsl.parse xml) with _ -> None)
+        |> Option.bind (fun style -> kids style |> List.tryFind (fun node -> nameOf node = "schemeClr" || nameOf node = "srgbClr" || nameOf node = "sysClr"))
+    match styleColor with
+    | Some node ->
+        { chart with
+            Plots =
+                chart.Plots |> List.map (fun plot ->
+                    match plot.Kind with
+                    | RegionMapPlot map when not map.OwnColors ->
+                        match colorOfNode map.Theme node with
+                        | Some (color, _) -> let low, high = mapScaleOf color in { plot with Kind = RegionMapPlot { map with MinColor = low; MaxColor = high } }
+                        | None -> plot
+                    | _ -> plot) }
     | None -> chart
 
 /// The cells and sheets the charts of an anchor read (`c:f`), by sheet

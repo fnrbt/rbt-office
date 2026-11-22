@@ -15,8 +15,8 @@ module Bridge = Rbt.Spreadsheet.XlsxBridge
 // totals from zero, increases, decreases and totals in the theme's first three accents, lines
 // between the bars; a funnel's bars centred, as long as their value is of the largest; a treemap's
 // rectangles (histograms, Pareto, box and whisker and sunburst charts: stage52 "Excel 2019: chartEx"). A
-// map is a placeholder that says what it is, with its title - read without reading the megabytes of
-// its geography. The parts go back as they were.
+// filled map is drawn from its geography cache - read only when it is drawn, not with the megabytes of
+// the part. The parts go back as they were.
 
 let mutable pass = 0
 let mutable fail = 0
@@ -121,10 +121,24 @@ do
             Charts.parseChart theme map |> ignore
             watch.Elapsed.TotalMilliseconds ]
         |> List.min
-    ok "a map of 8 MB is read in no time" (map.Length > 8000000 && best < 10.0) (sprintf "%d characters, %.1f ms" map.Length best)
+    ok "a map of 8 MB is read in no time (its geography cache cut out, read when it is drawn)" (map.Length > 8000000 && best < 10.0) (sprintf "%d characters, %.1f ms" map.Length best)
     match Charts.parseChart theme map with
-    | Some chart -> eq "... a placeholder named for its series" (texts (Charts.layoutChart theme noData chart 400.0 300.0)) [ "Sum of Sales"; "Map chart (not drawn)" ]
-    | None -> ok "a map part is read as a placeholder" false "not read"
+    | Some chart ->
+        ok "... a filled map" (chart.Plots |> List.exists (fun plot -> match plot.Kind with Charts.RegionMapPlot _ -> true | _ -> false)) (sprintf "%A" (chart.Plots |> List.map (fun plot -> plot.Kind)))
+    | None -> ok "a map part is read" false "not read"
+
+// ---- a filled map drawn from its geography cache, as Excel 2019 draws it without asking Bing (dashboard-ecommerce-sales'
+// "Map Chart" sheet, Excel's picture: the states of its data in the colour of their sales from #D2EFFA to #1482AC -
+// New York #51A5C5, Texas #8CC7DD -, Alaska #E0E0E0, the scale "Sales" $ 457.69K .. $ 0.92K, the credits) ----------
+eq "Bing's point compression: a ring of Maine's outline from the cache"
+    (Charts.decodeMapRing "t7j0-tx-zHuyB5BppBj1B2tD0uB2c1JrZuT-IgDzjB5IwgB" |> Array.truncate 2 |> Array.map (fun (lat, lon) -> Math.Round (lat, 5), Math.Round (lon, 5)))
+    [| 44.79195, -71.02368; 44.79204, -71.02349 |]
+eq "a raw deflate stream decoded (stored, fixed and dynamic blocks)"
+    (let data = Text.Encoding.UTF8.GetBytes (String.replicate 40 "the geography cache of a map chart; ")
+     use packed = new MemoryStream()
+     (use deflate = new DeflateStream(packed, CompressionLevel.Optimal, true) in deflate.Write(data, 0, data.Length))
+     Text.Encoding.UTF8.GetString (Rbt.Spreadsheet.Inflate.raw (packed.ToArray())))
+    (String.replicate 40 "the geography cache of a map chart; ")
 
 // ---- the e-commerce dashboard's waterfalls: their data through `_xlchart` names, from the cells ----------
 let partsOf (bytes: byte[]) : Map<string, byte[]> =
@@ -176,8 +190,50 @@ do
                 match Charts.objectScene drawing live item.Xml 600.0 400.0 with
                 | Some scene -> drawn <- (sheet.Name, texts scene |> List.exists (fun value -> value.EndsWith "(not drawn)")) :: drawn
                 | None -> drawn <- (sheet.Name + " (none)", false) :: drawn
-    eq "every chartEx anchor of the dashboard is drawn" (drawn |> List.sort)
-        [ "Dashboard", false; "Dashboard", true; "Map Chart", true; "Waterfall Chart", false ]
+    eq "every chartEx anchor of the dashboard is drawn, its maps too" (drawn |> List.sort)
+        [ "Dashboard", false; "Dashboard", false; "Map Chart", false; "Waterfall Chart", false ]
+    // The "Map Chart" sheet's map at its size in Excel (536 x 286 px).
+    let mapSheet = ecommerce.Sheets |> List.find (fun sheet -> sheet.Name = "Map Chart")
+    let target (id: string) = mapSheet.Extras.DrawingRelationships |> List.tryPick (fun (known, _, target, isExternal) -> if known = id && not isExternal then Some (ZipInterop.normalizePath target) else None)
+    let drawing : Charts.DrawingParts =
+        { Theme = ecommerceTheme
+          Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path ecommerceParts) |> Option.bind (fun bytes -> Charts.parseChartWith names ecommerceTheme (text bytes)))
+          Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None); Camera = (fun _ _ _ -> None) }
+    match mapSheet.Extras.Objects |> List.tryFind (fun item -> item.Xml.Contains "chartex") |> Option.bind (fun item -> Charts.objectScene drawing live item.Xml 536.0 286.0) with
+    | Some scene ->
+        let rec paths (items: Charts.Primitive list) =
+            items |> List.collect (fun item -> match item with Charts.PPath (_, Some fill, _, _, _) -> [ fill ] | Charts.PGroup (_, _, _, _, inner) | Charts.PFace (_, inner) -> paths inner | _ -> [])
+        let rec allTexts (items: Charts.Primitive list) =
+            items |> List.collect (fun item -> match item with Charts.PText (_, _, value, _, _, _, _, _, _) -> [ value ] | Charts.PGroup (_, _, _, _, inner) | Charts.PFace (_, inner) -> allTexts inner | _ -> [])
+        let fills = paths scene.Items
+        ok "the map: 51 regions (the states, Alaska and Hawaii, the District of Columbia)" (fills.Length = 51) (sprintf "%d" fills.Length)
+        ok "... California #1482AC, New York #51A5C5, Texas #8CC7DD, the least #D2EFFA, Alaska (no data) #E0E0E0 - Excel's colours"
+            ([ "#1482AC"; "#51A5C5"; "#8CC7DD"; "#E0E0E0" ] |> List.forall (fun color -> List.contains color fills)
+             && fills |> List.exists (fun fill -> fill = "#D1EFFA" || fill = "#D2EFFA"))
+            (sprintf "%A" (List.distinct fills))
+        ok "... its scale and credits" (List.forall (fun value -> List.contains value (allTexts scene.Items)) [ "Sales"; "$ 457.69K"; "$ 0.92K"; "Powered by Bing"; "© GeoNames, Microsoft, TomTom" ])
+            (sprintf "%A" (allTexts scene.Items))
+    | None -> ok "the Map Chart sheet's map is drawn" false "none"
+// dashboard-sales-analysis' map of Australia: its categories two columns (country, "NSW") found as the provider found them
+// (New South Wales), its colours its colour style's first (dk1: black to #CCCCCC) - Excel's picture's states.
+do
+    let wb, parts, theme = openBook "real-world/dashboard-sales-analysis.xlsx"
+    let saNames (name: string) = wb.NamedRanges |> List.tryPick (fun known -> if known.Name = name then Some known.RefersTo else None)
+    let saBook = Bridge.Import.importWorkbook wb
+    let sheets = saBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, resolveSheet sheet.Model)
+    let data : Charts.ChartData =
+        { live with
+            Cells = (fun name r0 c0 r1 c1 ->
+                sheets |> List.tryFind (fun (known, _) -> String.Equals(known, name, StringComparison.OrdinalIgnoreCase))
+                |> Option.map (fun (_, model) -> Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } model)))) }
+    match Charts.parseChartWith saNames theme (text parts.["xl/charts/chartEx1.xml"]) with
+    | Some chart ->
+        let chart = Charts.withUserShapes (fun name -> Map.tryFind name parts |> Option.map text) "xl/charts/chartEx1.xml" chart
+        let scene = Charts.layoutChart theme data chart 480.0 288.0
+        let fills = scene.Items |> List.choose (fun item -> match item with Charts.PPath (_, Some fill, _, _, _) -> Some fill | _ -> None)
+        ok "Australia's states as Excel colours them: New South Wales #000000, Victoria #464646, Queensland #606060, Western Australia #979797, South Australia #BDBDBD, the Northern Territory #C6C6C6"
+            ([ "#000000"; "#464646"; "#606060"; "#979797"; "#BDBDBD"; "#C6C6C6" ] |> List.forall (fun color -> List.contains color fills)) (sprintf "%A" fills)
+    | None -> ok "the sales-analysis map is read" false "not read"
 
 // ---- a save keeps the parts as they were, and the names they read through ----------------------------
 let exported (sheets: SpreadsheetModel array) =

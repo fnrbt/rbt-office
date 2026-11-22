@@ -2399,6 +2399,54 @@ checks['controls-move-excel-parity'] = async () => {
 // and a picture painted through it (SRCPAINT), its dot drawn; a list box's items cut at its inside
 // (INTERSECTCLIPRECT), the selected one on a filled rectangle (ETO_OPAQUE); text hung from its top by the font's
 // Windows ascent (Calibri 15 px: 14 px), each character at its advance from the record.
+// Linked pictures (cameras) as Excel 2019 draws them (build-missing-font.vbs: synthetic-missing-font.xlsx, Excel's pictures):
+// a cell's text cut where the grid cuts it - at the next cell that is not empty -, in the cell's font (Lato, an Office cloud
+// font, drawn by Excel); [Green] in a number format #00FF00 (the e-commerce dashboard's KPI YOY cells).
+checks['camera-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-missing-font.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Camera')); await frame(); await everyObjectSeen(host);
+        const pictures = [...host.querySelectorAll('.spreadsheet-drawing')].filter((item) => item.querySelector('svg text'));
+        check('four linked pictures drawn', pictures.length, 4);
+        const first = pictures[0];
+        if (first) {
+            const texts = [...first.querySelectorAll('svg text')];
+            const clipWidth = (text) => { const id = /url\(#([^)]+)\)/.exec(text.getAttribute('clip-path') ?? '')?.[1]; const rect = id ? first.querySelector(`[id="${id}"] rect`) : null; return rect ? Math.round(Number(rect.getAttribute('width'))) : null; };
+            check('B2:C2: each text cut at its own cell (the cell beside it is not empty: Excel\'s "Hamburgevo|")', texts.map(clipWidth), [159, 159]);
+            check('... in Lato, bold in C2', texts.map((t) => [t.getAttribute('font-family').split(',')[0].replace(/'/g, ''), t.getAttribute('font-weight') ?? '']), [['Lato', ''], ['Lato', 'bold']]);
+        }
+        await grid.ImportXlsx((await bytesOf('tests/real-world/dashboard-ecommerce-sales.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('KPI YOY')); await frame();
+        const cell = host.querySelector('.spreadsheet-cell[data-row="9"][data-col="7"]');
+        check('KPI YOY H10, [Green]\\▲0.00%: #00FF00 as Excel shows it', cell ? [cell.textContent, getComputedStyle(cell).color] : null, ['▲20.62%', 'rgb(0, 255, 0)']);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Filled maps (chartEx regionMap) drawn from their geography cache as Excel 2019 draws them (dashboard-ecommerce-sales'
+// "Map Chart": 51 regions, California #1482AC, Alaska #E0E0E0, the scale and the provider's credits).
+checks['map-charts-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const errors = [];
+    grid.OnError((error) => errors.push(error.source + ': ' + error.message));
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/real-world/dashboard-ecommerce-sales.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Map Chart')); await frame(); await everyObjectSeen(host);
+        const map = [...host.querySelectorAll('.spreadsheet-drawing')].find((item) => item.querySelector('svg path'));
+        const fills = map ? [...map.querySelectorAll('svg path')].map((p) => p.getAttribute('fill')) : [];
+        check('the Map Chart sheet\'s map: 51 regions drawn, no placeholder', [fills.length, host.querySelectorAll('.spreadsheet-object-label').length], [51, 0]);
+        check('... California #1482AC, Alaska #E0E0E0 (Excel\'s colours)', ['#1482AC', '#E0E0E0'].map((c) => fills.includes(c)), [true, true]);
+        check('... its scale and credits', map ? ['Sales', '$ 457.69K', '$ 0.92K', 'Powered by Bing'].map((t) => [...map.querySelectorAll('svg text')].some((n) => n.textContent === t)) : null, [true, true, true, true]);
+        check('no error reported', errors, []);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 checks['activex-emf-excel-parity'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();

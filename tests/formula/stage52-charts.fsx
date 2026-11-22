@@ -278,8 +278,8 @@ do
 
 // ---- a part of the newer kinds is told by its first tag -----------------------------------
 // dashboard-sales-analysis.xlsx has a map chart of 8 MB (`cx:chartSpace`): reading all of it to
-// find that it is not drawn took a tenth of a second of the workbook's opening. (It is a
-// placeholder, read up to its series' name: stage55-chartex.)
+// know what it is took a tenth of a second of the workbook's opening. (Its geography cache is cut out unread, read when the
+// map is drawn: stage55-chartex.)
 do
     let _, _, parts, theme = openBook "real-world/dashboard-sales-analysis.xlsx"
     let chartEx = text parts.["xl/charts/chartEx1.xml"]
@@ -287,7 +287,7 @@ do
         [ for _ in 1 .. 3 ->
             let watch = Diagnostics.Stopwatch.StartNew()
             let read = Charts.parseChart theme chartEx
-            if not (read |> Option.exists (fun chart -> chart.Plots |> List.exists (fun plot -> match plot.Kind with Charts.UndrawnPlot "regionMap" -> true | _ -> false))) then failwith "a map read as something else than a placeholder"
+            if not (read |> Option.exists (fun chart -> chart.Plots |> List.exists (fun plot -> match plot.Kind with Charts.RegionMapPlot _ -> true | _ -> false))) then failwith "a map read as something else than a filled map"
             watch.Elapsed.TotalMilliseconds ]
         |> List.min
     ok "a chartEx part of 8 MB is not read to say what it is" (chartEx.Length > 8000000 && best < 10.0) (sprintf "%d characters, %.1f ms" chartEx.Length best)
@@ -609,7 +609,7 @@ ok "Excel 2019: bins closed on the left [10, 49) .. [88, 127]; five bins [29.8, 
      && hasAll (exTexts (looksExScene 10)) [ "≤ 100"; "(100, 250]"; "(700, 800]"; "> 800" ] [])
     (sprintf "%A %A %A" (exTexts (looksExScene 2)) (exTexts (looksExScene 9)) (exTexts (looksExScene 10)))
 let histBars = rects (zooScene 5) |> List.filter (fun (_, _, w, _, fill) -> fill = "#4472C4" && w > 40.0) |> List.sortBy (fun (x, _, _, _, _) -> x)
-ok "Excel 2019: ... the bars touch, the plot from 28 to 471 px of 480 (labels 7.5 pt from the axis, the box 6 pt in)"
+ok "Excel 2019: ... the bars touch, the plot from 28 to 471 px of 480 (labels 6 pt from the axis, the box 6 pt in)"
     (histBars.Length = 6 && (let x, _, _, _, _ = histBars.Head in abs (x - 28.5) < 2.5) && (let x, _, w, _, _ = List.last histBars in abs (x + w - 471.0) < 2.0)) (sprintf "%A" histBars)
 let paretoTexts = allTexts (zooScene 12).Items
 ok "Excel 2019: a Pareto chart's bars from the most down (Wrong item, Late, Billing ...), its running share 0 % .. 100 % at the right"
@@ -618,6 +618,16 @@ ok "Excel 2019: a Pareto chart's bars from the most down (Wrong item, Late, Bill
 ok "Excel 2019: ... the binned one in bins from the most ((44.2, 61.2] first, (78.2, 95.2] last)"
     (let cats = allTexts (zooScene 13).Items |> List.filter (fun (v, _, _, _, _, _, _) -> v.StartsWith "(" || v.StartsWith "[") |> List.sortBy (fun (_, x, _, _, _, _, _) -> x) |> List.map (fun (v, _, _, _, _, _, _) -> v)
      cats = [ "(44.2, 61.2]"; "(27.2, 44.2]"; "(61.2, 78.2]"; "[10.2, 27.2]"; "(78.2, 95.2]" ]) (sprintf "%A" (exTexts (zooScene 13)))
+// A Pareto chart's plot between its two axes (build-pareto-layout.vbs: synthetic-pareto-layout.xlsx, counts 0.1 to 10000
+// times six causes', Excel 2019's pictures): 12 pt kept at either side (not 6), the labels' GDI widths 6 pt from the
+// plot - Excel's plots from 36, 42, 49, 55, 61, 67 px to 428 (a pixel either way with 4 figures and more).
+let gridSpan (scene: Charts.Scene) =
+    scene.Items |> List.tryPick (fun item -> match item with Charts.PLine (x1, y1, x2, y2, "#D9D9D9", _, _) when y1 = y2 && x2 - x1 > 200.0 -> Some (x1, x2) | _ -> None)
+let paretoLayout = chartExBook "test-documents-excel/synthetic-pareto-layout.xlsx"
+eq "Excel 2019: a Pareto chart's plot 12 pt in at both sides, its labels 6 pt from it: from 36, 42, 48 (Excel 49), .. 66 (67) to 429 px"
+    ([ for k in 0 .. 5 -> gridSpan (paretoLayout (2 * k + 1)) ] @ [ gridSpan (zooScene 12); gridSpan (zooScene 13) ])
+    ([ for left in [ 36.0; 42.0; 48.0; 54.0; 60.0; 66.0; 42.0; 36.0 ] -> Some (left, 429.0) ])
+eq "Excel 2019: ... a histogram's from 28 to 472 px (labels 6 pt from the plot)" (gridSpan (zooScene 5)) (Some (28.0, 472.0))
 let exclusiveBox = Charts.boxFiguresOf false [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
 let inclusiveBox = Charts.boxFiguresOf true [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
 ok "Excel 2019: a box's quartiles QUARTILE.EXC's (2.75 .. 8.25) or .INC's (3.25 .. 7.75); whiskers 1 .. 9, 30 beyond"
@@ -654,6 +664,16 @@ ok "Excel 2019: a sunburst of one level: a ring from half the radius (61 of 121 
 ok "Excel 2019: ... of three levels rings of a quarter of the radius, labels along their parts' radius"
     (sunPaths (zooScene 22) |> List.exists (fun (d, _) -> d.Contains "A 30.4") && allTexts (looksExScene 22).Items |> List.exists (fun (v, _, _, _, _, _, t) -> v = "Tokyo" && t < -10.0 && t > -80.0))
     (sprintf "%A" (allTexts (looksExScene 22).Items))
+// Sunburst labels (build-sunburst-labels.vbs: synthetic-sunburst-labels.xlsx; synthetic-chartex-looks' "Sunburst3"; Excel's
+// pictures): broken to the ring by the design advances ("Osaka" 29.6 px whole in a ring of 30.25, "0000iii" 32.5 broken), left
+// out where their lines and 4.5 pt are longer than the part's arc at its middle radius.
+let sunLabels = chartExBook "test-documents-excel/synthetic-sunburst-labels.xlsx"
+ok "Excel 2019: a sunburst label broken by the design advances: Osaka, 0000ii whole; 0000ii / i, Franc / e"
+    (hasAll (exTexts (sunLabels 1)) [ "Osaka"; "0000ii"; "i"; "Franc"; "e"; "Ab Cd" ] [ "Osak"; "0000iii" ]) (sprintf "%A" (exTexts (sunLabels 1)))
+ok "Excel 2019: ... \"Osaka / J\" (37.4 px of arc) .. \"Osaka / L\" kept, \"Osaka / I\" (33.6) and smaller left out"
+    (hasAll (exTexts (sunLabels 4)) [ "Big"; "J"; "K"; "L" ] [ "I"; "H"; "A " ]) (sprintf "%A" (exTexts (sunLabels 4)))
+ok "Excel 2019: ... synthetic-chartex-looks' Sunburst3: Osaka whole, Ameri / ca and Rome kept, Italy and Madri / d left out"
+    (hasAll (exTexts (looksExScene 22)) [ "Osaka"; "Ameri"; "ca"; "Rome"; "Tokyo" ] [ "Osak"; "Italy"; "Madri" ]) (sprintf "%A" (exTexts (looksExScene 22)))
 
 // Chart sheets (chartsheet-probe.ps1 on synthetic-chartsheets.xlsx, a window of 1898 x 787 px): the page less its
 // margins fitted to the window at a whole per cent (Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in

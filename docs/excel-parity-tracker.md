@@ -523,6 +523,45 @@ looked into: kept as the file has it). Converting the sheet a one-cell reference
 sheets a chart's one-cell series names read (sooner than before; the chart's values from its cache until then); an
 export keeps the calculation chain for such a sheet still standing in for the file's.
 
+## Slicer text, cameras, Pareto, sunburst labels, filled maps against Excel 2019, 2026-11-22
+
+What the earlier rounds left on the dashboards and the chartEx zoo, each from generated workbooks made by Excel 2019 on
+the VM (`probe-on-vm.sh`) and Excel's pictures (`shoot-sheets.ps1`, Chart.Export) against ours (`shoot-browser-sheets.mjs`,
+`render-charts.fsx` + `shoot-svgs.mjs`). Fixtures and probes: `build-slicer-cut.vbs` (synthetic-slicer-cut.xlsx and
+-twcen.xlsx: one table cache shown by 400 slicers 1 px apart, Calibri and a Tw Cen MT theme), `build-missing-font.vbs`
+(synthetic-missing-font.xlsx and -twcen.xlsx: cells in Lato, a made-up face and installed ones; linked pictures of them),
+`font-metrics/probe-font-faces.vbs` (Lato and Tw Cen MT as Normal fonts at 6 - 48 pt, their cells' rows),
+`build-pareto-layout.vbs` (synthetic-pareto-layout.xlsx: Pareto charts of labels 1 - 7 figures wide),
+`build-sunburst-labels.vbs` (synthetic-sunburst-labels.xlsx: leaves 2.75 px apart in width, leaves of 1 - 12 beside a large
+one). Checks: tests/formula stage56-slicers, stage52-charts, stage55-chartex; xlsx-browser `slicers-in-grid`,
+`camera-excel-parity`, `map-charts-excel-parity`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A slicer's text is in the theme's body font (Tw Cen MT in the e-commerce dashboard), at 15 px by GDI's widths | the Tw Cen book: every button and caption cut by Tw Cen MT's widths | Calibri | `Slicers.drawer` (`PFace`), `slicerFitted` |
+| A button's text is whole where it is no wider than the button less 18 px; else its most characters (spaces kept: "Ab ...") and three full stops "..." narrower than that; where even "..." is not, as many stops as are ("..", ".", none). The caption likewise in the slicer less 72 px | 400 slicers 1 px apart: each of the 1600 texts (3 buttons and the caption, 2 fonts) one ink width a text of ours and the other way round; the dashboard's "Centr..." in a 61-px button ("Central" 44 px of Tw Cen MT, room 43) | cut at the button less 12 px by Calibri's widths with "…" | `Slicers.slicerFitted` |
+| A slicer's buttons and header line from 9 px inside the frame at the left to 9.67 at the right (8 or 9 whole pixels by where the anchor falls), columns 3 px apart, each button on whole pixels rounded half down (108.25-px buttons 108, 108, 109, 108) | the cut fixture (button w - 18 px), synthetic-slicer-looks' "Two columns" (123 + 3 + 123), the dashboard's 61 / 108.25-px buttons 3 apart | 9 / 9 px, 4 apart, fractional | `rightMargin`, `columnGap`, `snap` |
+| A table's slicer on another sheet than its table shows its column's values (that sheet read first) | the cut fixture's B1 .. C2 sheets of the Data sheet's table | no buttons in the browser | `objectSvg` draws again once the sheet is converted |
+| Lato (an Office cloud font: %LOCALAPPDATA%\Microsoft\FontCache\4\CloudFonts) is drawn by Excel in Lato: as wide as its own advances, its rows as Lato's (11 pt: 24 px); a face no one has is Arial | synthetic-missing-font's Fonts sheet; the e-commerce KPI YOY cells (Lato bold) and their cameras' YOY boxes | the browser's fallback (narrower, taller), rows of Arial | Lato in artifacts/fonts/windows-extra (copied from the VM), `GdiAdvances` (Lato, regular and bold), `FontMetricsData` (Lato and Tw Cen MT: rows and widest figure as a Normal font, bold / italic rows; descents from winDescent); "Tw Cen MT" no longer measured as "Tw Cen" (Arial) |
+| A linked picture's cell text is cut where the grid cuts it: at the next cell that is not empty, on the side it is aligned to; numbers and wrapped text keep to their cell | synthetic-missing-font's Camera sheet: "Hamburgevo|" at C2 | running over its neighbour | `cameraSvg` clip paths |
+| [Green] in a number format is #00FF00 | the dashboard's KPI YOY cells and YOY boxes (#00FF00 ink) | #008000 | `CellText` colour tags |
+| A chartEx chart with a second value axis (Pareto) keeps 12 pt at either side, not 6; a value axis' labels (GDI widths) stand 6 pt from the plot, not 7.5 | Pareto plots from 36, 42, 49, 55, 61, 67 to 428 px (labels from 17 px, the right ones to 462); every histogram and box chart of the zoo from Excel's left pixel | 6 px wider; histograms 2 px right | `layoutClassicChart` `sideMargin`, `valueGap` |
+| A sunburst label is broken to its ring by the design advances (no extra room) and left out where its lines and 4.5 pt are longer than its part's arc at the middle radius | "Osaka" 29.6 px whole in a ring of 30.25, "0000iii" 32.5 broken; "Osaka / J" in 37.4 px of arc kept, "Osaka / I" in 33.6 left out; Sunburst3's "Ameri / ca" (42.3) kept, Italy (14.8) and "Madri / d" (31.2) left out | GDI widths and 2 px more ("Osak / a"); left out only where the lines alone did not fit | `layoutHierarchyChartEx` `brokenTo` |
+| A filled map (regionMap) is drawn from its part's geography cache (`cx:geoCache`: base64 of raw deflate; regions' outlines in Bing's point compression): the country's divisions, those of the data in the colour of their value (a scale of the part's own - min, mid at the values' middle, max -, else 80 % lighter to 75 % of the colour style's first colour, in proportion in sRGB), the others #E0E0E0, outlines in the series' line colour (else white); the United States as an Albers map with Alaska (0.35) and Hawaii in insets; the legend (the series' name, the scale's bar, its ends' or middle value) at the right; the provider's credits under the map | e-commerce "Map Chart": California #1482AC, New York #51A5C5, Texas #8CC7DD, the least #D2EFFA, Alaska #E0E0E0; "Sales by State": Texas #679491 (three colours, "$ 229.30K" the middle); sales-analysis' Australia: every state's grey (#000000 .. #C6C6C6) | a placeholder "Map chart (not drawn)" | `RegionMapPlot`, `Inflate.raw`, `decodeMapRing`, `layoutRegionMapChartEx`, `withUserShapes` (colour style) |
+
+Left: the slicer's header buttons of narrow slicers (Excel leaves the Multi-Select out under ~47 px) and a timeline's
+caption cut (not looked into); a button's whole pixels with an anchor at a fraction of a pixel (ours from the snapped frame:
+a pixel either way); a camera's text in a Lato row stands 4 px lower than Excel's (the row's baseline in a picture), the
+dashboard's YOY boxes 1 px narrower; Pareto plots of 4 figures and more and histograms of one start a pixel off Excel's;
+sunbursts of the 376 x 228-pt chart leave out labels Excel's 360 x 216 one breaks (not understood); a sunburst label on a
+light part is black in Excel (Sunburst's "Bread" / "Bakery" on yellow), white in ours. Maps: Excel 2019 on the VM was
+online (Bing answered), so that it draws these without the network is the cache's design, not checked by cutting the VM
+off (shared with another agent); the lower 48 states are about 4 % narrower in ours than Excel's projection, Australia
+wider (Mercator; Excel's projection of other countries not found); the legend's value labels are 7.5 pt (the Map Chart
+sheet) where the dashboard's are larger, its bar 6 px wide where the dashboard's is 8; the three-colour legend shows the
+largest and the middle value only (as the one Excel picture does); a world map or one of several countries is not tried;
+the map tests use the dashboards (no synthetic map: Excel makes one only with Bing).
+
 ## Formula oracle on real-world models, 2026-11-21
 
 Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel

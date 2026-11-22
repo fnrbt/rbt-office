@@ -1891,7 +1891,22 @@ checks['slicers-in-grid'] = async () => {
             check(`${name}: its slicers are drawn with their captions`, slicers.map((caption) => !!captioned(caption)), slicers.map(() => true));
             check('... no slicer is a labelled frame', labels().filter((label) => /Region|Ship|Year|State|Category/.test(label)), []);
             await shoot(`${name} Dashboard`);
+            if (name === 'dashboard-ecommerce-sales.xlsx') {
+                // (Excel 2019's picture: Region 1's buttons 61 px wide, "Central" in Tw Cen MT cut to "Centr...".)
+                const region = captioned('Select Region');
+                check('... Select Region: "Central" cut as Excel cuts it, in the theme\'s body font', region ? [textsOf(region).slice(1), region.querySelector('g[font-family]')?.getAttribute('font-family').split(',')[0]] : null,
+                    [['Centr...', 'East', 'South', 'West'], "'Tw Cen MT'"]);
+            }
         }
+        // A table's slicers on another sheet than the table (synthetic-slicer-cut.xlsx, made by Excel): the column's values once
+        // that sheet is read, cut where Excel cuts them (build-slicer-cut.vbs, Excel's pictures).
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-slicer-cut.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('B1')); await frame();
+        await seenAll(host); await frame(); await seenAll(host);
+        const cutTexts = drawn().map(textsOf).filter((texts) => texts.length === 4).map((texts) => texts.join('|'));
+        check('synthetic-slicer-cut B1: 50 slicers of the Data sheet\'s table, buttons drawn', cutTexts.length, 50);
+        check('... B1_80 and B1_81 as Excel shows them ("Cent..." in 62 px, "Central" in 63)', [cutTexts[40], cutTexts[41]],
+            ['C|0000...|Ab C...|Cent...', 'C|0000...|Ab C...|Central']);
         check('no error reported', errors, []);
     } catch (e) { lines.push('FAIL threw: ' + String(e && e.stack || e)); }
     finally { grid.Dispose(); host.remove(); }
