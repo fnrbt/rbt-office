@@ -1426,3 +1426,21 @@ Evidence: synthetic `bf4` icon-set and sparkline-look Excel PDFs (not checked in
 Shared geometry: `ConditionalFormatting.iconArtwork` supplies SVG and vector-native/PDF paths; `Sparklines.inCell` supplies range parsing, source values and axis bounds for the grid and print. The PDF and native PNG runners resolve explicit, quoted, cross-sheet and nonactive-sheet references against the workbook; printed overlays are drawn once, including cells without stored values. Native PNG no longer uses the legacy XML sparkline reader (which crashes on `$`-qualified cell references).
 
 Remaining visual limits: Excel rasterizes both into PDF images, whereas ours emits vector paths. Rounded corners on some icon-set boxes/traffic-light housings and stroke caps/anti-aliasing of sparkline lines may differ at pixel level. Standalone model-only static painting cannot resolve an explicitly named *different* sheet without a workbook source callback; workbook PDF/PNG runners supply that callback.
+
+## Print round 3: inherited columns and bottom text
+
+- Excel 2019's `blockhold.xlsx`/`blockhold.tsv`: an inherited column fill or
+  border can retain a trailing page when a visible participating row on that
+  page shares an absolute 16-row block with a used-cell extent reaching the
+  styled column. Source cells may be hidden or formula-empty; an empty merge
+  counts. A font-only column, absent/hidden target row, or a row with only a
+  nonprinting row font style does not. The existing implicit used-range and
+  trailing-page trim remain otherwise unchanged.
+- Printer bottom text baseline uses the larger 96-dpi GDI descent/internal
+  leading of the bottom-aligned row's fonts, with a Normal-font floor. The
+  600-dpi Normal metric sets the dot offset (not the screen row-height scale).
+  Checked normal sizes: Calibri 8/11/20, Arial 8/10/12, Segoe UI 9/10,
+  Times New Roman 12, Cambria 14, Tahoma 10, Aptos Narrow 10/11/12,
+  Aptos/Display 11 and Lato 11. Six tested body-font families use measured
+  GDI levels; other normals retain previous placement. Screen baselines,
+  row heights, line pitches, and top/middle print alignment are unchanged.
