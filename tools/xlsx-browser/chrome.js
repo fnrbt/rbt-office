@@ -182,10 +182,11 @@ checks['chrome-outline'] = async () => {
 
         grid.GroupRows('3:8'); grid.GroupRows('4:5');
         await frame();
-        check('grouped rows: a strip of three steps left of the row numbers', [origin(), buttons('rows'), nodes('level').map((n) => n.textContent)], [[98, 30], [[2, 7, '−'], [3, 4, '−']], ['1', '2', '3']]);
+        check('grouped rows: a strip of three steps left of the row numbers', [origin(), buttons('rows'), nodes('level').map((n) => n.textContent)], [[112, 30], [[2, 7, '−'], [3, 4, '−']], ['1', '2', '3']]);
         check('the +/- buttons are on the summary rows (the row below each group)', [rowOfButton(buttonOf('rows', 2)), rowOfButton(buttonOf('rows', 3))], [8, 5]);
-        check('the row numbers moved right with the cells', Math.round(host.querySelector('.spreadsheet-row-header[data-row="0"]').getBoundingClientRect().left - inner()[0]), 48);
+        check('the row numbers moved right with the cells', Math.round(host.querySelector('.spreadsheet-row-header[data-row="0"]').getBoundingClientRect().left - inner()[0]), 62);
         check('the brackets are drawn', nodes('line').length, 2);
+        check('a dot on each grouped row but where a button is (Excel 2019)', nodes('dot').length, 5);
         // A cell is still where the pointer says it is.
         const b2 = cellBox(host, 1, 1);
         await realClick(b2.left + b2.width / 2, b2.top + b2.height / 2);
@@ -214,7 +215,7 @@ checks['chrome-outline'] = async () => {
 
         // ---- columns ----
         grid.GroupColumns('C:D'); await frame();
-        check('grouped columns: a strip above the column letters', [origin(), buttons('columns'), colOfButton(buttonOf('columns', 2)), nodes('level').filter((n) => n.getAttribute('data-axis') === 'columns').map((n) => n.textContent)], [[98, 63], [[2, 3, '−']], 4, ['1', '2']]);
+        check('grouped columns: a strip above the column letters', [origin(), buttons('columns'), colOfButton(buttonOf('columns', 2)), nodes('level').filter((n) => n.getAttribute('data-axis') === 'columns').map((n) => n.textContent)], [[112, 73], [[2, 3, '−']], 4, ['1', '2']]);
         await click(buttonOf('columns', 2));
         check('a click collapses the columns', [grid.GetHiddenColumns(), buttons('columns')], [['C:D'], [[2, 3, '+']]]);
         await click(buttonOf('columns', 2));
@@ -229,7 +230,7 @@ checks['chrome-outline'] = async () => {
 
         // ---- zoom, frozen panes, scrolling ----
         grid.SetZoom(1.5); await frame();
-        check('zoomed: the strip scales', origin(), [147, 95]);
+        check('zoomed: the strip scales', origin(), [168, 110]);
         await click(buttonOf('rows', 3));
         check('... and its buttons are where they are drawn', grid.GetHiddenRows(), []);
         grid.SetZoom(1); await frame();
@@ -246,12 +247,12 @@ checks['chrome-outline'] = async () => {
         grid.SetShowOutline(false); await frame();
         check('SetShowOutline(false): no strip, the cells are back', [host.querySelectorAll('.spreadsheet-outline').length, origin(), grid.GetShowOutline(), grid.GetOutline().rowLevels], [0, [50, 30], false, 2]);
         grid.SetShowOutline(true); await frame();
-        check('SetShowOutline(true)', [origin(), nodes('button').length], [[98, 63], 3]);
+        check('SetShowOutline(true)', [origin(), nodes('button').length], [[112, 73], 3]);
         // A sheet without headers keeps its strips: a narrow band beside each holds the level buttons of the other axis.
         grid.SetShowHeaders(false); await frame();
         const shownHeaders = () => [...host.querySelectorAll('.spreadsheet-row-header, .spreadsheet-col-header')].filter((n) => n.getClientRects().length > 0).length;
         const inHeaderArea = (node) => { const box = node.getBoundingClientRect(), [left, top] = inner(), [x, y] = origin(); return box.left >= left - 1 && box.top >= top - 1 && (box.right <= left + x + 1 || box.bottom <= top + y + 1); };
-        check('no headers: the strips stay, the row numbers and column letters go', [nodes('button').length, nodes('level').length, origin(), shownHeaders(), nodes('button').concat(nodes('level')).every(inHeaderArea)], [3, 5, [66, 51], 0, true]);
+        check('no headers: the strips stay, the row numbers and column letters go', [nodes('button').length, nodes('level').length, origin(), shownHeaders(), nodes('button').concat(nodes('level')).every(inHeaderArea)], [3, 5, [82, 63], 0, true]);
         check('... the level buttons are in the corner bands, not over the cells', nodes('level').map((n) => { const box = n.getBoundingClientRect(), [left, top] = inner(), [x, y] = origin(); return box.right <= left + x + 1 && box.bottom <= top + y + 1; }).every(Boolean), true);
         await click(buttonOf('rows', 3));
         check('... and a click collapses', grid.GetHiddenRows(), ['4:5']);
@@ -260,7 +261,7 @@ checks['chrome-outline'] = async () => {
         await realClick(a1.left + a1.width / 2, a1.top + a1.height / 2);
         check('... a click on a cell still selects that cell', grid.GetSelectionRef(), 'A1');
         grid.SetShowHeaders(true); await frame();
-        check('headers again', [origin(), shownHeaders() > 0], [[98, 63], true]);
+        check('headers again', [origin(), shownHeaders() > 0], [[112, 73], true]);
         // The sheet's own switch (the sheet view's showOutlineSymbols): saved with the sheet, one undo step.
         check('the symbols are shown', [grid.GetShowOutlineSymbols(), grid.GetOutline().showSymbols], [true, true]);
         grid.SetShowOutlineSymbols(false); await frame();
@@ -272,7 +273,7 @@ checks['chrome-outline'] = async () => {
             try { await frame(); check('... read back: grouped, without symbols', [hidden.grid.GetShowOutlineSymbols(), hidden.grid.GetOutline().rowLevels, hidden.host.querySelectorAll('.spreadsheet-outline').length], [false, 2, 0]); } finally { hidden.close(); }
         }
         grid.Undo(); await frame();
-        check('... undone', [grid.GetShowOutlineSymbols(), origin()], [true, [98, 63]]);
+        check('... undone', [grid.GetShowOutlineSymbols(), origin()], [true, [112, 73]]);
         // A viewer: the buttons collapse and expand - how the sheet is looked at, not a change of the workbook.
         grid.SetReadOnly(true); await frame();
         {

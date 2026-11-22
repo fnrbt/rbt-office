@@ -1601,18 +1601,66 @@ let autoFitRowHeights (measure: TextMeasure) (model: SpreadsheetModel) (first: i
                 | ValueNone -> autoRowHeightPx
             yield row, min maxRowHeightPx height ]
 
-/// The measure the rows of a file are fitted with when it is opened (`fitRowsOnOpen`): a host that can
-/// measure text sets its own (the browser grid: its canvas). Without one a text is its characters at nine
-/// tenths of its font's maximum digit width.
+/// The measure the rows of a file are fitted with when it is opened (`fitRowsOnOpen`): Excel's widths at
+/// 100 %. A host that can measure text sets its own (the browser grid: `ExcelText` with its canvas for what
+/// the tables lack). Without one: `ExcelText` for the fonts its tables know, a character it does not know
+/// and the text of any other font at nine tenths of the font's maximum digit width a character.
 let mutable openFitMeasure : TextMeasure option = None
+
+/// The lines Excel 2019 fits a row's wrapped text to when it opens a file (checked in Excel on generated
+/// cells, `make-wrap-fit-fixture.py`: 27 fonts and sizes, 2-word and 1-word texts in columns a pixel apart,
+/// `Rows(r).Height` on opening): its own line breaks kept, then as many words on a line as fit (a break at a
+/// space only, not a no-break space), a word wider than a line broken between its characters. A line fits
+/// when its width - the sum of its characters' advances (`advance` i: character i's, Excel's at 100 %
+/// whatever the sheet's zoom, in its run's font; spaces at its end left out) - and a pixel more for every 28 past 56
+/// (`g + max(0, floor((g - 57) / 28))`: 80 px of Calibri 11 fit a column of 87 px, 88 px one of 96, 240 one
+/// of 253) is no more than `room`.
+let openWrapLineCount (advance: int -> float) (room: float) (text: string) : int =
+    let text = if isNull text then "" else text
+    let prefix = Array.zeroCreate (text.Length + 1)
+    for i in 0 .. text.Length - 1 do prefix.[i + 1] <- prefix.[i] + (if text.[i] = '\n' || text.[i] = '\r' then 0.0 else advance i)
+    let fits (first: int) (last: int) =
+        // (Spaces at a line's end do not count: a format's `_)` after the text.)
+        let mutable last = last
+        while last > first && text.[last - 1] = ' ' do last <- last - 1
+        let g = prefix.[last] - prefix.[first]
+        g + max 0.0 (Math.Floor ((g - 57.0) / 28.0)) <= room + 1e-9
+    let mutable lines = 0
+    let mutable paragraphStart = 0
+    while paragraphStart <= text.Length do
+        let paragraphEnd = match text.IndexOf('\n', paragraphStart) with -1 -> text.Length | i -> i
+        let ending = if paragraphEnd > paragraphStart && text.[paragraphEnd - 1] = '\r' then paragraphEnd - 1 else paragraphEnd
+        if ending = paragraphStart || room <= 0.0 || fits paragraphStart ending then lines <- lines + 1
+        else
+            // The line is lineStart .. the end of its last word; a word starts after a space.
+            let mutable lineStart = paragraphStart
+            let mutable lineEnd = paragraphStart
+            let mutable wordStart = paragraphStart
+            while wordStart <= ending do
+                let wordEnd = match text.IndexOf(' ', wordStart) with -1 -> ending | i when i > ending -> ending | i -> i
+                if lineEnd = lineStart || fits lineStart wordEnd then lineEnd <- wordEnd
+                else
+                    lines <- lines + 1
+                    lineStart <- wordStart
+                    lineEnd <- wordEnd
+                // A word (or the line it starts) wider than a line is broken between its characters.
+                while lineEnd - lineStart > 1 && (let space = text.IndexOf(' ', lineStart) in space < 0 || space >= lineEnd) && not (fits lineStart lineEnd) do
+                    let mutable cut = lineEnd - 1
+                    while cut > lineStart + 1 && not (fits lineStart cut) do cut <- cut - 1
+                    lines <- lines + 1
+                    lineStart <- cut
+                wordStart <- wordEnd + 1
+            lines <- lines + 1
+        paragraphStart <- paragraphEnd + 1
+    max 1 lines
 
 /// The heights Excel 2019 gives the rows `fitted` (indexes) it fits when it opens a file (synthetic-row-fit,
 /// synthetic-row-merged, probe-fonts: checked in Excel): the fonts of a row meet at their baseline - the row is
 /// as high as the most any of them has above it and the most any has below it (`FontMetrics.lineOf`: a line
 /// of its font, its descent) - the cells aligned at the bottom (the default); a cell centred or at the top is as
 /// high as its text (vertex42's centred Arial 12 and Arial 11 bold: 20 px, at the bottom 21). A cell is a line of its font - a line break without
-/// wrapping does not make another -, a wrapped text as many lines as it takes at its column's width less 3 px a
-/// side, text turned by 90 degrees its length; every cell of the row counts, an empty one with a format of its
+/// wrapping does not make another -, a wrapped text as many lines as it takes (`openWrapLineCount`, its room the column less a margin of
+/// its font), text turned by 90 degrees its length; every cell of the row counts, an empty one with a format of its
 /// own, one in a hidden column too. The row's empty cells are in `baseFonts` (the columns' styles, the Normal
 /// font while a column has none) or, when the row has a style of its own (`RowStyles`), in that. A cell merged
 /// with the cells of other rows counts for nothing; merged with others of its row, a wrapped text counts with
@@ -1625,7 +1673,13 @@ let fitRowsOnOpen (fitted: Collections.Generic.HashSet<int>) (face: string optio
         let byPoints =
             match openFitMeasure with
             | Some measure -> measure
-            | None -> fun text fontPt fontFace _ _ -> float text.Length * FontMetrics.maxDigitWidth fontFace fontPt * 0.9
+            | None ->
+                fun text fontPt fontFace bold italic ->
+                    let estimate (part: string) = float part.Length * FontMetrics.maxDigitWidth fontFace fontPt * 0.9
+                    match fontFace with
+                    | Some family when ExcelText.knowsFamily family ->
+                        ExcelText.textWidth estimate family bold italic (ExcelText.pixelSize fontPt 1.0) (ExcelText.isSmallFonts fontPt 1.0) text
+                    | _ -> estimate text
         fun text fontPt fontFace bold italic -> byPoints text (float (FontMetrics.pixelSize fontPt) * 0.75) fontFace bold italic
     // (A font's line and descent, by font: the cells of a style share their format.)
     let lineOf = Collections.Generic.Dictionary<string, struct (float * float)>()
@@ -1679,9 +1733,25 @@ let fitRowsOnOpen (fitted: Collections.Generic.HashSet<int>) (face: string optio
                     | value when format.WrapText && (match unwrapFormulaValue value with String _ -> true | _ -> false) ->
                         let text = shownText model data
                         let fontPt = defaultArg format.FontSize points
-                        let width = axisSize false addr.Col model - 6.0 - cellIndentPx format
-                        let lines = wrappedLineCount (fun part -> measure part fontPt (format.FontName |> Option.orElse face) format.Bold format.Italic) width text
-                        float lines * line
+                        let fontFace = format.FontName |> Option.orElse face
+                        let width (part: string) = measure part fontPt fontFace format.Bold format.Italic
+                        // (The room: the column less 2 x ceil(d / 4) + 3 px, d the font's widest digit at 100 % -
+                        // 7 px for Calibri 11 or Arial 10, 9 for Calibri 14, 11 for Calibri 20 and 24.)
+                        let mutable digit = 0.0
+                        for d in "0123456789" do digit <- max digit (width (string d))
+                        let room = axisSize false addr.Col model - (2.0 * Math.Ceiling (digit / 4.0) + 3.0) - cellIndentPx format
+                        // (A text of runs: each character in its run's font.)
+                        let runs = match Map.tryFind addr model.RichRuns with Some runs when runs |> List.sumBy (fun (t, _) -> t.Length) = text.Length -> runs | _ -> []
+                        let advances =
+                            if runs.IsEmpty then Array.init text.Length (fun i -> width (string text.[i]))
+                            else
+                                [| for (part, run) in runs do
+                                    let runFace = run.FontName |> Option.orElse fontFace
+                                    let runPt = defaultArg run.FontSize fontPt
+                                    let bold = defaultArg run.Bold format.Bold
+                                    let italic = defaultArg run.Italic format.Italic
+                                    for c in part -> measure (string c) runPt runFace bold italic |]
+                        float (openWrapLineCount (fun i -> advances.[i]) room text) * line
                     | _ -> line
                 place format addr.Row (height - descent) descent
     let baseLines = baseFonts |> List.map (fun format -> format, fontLine format)

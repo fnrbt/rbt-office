@@ -75,9 +75,10 @@ eq "right-aligned: runs to the left" (clipOf rightAligned long) (Some (Some (cel
 let centred = createEmpty 50 12 |> setCell (at 1 5) (aligned "center" long)
 eq "centred: runs both ways" (clipOf centred long) (Some (Some (cellX 3, 500.0)))
 let wrapped = createEmpty 50 12 |> setCell (at 1 1) { text long with Format = { defaultFormat with WrapText = true } }
+// (Clipped to its own cell: the lines past its bottom are not drawn, as in Excel's PDF.)
 eq "wrapped text is not let out"
     (Paint.buildViewportPaintItems wrapped viewport
-     |> List.forall (fun painted -> match painted.Item with Paint.DrawText drawn when drawn.Rect.Y > 30.0 -> drawn.Clip.IsNone | _ -> true)) true
+     |> List.forall (fun painted -> match painted.Item with Paint.DrawText drawn when drawn.Rect.Y > 30.0 -> (match drawn.Clip with None -> true | Some clip -> abs (clip.X - cellX 1) < 1e-6 && abs (clip.Width - 100.0) < 1e-6) | _ -> true)) true
 let merged = createEmpty 50 12 |> setCell (at 1 1) (text long) |> addMergedCell 1 1 1 2
 eq "a merged cell's text stays in the merged cell" (clipOf merged long |> Option.bind id |> Option.map snd) (Some 200.0)
 

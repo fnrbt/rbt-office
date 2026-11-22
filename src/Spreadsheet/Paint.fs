@@ -271,8 +271,8 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
                     match measure with
                     | Some m -> Some (fun (text: string) -> m text fontPt format.FontName format.Bold format.Italic)
                     | None -> None
-                // (Bold in Small Fonts is GDI's made-up bold: a pixel less room, `NumberFit.Overhang`.)
-                let fit = fit |> Option.map (fun fit -> { fit with Overhang = (if format.Bold && ExcelText.isSmallFonts fontPt fit.Zoom then 1.0 else 0.0) })
+                // (Italic, and bold in Small Fonts, have less room: `ExcelText.overhang`, `NumberFit.Overhang`.)
+                let fit = fit |> Option.map (fun fit -> { fit with Overhang = ExcelText.overhang (ExcelText.pixelSize fontPt fit.Zoom) (ExcelText.isSmallFonts fontPt fit.Zoom) format.Bold format.Italic })
                 cellDisplayTextFitted fit model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else fitWidth) format value
         let text =
             match format.DataBar, format.IconSet with
@@ -412,6 +412,17 @@ let private borderColor (side: BorderStyle) : string =
 /// ScrollX/Y=0 every zone paints at its absolute position anyway, so the
 /// only visible effect of frozen panes there is the divider lines emitted
 /// below.
+/// How far a line of text stands from its cell's sides in print (the PDF this paints): 16/600 in, 2.56 px - checked
+/// in Excel 2019's PDF of generated cells (make-print-text-fixture.py: left and right aligned text in 26 columns of
+/// Calibri 11 and bold, Arial 10, Times New Roman 12, 1.93 pt either side). On screen it is 2 px left and 3 right.
+[<Literal>]
+let printPadX = 2.56
+
+/// What a wrapped line's room is less than its printed column: 28/600 in, 4.48 px (the same fixture's paragraphs,
+/// broken in the font's advances at its size: 102 of 108 columns as Excel's PDF; on screen 5 px, measured in GDI's).
+[<Literal>]
+let printWrapMargin = 4.48
+
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
     let cells = visibleCells model viewport
@@ -661,8 +672,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     else cell.Rect
                 let textRect =
                     { baseRect with
-                        X = baseRect.X + 4.0 + iconGutter + leftIndent
-                        Width = max 0.0 (baseRect.Width - 8.0 - iconGutter - leftIndent - rightIndent) }
+                        X = baseRect.X + printPadX + iconGutter + leftIndent
+                        Width = max 0.0 (baseRect.Width - 2.0 * printPadX - iconGutter - leftIndent - rightIndent) }
                 // ShrinkToFit (single-line text only — wrap-mode escapes via
                 // line breaks). When the text overflows the cell width and
                 // shrinkToFit is set, scale the font size down until it fits,
@@ -692,7 +703,10 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // is ON (unwrapped, the look's text has none).
                 let lines =
                     if look.Wrap then
-                        wrapLines measure textRect.Width fontPt displayText
+                        match measure with
+                        | Some m when displayText <> "" ->
+                            excelWrapLines m (baseRect.Width - printWrapMargin - iconGutter - leftIndent - rightIndent) displayText
+                        | _ -> wrapLines measure textRect.Width fontPt displayText
                     else [ displayText ]
                 let vAlign = look.VerticalAlign
                 let lineCount = lines.Length
@@ -702,7 +716,10 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // cell that holds something (at its own edge when that is
                 // the neighbour).
                 let textClip =
-                    if format.WrapText || format.TextRotation <> 0 || horizForIndent = "centercontinuous" || horizForIndent = "fill" then None
+                    // (Wrapped lines are cut at the cell's edges: the lines past a row's bottom are not printed -
+                    // Excel's PDF of make-print-text-fixture.py's 300-pt rows.)
+                    if format.WrapText && format.TextRotation = 0 then Some baseRect
+                    elif format.WrapText || format.TextRotation <> 0 || horizForIndent = "centercontinuous" || horizForIndent = "fill" then None
                     else
                         let width =
                             match richRuns, viewport.Measurer with
@@ -725,10 +742,10 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             | None -> Some cell.Rect
                             | Some (toLeft, toRight) ->
                                 // How far the text reaches past the cell's edge (the
-                                // cell's own 4px of padding on that side is its to use);
+                                // cell's own padding on that side is its to use);
                                 // centred text needs half of the excess on each side.
-                                let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 2.0 else 0.0
-                                let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 2.0 else 0.0
+                                let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - printPadX else 0.0
+                                let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - printPadX else 0.0
                                 let first, last = textOverflowSpan model cell.Address.Row cell.Address.Col needLeft needRight
                                 if first = cell.Address.Col && last = cell.Address.Col then Some cell.Rect
                                 else

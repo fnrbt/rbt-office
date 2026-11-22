@@ -908,7 +908,7 @@ let private generalNumberFormats =
 type NumberFit =
     { /// The zoom (1.0 at 100 %).
       Zoom: float
-      /// What GDI's made-up bold adds to a line (1 px for bold text in Small Fonts, `fittedRoom`), else 0.
+      /// What GDI adds to a line of a slanted or made-up bold font (`ExcelText.overhang`: italic, bold in Small Fonts), else 0.
       Overhang: float }
 
 /// The room a number's text has in a cell `cellWidthPx` wide (screen pixels), as Excel 2019 fits it: the
@@ -924,10 +924,11 @@ let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx:
     for d in "0123456789" do widest <- max widest (measure (string d))
     max 0.0 (System.Math.Round cellWidthPx - (2.0 * System.Math.Ceiling (widest / 4.0) + 1.0) - fit.Overhang)
 
-/// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`).
+/// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`) - none where not one fits (Excel shows nothing: a 20-px
+/// column of italic Calibri 11 at 57 %, make-number-room-fixture.py).
 let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
     let room = fittedRoom fit measure cellWidthPx
-    System.String('#', max 1 (int (room / max 1.0 (measure "#"))))
+    System.String('#', max 0 (int (room / max 1.0 (measure "#"))))
 
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
     // Excel's General-format digit budget = floor((cellWidthPx - 5) / MDW).
@@ -1348,6 +1349,36 @@ let private expandAccountingFill
                     for i = suffixStart to text.Length - 1 do
                         result.Append(text.[i]) |> ignore
                     result.ToString()
+
+/// The lines Excel breaks a wrapped cell's text into on screen and in print (checked in Excel 2019 on generated cells,
+/// synthetic-wrap-budget.xlsx: Calibri 11 and bold, Arial 10 and 11, at 100 %, 85 % and 70 %): its own
+/// line breaks kept, then as many words on a line as fit - a line fits while it is no wider (`measure`,
+/// screen pixels at the zoom: `excelTextWidth`) than `room`, the cell's width on screen less 5 px (bold
+/// Calibri 11 "Releasing Cost", 90 px, is one line in a column of 95 px, two in one of 94). A word wider
+/// than a line is broken between its characters. In print (`Paint`, the PDF) the same, the line measured in the
+/// font's own advances at its size and the room the printed column less 4.48 px (`printWrapMargin`).
+let excelWrapLines (measure: string -> float) (room: float) (text: string) : string list =
+    [ for paragraph in text.Replace("\r\n", "\n").Split('\n') do
+        let words = paragraph.Split(' ')
+        let mutable line = ""
+        let mutable started = false
+        let lines = ResizeArray<string>()
+        for word in words do
+            let candidate = if started then line + " " + word else word
+            if not started || measure candidate <= room then
+                line <- candidate
+                started <- true
+            else
+                lines.Add line
+                line <- word
+            // A word (or the line it starts) wider than the room is broken between its characters.
+            while line.Length > 1 && measure line > room && not (line.Contains " ") do
+                let mutable cut = line.Length - 1
+                while cut > 1 && measure (line.Substring(0, cut)) > room do cut <- cut - 1
+                lines.Add (line.Substring(0, cut))
+                line <- line.Substring cut
+        lines.Add line
+        yield! lines ]
 
 /// Greedy word-wrap inside a cell. Splits on hard line breaks (\n) first,
 /// then on whitespace within each segment, packing as many words onto a line
