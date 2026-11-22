@@ -22,6 +22,15 @@ chart - its axes' scales, its plot area, its labels - and `shoot-sheets.ps1` its
   - "Skip": a line chart of 59 categories (1 .. 59) and no values, 345 x 225 px, Calibri 9: which labels are shown.
   - "Layout": columns of two series, a title, a legend at the right, the plot area filled (to see where it is).
 
+- synthetic-chart-lines.xlsx, sheet "Charts" (each checked the same way, and with style-probe through COM):
+  - "Widths": eight flat lines of 0.25 .. 4.5 pt, a legend: how many pixels a line and its legend key are.
+  - "Plain2" / "Plain34" / "PlainNone" / "ScatterPlain": series stating no line under chart styles 2, 34, none.
+  - "Keys9" / "Keys14": a column, a line and a line with markers: the legend's keys at 9 and 14 pt.
+  - "PiePoints": slices of their own outlines (1 pt red, none, a look without a line, 4.5 pt white) under a
+    series' 3 pt black; "PiePlain": a pie stating no lines.
+  - "LabelsWrap" / "Labels45" / "Labels90" / "LabelsSkip": category labels Excel breaks at spaces, turns -45 and
+    -90 degrees, shows every second of (60 numbers, oyabayo's cash flows).
+
 Deterministic: run it again and the bytes are the same.
 
     python3 tools/excel-parity/make-chart-fixtures.py
@@ -117,7 +126,7 @@ def val_ax(id_, cross, pos='l', tx='', fmt='<c:numFmt formatCode="General" sourc
 
 
 def chart_space(plot, title=None, legend=None, text=None, plot_sppr='<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>',
-                plot_layout='<c:layout/>', border=True):
+                plot_layout='<c:layout/>', border=True, style=2):
     t = ''
     if title:
         t = (f'<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr>{rpr(1400, False, "595959")}</a:pPr><a:r><a:rPr lang="en-US"/>'
@@ -127,7 +136,7 @@ def chart_space(plot, title=None, legend=None, text=None, plot_sppr='<c:spPr><a:
     frame = ('<c:spPr>' + solid('FFFFFF') + '<a:ln w="9525">' + solid('D9D9D9') + '</a:ln></c:spPr>') if border else \
         '<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>'
     return (DECL + f'<c:chartSpace xmlns:c="{C}" xmlns:a="{A}" xmlns:r="{REL}"><c:date1904 val="0"/><c:lang val="en-US"/>'
-            '<c:roundedCorners val="0"/><c:style val="2"/><c:chart>' + t + f'<c:plotArea>{plot_layout}{plot}{plot_sppr}</c:plotArea>'
+            '<c:roundedCorners val="0"/>' + (f'<c:style val="{style}"/>' if style else '') + '<c:chart>' + t + f'<c:plotArea>{plot_layout}{plot}{plot_sppr}</c:plotArea>'
             + (legend or '') + '<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>' + frame
             + (text if text is not None else txpr(900, None, '595959')) + '</c:chartSpace>')
 
@@ -300,6 +309,12 @@ def build():
     charts.append(('Layout', 118, 27, 480, 288, lay))
 
     put(18, 0, 'Charts:')
+    write_book('synthetic-chart-parity.xlsx', rows, charts)
+
+
+def write_book(book_name, rows, charts):
+    """A workbook of one sheet "Charts" of these cells ({row: {col: (value, style)}}) and charts (name, row, col,
+    width px, height px, chart part)."""
     sheet_rows = ''.join(f'<row r="{r + 1}">' + ''.join(cell(c, r, v, s) for c, (v, s) in sorted(cs.items())) + '</row>'
                          for r, cs in sorted(rows.items()))
     sheet_xml = (DECL + f'<worksheet xmlns="{MAIN}" xmlns:r="{REL}"><sheetViews><sheetView workbookViewId="0" tabSelected="1"/></sheetViews>'
@@ -345,7 +360,7 @@ def build():
     }
     for i, (_, _, _, _, _, xml) in enumerate(charts):
         files[f'xl/charts/chart{i + 1}.xml'] = xml
-    path = os.path.join(OUTDIR, 'synthetic-chart-parity.xlsx')
+    path = os.path.join(OUTDIR, book_name)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for name, text in files.items():
             info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
@@ -354,5 +369,88 @@ def build():
     print(path)
 
 
+def build_lines():
+    """synthetic-chart-lines.xlsx: how wide Excel 2019 draws lines and legend keys, a pie's own slice outlines."""
+    rows = {}
+
+    def put(c, r, v, s=0):
+        rows.setdefault(r, {})[c] = (v, s)
+
+    cats = ['A', 'B', 'C', 'D', 'E', 'F']
+    for i, cat in enumerate(cats):
+        put(0, i + 1, cat)
+    widths = [3175, 6350, 9525, 12700, 19050, 28575, 38100, 57150]
+    colors = ['000000', 'C00000', '0070C0', '00B050', '7030A0', 'ED7D31', '000080', 'BF8F00']
+    for k, w in enumerate(widths):
+        put(1 + k, 0, f'w{w}')
+        for i in range(len(cats)):
+            put(1 + k, i + 1, 8 - k)
+    none = '<c:marker><c:symbol val="none"/></c:marker>'
+    cat_ref = str_ref(f'Charts!$A$2:$A${len(cats) + 1}', cats)
+
+    def col(k):
+        return col_name(1 + k)
+
+    def series(k, sppr=''):
+        return ser(k, f'w{widths[k]}', cat_ref, num_ref(f'Charts!${col(k)}$2:${col(k)}${len(cats) + 1}', [8 - k] * len(cats)), sppr, none)
+
+    def line_plot(body):
+        return (f'<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>{body}<c:marker val="1"/>'
+                '<c:axId val="1"/><c:axId val="2"/></c:lineChart>' + cat_ax(1, 2) + val_ax(2, 1))
+
+    charts = []
+    # Eight series of the widths stated, 0.25 .. 4.5 pt, legend at the right.
+    stated = ''.join(series(k, f'<a:ln w="{w}" cap="rnd">{solid(colors[k])}<a:round/></a:ln>') for k, w in enumerate(widths))
+    charts.append(('Widths', 1, 12, 480, 360, chart_space(line_plot(stated), legend=legend('r'))))
+    # Three series that state no line, under chart styles 2, 34, none; and a scatter.
+    plain = ''.join(series(k) for k in range(3))
+    charts.append(('Plain2', 1, 21, 400, 260, chart_space(line_plot(plain), legend=legend('r'))))
+    charts.append(('Plain34', 20, 21, 400, 260, chart_space(line_plot(plain), legend=legend('r'), style=34)))
+    charts.append(('PlainNone', 39, 21, 400, 260, chart_space(line_plot(plain), legend=legend('r'), style=None)))
+    xy = ''.join(ser(k, f'w{widths[k]}', num_ref(f'Charts!$J$2:$J$7', [1, 2, 3, 4, 5, 6]),
+                     num_ref(f'Charts!${col(k)}$2:${col(k)}${len(cats) + 1}', [8 - k] * len(cats)), '', none, ('xVal', 'yVal')) for k in range(3))
+    for i in range(6):
+        put(9, i + 1, i + 1)
+    scatter = (f'<c:scatterChart><c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>{xy}<c:axId val="1"/><c:axId val="2"/></c:scatterChart>'
+               + val_ax(1, 2, 'b', between='midCat') + val_ax(2, 1, 'l', between='midCat'))
+    charts.append(('ScatterPlain', 58, 21, 400, 260, chart_space(scatter, legend=legend('r'))))
+    # Legend keys of a line, a column, a line with markers, at 9 and 14 pt.
+    bars = bar_plot(ser(0, 'Column', cat_ref, num_ref('Charts!$B$2:$B$7', [8] * 6), solid('4472C4')))
+    lines = (f'<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>'
+             + ser(1, 'Line', cat_ref, num_ref('Charts!$C$2:$C$7', [7] * 6), f'<a:ln w="28575">{solid("ED7D31")}</a:ln>', none)
+             + ser(2, 'Marked', cat_ref, num_ref('Charts!$D$2:$D$7', [6] * 6), f'<a:ln w="28575">{solid("00B050")}</a:ln>',
+                   f'<c:marker><c:symbol val="square"/><c:size val="7"/><c:spPr>{solid("00B050")}</c:spPr></c:marker>')
+             + '<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>')
+    for name, size, row in [('Keys9', 900, 20), ('Keys14', 1400, 39)]:
+        charts.append((name, row, 12, 480, 260, chart_space(bars + lines + cat_ax(1, 2) + val_ax(2, 1),
+                                                            legend=legend('r', text=txpr(size, None, '595959')))))
+    # A pie whose points state their own outlines: 1 pt red, none, nothing (the series' 3 pt black?), 4.5 pt white.
+    for i, v in enumerate([30, 25, 25, 20]):
+        put(10, i + 1, f'P{i + 1}'); put(11, i + 1, v)
+    pts = [f'<a:ln w="12700">{solid("FF0000")}</a:ln>', '<a:ln><a:noFill/></a:ln>', '', f'<a:ln w="57150">{solid("FFFFFF")}</a:ln>']
+    fills = ['4472C4', 'ED7D31', 'A5A5A5', 'FFC000']
+    points = ''.join(f'<c:dPt><c:idx val="{i}"/><c:bubble3D val="0"/><c:spPr>{solid(fills[i])}{ln}</c:spPr></c:dPt>' for i, ln in enumerate(pts))
+    pie = ser(0, 'Pie', str_ref('Charts!$K$2:$K$5', ['P1', 'P2', 'P3', 'P4']), num_ref('Charts!$L$2:$L$5', [30, 25, 25, 20]),
+              f'<a:ln w="38100">{solid("000000")}</a:ln>', points)
+    charts.append(('PiePoints', 58, 12, 360, 300, chart_space(f'<c:pieChart><c:varyColors val="1"/>{pie}<c:firstSliceAng val="0"/></c:pieChart>',
+                                                              legend=legend('r'), border=False)))
+    # The same pie stating no lines at all (style 2).
+    plain_pie = ser(0, 'Pie', str_ref('Charts!$K$2:$K$5', ['P1', 'P2', 'P3', 'P4']), num_ref('Charts!$L$2:$L$5', [30, 25, 25, 20]))
+    charts.append(('PiePlain', 77, 12, 360, 300, chart_space(f'<c:pieChart><c:varyColors val="1"/>{plain_pie}<c:firstSliceAng val="0"/></c:pieChart>',
+                                                             legend=legend('r'), border=False)))
+    # Category labels that do not fit in a line (Calibri 9): broken at spaces, turned -45 and -90 degrees, every
+    # second of 60 numbers (as oyabayo's cash flows).
+    for i in range(60):
+        put(13, i + 1, f'Cat {i + 1}'); put(14, i + 1, f'Category {i + 1}'); put(15, i + 1, i + 1); put(16, i + 1, 1 + (i + 1) % 3)
+    for name, row, col, letter, n, w, h in [('LabelsWrap', 1, 30, 'N', 6, 157, 293), ('Labels45', 1, 34, 'O', 6, 133, 293),
+                                            ('Labels90', 20, 30, 'O', 12, 236, 293), ('LabelsSkip', 20, 34, 'P', 60, 462, 303)]:
+        texts = [rows[r + 1][13 + 'NOP'.index(letter)][0] for r in range(n)]
+        cat = (str_ref if letter != 'P' else num_ref)(f'Charts!${letter}$2:${letter}${n + 1}', texts)
+        bars = bar_plot(ser(0, 'S', cat, num_ref(f'Charts!$Q$2:$Q${n + 1}', [1 + (i + 1) % 3 for i in range(n)]), solid('4472C4')))
+        charts.append((name, row, col, w, h, chart_space(bars + cat_ax(1, 2) + val_ax(2, 1))))
+    write_book('synthetic-chart-lines.xlsx', rows, charts)
+
+
 if __name__ == '__main__':
     build()
+    build_lines()

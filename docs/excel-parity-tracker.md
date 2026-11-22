@@ -72,6 +72,18 @@ axis lengths and fonts) and on synthetic-chart-parity.xlsx (`make-chart-fixtures
 | A scatter's x values that are text, or a range of two columns and rows, are 1, 2, 3 ...; the x axis to the last point drawn, in the x values' format | ScatterText 0 .. 150 by 50; vertex42 0 .. 400 | x of 6,000,000 "%" | `Charts.xValuesOf` |
 | A pie's label without a separator is a line a part, broken at spaces to a fifth of the chart's width; best fit inside the slice when it holds it, else just outside; moved by its manual layout from the series' place; the pie 1.5625 x the labels' size smaller each side for labels that may stand outside; a point's own `c:dLbl` | COM label rectangles of PieLabels / PieOut / A.CRE's two pies ("Two\nBR/One\nBA\n14%", 4 lines) | "Two BR/Two BA; 14%" in one line, cut at the chart's edge | pie labels |
 | Chart text in its typeface (`a:latin`), Segoe UI Black as Segoe UI bold where the weight is missing; measured with GDI's widths | pictures | all Calibri | `PFace`, `Charts.faceWidth` (`ExcelText`) |
+| A line of w EMU is round(w / 9525) px, at least 1 (0.25 - 1 pt 1 px, 1.5 pt 2, 2.25 pt 3, 3 pt 4, 4.5 pt 6); a series stating no line: 1.5 pt under chart styles 1 - 8, 3.5 pt under 25 - 32, else 2.5 pt | synthetic-chart-lines "Widths" (`Chart.Export` pixels), "Plain2" / "Plain34" / "PlainNone" / "ScatterPlain", `chart-style-probe.vbs` (48 styles through COM) | 0.75 px floor, unrounded; 2.25 px for a series stating none | `Charts.linePixels` |
+| Legend keys 26 px long wherever a line is in the legend (a column's key then a box that long, a swatch high), as wide as their series' line, the marker in the middle; else a square swatch | "Widths" / "Keys9" / "Keys14" (26 px at 9 and 14 pt; COM's LegendKey.Width says 12 pt and is not what is drawn) | 2.25 px lines of 1.44 em, no marker | `KeyLook` |
+| A slice's outline is its point's own look (`c:dPt` `c:spPr`): its `a:ln`, none where it has none; else the series'; stating none, the style's (a pixel of white for 9 - 16, of a shade for 33 - 40, else none) | "PiePoints" (1 pt red, none, a look without a line: none - not the series' 3 pt black -, 4.5 pt white), "PiePlain", style probe | the series' line, else a white pixel | `PointLines` |
+| Category labels along the bottom: every s-th, s the least for which the labels stand in s bands - in a line when the widest is no wider than s bands, else broken at spaces when the widest word is, else (the angle left to Excel: no `rot`, or -60000000) turned -45 when s bands are at least sqrt 2 lines (1.2207 em), -90 when a line; `c:tickLblSkip` sets s | `chart-label-probe.vbs`: 13,400 column charts (labels 1, 2 ..., "Cat 1", "Category 1", "Q1 2000", mixed; 6 - 100 categories; 8 - 11 pt; 90 - 760 pt): spacing 97 % (2,752 of 2,754 at 9 pt in 2 pt steps), the angle from the axis' height; "LabelsWrap" / "Labels45" / "Labels90" / "LabelsSkip" | every third of oyabayo's 60 (Excel every second); rot -60000000 drawn turned -1000 deg. | `categoryPlan` |
+| Clustered bars: a bar is a band / (series - (series - 1) x overlap + gap) - the gap a share of one bar | dashboard-sales-analysis "Sales By Manager": 7.5 px of a 29.6 px band, 2 series, gap 182 % | band / (1 + gap) / series | bars |
+| The primary axes are the first value axis written that a plot uses (not the first plot's) | dashboard-ecommerce-sales' area of profit before its columns of sales: $ 400K at the left | the profit's | `primaryValueAxis` |
+| A pivot chart (`c:pivotSource`) whose range holds an outer field's rows (years among months, subtotals) is drawn from the file's points; its series named as cached ("Total", not the cell's "Sum of Sales"); multi-level categories (`c:multiLvlStrCache`) are the file's levels: the outer a row each below the points' labels (a turned column beside bars), centred on its group, lines between groups | "Sales By Chain" / "By Manager", "Top 5", phpsp-32's years and quarters | 23 rows of years and months, values shifted; 24 quarters | `cellsOf`, `Outer` |
+| Chart text in the theme's fonts: `+mn-lt` / `+mj-lt`, and text naming no face in the minor font | sales-analysis in Garamond, e-commerce in Tw Cen MT | Calibri | `parseTheme`, `faceOf` |
+| A display-units label alone stands at the far end of its axis (the top of one up the side, the right of one along the bottom) | "Thousands" of the sales-analysis charts | the axis' middle | axis titles |
+| In a legend box of the file's size a too-long entry is broken at its spaces (its key by the first line) | e-commerce "Most Sold Items": "GBC Premium / Transparent / Covers" | cut with an ellipsis | `drawEntryIn` |
+| A pie with labels that may stand outside (end, best fit - a pie's default), a doughnut with any labels, is an eighth of the chart's shorter side smaller, whatever the labels' size | `chart-pie-probe.vbs`: 153 pt for 178 in 300 x 200, 196.75 for 228 in 400 x 250 and 250 x 300, labels 8, 10, 14 pt; e-commerce "Pie Chart" 165 pt | 1.5625 x the labels' size each side, doughnuts never | pie |
+| A marker of `c:size` n is n pt across | chart-zoo scatter: 7 px for 5 | 1.1 n px | markers |
 
 Grid chrome (synthetic-error-checks.xlsx, `make-error-check-fixtures.py`, `error-probe.vbs`; xlsx-browser
 `grid-chrome-excel-parity`):
@@ -81,14 +93,18 @@ Grid chrome (synthetic-error-checks.xlsx, `make-error-check-fixtures.py`, `error
 | Frozen panes: a screen pixel of #9B9B9B along each frozen edge, across the window and the headers, on the grid line after the last frozen row / column | choudhary's and the house-flipping model's pictures | `.spreadsheet-freeze-line` in the frozen corner's pane |
 | A green triangle (#008000, 6 px legs, inside the grid lines) at the top left of a cell a default check finds: a number stored as text ("1,000", " 12", "12%", "$5", "(7)", "0012" - not a date), a text date of a two-digit year, a formula's error but #N/A, a formula unlike the alike formulas above and below it (else either side of it; none reading another sheet), a total in line after its range that leaves out the number just before it, a formula in an unlocked cell (not on a protected sheet); not where `<ignoredErrors>` says so | the fixture's 17 marks, none on its "Ignored" sheet; Excel's `Range.Errors` over rows 1-80, columns A-AD of the 65 sheets of the 12 models: 5,700 marks, all ours, none more | `ErrorChecks.markedCells` |
 
-Left: chart lines and legend keys are not drawn as wide as Excel's (vertex42's 3 pt balance line); per-point lines of
-pie slices (`c:dPt` `a:ln`) are drawn as the series'; the default text size of a chart that names none is now 10 pt
-(Excel 2019's) - the fixture names its sizes, files Excel writes do too; a category axis' label spacing is still
-our measure (oyabayo's 59 labels every second in Excel at 57 %, every third ours); best fit placement of pie labels is
-an approximation (inside at 0.6 of the radius when the slice holds the label); the error triangle is 6 px whatever the
-zoom (Excel's at other zooms not measured); a table's inconsistent calculated column, data-validation and misleading
-number format checks are not run; the axis rules were measured on Calibri labels (other faces use Calibri's line
-height).
+Left: best fit placement of pie labels is an approximation (inside at 0.6 of the radius when the slice holds the
+label); -45 against -90 near sqrt 2 lines is wrong for 9 % of the probe's turned axes (Excel turns -45 at less room
+when it leaves labels out: 14.4 pt at every second, 12.5 at every third); category label spacing at bands under a
+pixel is a label or two short of Excel's; the error triangle is 6 px whatever the zoom; a table's inconsistent
+calculated column, data-validation and misleading number format checks are not run; the axis rules were measured on
+Calibri labels (other faces use Calibri's line height: the sales-analysis Garamond axis 0 .. 3000 by 1000, Excel's
+by 500). From the corpus: chart user shapes (`c:userShapes`, the e-commerce doughnut's "Most Sold Items") are not
+drawn; rich titles of several runs are one run (phpsp-32); a legend box's border; a doughnut beside a legend of manual
+layout is smaller than Excel's; Tw Cen MT (an Office font) is not among the fonts, so the e-commerce charts measure
+and draw in a fallback; Excel's own default marker sequence and grey marker outlines; area and line charts on ticks
+leave no room for the last label's half (chart-zoo "Area" plot 7 px wider than Excel's); chartEx and chart sheets
+were not compared (chart-probe reads ChartObjects only).
 
 ## Cell text at a zoom, 2026-11-21
 

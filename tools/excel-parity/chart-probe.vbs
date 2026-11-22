@@ -1,7 +1,8 @@
 ' chart-probe.vbs WORKBOOK OUT.tsv [PNGDIR]: what Excel 2019 makes of every chart of every sheet of a workbook, one
 ' line per fact (tab separated): the chart's size, each axis' scale (minimum, maximum, major unit, the category axis'
 ' label spacing and kind), the plot area outside and inside, the title and the legend (and each entry), each data
-' label's text and place. Points; positions from the chart area's top left. With PNGDIR each chart is also exported
+' label's text and place, each series' line (visible, weight, colour; each point's of a pie), each legend key's
+' rectangle. Points; positions from the chart area's top left. With PNGDIR each chart is also exported
 ' there as <sheet>-<chart>.png (Chart.Export, at 100 %). Run it in the desktop session (run-vbs-in-session.ps1).
 Option Explicit
 Dim book, out, pngDir, fso, f, xl, wb, ws, co, ch, ax, i, j, k, g, s, p, n, t, e
@@ -60,10 +61,24 @@ For Each ws In wb.Worksheets
       For j = 1 To ch.Legend.LegendEntries.Count
         Set e = ch.Legend.LegendEntries(j)
         W "entry" & vbTab & j & vbTab & e.Left & vbTab & e.Top & vbTab & e.Width & vbTab & e.Height & vbTab & e.Font.Size & vbTab & e.Font.Bold & vbTab & e.Font.Color
+        Err.Clear
+        With e.LegendKey
+          W "key" & vbTab & j & vbTab & .Left & vbTab & .Top & vbTab & .Width & vbTab & .Height
+        End With
       Next
     End If
     For s = 1 To ch.SeriesCollection.Count
       Set p = ch.SeriesCollection(s)
+      Err.Clear
+      W "series" & vbTab & s & vbTab & p.Name & vbTab & p.Format.Line.Visible & vbTab & p.Format.Line.Weight & vbTab & Hex(p.Format.Line.ForeColor.RGB) & vbTab & p.Border.Weight & vbTab & p.ChartType
+      If ch.ChartType = 5 Or ch.ChartType = -4120 Then
+        For j = 1 To p.Points.Count
+          Err.Clear
+          With p.Points(j).Format.Line
+            W "point" & vbTab & s & vbTab & j & vbTab & .Visible & vbTab & .Weight & vbTab & Hex(.ForeColor.RGB)
+          End With
+        Next
+      End If
       If p.HasDataLabels Then
         For j = 1 To p.Points.Count
           Err.Clear
