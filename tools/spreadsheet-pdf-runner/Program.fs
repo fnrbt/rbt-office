@@ -76,7 +76,10 @@ let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.
     let partOf (id: string) = target id |> Option.bind (fun path -> Map.tryFind path parts |> Option.map (fun bytes -> path, bytes))
     let drawing : Charts.DrawingParts =
         { Theme = theme
-          Chart = (fun id -> partOf id |> Option.bind (fun (_, bytes) -> Charts.parseChart theme (text bytes)))
+          Chart = (fun id ->
+            partOf id |> Option.bind (fun (path, bytes) ->
+                Charts.parseChart theme (text bytes)
+                |> Option.map (Charts.withUserShapes (fun name -> Map.tryFind name parts |> Option.map text) path)))
           Picture = (fun id -> partOf id |> Option.map (fun (name, bytes) -> "data:image/" + Path.GetExtension(name).TrimStart('.') + ";base64," + Convert.ToBase64String bytes))
           Slicer = Rbt.Spreadsheet.Slicers.drawer workbook }
     let drawn = (snd models.[sheetIndex]).Value

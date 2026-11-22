@@ -126,19 +126,22 @@ def val_ax(id_, cross, pos='l', tx='', fmt='<c:numFmt formatCode="General" sourc
 
 
 def chart_space(plot, title=None, legend=None, text=None, plot_sppr='<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>',
-                plot_layout='<c:layout/>', border=True, style=2):
+                plot_layout='<c:layout/>', border=True, style=2, rounded=False, user_shapes=False):
     t = ''
-    if title:
+    if title and title.startswith('<c:title>'):
+        t = title + '<c:autoTitleDeleted val="0"/>'
+    elif title:
         t = (f'<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr>{rpr(1400, False, "595959")}</a:pPr><a:r><a:rPr lang="en-US"/>'
              f'<a:t>{esc(title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>')
     else:
         t = '<c:autoTitleDeleted val="1"/>'
-    frame = ('<c:spPr>' + solid('FFFFFF') + '<a:ln w="9525">' + solid('D9D9D9') + '</a:ln></c:spPr>') if border else \
+    frame = border if isinstance(border, str) else ('<c:spPr>' + solid('FFFFFF') + '<a:ln w="9525">' + solid('D9D9D9') + '</a:ln></c:spPr>') if border else \
         '<c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr>'
     return (DECL + f'<c:chartSpace xmlns:c="{C}" xmlns:a="{A}" xmlns:r="{REL}"><c:date1904 val="0"/><c:lang val="en-US"/>'
-            '<c:roundedCorners val="0"/>' + (f'<c:style val="{style}"/>' if style else '') + '<c:chart>' + t + f'<c:plotArea>{plot_layout}{plot}{plot_sppr}</c:plotArea>'
+            + (f'<c:roundedCorners val="{1 if rounded else 0}"/>' if rounded is not None else '') + (f'<c:style val="{style}"/>' if style else '') + '<c:chart>' + t + f'<c:plotArea>{plot_layout}{plot}{plot_sppr}</c:plotArea>'
             + (legend or '') + '<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart>' + frame
-            + (text if text is not None else txpr(900, None, '595959')) + '</c:chartSpace>')
+            + (text if text is not None else txpr(900, None, '595959'))
+            + ('<c:userShapes r:id="rId1"/>' if user_shapes else '') + '</c:chartSpace>')
 
 
 def bar_plot(series, direction='col', axes=(1, 2), gap=219, overlap=-27):
@@ -156,8 +159,8 @@ def column_chart(cats, values, title=None, legend=None, plot_sppr=None, more=Non
     return chart_space(bar_plot(series) + cat_ax(1, 2) + val_ax(2, 1), title, legend, **kw)
 
 
-def legend(pos='r', layout='', entries='', text=''):
-    return f'<c:legend><c:legendPos val="{pos}"/>{entries}{layout}<c:overlay val="0"/>{text}</c:legend>'
+def legend(pos='r', layout='', entries='', text='', sppr=''):
+    return f'<c:legend><c:legendPos val="{pos}"/>{entries}{layout}<c:overlay val="0"/>{sppr}{text}</c:legend>'
 
 
 def manual(x, y, w=None, h=None, inner=False):
@@ -321,7 +324,7 @@ def write_book(book_name, rows, charts):
                  '<sheetFormatPr defaultRowHeight="15"/><cols><col min="20" max="40" width="9.140625"/></cols>'
                  f'<sheetData>{sheet_rows}</sheetData><drawing r:id="rId1"/></worksheet>')
     anchors = ''
-    for i, (name, r, c, w, h, _) in enumerate(charts):
+    for i, (name, r, c, w, h, *_) in enumerate(charts):
         anchors += (f'<xdr:oneCellAnchor><xdr:from><xdr:col>{c}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
                     f'<xdr:ext cx="{w * EMU}" cy="{h * EMU}"/><xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="{i + 2}" name="{name}"/>'
                     '<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr><xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>'
@@ -358,8 +361,15 @@ def write_book(book_name, rows, charts):
         'xl/drawings/_rels/drawing1.xml.rels': DECL + (f'<Relationships xmlns="{PKG}">' + ''.join(
             f'<Relationship Id="rId{i + 1}" Type="{REL}/chart" Target="../charts/chart{i + 1}.xml"/>' for i in range(len(charts))) + '</Relationships>'),
     }
-    for i, (_, _, _, _, _, xml) in enumerate(charts):
+    for i, (_, _, _, _, _, xml, *more) in enumerate(charts):
         files[f'xl/charts/chart{i + 1}.xml'] = xml
+        if more and more[0]:
+            # (The chart's shapes: a drawing part of its own, `c:userShapes`.)
+            files[f'xl/charts/_rels/chart{i + 1}.xml.rels'] = DECL + (
+                f'<Relationships xmlns="{PKG}"><Relationship Id="rId1" Type="{REL}/chartUserShapes" Target="../drawings/drawing{i + 101}.xml"/></Relationships>')
+            files[f'xl/drawings/drawing{i + 101}.xml'] = more[0]
+            files['[Content_Types].xml'] = files['[Content_Types].xml'].replace('</Types>',
+                f'<Override PartName="/xl/drawings/drawing{i + 101}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chartshapes+xml"/></Types>')
     path = os.path.join(OUTDIR, book_name)
     with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
         for name, text in files.items():
@@ -451,6 +461,134 @@ def build_lines():
     write_book('synthetic-chart-lines.xlsx', rows, charts)
 
 
+CDR = 'http://schemas.openxmlformats.org/drawingml/2006/chartDrawing'
+
+
+def text_box(anchor, sp_id, name, paragraphs, link=None, fill='<a:noFill/>', line='<a:ln><a:noFill/></a:ln>', anchor_at='t'):
+    """A text box of a chart's drawing (`cdr:sp`): paragraphs of runs (text, size in hundredths, colour, bold)."""
+    body = ''.join('<a:p><a:pPr algn="ctr"/>' + ''.join(
+        (f'<a:fld id="{{0F0F0F0F-0000-0000-0000-00000000000{sp_id}}}" type="TxLink">' if link else '<a:r>')
+        + f'<a:rPr lang="en-US" sz="{size}" b="{1 if bold else 0}">{solid(color)}<a:latin typeface="Calibri"/></a:rPr>'
+        + (('<a:pPr/>' if link else '') + f'<a:t>{esc(text)}</a:t>') + ('</a:fld>' if link else '</a:r>')
+        for text, size, color, bold in runs) + '</a:p>' for runs in paragraphs)
+    return (anchor[0] + f'<cdr:sp macro="" textlink="{esc(link or "")}"><cdr:nvSpPr><cdr:cNvPr id="{sp_id}" name="{name}"/><cdr:cNvSpPr txBox="1"/></cdr:nvSpPr>'
+            f'<cdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>{fill}{line}</cdr:spPr>'
+            f'<cdr:txBody><a:bodyPr vertOverflow="clip" wrap="square" rtlCol="0" anchor="{anchor_at}"/><a:lstStyle/>{body}</cdr:txBody></cdr:sp>' + anchor[1])
+
+
+def rel_anchor(x0, y0, x1, y1):
+    return (f'<cdr:relSizeAnchor><cdr:from><cdr:x>{x0}</cdr:x><cdr:y>{y0}</cdr:y></cdr:from><cdr:to><cdr:x>{x1}</cdr:x><cdr:y>{y1}</cdr:y></cdr:to>',
+            '</cdr:relSizeAnchor>')
+
+
+def abs_anchor(x0, y0, cx, cy):
+    return (f'<cdr:absSizeAnchor><cdr:from><cdr:x>{x0}</cdr:x><cdr:y>{y0}</cdr:y></cdr:from><cdr:ext cx="{cx}" cy="{cy}"/>', '</cdr:absSizeAnchor>')
+
+
+def build_looks():
+    """synthetic-chart-looks.xlsx: what Excel 2019 makes of a chart's own looks - the labels' typeface (a line of
+    it), shapes over a chart (`c:userShapes`), titles of several runs, a legend's and the plot area's fill and
+    border, rounded corners, the automatic markers, area and line charts on the ticks."""
+    rows = {}
+
+    def put(c, r, v, s=0):
+        rows.setdefault(r, {})[c] = (v, s)
+
+    cats = ['North', 'South', 'East', 'West', 'Central']
+    vals = [[2400, 1300, 2650, 900, 1800], [1500, 2100, 1200, 1700, 2500], [800, 1100, 1900, 2300, 600]]
+    put(0, 0, 'Region'); put(1, 0, 'Sales'); put(2, 0, 'Cost'); put(3, 0, 'Other')
+    for i, cat in enumerate(cats):
+        put(0, i + 1, cat)
+        for k in range(3):
+            put(1 + k, i + 1, vals[k][i])
+    cat_ref = str_ref('Charts!$A$2:$A$6', cats)
+
+    def col_series(k, color=None):
+        letter = 'BCD'[k]
+        return ser(k, ['Sales', 'Cost', 'Other'][k], cat_ref, num_ref(f'Charts!${letter}$2:${letter}$6', vals[k]), solid(color) if color else '')
+
+    charts = []
+    # The labels' typeface: the same columns in Calibri, Garamond, Tw Cen MT, Segoe UI and Arial 9 pt, 400 x 260 px.
+    for k, face in enumerate(['Calibri', 'Garamond', 'Tw Cen MT', 'Segoe UI', 'Arial']):
+        charts.append((f'Face{face.replace(" ", "")}', 1 + 14 * k, 6, 400, 260,
+                       chart_space(bar_plot(col_series(0, '4472C4')) + cat_ax(1, 2) + val_ax(2, 1), text=txpr(900, False, '595959', face))))
+    # A doughnut with text boxes over it: one from a corner to a corner, linked to a cell; one of a size of its own.
+    for i, (cat, v) in enumerate([('Fashions Direct', 71), ('Next Look', 29)]):
+        put(4, i + 1, cat); put(5, i + 1, v)
+    put(4, 4, 'Fashions Direct 71%')
+    dpts = ''.join(f'<c:dPt><c:idx val="{i}"/><c:bubble3D val="0"/><c:spPr>{solid(c)}<a:ln w="19050">{solid("FFFFFF")}</a:ln></c:spPr></c:dPt>'
+                   for i, c in enumerate(['4472C4', 'ED7D31']))
+    dough = ser(0, 'Share', str_ref('Charts!$E$2:$E$3', ['Fashions Direct', 'Next Look']), num_ref('Charts!$F$2:$F$3', [71, 29]), extra=dpts)
+    shapes = (DECL + f'<c:userShapes xmlns:c="{C}" xmlns:a="{A}" xmlns:cdr="{CDR}">'
+              + text_box(rel_anchor(0.4841, 0.66949, 1, 1), 2, 'TextBox 1', [[('Fashions Direct 71%', 900, '4472C4', False)]], link="Charts!$E$5")
+              + text_box(rel_anchor(0.00752, 0.02273, 0.44463, 0.42273), 3, 'TextBox 2',
+                         [[('Next Look', 1200, 'ED7D31', True)], [('29%', 900, '595959', False)]])
+              + text_box(abs_anchor(0.35, 0.42, 1143000, 381000), 4, 'TextBox 3', [[('Centre', 1400, 'C00000', True)]],
+                         fill=solid('FFF2CC'), line=f'<a:ln w="12700">{solid("C00000")}</a:ln>', anchor_at='ctr')
+              + '</c:userShapes>')
+    charts.append(('UserShapes', 1, 14, 360, 260,
+                   chart_space(f'<c:doughnutChart><c:varyColors val="1"/>{dough}<c:firstSliceAng val="0"/><c:holeSize val="60"/></c:doughnutChart>',
+                               border=False, user_shapes=True), shapes))
+    # A title of several runs (sizes, colours, bold, italic) over two lines; an axis title of two runs.
+    runs = [('Sales ', 1800, 'C00000', True, False), ('by ', 1200, '595959', False, True), ('Region', 1800, '0070C0', True, False)]
+    title_xml = ('<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr>' + rpr(1400, False, '595959') + '</a:pPr>'
+                 + ''.join(f'<a:r><a:rPr lang="en-US" sz="{sz}" b="{int(b)}" i="{int(it)}">{solid(c)}</a:rPr><a:t>{esc(t)}</a:t></a:r>' for t, sz, c, b, it in runs)
+                 + '</a:p><a:p><a:pPr>' + rpr(1000, False, '595959') + '</a:pPr><a:r><a:rPr lang="en-US" sz="1000"/><a:t>second line, 10 pt</a:t></a:r></a:p>'
+                 '</c:rich></c:tx><c:overlay val="0"/></c:title>')
+    ax_title = ('<c:title><c:tx><c:rich><a:bodyPr rot="-5400000" vert="horz"/><a:lstStyle/><a:p><a:pPr>' + rpr(1000, True, '595959') + '</a:pPr>'
+                f'<a:r><a:rPr lang="en-US" sz="1000" b="1">{solid("595959")}</a:rPr><a:t>Sales </a:t></a:r>'
+                f'<a:r><a:rPr lang="en-US" sz="1400" b="0" i="1">{solid("00B050")}</a:rPr><a:t>(USD)</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title>')
+    val_titled = val_ax(2, 1).replace('<c:numFmt', ax_title + '<c:numFmt', 1)
+    charts.append(('RichTitle', 1, 22, 480, 300, chart_space(bar_plot(col_series(0, '4472C4')) + cat_ax(1, 2) + val_titled, title_xml)))
+    # A legend with a fill and a border; the plot area with a fill and a border; the chart's corners rounded,
+    # a 2.25 pt border.
+    leg_sppr = f'<c:spPr>{solid("FFF2CC")}<a:ln w="19050">{solid("C00000")}</a:ln></c:spPr>'
+    plot_sppr = f'<c:spPr>{solid("DDEBF7")}<a:ln w="12700">{solid("0070C0")}</a:ln></c:spPr>'
+    frame = f'<c:spPr>{solid("FFFFFF")}<a:ln w="28575">{solid("7030A0")}</a:ln></c:spPr>'
+    for name, pos, row in [('LegendRight', 'r', 20), ('LegendBottom', 'b', 40)]:
+        charts.append((name, row, 22, 480, 300,
+                       chart_space(bar_plot(col_series(0, '4472C4') + col_series(1, 'ED7D31') + col_series(2, 'A5A5A5')) + cat_ax(1, 2) + val_ax(2, 1),
+                                   'Boxes', legend(pos, sppr=leg_sppr), plot_sppr=plot_sppr, border=frame, rounded=(name == 'LegendRight'))))
+    # Corners: no roundedCorners element at all, and Excel's grey frame (no spPr).
+    bare = chart_space(bar_plot(col_series(0, '4472C4')) + cat_ax(1, 2) + val_ax(2, 1), rounded=None, border='')
+    charts.append(('RoundedBare', 60, 22, 300, 200, bare))
+    # Automatic markers: eight line series and eight scatter series that state nothing of their markers.
+    for k in range(8):
+        put(8 + k, 0, f'M{k + 1}')
+        for i in range(5):
+            put(8 + k, i + 1, 10 - k + (i % 2))
+    for i in range(5):
+        put(6, i + 1, i + 1)
+
+    def plain(k, xy=False):
+        letter = col_name(8 + k)
+        values = num_ref(f'Charts!${letter}$2:${letter}$6', [10 - k + (i % 2) for i in range(5)])
+        return ser(k, f'M{k + 1}', num_ref('Charts!$G$2:$G$6', [1, 2, 3, 4, 5]) if xy else cat_ref, values, '', '', ('xVal', 'yVal') if xy else ('cat', 'val'))
+    marked = (f'<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>{"".join(plain(k) for k in range(8))}<c:marker val="1"/>'
+              '<c:axId val="1"/><c:axId val="2"/></c:lineChart>' + cat_ax(1, 2) + val_ax(2, 1))
+    charts.append(('Markers', 1, 30, 480, 300, chart_space(marked, legend=legend('r'))))
+    charts.append(('Markers34', 20, 30, 480, 300, chart_space(marked, legend=legend('r'), style=34)))
+    charts.append(('Markers42', 40, 30, 480, 300, chart_space(marked, legend=legend('r'), style=42)))
+    xy = (f'<c:scatterChart><c:scatterStyle val="lineMarker"/><c:varyColors val="0"/>{"".join(plain(k, True) for k in range(8))}'
+          '<c:axId val="1"/><c:axId val="2"/></c:scatterChart>' + val_ax(1, 2, 'b', between='midCat') + val_ax(2, 1, 'l', between='midCat'))
+    charts.append(('MarkersXY', 60, 30, 480, 300, chart_space(xy, legend=legend('r'))))
+    # Area and line charts on the ticks (crossBetween midCat) with long labels; the same between.
+    months = ['January 2024', 'February 2024', 'March 2024', 'April 2024', 'May 2024', 'June 2024']
+    for i, label in enumerate(months):
+        put(17, i + 1, label); put(18, i + 1, [3, 5, 4, 6, 5, 7][i])
+    area_series = ser(0, 'Area', str_ref('Charts!$R$2:$R$7', months), num_ref('Charts!$S$2:$S$7', [3, 5, 4, 6, 5, 7]), solid('4472C4'))
+    for name, kind, between, row in [('AreaTicks', 'area', 'midCat', 1), ('AreaBetween', 'area', 'between', 20),
+                                     ('LineTicks', 'line', 'midCat', 40), ('LineBetween', 'line', 'between', 60)]:
+        body = area_series if kind == 'area' else area_series.replace(solid('4472C4'), f'<a:ln w="28575">{solid("4472C4")}</a:ln>')
+        plot = (f'<c:{kind}Chart><c:grouping val="standard"/><c:varyColors val="0"/>{body}' + ('<c:marker val="1"/>' if kind == 'line' else '')
+                + f'<c:axId val="1"/><c:axId val="2"/></c:{kind}Chart>' + cat_ax(1, 2) + val_ax(2, 1, between=between))
+        charts.append((name, row, 38, 480, 260, chart_space(plot)))
+    put(5, 0, 'Charts:')
+    write_book('synthetic-chart-looks.xlsx', rows, charts)
+
+
 if __name__ == '__main__':
     build()
     build_lines()
+    build_looks()
+

@@ -1427,6 +1427,11 @@ type Spreadsheet(container: Element) as this =
                                                 | Some original, Some current -> Some (SpreadsheetCharts.markChangedReferences original current)
                                                 | _ -> parsed
                                         | ValueNone -> None
+                                    let partText (name: string) =
+                                        match Portable.Dict.tryFind name parts with
+                                        | ValueSome bytes -> Some (System.Text.Encoding.UTF8.GetString bytes)
+                                        | ValueNone -> None
+                                    let read = read |> Option.map (SpreadsheetCharts.withUserShapes partText path)
                                     chartModels.[path] <- read
                                     read))
                    Picture =

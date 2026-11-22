@@ -189,6 +189,41 @@ let faces : (string * bool * bool * int * string * string[])[] = [|
     ("aptos narrow", false, true, 2048,
      "0an0ij0ir0sc0su19l0ya0ab0hb0hb0sc0su0e20hg0eu0hp0su0su0su0su0su0su0su0su0su0su0eu0e30su0su0su0q31ab0ug0vr1070zk0su0s510q10q0dt0hc0t90pu15110m11x0ur11x0vh0tc0ou0zb0u51a90sq0s10qd0f90hq0f20su0no0se0rl0t80rh0tg0rl0f20p30st0c90c90pi0di18g0st0so0t80td0hi0p50gc0st0nj11c0n40nj0mp0gk0qa0gl0su0an0ij0sc0su0sc0su0sc0p00se12j0m80kc0su0hg0oq0se0ks0su0iq0iq0se0tn0ta0eu0se0iq0n20kd14j17n1a40q30ug0ug0ug0ug0ug0ug1921070su0su0su0su0dt0dt0dt0dt0zk10m11x11x11x11x11x0su11x0zb0zb0zb0zb0s10uq0su0rl0rl0rl0rl0rl0rl17m0rh0rl0rl0rl0rl0cy0cy0cy0cy0si0st0so0so0so0so0so0su0si0st0st0st0st0nj0t90nj",
      [| ""; "5bk5dk"; ""; "21k7fk80k81k82k83k84k"; "04i0bi10i11i12i13i14i15i16i17i18i19i1ci1di1ei5ei61i62i64i6bi70i96ia5kb6i"; ""; "3dk46k47k"; ""; ""; ""; ""; ""; ""; "27k28k"; ""; "6fk"; ""; "44k7ck"; "7di"; ""; ""; ""; ""; "75k"; "29k8bk8ck8dk8ek"; "42k50k5dk" |])
+    ("tw cen mt", false, false, 2048,
+     "0fp0ch0k71200ve1be11y0av0ff0ff0ox11y0ch0iy0ch0sg0ve0ve0ve0ve0ve0ve0ve0ve0ve0ve0ch0ff11y11y11y0lw1lr0yd0sg0yd0yd0ox0ox17v0yd0ch0lw0ve0lw17v11y17v0sg17v0sg0sg0ox0yd0yd1kw0ve0ve0sg0ff0sg0ff0qp0sg0iy0ve0ve0lw0ve0sg0iy0ve0ox0ch0ch0ox0ch11y0ox0sg0ve0ve0iy0iy0ff0ox0ox11y0sg0sg0ox0j00tz0j011b0fp0ch0ox0ve11y0ve0tz0ox0iy15z0ks0sg11y0iy15z0sg0mr11y0lw0lw0iy0vn0um0ch0iy0lw0ie0sg1fj1fj1fj0lw0yd0yd0yd0yd0yd0yd17v0yd0ox0ox0ox0ox0ch0ch0ch0ch0yd11y17v17v17v17v17v11y17v0yd0yd0yd0yd0ve0sg0ve0ve0ve0ve0ve0ve0ve1au0lw0sg0sg0sg0sg0ch0ch0ch0ch0sg0ox0sg0sg0sg0sg0sg11y0sg0ox0ox0ox0ox0sg0ve0sg",
+     [| "11i4dk"; "41i47i9fia0ia1ia2ia3ia4i"; "54i"; ""; "05k"; "49i4ai4ci5ek7bk7ck7dk"; "49i4ai4ci79k"; ""; ""; ""; "05k68k6dk"; ""; ""; "21k23k24k28k35k36k7fk80k81k82k83k84k86k8fk98k99k9ak9bk"; ""; "69k"; ""; ""; ""; ""; ""; ""; "20k"; ""; ""; "" |])
+    ("tw cen mt", true, false, 2048,
+     "0f50bu0qz1200u71ii1000dj0ht0ht0oa11y0es0ht0es0ks0u70u70u70u70u70u70u70u70u70u70es0es11y11y11y0r91jh1350u50x61040r90r91351040es0oa1040oa1921351640u71640x60r30r91041041921040x60x60ht0ks0ht0x80sg0iy0u10u70mz0u70r90ht0u30u70es0es0r90es1920u70u70u70u10ht0oa0es0u70u71920u70u70r90m50xg0m511b0f50bu0oa0u511y0x60xg0r70iy15z0jl0sg11y0ht15z0sg0mr11y0ks0ks0iy0yr0vn0es0iy0ks0jl0sg1fj1fj1fj0r51351351351351351351920x60r90r90r90r90es0es0es0es10413516416416416416411y1641041041041040x60u70u70u10u10u10u10u10u118u0mz0r90r90r90r90es0es0es0es0ve0u70u70u70u70u70u711y0u70u70u70u70u70u70u70u7",
+     [| "45k57ia7ka8ka9kaak"; "01k05k29k60k8bk8ck8dk8ek"; "29k8bk8ck8dk8ek"; "49i4ai4ci"; "06k57i"; "04k10k11k12k13k14k15k16k17k18k19k30k42k44k48k4ek4fk50k55k56k58k59k5ek7bk7ck7dk9dk9ekb0kb1kb2kb3kb4kb5kb7kb8kb9kbakbbkbckbdkbek"; ""; "23k32k39k3ak64k86k9ck"; ""; ""; "68k6dk"; "7ek"; ""; "1fk25k26k34k45k4bk5ak87k88k89k8aka7ka8ka9kaak"; "0ck0ek1ak1bk49k4ak4ck54k76kabkackadkaek"; "0fk3ck43k71k72k78ka6k"; "74k"; ""; ""; ""; ""; ""; ""; ""; ""; "" |])
+    ("tw cen mt", false, true, 2048,
+     "0fp0ff0k71200ve1kc11y0av0iy0iy0ox11y0ff0iy0ch0sg0ve0ve0ve0ve0ve0ve0ve0ve0ve0ve0ff0ff11y11y11y0ox1lr0yd0sg0yd0yd0ox0ox11y0yd0ff0lw0ve0lw17v11y17v0sg17v0sg0sg0ox0yb0yd1kw0ve0ve0ve0iy0sg0iy0qp0sg0iy0sg0sg0lw0sg0ox0iy0ve0ot0ch0ch0ox0ch11w0ot0sg0sg0sg0iy0iy0ff0ox0ox0yd0sg0ox0ox0j00tz0j011b0fp0ff0lw0ve11y0ve0tz0se0iy15z0ie0sg11y0iy15z0sg0mr11y0lw0lw0iy0vn0um0ch0iy0lw0ie0sg1fj1fj1fj0ox0yd0yd0yd0yd0yd0yd17v0yd0ox0ox0ox0ox0ff0ff0ff0ff0yd11y17v17v17v17v17v11y17v0yb0yb0yb0yb0ve0sg0sg0sg0sg0sg0sg0sg0sg17v0lw0ox0ox0ox0ox0ch0ch0ch0ch0sg0ot0sg0sg0sg0sg0sg11y0sg0ox0ox0ox0ox0ox0sg0ox",
+     [| ""; ""; ""; ""; ""; "5ek7bk7ck7dk"; "69k79k"; ""; ""; ""; "68k6dk"; ""; ""; "21k23k24k28k36k57k7fk80k81k82k83k84k86k8fk"; ""; ""; ""; ""; ""; ""; ""; ""; "20k"; ""; ""; "" |])
+    ("tw cen mt", true, true, 2048,
+     "0f50bu0qz1200u71ii1040dj0ht0ht0oa11y0bu0ht0bu0ks0u70u70u70u70u70u70u70u70u70u70bu0bu11y11y11y0r91jh1040u70x60x60oa0oa1350x60bu0oa0x60oa1641041640r91640u70oa0oa0x41041920x60x60u70ht0ks0ht0x80sg0iy0r90r90oa0r90r90es0r90o40bu0bu0oa0bu1350o40r90r90r90ht0ht0fz0r70r91640r90q20oa0m50xg0m511b0f50bu0oa0x611y0x60xg0r90iy15z0ht0sg11y0ht15z0sg0mr11y0ks0ks0iy0yr0vn0es0iy0ks0ht0sg1fj1fj1fj0r91041041041041041041920x60oa0oa0oa0oa0bu0bu0bu0bu0x610416416416416416411y1640x40x40x40x40x60r90r90r90r90r90r90r90r91610oa0r90r90r90r90bu0bu0bu0bu0r90o40r90r90r90r90r911y0r90r70r70r70r70q20r90q2",
+     [| "29k49k4ak4ck53k8bk8ck8dk8ekabkackadkaek"; "01k05k0ck0ek1ak1bk29k48k49k4ak4ck4ek59k60k8bk8ck8dk8ekabkackadkaekb0kbckbek"; ""; ""; ""; "04k10k11k12k13k14k15k16k17k18k19k22k32k3ak54k5ek7bk7ck7dk"; ""; "23k24k28k2bk38k39k62k64k86k8fk9ck"; ""; ""; "68k6dk"; ""; ""; "1fk30k41k42k44k45k47k4fk50k51k56k58k66k7ek9dk9ek9fka0ka1ka2ka3ka4ka7ka8ka9kaakafkb1kb2kb3kb4kb5kb7kbdk"; "46k76k"; "0fk3ck71k72k78k"; "74k"; ""; ""; ""; ""; ""; ""; ""; ""; "" |])
+|]
+
+/// A line of each family (its regular face) as GDI spaces lines, tmHeight + tmExternalLeading: (family lower case, the line in font units, units per em).
+let lineExtents : (string * int * int)[] = [|
+    ("calibri", 2500, 2048)
+    ("calibri light", 2500, 2048)
+    ("arial", 2355, 2048)
+    ("arial narrow", 2350, 2048)
+    ("arial black", 2888, 2048)
+    ("times new roman", 2355, 2048)
+    ("cambria", 2401, 2048)
+    ("verdana", 2489, 2048)
+    ("tahoma", 2472, 2048)
+    ("segoe ui", 2724, 2048)
+    ("segoe ui black", 2766, 2048)
+    ("garamond", 2304, 2048)
+    ("georgia", 2327, 2048)
+    ("trebuchet ms", 2378, 2048)
+    ("courier new", 2320, 2048)
+    ("consolas", 2398, 2048)
+    ("lucida console", 2048, 2048)
+    ("aptos narrow", 2631, 2048)
+    ("tw cen mt", 2230, 2048)
 |]
 
 /// Small Fonts by em height in pixels (the 96-dpi face where both have one): (em, advances of U+0020-00FF).

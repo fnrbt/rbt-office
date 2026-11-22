@@ -115,7 +115,7 @@ let pieScene = Charts.layoutChart zooTheme zooData pie 480.0 288.0
 eq "pie: a pie plot" (pie.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.PiePlot ]
 ok "pie: four wedges in four colours, from the centre" (let wedges = paths pieScene in wedges.Length = 4 && (wedges |> List.map snd |> List.distinct).Length = 4 && wedges |> List.forall (fun (d, _) -> d.Contains "A" && d.EndsWith "Z")) (sprintf "%A" (paths pieScene |> List.map snd))
 ok "pie: a legend, when the chart has one, names the categories" (pie.Legend.IsNone || [ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieScene))) (sprintf "%A" (texts pieScene))
-let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None; Face = None }; Layout = None; Overlay = false; Deleted = Set.empty; EntryStyles = Map.empty } } 480.0 288.0
+let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None; Face = None }; Layout = None; Overlay = false; Deleted = Set.empty; EntryStyles = Map.empty; Fill = Charts.FillNone; Border = None } } 480.0 288.0
 ok "pie: with a legend at the right, its entries are the categories" ([ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieWithLegend))) (sprintf "%A" (texts pieWithLegend))
 
 // The area chart and the scatter chart.
@@ -151,7 +151,7 @@ ok "100 % stacked: every column is as high as the plot, in the shares of its val
 ok "100 % stacked: the scale is 0% .. 100%" (List.contains "0%" (texts percentScene) && List.contains "100%" (texts percentScene) && List.contains "50%" (texts percentScene)) (sprintf "%A" (texts percentScene))
 // A combination: columns on the first axis, a line on a second one at the right.
 let comboAxes = axesXml + "<c:catAx><c:axId val=\"3\"/><c:delete val=\"1\"/><c:axPos val=\"b\"/><c:crossAx val=\"4\"/></c:catAx><c:valAx><c:axId val=\"4\"/><c:delete val=\"0\"/><c:axPos val=\"r\"/><c:numFmt formatCode=\"0%\" sourceLinked=\"0\"/><c:crossAx val=\"3\"/></c:valAx>"
-let combo = parsed (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 100.0; 300.0; 200.0 ] "") + "<c:lineChart><c:grouping val=\"standard\"/>" + ser 1 "00AA00" [ 0.1; 0.5; 0.25 ] "<c:marker><c:symbol val=\"circle\"/><c:size val=\"7\"/></c:marker>" + "<c:marker val=\"1\"/><c:axId val=\"3\"/><c:axId val=\"4\"/></c:lineChart>") comboAxes)
+let combo = parsed (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 100.0; 300.0; 200.0 ] "") + "<c:lineChart><c:grouping val=\"standard\"/>" + ser 1 "00AA00" [ 0.1; 0.5; 0.25 ] "<c:marker><c:symbol val=\"circle\"/><c:size val=\"7\"/></c:marker><c:smooth val=\"0\"/>" + "<c:marker val=\"1\"/><c:axId val=\"3\"/><c:axId val=\"4\"/></c:lineChart>") comboAxes)
 let comboScene = Charts.layoutChart Charts.defaultTheme noData combo 400.0 300.0
 eq "combination: a bar plot and a line plot" (combo.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.BarPlot; Charts.LinePlot ]
 ok "combination: the line has its own scale, in per cent, at the right" (List.contains "50%" (texts comboScene) && List.contains "300" (texts comboScene) && (comboScene.Items |> List.exists (fun item -> match item with Charts.PText (x, _, "50%", _, _, "start", _, _, _) -> x > 300.0 | _ -> false))) (sprintf "%A" (texts comboScene))
@@ -381,7 +381,10 @@ ok "Excel 2019: bars to 250,000 in 300 px: 0 .. 300,000 by 100,000" (hasAll barW
 let skip = parityTexts 11 345.0 225.0
 ok "Excel 2019: no values at all: as 0 .. 1 (to 1.2); 59 categories in 345 px: every third label" (hasAll skip [ "1.2"; "1"; "4"; "58" ] [ "2"; "3"; "59" ]) (sprintf "%A" skip)
 // A date axis: a band a month from the first date to the last, a label every two years, turned up.
-let dateScene = Charts.layoutChart parityTheme parityData (parityChart 6) 400.0 300.0
+/// (These fixtures' line series say nothing of smoothing - Excel 2019 then smooths them, synthetic-chart-looks "Markers" -;
+/// their lines are measured as the points joined.)
+let unsmoothed (chart: Charts.Chart) = { chart with Plots = chart.Plots |> List.map (fun plot -> { plot with Series = plot.Series |> List.map (fun series -> { series with Smooth = false }) }) }
+let dateScene = Charts.layoutChart parityTheme parityData (unsmoothed (parityChart 6)) 400.0 300.0
 let dateLabels = allTexts dateScene.Items |> List.filter (fun (_, _, _, _, _, _, turn) -> turn = -90.0) |> List.map (fun (value, _, _, _, _, _, _) -> value)
 eq "Excel 2019: a date axis labelled every two years, turned" dateLabels [ "2024"; "2026"; "2028"; "2030"; "2032" ]
 ok "Excel 2019: ... its line across the whole plot, the 40 rows of \"\" after it no points" (lines dateScene |> List.exists (fun (points, _) -> points.Length = 120 && fst (List.last points) > 360.0)) (sprintf "%A" (lines dateScene |> List.map (fun (points, _) -> points.Length, List.last points)))
@@ -407,7 +410,7 @@ ok "Excel 2019: a point's label of its own colour and weight (c:dLbl)" ((parityP
 let linesWb, linesBook, linesParts, linesTheme = openBook "test-documents-excel/synthetic-chart-lines.xlsx"
 let linesData = dataOf (linesBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
 let linesScene (number: int) (w: float) (h: float) =
-    Charts.layoutChart linesTheme linesData (Charts.parseChart linesTheme (text linesParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get) w h
+    Charts.layoutChart linesTheme linesData (Charts.parseChart linesTheme (text linesParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get |> unsmoothed) w h
 let strokeWidths (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PPolyline (_, None, _, Some _, w, _) -> Some w | _ -> None)
 let keyLines (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PLine (x1, y1, x2, y2, color, w, _) when y1 = y2 && abs (x2 - x1 - 26.0) < 0.01 -> Some (color, w) | _ -> None)
 let widthsScene = linesScene 1 480.0 360.0
