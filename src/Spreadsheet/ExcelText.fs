@@ -28,6 +28,17 @@ let pixelSize (points: float) (zoom: float) : int =
 /// 10.5 at 76 % (7.98, which is 8), Calibri 8 at 100 %, Arial 10 at 80 %.
 let isSmallFonts (points: float) (zoom: float) = System.Math.Floor (System.Math.Round (points * zoom * 20.0, 9) + 0.5) < 160.0
 
+/// What Excel 2019 leaves out of a number's room in its cell beyond its padding for the slant or weight GDI adds to a
+/// font (`CellText.NumberFit.Overhang`), at pixel size `px`: italic in a TrueType font round(px x 0.16) - 2 px at
+/// 11-15 px, 3 at 16-21, 4 at 24, 5 at 29 -, in Small Fonts (`smallFonts`, its italic made up) half the size,
+/// cut down - 3 px at 7, 4 at 8, 5 at 10 -, and bold in Small Fonts a pixel more (checked in Excel on generated
+/// cells, make-number-room-fixture.py: Aptos Narrow, Calibri, Arial, Times New Roman, upright, italic and bold at
+/// 8-22 pt and 50-100 %: the widths at which -100.00%, 50.00%, 1,234,567 and -1,234.50 show, and the #s before;
+/// Calibri 16 pt italic, 21 px, has 4).
+let overhang (px: int) (smallFonts: bool) (bold: bool) (italic: bool) : float =
+    let slant = if not italic then 0.0 elif smallFonts then floor (float px / 2.0) else floor (float px * 0.16 + 0.5)
+    slant + (if bold && smallFonts then 1.0 else 0.0)
+
 let private base36 (c: char) = if c <= '9' then int c - int '0' else int c - int 'a' + 10
 
 type private Face =

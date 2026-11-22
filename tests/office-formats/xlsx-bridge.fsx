@@ -1138,10 +1138,49 @@ do
         (let m = sheetNamed merged "Merged" in [ for row in [ 2; 3; 4; 5; 6; 10 ] -> getRowHeight row m ]) [ 35.0; 20.0; 20.0; 20.0; 20.0; 23.0 ]
     eq "rows: a column of Calibri 20 under wrapped Calibri 11: its descent below the text's (3 lines, plain, 2 lines)"
         (heights (sheetNamed merged "ColStyle") 4 |> List.tail) [ 63.0; 35.0; 43.0 ]
+    // Wrapped rows on opening (make-wrap-fit-fixture.py + wrap-fit-cases.tsv; Excel 2019's Rows(r).Height on opening,
+    // synthetic-wrap-fit.excel.tsv): Calibri 11 / bold at 85 %, Arial 10, Calibri 14 at 85 %, Calibri 20, in columns a
+    // pixel apart about where a line fits (`SheetOps.openWrapLineCount`). Not the first screen of the sheets at 85 %
+    // (S2, S4): the rows Excel shows first it fits at the sheet's zoom, which is not followed.
+    let wrapFit = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-wrap-fit.xlsx")
+    let expected =
+        File.ReadAllLines(Path.Combine(root, "test-documents-excel/synthetic-wrap-fit.excel.tsv")) |> Array.map (fun line -> line.Split '\t')
+        |> Array.filter (fun parts -> not ((parts.[0] = "S2" || parts.[0] = "S4") && int parts.[1] <= 60))
+    let wrong =
+        [ for parts in expected do
+            let got = getRowHeight (int parts.[1] - 1) (sheetNamed wrapFit parts.[0]) * 0.75
+            if abs (got - float parts.[2]) > 0.01 then yield sprintf "%s!%s %g (Excel %s)" parts.[0] parts.[1] got parts.[2] ]
+    eq (sprintf "rows: wrapped text fitted on opening as Excel's (%d rows)" expected.Length) (List.truncate 8 wrong) []
+    // Spaces at a line's end do not count, at its start they do (Excel: "Cost Unit   " one line from a 63-px column as
+    // "Cost Unit", "   Cost Unit" from 72).
+    let calibri (text: string) = fun i -> Rbt.Spreadsheet.ExcelText.textWidth (fun _ -> 0.0) "Calibri" false false 15 false (string text.[i])
+    eq "rows: a line's trailing spaces do not count, leading ones do"
+        [ for text, col in [ "Cost Unit   ", 63.0; "Cost Unit   ", 62.0; "   Cost Unit", 72.0; "   Cost Unit", 71.0 ] -> Ops.openWrapLineCount (calibri text) (col - 7.0) text ]
+        [ 1; 2; 1; 2 ]
     let baseline = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-row-baseline.xlsx")
     eq "rows: cells at the bottom meet at their baseline (Arial 12 and Arial 11 bold: 21 px), centred or at the top only their height (20)"
         (heights (sheetNamed baseline "Baseline") 11) [ 21.0; 21.0; 20.0; 20.0; 20.0; 20.0; 20.0; 63.0; 60.0; 60.0; 63.0 ]
     eq "fonts: a size set is kept to a twentieth of a point, as Excel keeps it" (List.map fontSizeAsKept [ 10.3; 8.33; 10.01; 10.5 ]) [ 10.3; 8.35; 10.0; 10.5 ]
+
+// ---- a number's room in italic (make-number-room-fixture.py, Range.Text from Excel 2019) ----
+do
+    let shown (face: string) (pt: float) (italic: bool) (zoom: float) (width: float) (value: float) =
+        let format = { defaultFormat with FontName = Some face; FontSize = Some pt; Italic = italic; NumberFormat = Some "0.00%" }
+        let model = setCell (addr 0 0) { Value = Number value; Format = format; Comment = None } (createEmpty 2 2)
+        let measure : Rbt.Spreadsheet.Layout.TextMeasurer =
+            fun text fontPt family bold italic ->
+                let px = Rbt.Spreadsheet.ExcelText.pixelSize fontPt zoom
+                Rbt.Spreadsheet.ExcelText.textWidth (fun _ -> 0.0) (defaultArg family "Calibri") bold italic px (Rbt.Spreadsheet.ExcelText.isSmallFonts fontPt zoom) text
+        let fit : Rbt.Spreadsheet.CellText.NumberFit = { Zoom = zoom; Overhang = 0.0 }
+        (Rbt.Spreadsheet.Paint.cellLookFitted (Some fit) model 0 0 (Map.tryFind (addr 0 0) model.Cells) (Some measure) (Math.Floor (width * zoom + 0.5))).Text
+    // oyabayo's italic Aptos Narrow 14 at 57 %: -100.00% from a 91-px column, upright from 86.
+    eq "numbers: italic has round(px x 0.16) less room (Aptos Narrow 14 italic at 57 %: 2 px)"
+        [ shown "Aptos Narrow" 14.0 true 0.57 90.0 -1.0; shown "Aptos Narrow" 14.0 true 0.57 91.0 -1.0; shown "Aptos Narrow" 14.0 false 0.57 85.0 -1.0; shown "Aptos Narrow" 14.0 false 0.57 86.0 -1.0 ]
+        [ "########"; "-100.00%"; "########"; "-100.00%" ]
+    eq "numbers: ... Calibri 11 italic at 100 % (2 px), in Small Fonts at 57 % (half its size, 4 px)"
+        [ shown "Calibri" 11.0 true 1.0 61.0 -1.0; shown "Calibri" 11.0 true 1.0 62.0 -1.0; shown "Calibri" 11.0 true 0.57 72.0 -1.0; shown "Calibri" 11.0 true 0.57 73.0 -1.0 ]
+        [ "#######"; "-100.00%"; "#####"; "-100.00%" ]
+    eq "numbers: no # where not one fits" (shown "Calibri" 11.0 true 0.57 20.0 -1.0) ""
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

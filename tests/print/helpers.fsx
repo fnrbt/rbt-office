@@ -280,6 +280,28 @@ do
     let content = match swapped.Head.Model.Drawings.Head.Content with Picture (kind, _, data) -> kind, data.Length | _ -> "", 0
     ok "pictures: the PNG listed, then drawn from the JPEG handed for it" (listed.Length = 1 && obj.ReferenceEquals(listed.[0], png) && content = ("image/jpeg", 3)) (sprintf "%d, %A" listed.Length content)
 
+// ----- cell text in print, as Excel 2019's PDF sets it (make-print-text-fixture.py) -----
+do
+    let paint = Rbt.Spreadsheet.Paint.buildPaintItems
+    let textItems (width: float) (text: string) (wrap: bool) =
+        let model =
+            createEmpty 4 4
+            |> setCell { Row = 0; Col = 1 } { Value = String text; Format = { defaultFormat with WrapText = wrap }; Comment = None }
+            |> setColumnWidth 1 width
+        let viewport : Rbt.Spreadsheet.Layout.Viewport =
+            { ScrollX = 0.0; ScrollY = 0.0; Width = 400.0; Height = 100.0; HeaderHeight = 0.0; RowHeaderWidth = 0.0
+              Measurer = Some (fun s _ _ _ _ -> 6.0 * float s.Length) }
+        [ for item in paint model viewport do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.Text.Contains "a" || t.Text.Contains "b" -> yield t
+            | _ -> () ]
+    // (Column A is 100 px: B starts there; the headers' letters are left out.) A line 2.56 px in from the cell's left side, 16/600 in.
+    let one = textItems 100.0 "abc" false
+    ok "print: text 2.56 px from the cell's left side" (one.Length = 1 && abs (one.Head.Rect.X - (100.0 + 2.56)) < 1e-6) (sprintf "%A" (one |> List.map (fun t -> t.Rect.X)))
+    // A wrapped line fits while no wider than the column less 4.48 px: 15 characters of 6 px (90) in 95 px, not in 94.
+    let lines width = textItems width "aaaaaaa bbbbbbb" true |> List.map (fun t -> t.Text)
+    ok "print: wrapped at the column less 4.48 px" (lines 95.0 = [ "aaaaaaa bbbbbbb" ] && lines 94.0 = [ "aaaaaaa"; "bbbbbbb" ]) (sprintf "%A / %A" (lines 95.0) (lines 94.0))
+
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -1,6 +1,6 @@
 # Excel Parity Tracker
 
-Last updated: 2026-11-21 UTC.
+Last updated: 2026-11-22 UTC.
 
 This tracker is for deciding what to fix next and recording which parity
 surfaces have actually been checked. It complements
@@ -151,7 +151,42 @@ below confirmed on generated workbooks in Excel on the VM, then implemented.
 Found, not matched: rows Excel fits on opening wrap about 9 % earlier than it draws them (synthetic-wrap-budget
 rows 6+: "Cost per Unit" bold, 81 px, one line from an 88-px column, "The quick brown" Calibri from 111, Arial 10 from
 103), and depending on the zoom (85 %: 90) - the measure is not GDI's at the drawn size (vertex42's Help rows a line
-higher in Excel); text paddings for wide fonts (the room is wider, the text's left edge measured the same).
+higher in Excel); text paddings for wide fonts (the room is wider, the text's left edge measured the same). (The
+open-time wrap is matched now: "Wrapped rows, print text, outline strips, numbers in italic" below.)
+
+## Wrapped rows, print text, outline strips, numbers in italic against Excel 2019, 2026-11-22
+
+The rest of the re-survey: rows of wrapped text Excel fits on opening, the PDF's cell text (the painter still wrapped at
+the cell less 22 px with 4 px paddings), the outline strips beside / above the headers, oyabayo's `-100.00%` that Excel
+shows as `########`. Each rule found on generated workbooks in Excel on the VM, then implemented. Fixtures and probes:
+`make-wrap-fit-fixture.py` (+ `wrap-fit-cases.tsv`: synthetic-wrap-fit.xlsx, Excel's heights in
+synthetic-wrap-fit.excel.tsv), `probe-wrap-fit.vbs` (heights on opening, after AutoFit at the sheet's zoom and at 100 %),
+`probe-open-heights.vbs`; `make-print-text-fixture.py` (`print-excel-pdf.vbs`, the PDF's words and grid lines);
+`make-outline-fixture.py` (synthetic-outline.xlsx, `shoot-sheets.ps1`); `make-number-room-fixture.py`,
+`probe-text-shown.vbs` (`Range.Text` with each sheet shown at its zoom). Checks: `tests/office-formats/xlsx-bridge.fsx`
+("rows: wrapped text fitted on opening", "rows: a line's trailing spaces", "numbers: italic"), `tests/print/helpers.fsx`
+("print:"), xlsx-browser `chrome-outline`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| Fitting a row on opening, a wrapped line fits when g + max(0, floor((g - 57) / 28)) <= the column less 2 ceil(d / 4) + 3 px: g its width at 100 % in GDI's advances (whatever the sheet's zoom), d the font's widest digit at 100 % (7 px for Calibri 11 / Arial 10, 9 for Calibri 14 / Arial 16 / Cambria 12 / Segoe UI Black 11, 11 for Calibri 20 and 24). 80 px of Calibri 11 fit a column of 87 px, 88 px one of 96, 240 one of 253 | 3 sweeps, 27 fonts and sizes (Calibri 8-24 and bold, Arial 8-16, Times, Verdana, Segoe UI, Tahoma, Cambria, Segoe UI Black), 2-word and 1-word texts (runs of `n`, `i`, `0`) in columns a pixel apart, 75,000 rows: every threshold as the rule (the 28-px step: the same for every font) | the column less 6 px, the line in the browser's widths | `SheetOps.openWrapLineCount`, `fitRowsOnOpen` (native: `ExcelText` too) |
+| ... a line's spaces at its end do not count, at its start they do; a text of runs is measured run by run in its runs' fonts | "Cost Unit   " one line from 63 px as "Cost Unit", "   Cost Unit" from 72; choudhary's `_(@_)` headers one line; vertex42's Help (bold runs) | the whole shown text, the cell's font | `openWrapLineCount` (per-character advances) |
+| The rows Excel shows first - those that fit its window at their unfitted heights, from the top - of a sheet at a zoom are fitted at that zoom, the active sheet's all; the rest at 100 % | the same case in every row of sheets at 50, 85, 150 %: rows 1-78 / 1-46 / 1-26 differ (780 px of 20-px rows at the zoom), the active sheet's 300 | - | not followed (the zoomed measure not found: Calibri as at 100 %, Arial 10 a pixel off either way; the window's size is Excel's own) |
+| Text in print (PDF) is set at 600 dpi: the font a whole number of dots high (11 pt is 92 dots, 11.04 pt in the PDF; Arial 10 9.96), each character a whole number of dots wide; a line 16/600 in (2.56 px) from either side of its cell | make-print-text-fixture.py: 4 fonts x 27 columns, left and right aligned digits 1.93 pt from the grid lines (+-0.07), the PDF's `Tf` | 4 px either side, the font's advances unrounded | `Paint.printPadX`; `Pdf.measurePdf` |
+| ... a wrapped line breaks as on screen (`CellText.excelWrapLines`) with the printed column less 28/600 in (4.48 px) for room; lines past the cell's bottom are not printed | the paragraphs of the same 108 columns: 101 as Excel's PDF (before: 8) | the cell less 22 px; lines drawn over the rows below | `Paint.printWrapMargin`, the text clipped to its cell |
+| The outline strips at 100 %: a column of 19 px a level and one more, 5 px to spare (62 px beside the row numbers for two levels of groups, 81 for three; 43 above the letters for one); level and +/- buttons 19 px (a +/- at the top of its summary row / column); bars 2 px wide, 6 px into their column, a 6-px tick at the end away from the summary; a 2-px dot in the middle of every grouped row / column, in the column of the level below its own, unless a button is there | pictures of synthetic-outline.xlsx ("Rows", "Cols", "Both", "Above") | 15-px columns, 13-px buttons, 1-px brackets, no dots | `renderOutline` in the grid; xlsx-browser `chrome-outline` |
+| A number in italic has round(px x 0.16) px less room (2 px at 11-15 px, 3 at 16-21, 4 at 24, 5 at 29); italic in Small Fonts (made up by GDI) half its size, cut down (3 at 7 px, 4 at 8, 5 at 10), bold there a pixel more. The `#`s fill the same room; none where not one fits (the cell shows nothing) | make-number-room-fixture.py: Aptos Narrow 14, Calibri, Arial upright, italic, bold, bold italic at 57 and 100 %: 9,684 of 9,696 cells as Excel (before 8,407); italic Calibri, Arial, Times at 8-22 pt and in Small Fonts: 10,066 of 10,100 (Calibri 16 italic, 21 px, has 4) | italic as upright; at least one `#` | `ExcelText.overhang`, `CellText.fittedHashes` |
+
+On the 12 real-estate models (every sheet, rows 1-150, Excel's heights on opening): 4,032 of 4,038 rows as Excel's
+(before: 4,027 with the native measure); oyabayo's `-100.00%` (italic Aptos Narrow 14 at 57 %, a 90-px column) is
+`########` as in Excel. The reader kept a no-break space at the end of a run: .NET's `Trim` took it (vertex42's "and
+payment schedule" was "andpayment").
+
+Left: the first screen of rows of a sheet at a zoom (above); vertex42's Help rows 1-2 px lower than Excel's (the lines
+of bold runs, unchanged); in print, Excel prints from column A where the PDF starts at the first column with
+something (synthetic print fixture: our page starts at B), and a 300-pt row prints a little lower than ours; a General
+number in Small Fonts at 57 % (4 cells), bold italic Aptos Narrow at 57 % (a pixel more room than the rule); text
+boxes' wrapping not measured.
 
 ## Formula oracle on real-world models, 2026-11-21
 
