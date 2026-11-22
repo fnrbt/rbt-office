@@ -115,10 +115,21 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     // on Windows; match that so our footer reads "synthetic-print" rather
     // than "synthetic-print.xlsx".
     // Charts and shapes as the grid draws them, anchored to their cells.
-    let _, overlays = drawingOverlays workbook context sheetIndex
-    let required = Rbt.Spreadsheet.Pdf.Render.requiredFaces "Calibri" [| Rbt.Spreadsheet.Pdf.Render.pdfSheet model sheet.Name overlays |]
+    let _, drawingItems = drawingOverlays workbook context sheetIndex
+    let source : Rbt.Spreadsheet.Sparklines.Source =
+        fun name ->
+            let target = name |> Option.defaultValue sheet.Name
+            workbook.Sheets
+            |> List.tryFindIndex (fun s -> String.Equals(s.Name,target,StringComparison.OrdinalIgnoreCase))
+            |> Option.map (fun index ->
+                let other = (Map.find (sprintf "sheet%d" (index+1)) context.Sheets).Model
+                fun row col -> Rbt.Spreadsheet.Model.getCell { Row = row; Col = col } other)
+    let printed = Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes model
+    let overlays = drawingItems @ Rbt.Spreadsheet.Paint.sparklineOverlays source model printed
+    let painted = { model with Sparklines = [] }
+    let required = Rbt.Spreadsheet.Pdf.Render.requiredFaces "Calibri" [| Rbt.Spreadsheet.Pdf.Render.pdfSheet painted sheet.Name overlays |]
     let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath) required
-    let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
+    let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts painted overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
     printfn "spreadsheet pdf runner ok: %s [sheet=%s cells=%d] -> %s (%d bytes)"

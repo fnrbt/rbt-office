@@ -507,6 +507,22 @@ let rec private translateItem (options: RenderOptions) (faceByName: Map<string, 
         | VecGroup ((a2, b2, c2, d2, e2, f2), children) ->
             let comp = (a*a2 + c*b2, b*a2 + d*b2, a*c2 + c*d2, b*c2 + d*d2, a*e2 + c*f2 + e, b*e2 + d*f2 + f)
             children |> List.collect (vec comp)
+        | FillRect (rect, color) ->
+            vec (a,b,c,d,e,f)
+                (VecPath ([VMove(rect.X,rect.Y);VLine(rect.X+rect.Width,rect.Y)
+                           VLine(rect.X+rect.Width,rect.Y+rect.Height)
+                           VLine(rect.X,rect.Y+rect.Height);VClose],Some color,None))
+        | Clipped (rect, children) ->
+            let pt x y = xPt (a*x+c*y+e), yPdf (b*x+d*y+f)
+            let x0,y0 = pt rect.X rect.Y
+            let x1,y1 = pt (rect.X+rect.Width) rect.Y
+            let x2,y2 = pt (rect.X+rect.Width) (rect.Y+rect.Height)
+            let x3,y3 = pt rect.X (rect.Y+rect.Height)
+            [PdfDraw.SaveState;PdfDraw.MoveTo(x0,y0);PdfDraw.LineTo(x1,y1)
+             PdfDraw.LineTo(x2,y2);PdfDraw.LineTo(x3,y3);PdfDraw.ClosePath
+             PdfDraw.ClipPath;PdfDraw.EndPath]
+            @ (children |> List.collect (vec (a,b,c,d,e,f)))
+            @ [PdfDraw.RestoreState]
         | _ -> []
     match item with
     | (VecPath _ | VecGroup _) -> vec (1.0, 0.0, 0.0, 1.0, 0.0, 0.0) item

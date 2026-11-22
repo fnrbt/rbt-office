@@ -24,10 +24,77 @@ type SparkMark =
     | SparkBar of x: float * y: float * w: float * h: float * color: string
     | SparkDot of x: float * y: float * r: float * color: string
 
-/// The lowest and highest values of a list (None: no values).
+/// The lowest and highest known values, without allocating an intermediate array.
 let range (values: float option array) : (float * float) option =
-    let known = values |> Array.choose id
-    if known.Length = 0 then None else Some (Array.min known, Array.max known)
+    let mutable low, high = Double.PositiveInfinity, Double.NegativeInfinity
+    for value in values do
+        match value with
+        | Some number ->
+            low <- min low number
+            high <- max high number
+        | None -> ()
+    if low = Double.PositiveInfinity then None else Some (low, high)
+
+/// Resolve a source sheet once per formula, then look up its cells without
+/// allocating an intermediate rectangular block.
+type Source = string option -> (int -> int -> CellData option) option
+
+let values (source: Source) (formula: string) : float option array =
+    let bang = formula.LastIndexOf '!'
+    let sheet, reference =
+        if bang < 0 then None, formula
+        else
+            let name = formula.Substring(0, bang).Trim()
+            let name =
+                if name.Length >= 2 && name.[0] = '\'' && name.[name.Length - 1] = '\''
+                then name.Substring(1, name.Length - 2).Replace("''", "'")
+                else name
+            Some name, formula.Substring(bang + 1)
+    match Rbt.Spreadsheet.SheetOps.tryParseRange (reference.Replace("$", "")) with
+    | Some range when float (range.To.Row - range.From.Row + 1) * float (range.To.Col - range.From.Col + 1) <= 4096.0 ->
+        match source sheet with
+        | None -> [||]
+        | Some cellAt ->
+            [| for row in range.From.Row .. range.To.Row do
+                   for col in range.From.Col .. range.To.Col do
+                       match cellAt row col |> Option.map (fun c -> unwrapFormulaValue c.Value) with
+                       | Some (Number v) -> yield Some v
+                       | _ -> yield None |]
+    | _ -> [||]
+
+/// A group item with its data and vertical scale, including group-wide and
+/// manually specified bounds. Only the requested item reads its data for
+/// individually scaled groups.
+let inCell (source: Source) (groups: SparklineGroup list) (addr: CellAddress) =
+    groups
+    |> List.tryPick (fun group ->
+        group.Items
+        |> List.tryFind (fun (at, _) -> at = addr)
+        |> Option.bind (fun (_, formula) ->
+            let points = values source formula
+            let own = range points
+            let mutable groupBounds = None
+            let all () =
+                match groupBounds with
+                | Some bounds -> bounds
+                | None ->
+                    let bounds = group.Items |> List.choose (fun (_, f) -> range (values source f))
+                    groupBounds <- Some bounds
+                    bounds
+            let pick kind manual ownValue groupValue =
+                match kind, manual with
+                | "custom", Some v -> Some v
+                | "group", _ -> match all () with [] -> None | bounds -> Some (groupValue bounds)
+                | _ -> own |> Option.map ownValue
+            match pick group.MinAxis group.ManualMin fst (List.map fst >> List.min),
+                  pick group.MaxAxis group.ManualMax snd (List.map snd >> List.max) with
+            | Some low, Some high when points.Length > 0 -> Some (group, points, (low, high))
+            | _ -> None))
+
+let modelSource (model: SpreadsheetModel) : Source =
+    function
+    | Some _ -> None
+    | None -> Some (fun row col -> getCell { Row = row; Col = col } model)
 
 /// The marks of a sparkline of `group` over `values` (one a cell of its data, None an empty one) in a cell `width` x
 /// `height` px (grid line to grid line); `scale` the lowest and highest value of its vertical scale.

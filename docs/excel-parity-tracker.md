@@ -1400,3 +1400,11 @@ Fixes that landed via the harness this round:
 - `spreadsheet-vba-layout` now walks every sheet and skips
   formatted-but-empty cells to match `extract-excel-layout.vbs`'s
   `IsEmptyCell` filter, eliminating spurious `ours-only` rows.
+
+## Print icon sets and sparklines against Excel 2019, round 3 (2026-11-22)
+
+Evidence: synthetic `bf4` icon-set and sparkline-look Excel PDFs (not checked in). Icons are embedded at 24×24 pixels/144 ppi, i.e. 16×16 screen px; their positions agree with the existing browser grid's 2-px left inset and vertical alignment. Each sparkline is embedded as a 447×80-pixel image at about 200 ppi across a printed cell that was 200×40 px on screen: plot in screen-cell coordinates, then stretch to its printed row/column size. The original grid geometry leaves 3/2 px horizontally and 5/4 px vertically for the plot.
+
+Shared geometry: `ConditionalFormatting.iconArtwork` supplies SVG and vector-native/PDF paths; `Sparklines.inCell` supplies range parsing, source values and axis bounds for the grid and print. The PDF and native PNG runners resolve explicit, quoted, cross-sheet and nonactive-sheet references against the workbook; printed overlays are drawn once, including cells without stored values. Native PNG no longer uses the legacy XML sparkline reader (which crashes on `$`-qualified cell references).
+
+Remaining visual limits: Excel rasterizes both into PDF images, whereas ours emits vector paths. Rounded corners on some icon-set boxes/traffic-light housings and stroke caps/anti-aliasing of sparkline lines may differ at pixel level. Standalone model-only static painting cannot resolve an explicitly named *different* sheet without a workbook source callback; workbook PDF/PNG runners supply that callback.

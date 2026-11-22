@@ -435,119 +435,155 @@ let dataBarDrawOf (options: DataBarOptions) (color: string) (lo: float) (hi: flo
 /// The icon sets of Excel 2010+, which only the x14 form of a rule can name.
 let extendedIconSets = [ "3Stars"; "3Triangles"; "5Boxes" ]
 
-/// How an icon is drawn where the icon itself cannot be: a character and
-/// its colour. `index` 0 is the icon of the lowest values.
-let iconGlyph (family: string) (index: int) : string * string =
-    let red, amber, green, grey, black = "#E53935", "#F9A825", "#43A047", "#8E8E8E", "#404040"
+/// Shared 16-pixel icon artwork for the DOM, canvas, native raster and PDF.
+/// Coordinates are in the icon's own space, before its cell placement.
+type IconSegment =
+    | IconMove of float * float
+    | IconLine of float * float
+    | IconCurve of float * float * float * float * float * float
+    | IconClose
+
+type IconPart = {
+    Segments: IconSegment list
+    Fill: string option
+    Stroke: (string * float) option
+    /// The half-filled star is cut at the icon's midpoint.
+    ClipLeft: bool
+}
+
+let iconArtwork (family: string) (index: int) : IconPart list =
     let count = if family.Length > 0 && Char.IsDigit family.[0] then int family.[0] - int '0' else 3
     let index = max 0 (min (count - 1) index)
-    // Position of the icon between the lowest (0) and the highest (1).
-    let level = if count <= 1 then 1.0 else float index / float (count - 1)
-    let trafficColor = if level < 0.34 then red elif level < 0.67 then amber else green
     let name = if family.Length > 1 then family.Substring 1 else family
+    let red, amber, green, grey, dark, blue, light =
+        ("#D65532", "#B4482B"), ("#EAC282", "#A4802B"), ("#68A490", "#44806C"),
+        ("#808080", "#646262"), ("#505050", "#3A3A3A"), ("#4A7DB1", "#335F8C"), ("#B3B3B3", "#727272")
+    let traffic = [| red; amber; green |]
+    let path segments fill stroke = { Segments = segments; Fill = fill; Stroke = stroke; ClipLeft = false }
+    let solid segments (fill, edge) width = path segments (Some fill) (Some (edge, width))
+    let polygon points color =
+        let segments = points |> List.mapi (fun i (x,y) -> if i = 0 then IconMove (x,y) else IconLine (x,y))
+        solid (segments @ [IconClose]) color 0.75
+    let rect x y w h color =
+        polygon [x,y; x+w,y; x+w,y+h; x,y+h] color
+    let circle x y r fill stroke =
+        let k = 0.5522847498307936 * r
+        path [ IconMove (x+r,y)
+               IconCurve (x+r,y+k,x+k,y+r,x,y+r)
+               IconCurve (x-k,y+r,x-r,y+k,x-r,y)
+               IconCurve (x-r,y-k,x-k,y-r,x,y-r)
+               IconCurve (x+k,y-r,x+r,y-k,x+r,y); IconClose ] (Some fill) stroke
+    let disc (fill, edge) = circle 8.0 8.0 7.5 fill (Some (edge,0.75))
+    let rotate angle segments =
+        if angle = 0 then segments
+        else
+            let radians = float angle * Math.PI / 180.0
+            let s, c = Math.Sin radians, Math.Cos radians
+            let at x y = 8.0 + (x-8.0)*c - (y-8.0)*s, 8.0 + (x-8.0)*s + (y-8.0)*c
+            segments |> List.map (function
+                | IconMove (x,y) -> IconMove (at x y)
+                | IconLine (x,y) -> IconLine (at x y)
+                | IconCurve (x1,y1,x2,y2,x,y) ->
+                    let a,b = at x1 y1
+                    let c,d = at x2 y2
+                    IconCurve (a,b,c,d,fst (at x y),snd (at x y))
+                | IconClose -> IconClose)
+    let arrow color angle =
+        let shape = polygon [4.8,0.5;11.2,0.5;11.2,6.0;15.0,6.0;8.0,15.5;1.0,6.0;4.8,6.0] color
+        { shape with Segments = rotate angle shape.Segments }
+    let mark points color width =
+        path points None (Some (color,width))
+    let star =
+        [8.0,0.8;10.1,5.6;15.3,6.1;11.4,9.6;12.5,14.8;8.0,12.1;3.5,14.8;4.6,9.6;0.7,6.1;5.9,5.6]
     match name with
     | "Arrows" | "ArrowsGray" ->
-        let glyph =
-            if level <= 0.0 then "\u2193" elif level >= 1.0 then "\u2191"
-            elif level < 0.5 then "\u2198" elif level > 0.5 then "\u2197" else "\u2192"
-        glyph, (if name = "ArrowsGray" then grey else trafficColor)
-    | "Triangles" -> (if level <= 0.0 then "\u25BC" elif level >= 1.0 then "\u25B2" else "\u25AC"), trafficColor
-    | "Flags" -> "\u2691", trafficColor
-    | "Signs" -> (if level <= 0.0 then "\u25C6" elif level >= 1.0 then "\u25CF" else "\u25B2"), trafficColor
-    | "Symbols" | "Symbols2" -> (if level <= 0.0 then "\u2718" elif level >= 1.0 then "\u2714" else "!"), trafficColor
-    | "Stars" -> (if level <= 0.0 then "\u2606" else "\u2605"), (if level >= 1.0 then amber elif level > 0.0 then "#FBD46B" else grey)
-    | "Rating" | "Boxes" | "Quarters" ->
-        // More of the mark is filled the higher the value.
-        let glyph = if level <= 0.0 then "\u25CB" elif level < 0.34 then "\u25D4" elif level < 0.67 then "\u25D1" elif level < 1.0 then "\u25D5" else "\u25CF"
-        glyph, (if name = "Quarters" then black else "#4472C4")
-    | "RedToBlack" -> "\u25CF", (if level <= 0.0 then black elif level < 0.5 then grey elif level < 1.0 then "#F28B82" else red)
-    | _ -> "\u25CF", trafficColor
+        let angles =
+            if count = 3 then [|0;-90;180|]
+            elif count = 4 then [|0;-45;-135;180|]
+            else [|0;-45;-90;-135;180|]
+        let colors = if name = "ArrowsGray" then [|grey;grey;grey;grey;grey|]
+                     elif count = 3 then traffic
+                     elif count = 4 then [|red;amber;amber;green|]
+                     else [|red;amber;amber;amber;green|]
+        [arrow colors.[index] angles.[index]]
+    | "Flags" ->
+        [rect 1.0 0.5 1.5 15.0 ("#7F7F7F","#7F7F7F")
+         polygon [2.5,1.0;14.5,5.0;2.5,9.0] traffic.[index]]
+    | "TrafficLights1" -> [disc traffic.[index]]
+    | "TrafficLights2" ->
+        [rect 0.5 0.5 15.0 15.0 dark
+         circle 8.0 8.0 4.5 (fst traffic.[index]) (Some (snd traffic.[index],0.75))]
+    | "Signs" ->
+        [match index with
+         | 0 -> polygon [8.0,0.5;15.5,8.0;8.0,15.5;0.5,8.0] red
+         | 1 -> polygon [8.0,1.0;15.5,15.0;0.5,15.0] amber
+         | _ -> disc green]
+    | "Symbols" ->
+        let white = "#FFFFFF"
+        disc traffic.[index] ::
+        (match index with
+         | 0 -> [mark [IconMove(5.0,5.0);IconLine(11.0,11.0);IconMove(11.0,5.0);IconLine(5.0,11.0)] white 2.0]
+         | 1 -> [mark [IconMove(8.0,3.5);IconLine(8.0,9.0)] white 2.0;circle 8.0 12.0 1.2 white None]
+         | _ -> [mark [IconMove(4.5,8.5);IconLine(7.0,11.0);IconLine(11.5,5.5)] white 2.0])
+    | "Symbols2" ->
+        [match index with
+         | 0 -> mark [IconMove(2.5,2.5);IconLine(13.5,13.5);IconMove(13.5,2.5);IconLine(2.5,13.5)] (fst red) 4.2
+         | 1 -> mark [IconMove(8.0,0.5);IconLine(8.0,10.0)] (fst amber) 4.0
+         | _ -> mark [IconMove(1.5,8.0);IconLine(6.0,12.5);IconLine(14.5,3.0)] (fst green) 4.0]
+        @ (if index = 1 then [rect 6.0 12.0 4.0 3.5 (fst amber,fst amber)] else [])
+    | "RedToBlack" -> [disc [|dark;("#B1B1B1","#8C8C8C");("#EDB2A3","#C98A7A");("#D86344","#B14629")|].[index]]
+    | "TrafficLights" -> [disc [|dark;red;amber;green|].[index]]
+    | "Rating" ->
+        [for k in 0..3 do
+            let h = 4.0 + float k * 3.7
+            yield rect (1.5 + float k * 3.5) (15.5-h) 2.5 h (if k < (if count=4 then index+1 else index) then blue else light)]
+    | "Quarters" ->
+        if index = 4 then [disc dark]
+        else
+            let outline = circle 8.0 8.0 7.5 "#FFFFFF" (Some ("#505050",1.0))
+            if index = 0 then [outline]
+            else
+                // One, two or three clockwise quarters from twelve o'clock.
+                let arc =
+                    [for q in 0..index-1 do
+                        let a = -Math.PI/2.0 + float q * Math.PI/2.0
+                        let b = a + Math.PI/2.0
+                        let k = 4.14213562373095
+                        let x t = 8.0 + 7.5*Math.Cos t
+                        let y t = 8.0 + 7.5*Math.Sin t
+                        yield IconCurve(x a-k*Math.Sin a,y a+k*Math.Cos a,
+                                        x b+k*Math.Sin b,y b-k*Math.Cos b,x b,y b)]
+                [outline;path ([IconMove(8.0,8.0);IconLine(8.0,0.5)] @ arc @ [IconClose]) (Some "#505050") None]
+    | "Stars" ->
+        let outline = polygon star (if index = 2 then amber else if index = 1 then ("#FFFFFF","#A4802B") else ("#FFFFFF","#727272"))
+        if index = 1 then [outline; { (polygon star amber) with Stroke = None; ClipLeft = true }] else [outline]
+    | "Triangles" ->
+        [match index with
+         | 0 -> polygon [0.5,3.5;15.5,3.5;8.0,12.5] red
+         | 1 -> rect 0.5 5.5 15.0 5.0 amber
+         | _ -> polygon [0.5,12.5;15.5,12.5;8.0,3.5] green]
+    | "Boxes" ->
+        [for k, (x,y) in [|0.5,8.5;8.5,8.5;0.5,0.5;8.5,0.5|] |> Array.indexed do
+            yield rect x y 7.0 7.0 (if k < index then blue else light)]
+    | _ -> [disc traffic.[min 2 index]]
 
-/// An icon of an icon set as Excel 2019 draws it, as SVG of 16 x 16 px (its own picture is a bitmap of that size at
-/// 100 %): shapes and colours taken from Excel's picture of synthetic-icon-sets.xlsx (tools/excel-parity/
-/// build-icon-sets.vbs) - red #D65532, amber #EAC282, green #68A490, grey #808080, dark #505050, blue #4A7DB1, each
-/// with a darker edge. `index` 0 is the icon of the lowest values.
 let iconSvg (family: string) (index: int) : string =
-    let count = if family.Length > 0 && Char.IsDigit family.[0] then int family.[0] - int '0' else 3
-    let index = max 0 (min (count - 1) index)
-    let name = if family.Length > 1 then family.Substring 1 else family
-    let red, amber, green, grey, dark, blue, light = ("#D65532", "#B4482B"), ("#EAC282", "#A4802B"), ("#68A490", "#44806C"), ("#808080", "#646262"), ("#505050", "#3A3A3A"), ("#4A7DB1", "#335F8C"), ("#B3B3B3", "#727272")
-    let shape (fill: string, edge: string) (body: string) = body.Replace("FILL", fill).Replace("EDGE", edge)
-    let circle color = shape color "<circle cx='8' cy='8' r='7.5' fill='FILL' stroke='EDGE' stroke-width='0.75'/>"
-    // An arrow pointing down, turned by `angle` degrees (clockwise from down: 90 left ... ; -90 right, 180 up).
-    let arrow color (angle: int) =
-        shape color ("<path d='M4.8 0.5 H11.2 V6 H15 L8 15.5 L1 6 H4.8 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round' transform='rotate(" + string angle + " 8 8)'/>")
-    let traffic3 = [| red; amber; green |]
+    let num (v: float) = v.ToString("0.###", Globalization.CultureInfo.InvariantCulture)
+    let segment = function
+        | IconMove (x,y) -> "M" + num x + " " + num y
+        | IconLine (x,y) -> "L" + num x + " " + num y
+        | IconCurve (x1,y1,x2,y2,x,y) ->
+            "C" + num x1 + " " + num y1 + " " + num x2 + " " + num y2 + " " + num x + " " + num y
+        | IconClose -> "Z"
     let body =
-        match name with
-        | "Arrows" when count = 3 -> arrow traffic3.[index] [| 0; -90; 180 |].[index]
-        | "ArrowsGray" when count = 3 -> arrow grey [| 0; -90; 180 |].[index]
-        | "Arrows" when count = 4 -> arrow [| red; amber; amber; green |].[index] [| 0; -45; -135; 180 |].[index]
-        | "ArrowsGray" when count = 4 -> arrow grey [| 0; -45; -135; 180 |].[index]
-        | "Arrows" -> arrow [| red; amber; amber; amber; green |].[index] [| 0; -45; -90; -135; 180 |].[index]
-        | "ArrowsGray" -> arrow grey [| 0; -45; -90; -135; 180 |].[index]
-        | "Flags" ->
-            shape traffic3.[index] "<rect x='1' y='0.5' width='1.5' height='15' fill='#7F7F7F'/><path d='M2.5 1 L14.5 5 L2.5 9 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round'/>"
-        | "TrafficLights1" -> circle traffic3.[index]
-        | "TrafficLights2" ->
-            "<rect x='0.5' y='0.5' width='15' height='15' rx='3' fill='#505050' stroke='#3A3A3A'/>" + shape traffic3.[index] "<circle cx='8' cy='8' r='4.5' fill='FILL' stroke='EDGE' stroke-width='0.75'/>"
-        | "Signs" ->
-            match index with
-            | 0 -> shape red "<path d='M8 0.5 L15.5 8 L8 15.5 L0.5 8 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round'/>"
-            | 1 -> shape amber "<path d='M8 1 L15.5 15 H0.5 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round'/>"
-            | _ -> circle green
-        | "Symbols" ->
-            let mark =
-                match index with
-                | 0 -> "<path d='M5 5 L11 11 M11 5 L5 11' stroke='#FFFFFF' stroke-width='2' stroke-linecap='round'/>"
-                | 1 -> "<path d='M8 3.5 V9' stroke='#FFFFFF' stroke-width='2' stroke-linecap='round'/><circle cx='8' cy='12' r='1.2' fill='#FFFFFF'/>"
-                | _ -> "<path d='M4.5 8.5 L7 11 L11.5 5.5' fill='none' stroke='#FFFFFF' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/>"
-            circle traffic3.[index] + mark
-        | "Symbols2" ->
-            match index with
-            | 0 -> shape red "<path d='M2.5 2.5 L13.5 13.5 M13.5 2.5 L2.5 13.5' stroke='FILL' stroke-width='4.2'/>"
-            | 1 -> shape amber "<path d='M8 0.5 L8 10' stroke='FILL' stroke-width='4'/><rect x='6' y='12' width='4' height='3.5' fill='FILL'/>"
-            | _ -> shape green "<path d='M1.5 8 L6 12.5 L14.5 3' fill='none' stroke='FILL' stroke-width='4' stroke-linejoin='miter'/>"
-        | "RedToBlack" -> circle [| dark; ("#B1B1B1", "#8C8C8C"); ("#EDB2A3", "#C98A7A"); ("#D86344", "#B14629") |].[index]
-        | "TrafficLights" -> circle [| dark; red; amber; green |].[index]
-        | "Rating" ->
-            // Four bars rising to the right, the first `index` (four: `index + 1`) blue.
-            let filled = if count = 4 then index + 1 else index
-            [ for k in 0 .. 3 ->
-                let x = 1.5 + float k * 3.5
-                let h = 4.0 + float k * 3.7
-                let fill, edge = if k < filled then blue else light
-                "<rect x='" + string x + "' y='" + string (15.5 - h) + "' width='2.5' height='" + string h + "' fill='" + fill + "' stroke='" + edge + "' stroke-width='0.75'/>" ]
-            |> String.concat ""
-        | "Quarters" ->
-            let outline = "<circle cx='8' cy='8' r='7.5' fill='#FFFFFF' stroke='#505050' stroke-width='1'/>"
-            match index with
-            | 0 -> outline
-            | 4 -> circle dark
-            | k ->
-                let ends = [| ""; "M8 8 V0.5 A7.5 7.5 0 0 1 15.5 8 Z"; "M8 8 V0.5 A7.5 7.5 0 0 1 8 15.5 Z"; "M8 8 V0.5 A7.5 7.5 0 1 1 0.5 8 Z" |]
-                outline + "<path d='" + ends.[k] + "' fill='#505050'/>"
-        | "Stars" ->
-            let star = "M8 0.8 L10.1 5.6 L15.3 6.1 L11.4 9.6 L12.5 14.8 L8 12.1 L3.5 14.8 L4.6 9.6 L0.7 6.1 L5.9 5.6 Z"
-            match index with
-            | 0 -> "<path d='" + star + "' fill='#FFFFFF' stroke='#727272' stroke-width='0.75' stroke-linejoin='round'/>"
-            | 1 -> "<defs><clipPath id='h'><rect x='0' y='0' width='8' height='16'/></clipPath></defs><path d='" + star + "' fill='#FFFFFF' stroke='#A4802B' stroke-width='0.75' stroke-linejoin='round'/><path d='" + star + "' fill='#EAC282' clip-path='url(#h)'/>"
-            | _ -> "<path d='" + star + "' fill='#EAC282' stroke='#A4802B' stroke-width='0.75' stroke-linejoin='round'/>"
-        | "Triangles" ->
-            match index with
-            | 0 -> shape red "<path d='M0.5 3.5 H15.5 L8 12.5 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round'/>"
-            | 1 -> shape amber "<rect x='0.5' y='5.5' width='15' height='5' fill='FILL' stroke='EDGE' stroke-width='0.75'/>"
-            | _ -> shape green "<path d='M0.5 12.5 H15.5 L8 3.5 Z' fill='FILL' stroke='EDGE' stroke-width='0.75' stroke-linejoin='round'/>"
-        | "Boxes" ->
-            // Four squares, filled blue one more at each step: bottom left, bottom right, top left, top right.
-            let order = [| (0.5, 8.5); (8.5, 8.5); (0.5, 0.5); (8.5, 0.5) |]
-            [ for k in 0 .. 3 ->
-                let x, y = order.[k]
-                let fill, edge = if k < index then blue else light
-                "<rect x='" + string x + "' y='" + string y + "' width='7' height='7' rx='1' fill='" + fill + "' stroke='" + edge + "' stroke-width='0.75'/>" ]
-            |> String.concat ""
-        | _ -> circle traffic3.[min 2 index]
-    "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'>" + body + "</svg>"
+        iconArtwork family index
+        |> List.map (fun part ->
+            "<path d='" + (part.Segments |> List.map segment |> String.concat " ") +
+            "' fill='" + (part.Fill |> Option.defaultValue "none") + "'" +
+            (match part.Stroke with Some (color,w) -> " stroke='" + color + "' stroke-width='" + num w + "'" | None -> "") +
+            (if part.ClipLeft then " clip-path='url(#icon-half)'" else "") + "/>")
+        |> String.concat ""
+    "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'><defs><clipPath id='icon-half'><rect width='8' height='16'/></clipPath></defs>" + body + "</svg>"
 
 /// What a matching rule contributes to the cell.
 let private ruleEffect (ctx: Context) (rule: PreparedRule) (raw: CellValue) : CellEffect =

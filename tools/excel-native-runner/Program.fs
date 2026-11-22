@@ -81,7 +81,7 @@ let private cellInfoJson (sheetName: string) (model: SpreadsheetModel) =
 let private renderSheetToPath
     (inputPath: string) (outputPath: string) (jsonPath: string option)
     (width: int) (height: int)
-    (sheetIndex: int) (sheet: Xlsx.Worksheet) (wbContext: Rbt.Spreadsheet.Workbook.Workbook) =
+    (sheetIndex: int) (sheet: Xlsx.Worksheet) (sheetNames: string array) (wbContext: Rbt.Spreadsheet.Workbook.Workbook) =
     // The shared workbook import computes only uncached formulas and keeps
     // cached results intact, including references to other sheets and names.
     let sheetId = sprintf "sheet%d" (sheetIndex + 1)
@@ -113,11 +113,17 @@ let private renderSheetToPath
             let w = (t.X + pl.ToColOffPx) - left
             let h = (t.Y + pl.ToRowOffPx) - top
             [ Rbt.Spreadsheet.Paint.VecGroup((1.0, 0.0, 0.0, 1.0, left, top), ChartRender.buildChart pl.Spec w h) ])
+    let source : Rbt.Spreadsheet.Sparklines.Source =
+        fun name ->
+            let target = name |> Option.defaultValue sheet.Name
+            sheetNames
+            |> Array.tryFindIndex (fun known -> String.Equals(known,target,StringComparison.OrdinalIgnoreCase))
+            |> Option.map (fun index ->
+                let other = (Map.find (sprintf "sheet%d" (index+1)) wbContext.Sheets).Model
+                fun row col -> getCell { Row = row; Col = col } other)
     let sparkItems =
-        ChartRender.parseSparklines inputPath sheetIndex
-        |> List.collect (fun sp ->
-            let r = Rbt.Spreadsheet.Layout.cellRect model viewport sp.Row sp.Col
-            ChartRender.buildSparkline sp r)
+        Rbt.Spreadsheet.Paint.sparklineCellItems source model viewport
+        |> List.map snd
     let slicerItems =
         ChartRender.parseSlicers inputPath
         |> List.collect (fun sl ->
@@ -128,7 +134,7 @@ let private renderSheetToPath
                   Width = (t.X + sl.ToColOffPx) - (f.X + sl.FromColOffPx)
                   Height = (t.Y + sl.ToRowOffPx) - (f.Y + sl.FromRowOffPx) }
             ChartRender.buildSlicer sl rect)
-    let png = renderGridPng width height model (chartItems @ sparkItems @ slicerItems)
+    let png = renderGridPng width height { model with Sparklines = [] } (chartItems @ sparkItems @ slicerItems)
 
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, png)
@@ -164,12 +170,13 @@ let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (he
     // workbook's defined names. Shared across all sheets so cross-sheet
     // references and named ranges resolve during recalculation.
     let wbContext = buildWorkbookContext workbook
+    let sheetNames = workbook.Sheets |> List.map (fun s -> s.Name) |> List.toArray
 
     match sheetSel with
     | Choice1Of2 sheetIndex ->
         let chosenIndex = min (max 0 sheetIndex) (workbook.Sheets.Length - 1)
         let sheet = workbook.Sheets.[chosenIndex]
-        renderSheetToPath inputPath outputPath jsonPath width height chosenIndex sheet wbContext
+        renderSheetToPath inputPath outputPath jsonPath width height chosenIndex sheet sheetNames wbContext
     | Choice2Of2 () ->
         // --all: render every sheet to `<base>-sheet<N>.png` (1-indexed,
         // matching how Excel labels them in the tab strip and how pandas
@@ -185,7 +192,7 @@ let private renderXlsx (inputPath: string) (outputPath: string) (width: int) (he
                 jsonPath |> Option.map (fun p ->
                     if sheets.Length = 1 then p
                     else withSheetSuffix p (sprintf "sheet%d" (i + 1)))
-            renderSheetToPath inputPath path json width height i sheet wbContext)
+            renderSheetToPath inputPath path json width height i sheet sheetNames wbContext)
 
 /// Parse the sheet argument: `all` / `-a` selects every sheet; an integer
 /// selects that 0-based sheet index. Anything else falls back to sheet 0.
