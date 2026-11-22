@@ -225,8 +225,8 @@ ok "sheet-to-array-sparse-shape"
 
 let metadataSheet =
     { mkSheetWithColumns [
-        { Index = 2; MaxIndex = 3; Width = Some 12.5; Hidden = false; OutlineLevel = 0; Collapsed = false; Style = None }
-        { Index = 5; MaxIndex = 5; Width = Some 9.0; Hidden = true; OutlineLevel = 0; Collapsed = false; Style = None }
+        { Index = 2; MaxIndex = 3; Width = Some 12.5; BestFit = false; Hidden = false; OutlineLevel = 0; Collapsed = false; Style = None }
+        { Index = 5; MaxIndex = 5; Width = Some 9.0; BestFit = false; Hidden = true; OutlineLevel = 0; Collapsed = false; Style = None }
       ] [
         { mkRow 2 [] with Height = Some 22.0 }
       ] with

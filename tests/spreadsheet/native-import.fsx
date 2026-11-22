@@ -52,7 +52,7 @@ let lastRow =
     { sourceRow with Index = 1048576; Height = None; RawHeight = None; CustomHeight = None
                      Cells = [ { sourceCell with Reference = { sourceCell.Reference with Row = 1048576 } } ] }
 let visibleColumn : XlsxReader.ColumnInfo =
-    { Index = 1; MaxIndex = 1; Width = Some 10.0; Hidden = false; OutlineLevel = 0; Collapsed = false; Style = None }
+    { Index = 1; MaxIndex = 1; Width = Some 10.0; BestFit = false; Hidden = false; OutlineLevel = 0; Collapsed = false; Style = None }
 let hiddenColumn = { visibleColumn with Index = 4; MaxIndex = 4; Hidden = true }
 let table : XlsxReader.TableDefinition =
     { Name = "Sales"; Columns = [ "Amount" ]; StartRow = 1; StartCol = 1; EndRow = 2; EndCol = 1
