@@ -36,6 +36,8 @@ XFS = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>',
        '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0" applyAlignment="1"><alignment vertical="top"/></xf>',
        '<xf numFmtId="2" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>',
        '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="top"/></xf>']
+# Style 7 (a date, d-mmm-yy), only in the sets that use it (the others' bytes as they were probed).
+DATE_XF = '<xf numFmtId="15" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
 
 
 def col_letter(c):
@@ -130,6 +132,13 @@ def sets():
         sheet('TitlesColsInside', block(1, 1, 30, 30), names=[('_xlnm.Print_Titles', 'TitlesColsInside!$E:$E')]),
     ]
     out['titles'][0]['cells'].append((1, 8, 37, 0))
+    # Columns Excel's AutoFit left (`bestFit`) next to ones it did not: a number too wide for its column, text, a date.
+    bf = {2: (5, 'bestFit'), 3: (5, 'bestFit'), 4: 5, 5: (20, 'bestFit'), 6: (9.5546875, 'bestFit'), 7: 9.5546875, 8: (5, 'bestFit'), 9: 5}
+    out['bestfit'] = [
+        sheet('BestFit', [(1, c, 'x', 0) for c in range(1, 11)] + [(2, 2, 123456789, 0), (2, 3, 'Long text here', 0), (2, 4, 123456789, 0),
+                                                                    (2, 5, 1, 0), (2, 6, 44317, 7), (2, 7, 44317, 7), (2, 8, 1.5, 0), (2, 9, 1.5, 0)],
+              cols=bf),
+    ]
     # A row of the Normal font as it prints: 60 rows of the default height (and gridlines), for `rowunit-<face><size>`.
     out['rowunit'] = [sheet('Rows', [(r, 1, f'r{r}', 0) for r in range(1, 61)])]
     return out
@@ -160,13 +169,14 @@ def build(out, which):
         which, face, size = NORMAL[which]
         fonts = [f'<sz val="{size}"/><name val="{face}"/><family val="2"/>', f'<b/><sz val="{size}"/><name val="{face}"/><family val="2"/>']
     sheets = sets()[which]
+    xfs = XFS + ([DATE_XF] if which == 'bestfit' else [])
     styles = DECL + (
         f'<styleSheet xmlns="{MAIN}">'
         f'<fonts count="{len(fonts)}">' + ''.join(f'<font>{f}</font>' for f in fonts) + '</fonts>'
         f'<fills count="{len(FILLS)}">' + ''.join(FILLS) + '</fills>'
         f'<borders count="{len(BORDERS)}">' + ''.join(BORDERS) + '</borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-        f'<cellXfs count="{len(XFS)}">' + ''.join(XFS) + '</cellXfs>'
+        f'<cellXfs count="{len(xfs)}">' + ''.join(xfs) + '</cellXfs>'
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
     parts = []
     for i, sh in enumerate(sheets):
@@ -194,7 +204,9 @@ def build(out, which):
                     cs.append(f'<c r="{ref}"{sa}><v>{v}</v></c>')
             xml_rows.append(f'<row r="{r}"{ht}>' + ''.join(cs) + '</row>')
         cols = ''
-        colxml = [f'<col min="{c}" max="{c}" width="{w}" customWidth="1"/>' for c, w in sorted(sh['cols'].items())]
+        # (A width given as (width, 'bestFit') is marked as Excel's AutoFit leaves it.)
+        colxml = [f'<col min="{c}" max="{c}" width="{w[0] if isinstance(w, tuple) else w}"{" bestFit=\"1\"" if isinstance(w, tuple) else ""} customWidth="1"/>'
+                  for c, w in sorted(sh['cols'].items())]
         colxml += [f'<col min="{c}" max="{c}" width="9.140625" style="{st}"/>' for c, st in sorted(sh['colstyles'].items())]
         if colxml:
             cols = '<cols>' + ''.join(colxml) + '</cols>'
