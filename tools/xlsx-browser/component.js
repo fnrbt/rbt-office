@@ -2103,7 +2103,8 @@ checks['charts-excel-parity'] = async () => {
         }
         const svgs = [...seen.values()];
         const all = (selector) => svgs.flatMap((svg) => [...svg.querySelectorAll(selector)]);
-        const widths = all('polyline').map((l) => l.getAttribute('stroke-width'));
+        // (Its lines say nothing of smoothing: Excel 2019 smooths them, so they are paths.)
+        const widths = all('polyline, path').map((l) => l.getAttribute('stroke-width'));
         check('lines of 0.25 .. 4.5 pt: 1, 1, 1, 1, 2, 3, 4, 6 px', ['1', '2', '3', '4', '6'].map((w) => widths.includes(w)), [true, true, true, true, true]);
         const keys = all('line').filter((l) => Math.abs(Number(l.getAttribute('x2')) - Number(l.getAttribute('x1')) - 26) < 0.01).map((l) => l.getAttribute('stroke-width'));
         check('legend keys 26 px long, as wide as their lines', ['1', '4', '6'].map((w) => keys.includes(w)), [true, true, true]);
@@ -2112,6 +2113,25 @@ checks['charts-excel-parity'] = async () => {
         check('labels turned -45 (every second), -90 (all twelve)', [turned(-45).includes('Category 3'), turned(-45).includes('Category 2'), turned(-90).includes('Category 12')], [true, false, true]);
         const texts2 = labels.map((t) => t.textContent);
         check('"Cat 1" broken at its space; 60 numbers every second', [texts2.includes('Cat'), texts2.includes('59'), texts2.includes('60')], [true, true, false]);
+        // synthetic-chart-looks.xlsx: shapes over a chart (c:userShapes), a title of runs, a legend's own box, the
+        // labels' typefaces.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-chart-looks.xlsx')).slice());
+        await everyObjectSeen(host);
+        const looks = new Map();
+        for (const [row, col] of [[0, 6], [28, 6], [0, 14], [0, 22], [19, 22], [0, 30]]) {
+            grid.SelectCell(row, col); await frame();
+            for (let i = 0; i < 30 && host.querySelector('.spreadsheet-object-pending'); i++) await frame();
+            for (const svg of host.querySelectorAll('svg')) looks.set(svg.outerHTML, svg);
+        }
+        const lsvgs = [...looks.values()];
+        const ltexts = lsvgs.flatMap((svg) => [...svg.querySelectorAll('text, tspan')].map((t) => t.textContent));
+        check('a chart\'s shapes drawn over it, one linked to its cell', ['Centre', 'Next Look', 'Fashions Direct 71%'].map((t) => ltexts.includes(t)), [true, true, true]);
+        const runs = lsvgs.flatMap((svg) => [...svg.querySelectorAll('text')]).filter((t) => ['Sales ', 'by ', 'Region'].includes(t.textContent) && !t.getAttribute('transform')).map((t) => [t.textContent, t.getAttribute('font-size'), t.getAttribute('fill')]);
+        check('a title of runs, each its size and colour', runs.slice(0, 3), [['Sales ', '24', '#C00000'], ['by ', '16', '#595959'], ['Region', '24', '#0070C0']]);
+        const legendBox = lsvgs.flatMap((svg) => [...svg.querySelectorAll('rect')]).some((r) => r.getAttribute('fill') === '#FFF2CC' && r.getAttribute('stroke') === '#C00000');
+        check('a legend\'s own fill and outline', legendBox, true);
+        const faces2 = lsvgs.flatMap((svg) => [...svg.querySelectorAll('g[font-family]')]).map((g) => g.getAttribute('font-family').split(',')[0]);
+        check('Tw Cen MT and Garamond labels', [faces2.includes("'Tw Cen MT'"), faces2.includes("'Garamond'")], [true, true]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;
