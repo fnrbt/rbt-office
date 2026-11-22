@@ -13,9 +13,17 @@ let private fullPath (path: string) =
     if Path.IsPathRooted path then path
     else Path.GetFullPath(path, Directory.GetCurrentDirectory())
 
-let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.Pdf.Render.RenderOptions =
+/// The faces of the PDF: those of the families the sheet's text is set in (`Pdf.requiredFaces`, by the names the
+/// workbook gives them) that the font directories have (RB_WORD_FONT_DIR: Aptos Narrow, Tahoma, Segoe UI Black
+/// in their own faces; a family the machine has none of is set in Calibri), and Calibri, Arial, Cambria, Times
+/// New Roman and Verdana.
+let private pdfOptions (sheetName: string) (fileName: string) (required: (string * bool * bool) array) =
+    let families =
+        [ "Calibri"; "Arial"; "Cambria"; "Times New Roman"; "Verdana" ]
+        @ (required |> Array.map (fun (family, _, _) -> family) |> Array.filter Rbt.OfficeNative.Fonts.hasFamily |> List.ofArray)
+        |> List.distinct
     let faces : Rbt.Spreadsheet.Pdf.Render.FontFace list =
-        [ for family in [ "Calibri"; "Arial"; "Cambria"; "Times New Roman"; "Verdana" ] do
+        [ for family in families do
             for bold, italic in [ false, false; true, false; false, true; true, true ] do
                 let font = Rbt.OfficeNative.Fonts.resolve (Some family) bold italic
                 let suffix =
@@ -40,13 +48,13 @@ let private pdfOptions (sheetName: string) (fileName: string) : Rbt.Spreadsheet.
                     Italic = false
                     Data = font.OtFont.Data
                 } ]
-    {
+    ({
         DefaultFontFamily = "Calibri"
         Fonts = faces
         CjkFallback = cjkFallback
         SheetName = sheetName
         FileName = fileName
-    }
+    } : Rbt.Spreadsheet.Pdf.Render.RenderOptions)
 
 /// The charts and shapes of a sheet of a workbook as overlays of its PDF, by the layout of the grid.
 let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.Workbook.Workbook) (sheetIndex: int) =
@@ -95,16 +103,20 @@ let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int)
     if sheetIndex < 0 || sheetIndex >= workbook.Sheets.Length then
         failwithf "Sheet index %d out of range (workbook has %d sheets)" sheetIndex workbook.Sheets.Length
     let sheet = workbook.Sheets.[sheetIndex]
-    let context = ExcelNativeRunner.buildWorkbookContext workbook
+    // (The bridge's model as the browser has it - rows fitted on opening as Excel 2019 fits them, columns at its
+    // widths: ExcelNativeRunner's native geometry fits wrapped rows with the renderer's widths, a line more than
+    // Excel's on acre's MF sheets.)
+    let context = (Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook workbook).Context
     let model = (Map.find (sprintf "sheet%d" (sheetIndex + 1)) context.Sheets).Model
     // Page size + margins now live on model.PageSetup (defaulted to US
     // Letter portrait when the source file didn't specify a pageSetup).
     // Excel's `&F` substitutes the workbook's display name (no extension)
     // on Windows; match that so our footer reads "synthetic-print" rather
     // than "synthetic-print.xlsx".
-    let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath)
     // Charts and shapes as the grid draws them, anchored to their cells.
     let _, overlays = drawingOverlays workbook context sheetIndex
+    let required = Rbt.Spreadsheet.Pdf.Render.requiredFaces "Calibri" [| Rbt.Spreadsheet.Pdf.Render.pdfSheet model sheet.Name overlays |]
+    let opts = pdfOptions sheet.Name (Path.GetFileNameWithoutExtension inputPath) required
     let pdfBytes = Rbt.Spreadsheet.Pdf.Render.toBytesWith opts model overlays
     Directory.CreateDirectory(Path.GetDirectoryName outputPath) |> ignore
     File.WriteAllBytes(outputPath, pdfBytes)
