@@ -439,40 +439,53 @@ let printPadXOf (model: SpreadsheetModel) =
 [<Literal>]
 let printWrapMargin = 4.48
 
-let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
-    let visible = visibleRange model viewport
-    let padX = printPadXOf model
-    // The largest descent (`FontMetrics.lineOf`, screen pixels) of the text at the bottom of its cells, by row: the
-    // cells of a row so aligned meet at one baseline (Excel 2019's PDF).
-    let rowDescents = Dictionary<int, float>()
-    let rowDescent (row: int) =
-        if rowDescents.Count = 0 then
-            rowDescents.[-1] <- 0.0
-            let multiRow (addr: CellAddress) =
-                not model.MergedCells.IsEmpty
-                && (match findMergedCell addr model with Some merge -> merge.EndRow > merge.StartRow | None -> false)
+/// The largest descent (`FontMetrics.lineOf`, screen pixels) of the text at the bottom of its cells, by row: the cells
+/// of a row so aligned meet at one baseline (Excel 2019's PDF). Worked out once for a sheet's cells (the last asked
+/// for: a PDF paints them page by page).
+let private descentsCache : (obj * Dictionary<int, float>) option ref = ref None
+let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
+    let descents =
+        match descentsCache.Value with
+        | Some (cells, known) when obj.ReferenceEquals(cells, model.Cells) -> known
+        | _ ->
+            let known = Dictionary<int, float>()
+            // (A cell merged down over other rows holds its text at its block's top left.)
+            let multiRowStarts = HashSet<CellAddress>()
+            for merge in model.MergedCells do
+                if merge.EndRow > merge.StartRow then multiRowStarts.Add { Row = merge.StartRow; Col = merge.StartCol } |> ignore
+            let lines = Dictionary<string, float>()
+            let descentOf (face: string option) (points: float) (bold: bool) (italic: bool) =
+                let key = (defaultArg face "") + "|" + string points + "|" + string bold + string italic
+                match lines.TryGetValue key with
+                | true, d -> d
+                | _ ->
+                    let struct (_, d) = FontMetrics.lineOf face points bold italic
+                    lines.[key] <- d
+                    d
             for KeyValue(addr, data) in model.Cells do
                 let format = data.Format
                 if (match format.VerticalAlign with None | Some "bottom" -> true | Some _ -> false) && format.TextRotation = 0
                    && (match unwrapFormulaValue data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true)
-                   && not (multiRow addr) then
+                   && not (multiRowStarts.Count > 0 && multiRowStarts.Contains addr) then
                     let points = defaultArg format.FontSize 11.0
-                    let struct (_, descent) = FontMetrics.lineOf format.FontName points format.Bold format.Italic
-                    let mutable most = descent
+                    let mutable most = descentOf format.FontName points format.Bold format.Italic
                     match Map.tryFind addr model.RichRuns with
                     | Some runs ->
                         for _, run in runs do
-                            let struct (_, d) =
-                                FontMetrics.lineOf (run.FontName |> Option.orElse format.FontName) (defaultArg run.FontSize points)
-                                    (defaultArg run.Bold format.Bold) (defaultArg run.Italic format.Italic)
-                            most <- max most d
+                            most <- max most (descentOf (run.FontName |> Option.orElse format.FontName) (defaultArg run.FontSize points)
+                                                (defaultArg run.Bold format.Bold) (defaultArg run.Italic format.Italic))
                     | None -> ()
-                    match rowDescents.TryGetValue addr.Row with
-                    | true, known when known >= most -> ()
-                    | _ -> rowDescents.[addr.Row] <- most
-        match rowDescents.TryGetValue row with
-        | true, descent -> descent
-        | _ -> 0.0
+                    match known.TryGetValue addr.Row with
+                    | true, d when d >= most -> ()
+                    | _ -> known.[addr.Row] <- most
+            descentsCache.Value <- Some (box model.Cells, known)
+            known
+    fun row -> match descents.TryGetValue row with | true, d -> d | _ -> 0.0
+
+let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
+    let visible = visibleRange model viewport
+    let padX = printPadXOf model
+    let rowDescent = rowDescentsOf model
     let cells = visibleCells model viewport
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.

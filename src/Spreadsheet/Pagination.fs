@@ -320,10 +320,15 @@ let paginate (model: SpreadsheetModel) : Pagination =
     // with its gridlines, are not in Excel 2019's PDF; Blank's two in the middle are; acre-property's Summary, its last
     // page past the text running over from rows above, and dcf-stock-analysis's Financial Model print 7 and 9 pages).
     let pages =
+        // (Each cell where it is first - most last pages have one; the text running over from cells, measured, only
+        // when that finds nothing: a sheet of 846,241 cells and 3,018 pages.)
         let spans = ResizeArray<int * int * int * int>()
         let shown (row: int) (col: int) = rowHeightPx model row > 0.0 && colWidthPx model col > 0.0
+        let printing = ResizeArray<CellAddress * CellData>()
         for KeyValue(addr, data) in model.Cells do
-            if printsCell data && shown addr.Row addr.Col then spans.Add((addr.Row, addr.Row, addr.Col, overflowEnd model addr data))
+            if printsCell data && shown addr.Row addr.Col then
+                printing.Add((addr, data))
+                spans.Add((addr.Row, addr.Row, addr.Col, addr.Col))
         for merge in model.MergedCells do
             match Map.tryFind { Row = merge.StartRow; Col = merge.StartCol } model.Cells with
             | Some data when printsCell data -> spans.Add((merge.StartRow, merge.EndRow, merge.StartCol, merge.EndCol))
@@ -331,8 +336,15 @@ let paginate (model: SpreadsheetModel) : Pagination =
         for drawing in model.Drawings do
             let anchor = drawing.Anchor
             spans.Add((anchor.FromRow, defaultArg anchor.ToRow anchor.FromRow, anchor.FromCol, defaultArg anchor.ToCol anchor.FromCol))
+        let overflows = lazy (
+            let runs = ResizeArray<int * int * int * int>()
+            for (addr, data) in printing do
+                let last = overflowEnd model addr data
+                if last > addr.Col then runs.Add((addr.Row, addr.Row, addr.Col, last))
+            runs)
+        let meets (page: PageSlice) (r0, r1, c0, c1) = r0 <= page.RowEnd && r1 >= page.RowStart && c0 <= page.ColEnd && c1 >= page.ColStart
         let hasSomething (page: PageSlice) =
-            spans |> Seq.exists (fun (r0, r1, c0, c1) -> r0 <= page.RowEnd && r1 >= page.RowStart && c0 <= page.ColEnd && c1 >= page.ColStart)
+            spans |> Seq.exists (meets page) || overflows.Value |> Seq.exists (meets page)
         let rec trim (reversed: PageSlice list) =
             match reversed with
             | last :: earlier when not earlier.IsEmpty && not (hasSomething last) -> trim earlier
