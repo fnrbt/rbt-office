@@ -1916,7 +1916,7 @@ checks['font-faces-excel-parity'] = async () => {
         for (const [sheet, rows] of Object.entries(excel)) {
             grid.SwitchSheet(grid.GetSheetNames().indexOf(sheet)); await frame(); await frame();
             const seen = new Map();
-            for (const top of [0, 300]) for (let left = 0; left < 8000; left += 600) {
+            for (const top of [0, 300, 600]) for (let left = 0; left < 8000; left += 600) {
                 scroller.scrollTop = top; scroller.scrollLeft = left; await frame(); await frame();
                 for (const node of host.querySelectorAll('.spreadsheet-cell')) {
                     if (node.style.display === 'none') continue;

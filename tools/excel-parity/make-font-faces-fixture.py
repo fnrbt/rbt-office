@@ -72,8 +72,14 @@ def build():
     for i in range(len(FONTS)):
         xfs.append(f'<xf numFmtId="0" fontId="{i}" fillId="0" borderId="0" xfId="0" applyFont="1"/>')
         xfs.append(f'<xf numFmtId="164" fontId="{i}" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"/>')
+    # Then #,##0_) and #,##0_W (a width placeholder) in Calibri 11 and Segoe UI Black 11.
+    placeholder = len(xfs)
+    for fmt in (165, 166):
+        for font in (0, 3):
+            xfs.append(f'<xf numFmtId="{fmt}" fontId="{font}" fillId="0" borderId="0" xfId="0" applyFont="1" applyNumberFormat="1"/>')
     styles = DECL + (
-        f'<styleSheet xmlns="{MAIN}"><numFmts count="1"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/></numFmts>'
+        f'<styleSheet xmlns="{MAIN}"><numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/>'
+        '<numFmt numFmtId="165" formatCode="#,##0_)"/><numFmt numFmtId="166" formatCode="#,##0_W"/></numFmts>'
         f'<fonts count="{len(FONTS)}">' + ''.join(f'<font>{f}</font>' for f in FONTS) + '</fonts>'
         '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>'
         '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'
@@ -97,7 +103,10 @@ def build():
         room_rows.append(f'<row r="{r + 1}" ht="21" customHeight="1">{cells}</row>')
     # Rows 12-15: numbers that fit from some column on - $1,234,567 in Calibri 11, $12,345 and $123,456 in Segoe UI
     # Black 11 ("$"#,##0), 1234567 in Calibri 11 General.
-    for r, (style, value) in enumerate([(1, 1234567), (7, 12345), (7, 123456), (0, 1234567)]):
+    # Rows 16-19: 1,234,567 in Calibri 11 and Segoe UI Black 11 as #,##0_) and #,##0_W (the placeholder as wide as its
+    # character, not a space).
+    for r, (style, value) in enumerate([(1, 1234567), (7, 12345), (7, 123456), (0, 1234567),
+                                        (placeholder, 1234567), (placeholder + 1, 1234567), (placeholder + 2, 1234567), (placeholder + 3, 1234567)]):
         cells = ''.join(f'<c r="{col_letter(i + 2)}{r + 12}" s="{style}"><v>{value}</v></c>' for i in range(46))
         room_rows.append(f'<row r="{r + 12}" ht="21" customHeight="1">{cells}</row>')
     sheets = [('Black', sheet(100, black_cols, black_rows, True)), ('Z57', sheet(57, z_cols, z_rows)), ('Room', sheet(100, room_cols, room_rows))] + [
