@@ -1,0 +1,117 @@
+TitlesInside	1	setup.orientation	1
+TitlesInside	1	setup.paper	1
+TitlesInside	1	setup.zoom	100
+TitlesInside	1	setup.fitwide	1
+TitlesInside	1	setup.fittall	1
+TitlesInside	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+TitlesInside	1	setup.center	False False
+TitlesInside	1	setup.printarea	$A$1:$F$137
+TitlesInside	1	setup.titlerows	$20:$20
+TitlesInside	1	setup.titlecols	
+TitlesInside	1	setup.order	1
+TitlesInside	1	setup.firstpage	-4105
+TitlesInside	1	setup.gridlines	True
+TitlesInside	1	setup.headings	False
+TitlesInside	1	setup.bw	False
+TitlesInside	1	setup.draft	False
+TitlesInside	1	setup.errors	0
+TitlesInside	1	used	$A$1:$H$200
+TitlesInside	1	hbreak	48 auto
+TitlesInside	1	hbreak	94 auto
+TitlesInside	1	pdf	synthetic-print-pages-titles-1.pdf
+TitlesTop	2	setup.orientation	1
+TitlesTop	2	setup.paper	1
+TitlesTop	2	setup.zoom	100
+TitlesTop	2	setup.fitwide	1
+TitlesTop	2	setup.fittall	1
+TitlesTop	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+TitlesTop	2	setup.center	False False
+TitlesTop	2	setup.printarea	
+TitlesTop	2	setup.titlerows	$1:$2
+TitlesTop	2	setup.titlecols	
+TitlesTop	2	setup.order	1
+TitlesTop	2	setup.firstpage	-4105
+TitlesTop	2	setup.gridlines	True
+TitlesTop	2	setup.headings	False
+TitlesTop	2	setup.bw	False
+TitlesTop	2	setup.draft	False
+TitlesTop	2	setup.errors	0
+TitlesTop	2	used	$A$1:$F$200
+TitlesTop	2	hbreak	48 auto
+TitlesTop	2	hbreak	93 auto
+TitlesTop	2	hbreak	138 auto
+TitlesTop	2	hbreak	183 auto
+TitlesTop	2	pdf	synthetic-print-pages-titles-2.pdf
+TitlesAbove	3	setup.orientation	1
+TitlesAbove	3	setup.paper	1
+TitlesAbove	3	setup.zoom	100
+TitlesAbove	3	setup.fitwide	1
+TitlesAbove	3	setup.fittall	1
+TitlesAbove	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+TitlesAbove	3	setup.center	False False
+TitlesAbove	3	setup.printarea	$A$10:$F$200
+TitlesAbove	3	setup.titlerows	$1:$1
+TitlesAbove	3	setup.titlecols	
+TitlesAbove	3	setup.order	1
+TitlesAbove	3	setup.firstpage	-4105
+TitlesAbove	3	setup.gridlines	True
+TitlesAbove	3	setup.headings	False
+TitlesAbove	3	setup.bw	False
+TitlesAbove	3	setup.draft	False
+TitlesAbove	3	setup.errors	0
+TitlesAbove	3	used	$A$1:$F$200
+TitlesAbove	3	hbreak	56 auto
+TitlesAbove	3	hbreak	102 auto
+TitlesAbove	3	hbreak	148 auto
+TitlesAbove	3	hbreak	194 auto
+TitlesAbove	3	pdf	synthetic-print-pages-titles-3.pdf
+TitlesCols	4	setup.orientation	1
+TitlesCols	4	setup.paper	1
+TitlesCols	4	setup.zoom	100
+TitlesCols	4	setup.fitwide	1
+TitlesCols	4	setup.fittall	1
+TitlesCols	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+TitlesCols	4	setup.center	False False
+TitlesCols	4	setup.printarea	
+TitlesCols	4	setup.titlerows	
+TitlesCols	4	setup.titlecols	$A:$B
+TitlesCols	4	setup.order	1
+TitlesCols	4	setup.firstpage	-4105
+TitlesCols	4	setup.gridlines	True
+TitlesCols	4	setup.headings	False
+TitlesCols	4	setup.bw	False
+TitlesCols	4	setup.draft	False
+TitlesCols	4	setup.errors	0
+TitlesCols	4	used	$A$1:$AD$30
+TitlesCols	4	vbreak	10 auto
+TitlesCols	4	vbreak	17 auto
+TitlesCols	4	vbreak	24 auto
+TitlesCols	4	vbreak	24 auto
+TitlesCols	4	pdf	synthetic-print-pages-titles-4.pdf
+TitlesColsInside	5	setup.orientation	1
+TitlesColsInside	5	setup.paper	1
+TitlesColsInside	5	setup.zoom	100
+TitlesColsInside	5	setup.fitwide	1
+TitlesColsInside	5	setup.fittall	1
+TitlesColsInside	5	setup.margins	50.4 50.4 54 54 21.6 21.6
+TitlesColsInside	5	setup.center	False False
+TitlesColsInside	5	setup.printarea	
+TitlesColsInside	5	setup.titlerows	
+TitlesColsInside	5	setup.titlecols	$E:$E
+TitlesColsInside	5	setup.order	1
+TitlesColsInside	5	setup.firstpage	-4105
+TitlesColsInside	5	setup.gridlines	True
+TitlesColsInside	5	setup.headings	False
+TitlesColsInside	5	setup.bw	False
+TitlesColsInside	5	setup.draft	False
+TitlesColsInside	5	setup.errors	0
+TitlesColsInside	5	used	$A$1:$AD$30
+TitlesColsInside	5	vbreak	10 auto
+TitlesColsInside	5	vbreak	18 auto
+TitlesColsInside	5	vbreak	26 auto
+TitlesColsInside	5	pdf	synthetic-print-pages-titles-5.pdf
+TitlesInside	1	pages	3
+TitlesTop	2	pages	5
+TitlesAbove	3	pages	5
+TitlesCols	4	pages	4
+TitlesColsInside	5	pages	4

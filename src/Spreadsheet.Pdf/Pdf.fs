@@ -213,6 +213,12 @@ let private tryGetMappedFace (faceByName: Map<string, PdfFont.TrueTypeFont>) (fa
 /// Page placement: where this page's content sits on the paper, what the
 /// page is sized at, and how content is scaled. translateItem bakes all
 /// three into every coordinate it emits.
+/// Excel 2019's PDF draws a sheet's grid 4 dots of 600 dpi (0.48 pt) right of the left margin and below the top one,
+/// whatever the scale (make-print-pages-fixture.py: the first grid lines at 18.48 pt for a margin of 18, 54.48 for 54,
+/// 50.88 for 50.4 at 98 %). The text of the cells keeps where it was (its place in a cell is not Excel's yet: a line
+/// at the bottom of a cell of Calibri 11 stands 3.58 pt above the cell's bottom in Excel's, 2.96 in ours).
+let private gridInsetPt = 0.48
+
 type private Placement = {
     /// PDF points from the paper's left edge to where page-local X=0 lands.
     LeftPtOffset: float
@@ -223,6 +229,8 @@ type private Placement = {
     PageHeightPt: float
     /// Multiplier applied to every size + offset (fit-to-page / manual scale).
     Scale: float
+    /// PDF points text is set higher than the cells it is in say (`gridInsetPt`).
+    TextRaisePt: float
     /// When true, every fill becomes white and every stroke / text becomes
     /// black. Matches Excel's `<pageSetup blackAndWhite="1"/>` print mode.
     BlackAndWhite: bool
@@ -278,7 +286,7 @@ let private appendDrawTextOps
         | Some primaryTtf ->
             let sz v = v * pxToPt * placement.Scale
             let xPt x = placement.LeftPtOffset + sz x
-            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y + placement.TextRaisePt
             // PaintText.FontSize is stored in points. Draw in PDF points,
             // but use CSS-pixel metrics for layout because cell geometry is
             // still page-local CSS px before translateItem applies pxToPt.
@@ -652,9 +660,9 @@ let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetMo
 let private directPrintDimensionRemapLimit = 100000
 
 // (The sizes rows and columns print at are Pagination's: a host is told the same pages.)
-let private printColumnWidthPx mdw width = Pagination.printColumnWidthPx mdw width
+let private printColumnWidthPx mdw digit width = Pagination.printColumnWidthPx mdw digit width
 
-let private printRowHeightPx px = Pagination.printRowHeightPx px
+let private printRowHeightPx scale px = Pagination.printRowHeightPx scale px
 
 let private printDimensionBounds
     (model: SpreadsheetModel)
@@ -689,67 +697,36 @@ let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
         | None -> ()
     mapped
 
-let private remapPrintColumnWidthsDirect mdw maxCol values =
-    remapPrintDimensionDirect maxCol (printColumnWidthPx mdw) values
+let private remapPrintColumnWidthsDirect mdw digit maxCol values =
+    remapPrintDimensionDirect maxCol (printColumnWidthPx mdw digit) values
 
-let private remapPrintRowHeightsDirect maxRow values =
-    remapPrintDimensionDirect maxRow printRowHeightPx values
+let private remapPrintRowHeightsDirect (model: SpreadsheetModel) maxRow values =
+    let mutable mapped = Map.empty
+    for index in 0 .. max 0 maxRow do
+        match Map.tryFind index values with
+        | Some px -> mapped <- Map.add index (printRowHeightPx model.PrintRowScale (Pagination.exactRowPx (defaultArg (Map.tryFind index model.RowPoints) 0.0) px)) mapped
+        | None -> ()
+    mapped
 
 let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
-    if Map.isEmpty model.ColumnWidths then model else
-    // Excel's live grid lays columns out with the floored screen MDW (7 px for
-    // Calibri 11), but its PDF print path uses the non-floored width (~7.5 px),
-    // i.e. ~15/14 wider — for EVERY column, including the workbook-default
-    // width. Measured on `synthetic-diagonal-borders.xlsx`: a default 8.43-char
-    // column prints at ~68.8 px vs our 64 px; 64 × 15/14 = 68.6 px. Earlier
-    // this scale was applied only to explicit `<col>` widths, which left the
-    // default columns ~5 px narrow and drifted every cell right of column A
-    // leftward. Scale all positive widths.
+    // (Every column, the default width too: `Pagination.printColumnWidthPx`.)
     let widths =
         match maxPrintCol with
         | Some maxCol when maxCol >= 0 && maxCol <= directPrintDimensionRemapLimit ->
-            remapPrintColumnWidthsDirect model.MaxDigitWidth maxCol model.ColumnWidths
+            remapPrintColumnWidthsDirect model.MaxDigitWidth model.PrintDigitWidth maxCol model.ColumnWidths
         | _ ->
-            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth width)
-    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.DefaultColumnWidth }
+            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width)
+    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth }
 
-/// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
-/// even though `cell.Height` via COM still reports 15 pt (20 px). This is a
-/// long-standing Excel quirk specific to that font/size pair — verified
-/// empirically against `synthetic-print-chrome` (no styles.xml, Calibri 11
-/// default, row pitch 19.4 px) and `pandas-dimension_large` body (Calibri 11
-/// cells, row pitch 19-20 px alternating). Other auto-row heights match
-/// editor exactly: Calibri 12 → 21 px (no shift), Calibri 18 Title → 31 px
-/// (no shift). The harness must keep reporting 15 pt (matches Excel COM),
-/// so the adjustment lives only in the print path here.
-///
-/// Strategy: any row whose model height is exactly 20 px gets remapped to
-/// 19.36 px (= 14.52 pt) during PDF rendering. The fractional value
-/// matters — Excel's actual print pitch is 14.55 pt, which on the integer
-/// pixel grid alternates 19/20 px as cumulative y crosses each pixel
-/// boundary. Mapping to 19 px exactly produces a uniform 19-pitch that
-/// drifts the OTHER way from Excel; the fractional value lets the PDF
-/// rasterizer reproduce Excel's alternating pattern. Other heights pass
-/// through unchanged (preserves explicit `ht` values, Title rows, and
-/// font-derived rows from non-11pt cells).
-///
-/// The 20→19.36 mapping carries a theoretical regression risk if a
-/// workbook explicitly sets `ht="15.0" customHeight="true"` — we'd shift
-/// it to 14.52 pt when Excel would honor the stored 15 pt. No fixture in
-/// the test corpus trips that; if one does, we'll need to thread per-row
-/// "auto vs explicit" flags through the model and key the remap off that.
+/// The rows at the heights they print at (`Pagination.printRowHeightPx`).
 let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : SpreadsheetModel =
-    // Calibri 12 print pitch is similarly off — editor 21 px → print
-    // ~20.64 px (= 15.48 pt). pandas-test1 rows positioned 1 px per row
-    // below Excel because we used 21 px uniform while Excel's quantized
-    // 20/21/21/21/21/20 pattern averages to ~20.64 px.
     let heights =
         match maxPrintRow with
         | Some maxRow when maxRow >= 0 && maxRow <= directPrintDimensionRemapLimit ->
-            remapPrintRowHeightsDirect maxRow model.RowHeights
+            remapPrintRowHeightsDirect model maxRow model.RowHeights
         | _ ->
-            model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)
-    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.DefaultRowHeight }
+            model.RowHeights |> Map.map (fun row px -> printRowHeightPx model.PrintRowScale (Pagination.exactRowPx (defaultArg (Map.tryFind row model.RowPoints) 0.0) px))
+    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.PrintRowScale (Pagination.exactRowPx model.DefaultRowPoints model.DefaultRowHeight) }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
 /// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the
@@ -901,11 +878,14 @@ let private iterSliceItems
     let scrollY = geometry.Row.Sum 0 (rowStart - 1)
     let width = geometry.Col.Sum colStart colEnd
     let height = geometry.Row.Sum rowStart rowEnd
+    // (A hair inside the slice: rows of a fraction of a pixel - 121 dots of 600 dpi - summed in floating point put the
+    // next row's top, or the row before's bottom, a rounding error inside it, and its text was drawn under the page's
+    // last row / over its first: synthetic-print-pages-titles.)
     let viewport =
-        { ScrollX = scrollX
-          ScrollY = scrollY
-          Width = width
-          Height = height
+        { ScrollX = scrollX + 1e-6
+          ScrollY = scrollY + 1e-6
+          Width = width - 2e-6
+          Height = height - 2e-6
           HeaderHeight = 0.0
           RowHeaderWidth = 0.0
           Measurer = Some measurer }
@@ -1032,14 +1012,14 @@ let private headingItems
     // matching column.
     let allCols = ResizeArray<int>()
     match pagination.RepeatCols with
-    | Some (a, b) when b >= a ->
+    | Some (a, b) when b >= a && slice.TitleCols ->
         for c in a .. b do allCols.Add c
     | _ -> ()
     for c in slice.ColStart .. slice.ColEnd do
         allCols.Add c
     let allRows = ResizeArray<int>()
     match pagination.RepeatRows with
-    | Some (a, b) when b >= a ->
+    | Some (a, b) when b >= a && slice.TitleRows ->
         for r in a .. b do allRows.Add r
     | _ -> ()
     for r in slice.RowStart .. slice.RowEnd do
@@ -1147,11 +1127,18 @@ let private appendSectionOps
         ops.Add(PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, xPt, baselineYPt + baselineDeltaPt))
         ops.Add(PdfDraw.ShowTextHex hex)
         ops.Add PdfDraw.EndText
+    // (Excel 2019 sets a left section 8 dots of 600 dpi (0.96 pt) in from the left margin and a right one as far in
+    // from the right margin: synthetic-print's "&BReport" at 51.36 pt for a margin of 50.4, "&D" ending at 740.6 for
+    // 741.6 - but not a section with underlined, struck, raised or lowered runs: synthetic-hf-style-codes' "Plain ..."
+    // at 50.4.)
+    let insetPt =
+        if section.Runs |> List.exists (fun run -> run.Underline || run.DoubleUnderline || run.Strikethrough || run.Superscript || run.Subscript)
+        then 0.0 else 0.96
     let startX totalWidthPt =
         match xAlign with
-        | AlignLeft -> leftPt
+        | AlignLeft -> leftPt + insetPt
         | AlignCenter -> leftPt + ((rightPt - leftPt) - totalWidthPt) / 2.0
-        | AlignRight -> rightPt - totalWidthPt
+        | AlignRight -> rightPt - totalWidthPt - insetPt
     let tryAppendSingleRun () =
         match section.Runs with
         | [ run ] when
@@ -1529,6 +1516,9 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
         let emitPageItems (i: int) (emit: PaintItem -> unit) =
             if i < pages.Length then
                 let slice = pages.[i]
+                // (The repeat bands of a page that carries them: `PageSlice.TitleRows` / `TitleCols`.)
+                let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
+                let repeatColsWidthPx = if slice.TitleCols then repeatColsWidthPx else 0.0
                 // Body: rows × cols of the slice, offset by repeat band sizes.
                 appendBand
                     emit
@@ -1537,7 +1527,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
                 // Repeat-rows band (above body, full width): repeat rows × slice cols.
                 match pagination.RepeatRows with
-                | Some (rs, re) when re >= rs ->
+                | Some (rs, re) when re >= rs && slice.TitleRows ->
                     appendBand
                         emit
                         rs re
@@ -1546,7 +1536,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | _ -> ()
                 // Repeat-cols band (left of body, full height): slice rows × repeat cols.
                 match pagination.RepeatCols with
-                | Some (cs, ce) when ce >= cs ->
+                | Some (cs, ce) when ce >= cs && slice.TitleCols ->
                     appendBand
                         emit
                         slice.RowStart slice.RowEnd
@@ -1555,7 +1545,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | _ -> ()
                 // Repeat corner (top-left): repeat rows × repeat cols.
                 match pagination.RepeatRows, pagination.RepeatCols with
-                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
+                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs && slice.TitleRows && slice.TitleCols ->
                     appendBand emit rs re cs ce headingsColPx headingsRowPx
                 | _ -> ()
                 if printHeadings then
@@ -1705,9 +1695,11 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 // own filled area, so a partly-filled last page still centers on
                 // what's actually drawn rather than the full printable rectangle.
                 let leftPtOffset, topPtOffset =
-                    if pages.Length = 0 then leftMarginPt, topMarginPt
+                    if pages.Length = 0 then leftMarginPt + gridInsetPt, topMarginPt + gridInsetPt
                     else
                         let slice = pages.[pageIdx]
+                        let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
+                        let repeatColsWidthPx = if slice.TitleCols then repeatColsWidthPx else 0.0
                         let bodyWidthPx =
                             headingsColPx + repeatColsWidthPx
                             + geometry.Col.Sum slice.ColStart slice.ColEnd
@@ -1716,20 +1708,23 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                             + geometry.Row.Sum slice.RowStart slice.RowEnd
                         let bodyWidthPt = bodyWidthPx * pxToPt * pagination.Scale
                         let bodyHeightPt = bodyHeightPx * pxToPt * pagination.Scale
+                        // (Centred, the grid starts 4 dots short of the middle: synthetic-print-centered's A1 at
+                        // 96.98 pt past the margin where (691.2 - 496.32) / 2 is 97.44, row 1 at 157.11 for 157.62.)
                         let extraLeft =
                             if ps.Options.HorizontalCentered && bodyWidthPt < printableWidthPt
-                            then (printableWidthPt - bodyWidthPt) / 2.0
-                            else 0.0
+                            then (printableWidthPt - bodyWidthPt) / 2.0 - gridInsetPt
+                            else gridInsetPt
                         let extraTop =
                             if ps.Options.VerticalCentered && bodyHeightPt < printableHeightPt
-                            then (printableHeightPt - bodyHeightPt) / 2.0
-                            else 0.0
+                            then (printableHeightPt - bodyHeightPt) / 2.0 - gridInsetPt
+                            else gridInsetPt
                         leftMarginPt + extraLeft, topMarginPt + extraTop
                 let placement =
                     { LeftPtOffset = leftPtOffset
                       TopPtOffset = topPtOffset
                       PageHeightPt = pageHeightPt
                       Scale = pagination.Scale
+                      TextRaisePt = gridInsetPt
                       BlackAndWhite = ps.BlackAndWhite
                       ImageName = imageNames.NameOf }
                 let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
@@ -1775,6 +1770,15 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | None -> ()
                 PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
 
+    // (A sheet with nothing to print is left out of a workbook's PDF, as Excel 2019 leaves it out; a document of
+    // that sheet alone is a blank page.)
+    let sheets =
+        match sheets with
+        | _ :: _ :: _ ->
+            match sheets |> List.filter (fun sheet -> not (Pagination.paginatePrinted sheet.Model).Pages.IsEmpty) with
+            | [] -> [ List.head sheets ]
+            | printing -> printing
+        | _ -> sheets
     let addSheets = sheets |> List.map planSheet
     // An empty list of sheets is a document of one blank page.
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
@@ -1856,7 +1860,7 @@ let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : by
     let pageHeightPt = heightPx * pxToPt
     let placement =
         { LeftPtOffset = 0.0; TopPtOffset = 0.0; PageHeightPt = pageHeightPt
-          Scale = 1.0; BlackAndWhite = false; ImageName = imageNames.NameOf }
+          Scale = 1.0; TextRaisePt = 0.0; BlackAndWhite = false; ImageName = imageNames.NameOf }
     let opts = { DefaultFontFamily = "Calibri"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "" }
     let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
     for item in items do

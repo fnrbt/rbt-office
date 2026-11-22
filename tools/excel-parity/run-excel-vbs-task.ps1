@@ -3,7 +3,9 @@ param(
   [Parameter(Mandatory = $true)][string]$InputPath,
   [Parameter(Mandatory = $true)][string]$OutputPath,
   [int]$TimeoutSeconds = 180,
-  [ValidateSet("cscript", "powershell")][string]$Engine = "cscript"
+  [ValidateSet("cscript", "powershell")][string]$Engine = "cscript",
+  # Leave every Excel running when done (the script quits its own): another job may share the VM's Excel.
+  [switch]$KeepExcel
 )
 
 $ErrorActionPreference = "Stop"
@@ -116,11 +118,11 @@ try {
     Get-Content -LiteralPath $logPath | Write-Error
   }
   & schtasks.exe /End /TN $taskName 2>$null | Out-Null
-  Stop-InteractiveExcel
+  if (-not $KeepExcel) { Stop-InteractiveExcel }
   throw "Timed out waiting for VBS task after $TimeoutSeconds seconds"
 }
 finally {
   & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
   Remove-Item -LiteralPath $cmdPath -Force -ErrorAction SilentlyContinue
-  Stop-InteractiveExcel
+  if (-not $KeepExcel) { Stop-InteractiveExcel }
 }

@@ -3157,7 +3157,10 @@ let private workbookXmlFull (workbook: XlsxWorkbookOut) =
             [ match s.PrintArea with
               | Some v ->
                   // (Each area of a print area of several is named with its sheet.)
-                  let areas = CellRef.areas v |> List.map (fun area -> sprintf "%s!%s" (quoted s.Name) area) |> String.concat ","
+                  // (A print area written as a formula goes back as it came.)
+                  let areas =
+                      if (System.Text.RegularExpressions.Regex.Replace(v, "'[^']*'", "")).Contains "(" then v
+                      else CellRef.areas v |> List.map (fun area -> sprintf "%s!%s" (quoted s.Name) area) |> String.concat ","
                   yield { Name = "_xlnm.Print_Area"; RefersTo = areas; LocalSheetIndex = Some i; Comment = None; Hidden = false }
               | None -> ()
               match s.PrintTitleRows, s.PrintTitleCols with

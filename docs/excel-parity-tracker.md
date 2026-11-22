@@ -217,9 +217,60 @@ payment schedule" was "andpayment").
 
 Left: the first screen of rows of a sheet at a zoom (above); vertex42's Help rows 1-2 px lower than Excel's (the lines
 of bold runs, unchanged); in print, Excel prints from column A where the PDF starts at the first column with
-something (synthetic print fixture: our page starts at B), and a 300-pt row prints a little lower than ours; a General
+something (synthetic print fixture: our page starts at B), and a 300-pt row prints a little lower than ours (both
+matched now: "Print pages against Excel 2019's PDF"); a General
 number in Small Fonts at 57 % (4 cells), bold italic Aptos Narrow at 57 % (a pixel more room than the rule); text
 boxes' wrapping not measured.
+
+## Print pages against Excel 2019's PDF, 2026-11-22
+
+Every visible sheet of the 12 real-estate models, three real-world workbooks and the print fixtures of
+tests/test-documents-excel, exported by Excel 2019 sheet by sheet (`Worksheet.ExportAsFixedFormat`), against our
+pages (`Pagination.paginatePrinted`, what our PDF prints): the pages, where they break (Page Break Preview's
+`HPageBreaks` / `VPageBreaks`), the print area, the scale. Then the words of the pages (`compare-pdf-words.py`).
+Tools: `probe-print-pages.vbs` / `excel-print-pages.sh` (each sheet's PDF, page setup and breaks), `compare-print-pages.fsx`,
+`compare-pdf-words.py`, `probe-col-widths.vbs`; fixtures `make-print-pages-fixture.py` (sets range, widths, heights,
+fit, breaks, titles, rowunit-*, bestfit), checked in as synthetic-print-pages-*.xlsx with Excel's facts in
+*.excel.tsv; checks: tests/print/helpers.fsx ("print pages:", "print sizes:").
+
+Sheets paged as Excel (pages, row and column breaks): 181 of 186 - 59 real-estate sheets, 8 real-world, 13 print
+fixtures, 106 synthetic (before: 113). Words of the print fixtures' pages: within 0.02 pt across (were 0.50 left).
+
+Ranked differences found (sheets of the corpus they changed): what prints without a print area (17), how wide a
+column prints (9), how high a row prints (11), the fit-to-pages scale and the page's room (6), repeat rows inside the
+print area and print areas written as formulas (2, one of them no page at all), sheets with nothing to print (2),
+the grid's place on the page (every page, 0.48 pt), header / footer sections (every page, 0.96 pt), columns
+Excel's AutoFit left (2, not matched).
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| Without a print area a sheet prints from A1, whatever its first row and column with something | "range" StartC5 (C5:F12 prints A1:F12; StartC5Wide breaks at row 48, column J as from A1); acre's MF Rents (breaks J, Q, ... not K, R) | from the first row / column with a cell | `Pagination.usedRange` |
+| ... to the last cell with a value (a formula giving "" too), a fill or a border; a font or number format alone does not print; a merged cell with a value or fill to its end; a drawing; text running over empty cells to its right to where it ends; a row's own fill (`<row s customFormat>`) down to that row and across to the last column with a format of its own, a column's own fill not at all | "range": FillPast / BorderPast to F12, BoldPast / FormatPast A1:C5, FormulaBlank, MergePast / MergeFill to H14, Overflow to F7, OverflowFar 3 pages, RowFill A1:C12, ColFill A1:C5; bramosman's Amortization formatted to row 383 prints to row 194; acre-property's Summary (text to X); choudhary's Rental Assumptions (to U) | every cell in the model | `printsCell`, `overflowEnd` |
+| A sheet with nothing to print has no pages: Excel's export fails ("We didn't find anything to print"), its workbook's PDF leaves it out | "range" Empty; acre's "Calculation Modules-->" | one blank page | `paginate` (no pages), `Render.toBytesOfSheets` |
+| A column prints at d / m dots of 600 dpi a pixel of its width on the screen, rounded to whole dots: m the Normal font's maximum digit width on the screen, d its widest digit in print (the font at its 600-dpi pixel size, points x 600 / 72 rounded: 47 for Calibri 11, 46 Arial 10, 51 Calibri 12, 56 Arial 12, 47 Aptos Narrow 11) | "widths": 36 columns of 0.1 to 25 characters in 5 Normal fonts, 180 columns within a dot of Excel's grid lines | 7.5 / m px a pixel for every font (Calibri 12 7 % narrow, Arial 12 15 %) | `Pagination.printColumnWidthPx`, `ExcelText.printDigitWidth`, `SpreadsheetModel.PrintDigitWidth` |
+| A row prints at floor(h x R / r + 0.14) dots, h its height in pixels unrounded (points x 4/3), r the Normal font's row on the screen, R the font's row in print (121 dots Calibri 11, 103 Arial 10, 130 Calibri 12, 127 Aptos Narrow 11, 108 Tahoma 10: 32 fonts and sizes measured) | "heights": rows of 7.5 to 409.5 pt in 9 Normal fonts, 151 of 153 within a dot; "rowunit-*" (24 fonts); bramosman (Calibri 12: 15.24 pt a row, we 15.48), oyabayo / acre-property (Aptos Narrow: 15.24, we 14.52), vertex42 mortgage (Tahoma) | 19.36 px for a 20-px row, 20.64 for 21, else the screen's | `Pagination.printRowHeightPx`, `ExcelText.printRowScale` |
+| ... h from the row's points (`ht`, or the sheet's own default height) while they are the pixels the row shows: a row of 20 pt shows at 26 px and prints as 26.67 px would | "heights" (10 and 20 pt rows); houseflipping's HOME (rows of 15.7 pt: Excel's break at row 38, ours 39 from the 21 px) | the pixels | `SpreadsheetModel.RowPoints` / `DefaultRowPoints`, `Pagination.exactRowPx` |
+| At a scale every row and column is its printed size times the scale in whole dots, and a page is filled to a pixel short of its printable width / height | "fit": Scale90 ten 387-dot columns a page (eleven would be 4,257 of 4,260 dots), Scale55 84 rows of 67 dots | sizes unrounded, the whole page | `Pagination.paginate` (`rangesAt`) |
+| Fit to pages is a whole percent: the share of a page (a pixel short) the area needs, cut down, and lower while the area takes more pages than it may | "fit": Fit10 98 % (99.07 cut to 99 fills the width), Fit11 89, Fit13 76, Fit17 58, Fit23 42, FitTall 72 on 2 pages, Fit2x2 67 (each the PDF's column pitch) | the exact share (99.4 %, 3 pages for FitTall) | `paginate` |
+| Repeat rows / columns are printed above / beside a page that begins past them; a page that begins at or before them has them where they are | "titles": TitlesInside (row 20 of A1:F137: page 1 rows 1-47, then 47 with the title), TitlesTop, TitlesAbove, TitlesCols, TitlesColsInside; vertex42 mortgage (row 49 of A1:L410) | the rows before the titles were not printed at all (vertex42's first 48 rows) | `PageSlice.TitleRows` / `TitleCols`, `Render` |
+| A print area written as a formula is the area it comes to | "titles" TitlesInside (`OFFSET(...,100+H1,6)`: A1:F137); vertex42 balloon and mortgage (`OFFSET(...,ROW($A$49)+1+$K$25,...)`: A1:L410) | not read (the mortgage sheet printed no page) | `Formula.evaluateFormulaArea`, the importer; the reader and writer keep the formula |
+| The grid starts 4 dots (0.48 pt) right of the left margin and below the top one at any scale; centred, 4 dots short of the middle | the widths fixture's first lines at 18.48 / 54.48 pt; Fit10 at 98 % 50.88 for 50.4; synthetic-print-centered (96.98 pt past the margin for 97.44) | at the margins | `gridInsetPt` (text kept where it was) |
+| A left header / footer section starts 8 dots (0.96 pt) right of the left margin, a right one ends 8 dots left of the right margin - not a section with underlined, struck, raised or lowered runs | synthetic-print, -centered, -scale, -first-page-number, header-footer-runs (51.36 pt for 50.4; 740.6 for 741.6); hf-style-codes at the margins | at the margins | `appendSectionOps` |
+| A header / footer's `&Ktt+nnn` (`-nnn`) is a theme colour (index tt, tint nnn %), six characters of code | vertex42 mortgage's footer `&K01+034https://...` prints the address alone | "+034" printed, the colour code read as hex | `PrintHeaderFooter` (the colour kept: the theme is not known there) |
+
+Found, not matched: a column Excel's AutoFit left (`bestFit="1"`) prints wider than its width - 7 dots more, or as
+wide as a number in it needs ("bestfit": a 5-character column of 123456789 at 577 dots, not 235; acre's Annual Cash
+Flow and choudhary's Rental break columns earlier than ours); where a cell's text stands in it in print depends on the
+Normal font (a line 16 dots from the cell's left in Calibri 11 / Arial 10, 17 in Calibri 12, 18 in Arial 12, 21 in
+Cambria 14; a bottom-aligned line of Calibri 11 3.58 pt above the cell's bottom, ours 2.96; a top-aligned one 11.04 pt
+below its top, ours 10.47); the row of a Normal font not among the 32 measured is taken at 6.2 dots a pixel (they
+run 5.55 to 7.1); a header's vertical place (0.2-0.3 pt); houseflipping's "2 REPAIR ESTIMATOR" (fit 1 x 6 of a
+print area of 1,092 rows with hidden ones: 2 pages in Excel, 6 ours); dcf-stock-analysis's Financial Model and
+acre-property's Summary (a page more than Excel). Words of the real-estate pages (354 pages, `compare-pdf-words.py`): 47 within 1 pt of
+Excel's; the rest mostly from elsewhere - rows fitted on opening a line higher than Excel's (acre's MF sheets: a
+two-line header of 28.8 pt fitted to three lines, every row below 14.7 pt lower), the PDF runner's faces (Calibri,
+Arial, Cambria, Times New Roman, Verdana: Aptos Narrow, Tahoma, Arial MT are set in Calibri - oyabayo and
+acre-property 4 pt across), the columns AutoFit left (above).
 
 ## Formula oracle on real-world models, 2026-11-21
 

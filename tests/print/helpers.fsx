@@ -34,6 +34,9 @@ ok "hf-sheet-file" (sec3.Center.Text = "Sheet One — report.xlsx") sec3.Center.
 let sec4 = HeaderFooter.resolve ctx "&D at &T"
 ok "hf-date-time" (sec4.Center.Text = "3/15/2026 at 2:30 PM") sec4.Center.Text
 
+let secTheme = HeaderFooter.resolve ctx "&L&\"Arial,Regular\"&8&K01+034https://example.com/x.html"
+ok "hf-theme-colour-code" (secTheme.Left.Text = "https://example.com/x.html") secTheme.Left.Text
+
 let sec5 = HeaderFooter.resolve ctx "AT&&T"
 ok "hf-ampersand-escape" (sec5.Center.Text = "AT&T") sec5.Center.Text
 
@@ -211,8 +214,9 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
                 pagination.PrintAreas |> List.mapi (fun index area ->
                     let pages = pagination.Pages |> List.filter (fun page -> page.Area = index)
                     let cells = pages |> List.sumBy (fun page -> (page.RowEnd - page.RowStart + 1) * (page.ColEnd - page.ColStart + 1))
-                    let rows = match pagination.RepeatRows with Some (_, last) when last >= area.From.Row -> area.To.Row - max area.From.Row (last + 1) + 1 | _ -> area.To.Row - area.From.Row + 1
-                    let cols = match pagination.RepeatCols with Some (_, last) when last >= area.From.Col -> area.To.Col - max area.From.Col (last + 1) + 1 | _ -> area.To.Col - area.From.Col + 1
+                    // (The repeat rows / columns print where they are on the pages that begin at or before them.)
+                    let rows = area.To.Row - area.From.Row + 1
+                    let cols = area.To.Col - area.From.Col + 1
                     cells = max 0 rows * max 0 cols)
             ok (sprintf "pages: %s / %s cover their areas" (System.IO.Path.GetFileName file) sheet.Name) (List.forall id covered) (sprintf "%A" covered)
 // A landscape sheet is paginated the wider way round, whether its setup holds the paper's size
@@ -301,6 +305,60 @@ do
     // A wrapped line fits while no wider than the column less 4.48 px: 15 characters of 6 px (90) in 95 px, not in 94.
     let lines width = textItems width "aaaaaaa bbbbbbb" true |> List.map (fun t -> t.Text)
     ok "print: wrapped at the column less 4.48 px" (lines 95.0 = [ "aaaaaaa bbbbbbb" ] && lines 94.0 = [ "aaaaaaa"; "bbbbbbb" ]) (sprintf "%A / %A" (lines 95.0) (lines 94.0))
+
+
+// ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break
+// Preview's breaks and each sheet's pages in its PDF, probe-print-pages.vbs) -----
+do
+    let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel")
+    let mutable sheets = 0
+    for tsv in System.IO.Directory.GetFiles(dir, "synthetic-print-pages-*.excel.tsv") |> Array.sort do
+        let book = tsv.Replace(".excel.tsv", ".xlsx")
+        let facts = System.IO.File.ReadAllLines tsv |> Array.map (fun line -> line.Split '\t') |> Array.filter (fun parts -> parts.Length = 4)
+        let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes book) |> Option.get)
+        imported.Sheets |> Array.iteri (fun index sheet ->
+            let mine = facts |> Array.filter (fun parts -> parts.[1] = string (index + 1))
+            let get key = mine |> Array.tryPick (fun parts -> if parts.[2] = key then Some parts.[3] else None)
+            let pagination = Pagination.paginatePrinted sheet.Model
+            let area = pagination.PrintBounds
+            let starts (pick: Pagination.PageSlice -> int) = pagination.Pages |> List.map (fun page -> pick page + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
+            let breaks key last = mine |> Array.choose (fun parts -> if parts.[2] = key then Some (int (parts.[3].Split(' ').[0])) else None) |> Array.distinct |> Array.sort |> Array.filter (fun b -> b <= last) |> List.ofArray
+            let excelPages = match get "pages" with Some n -> int n | None -> 0
+            let excelRows, excelCols = breaks "hbreak" (area.To.Row + 1), breaks "vbreak" (area.To.Col + 1)
+            sheets <- sheets + 1
+            ok (sprintf "print pages: %s / %s" (System.IO.Path.GetFileNameWithoutExtension book) sheet.Name)
+                (pagination.Pages.Length = excelPages && starts (fun page -> page.RowStart) = excelRows && starts (fun page -> page.ColStart) = excelCols)
+                (sprintf "pages %d (Excel %d), rows %A (%A), columns %A (%A), scale %g" pagination.Pages.Length excelPages
+                    (starts (fun page -> page.RowStart)) excelRows (starts (fun page -> page.ColStart)) excelCols pagination.Scale))
+    ok "print pages: the fixtures were read" (sheets >= 40) (sprintf "%d sheets" sheets)
+    // The sizes: a column of 64 px of Calibri 11 (7 px a digit on the screen, 47 dots in print) prints at 430 dots; 12 px of
+    // Arial 10 (46) at 79; 12 px of Calibri 12 (8, 51) at 77 (76.5 up); a row of 20 px of Calibri 11 at 121 dots, of 546 px at 3303.
+    let dots (px: float) = System.Math.Round (px * 6.25, 6)
+    ok "print sizes: columns" (dots (Pagination.printColumnWidthPx 7.0 47.0 64.0) = 430.0 && dots (Pagination.printColumnWidthPx 7.0 46.0 12.0) = 79.0 && dots (Pagination.printColumnWidthPx 8.0 51.0 12.0) = 77.0) ""
+    ok "print sizes: the widest digit in print" ([ "Calibri", 11.0; "Arial", 10.0; "Calibri", 12.0; "Arial", 12.0; "Arial MT", 12.0 ] |> List.map (fun (f, p) -> Rbt.Spreadsheet.ExcelText.printDigitWidth f p) = [ 47.0; 46.0; 51.0; 56.0; 56.0 ]) ""
+    // A row of 20 pt shows at 26 px and prints as 26.67 px would: 161 dots of Calibri 11.
+    ok "print sizes: a row's points" (dots (Pagination.printRowHeightPx 6.05 (Pagination.exactRowPx 20.0 26.0)) = 161.0 && Pagination.exactRowPx 20.0 27.0 = 27.0) ""
+    // The grid 0.48 pt in from the margins: the heights fixture's first lines (margins 0.7 / 0.75 in) at x 50.88, y 54.48 from the top.
+    let heights = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-pages-heights.xlsx"))) |> Option.get)
+    let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = "Heights"; FileName = "f" }
+    let text = System.Text.Encoding.Latin1.GetString (Render.toBytes options heights.Sheets.[0].Model)
+    // A page prints its own rows' text, not the row after its last nor before its first (rows of 121 dots summed in
+    // floating point): synthetic-print-pages-titles' page 1 is rows 1-47, page 3 rows 94-137 under row 20.
+    let calibri = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "artifacts", "fonts", "windows", "calibri.ttf")
+    if System.IO.File.Exists calibri then
+        let titles = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-pages-titles.xlsx"))) |> Option.get)
+        let face = Render.fontFace "Calibri" "Calibri" false false (System.IO.File.ReadAllBytes calibri)
+        let withFont : Render.RenderOptions = { DefaultFontFamily = "Calibri"; Fonts = [ face ]; CjkFallback = []; SheetName = "TitlesInside"; FileName = "f" }
+        let pdf = Render.toBytes withFont titles.Sheets.[0].Model
+        let path = System.IO.Path.GetTempFileName()
+        System.IO.File.WriteAllBytes(path, pdf)
+        let pageText (n: int) =
+            let p = System.Diagnostics.Process.Start(System.Diagnostics.ProcessStartInfo("pdftotext", sprintf "-f %d -l %d \"%s\" -" n n path, RedirectStandardOutput = true))
+            let t = p.StandardOutput.ReadToEnd() in p.WaitForExit(); t
+        let p1, p3 = pageText 1, pageText 3
+        ok "print: a page's own rows" (p1.Contains "r47c1" && not (p1.Contains "r48c1") && p3.Contains "r94c1" && p3.Contains "r20c1" && not (p3.Contains "r93c1")) ""
+    ok "print: the grid 0.48 pt inside the margins" (text.Contains "50.88 " && text.Contains (sprintf "%g " (792.0 - 54.48))) ""
+    ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
 
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail

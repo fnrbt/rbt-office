@@ -1,0 +1,66 @@
+Heights	1	setup.orientation	1
+Heights	1	setup.paper	1
+Heights	1	setup.zoom	100
+Heights	1	setup.fitwide	1
+Heights	1	setup.fittall	1
+Heights	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+Heights	1	setup.center	False False
+Heights	1	setup.printarea	
+Heights	1	setup.titlerows	
+Heights	1	setup.titlecols	
+Heights	1	setup.order	1
+Heights	1	setup.firstpage	-4105
+Heights	1	setup.gridlines	True
+Heights	1	setup.headings	False
+Heights	1	setup.bw	False
+Heights	1	setup.draft	False
+Heights	1	setup.errors	0
+Heights	1	used	$A$1:$A$20
+Heights	1	hbreak	18 auto
+Heights	1	hbreak	20 auto
+Heights	1	pdf	synthetic-print-pages-heights-1.pdf
+Default	2	setup.orientation	1
+Default	2	setup.paper	1
+Default	2	setup.zoom	100
+Default	2	setup.fitwide	1
+Default	2	setup.fittall	1
+Default	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+Default	2	setup.center	False False
+Default	2	setup.printarea	
+Default	2	setup.titlerows	
+Default	2	setup.titlecols	
+Default	2	setup.order	1
+Default	2	setup.firstpage	-4105
+Default	2	setup.gridlines	True
+Default	2	setup.headings	False
+Default	2	setup.bw	False
+Default	2	setup.draft	False
+Default	2	setup.errors	0
+Default	2	used	$A$1:$A$120
+Default	2	hbreak	48 auto
+Default	2	hbreak	95 auto
+Default	2	pdf	synthetic-print-pages-heights-2.pdf
+Bold	3	setup.orientation	1
+Bold	3	setup.paper	1
+Bold	3	setup.zoom	100
+Bold	3	setup.fitwide	1
+Bold	3	setup.fittall	1
+Bold	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+Bold	3	setup.center	False False
+Bold	3	setup.printarea	
+Bold	3	setup.titlerows	
+Bold	3	setup.titlecols	
+Bold	3	setup.order	1
+Bold	3	setup.firstpage	-4105
+Bold	3	setup.gridlines	True
+Bold	3	setup.headings	False
+Bold	3	setup.bw	False
+Bold	3	setup.draft	False
+Bold	3	setup.errors	0
+Bold	3	used	$A$1:$A$120
+Bold	3	hbreak	48 auto
+Bold	3	hbreak	95 auto
+Bold	3	pdf	synthetic-print-pages-heights-3.pdf
+Heights	1	pages	3
+Default	2	pages	3
+Bold	3	pages	3

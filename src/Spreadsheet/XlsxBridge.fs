@@ -1005,6 +1005,9 @@ module Import =
                 row.CustomHeight = Some true || row.Hidden
                 || (match row.RawHeight with Some height -> FontMetrics.pointsToRowPx height <> defaultRowPx | None -> false))
         let mutable rowHeights = Map.empty<int, float>
+        // (The points of a row's height, for print: Excel 2019 prints a row of 15.7 pt at 15.7 pt, not at the 21 px
+        // it shows - `SpreadsheetModel.RowPoints`.)
+        let mutable rowPoints = Map.empty<int, float>
         let fittedRows = Collections.Generic.HashSet<int>()
         // (A row that says `thickTop` / `thickBot` is fitted a pixel higher for each.)
         let thickRows = Collections.Generic.Dictionary<int, int>()
@@ -1012,7 +1015,9 @@ module Import =
             let index = row.Index - 1
             if index >= 0 && index < rowCount then
                 match row.CustomHeight, row.RawHeight with
-                | Some true, Some height -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                | Some true, Some height ->
+                    rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                    rowPoints <- Map.add index height rowPoints
                 | Some true, None -> ()
                 | _, height when fitsRows ->
                     if not row.Hidden then fittedRows.Add index |> ignore
@@ -1021,7 +1026,9 @@ module Import =
                     match height with
                     | Some height when height > 0.0 -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
                     | _ -> ()
-                | _, Some height when height > 0.0 -> rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                | _, Some height when height > 0.0 ->
+                    rowHeights <- Map.add index (FontMetrics.pointsToRowPx height) rowHeights
+                    rowPoints <- Map.add index height rowPoints
                 | _ -> ()
         // A size of 0 is how the model marks a hidden row / column; the size
         // it is shown at again, and the outline, are kept beside the sizes.
@@ -1205,6 +1212,13 @@ module Import =
                 // keeps the grid's own.)
                 DefaultRowHeight = (if defaultRowPx > 0.0 then defaultRowPx else 25.0)
                 MaxDigitWidth = mdw
+                PrintDigitWidth = ExcelText.printDigitWidth (defaultArg defaultFace "Calibri") defaultPoints
+                RowPoints = rowPoints
+                DefaultRowPoints =
+                    match sheet.Format.CustomDefaultHeight, sheet.Format.DefaultRowHeight with
+                    | true, Some height when height > 0.0 -> height
+                    | _ -> 0.0
+                PrintRowScale = ExcelText.printRowScale (defaultArg defaultFace "Calibri") defaultPoints (FontMetrics.rowHeightPx defaultFace defaultPoints)
                 DefaultColumnWidth =
                     // (A <col> that runs to the last column - Excel writes one for "every column
                     // from here on" - says what the columns past the used ones have.)
@@ -1277,6 +1291,17 @@ module Import =
                     RowHeights = heights
                     DefaultRowHeight = 0.0
                     Axes = { model.Axes with DefaultRowShownHeight = shown } }
+        // A print area written as a formula (vertex42's `OFFSET(MortgageCalculator!$A$1,0,0,ROW(...)+1+$K$25,12)`)
+        // prints the area it comes to with the values as they are: Excel 2019's PDF of the opened file.
+        let model =
+            match sheet.PrintArea with
+            | Some text when model.PageSetup.PrintArea.IsNone && (Text.RegularExpressions.Regex.Replace(text, "'[^']*'", "")).Contains "(" ->
+                let context = buildWorkbookContext [| model |] [| sheet.Name |] [| true |] Map.empty Map.empty 0
+                match Rbt.Spreadsheet.Formula.evaluateFormulaArea (Some context) (Some (sheetIdOfIndex 0)) text model with
+                | Some (r0, c0, r1, c1) ->
+                    { model with PageSetup = { model.PageSetup with PrintArea = Some { From = { Row = r0; Col = c0 }; To = { Row = r1; Col = c1 } } } }
+                | None -> model
+            | _ -> model
         { Model = model
           TableColumns = tableColumns
           State = sheetStateText sheet.State }

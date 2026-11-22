@@ -42,6 +42,12 @@ type PageSlice = {
     ColEnd: int
     /// Which of the print areas the page is of (`Pagination.PrintAreas`, 0-based).
     Area: int
+    /// The page carries the repeat rows / columns (`Pagination.RepeatRows` / `RepeatCols`) above / beside its own: it
+    /// begins past them. A page that begins at or before them has them where they are (vertex42's MortgageCalculator,
+    /// rows 1:410 with row 49 to repeat: its first page is rows 1-60, row 49 among them; the pages after begin with
+    /// row 49).
+    TitleRows: bool
+    TitleCols: bool
 }
 
 /// Full pagination for one sheet. Pages are emitted in the "down then
@@ -88,33 +94,85 @@ let private breakSet (breaks: int list) =
         result <- Set.add (breakIndex - 1) result
     result
 
-/// Bounding box of every non-empty cell and every drawing (a chart prints too).
-/// Empty model collapses to A1 so downstream code has a non-degenerate range
-/// to work with.
-let private usedRange (model: SpreadsheetModel) : CellRange =
-    if Map.isEmpty model.Cells && model.Drawings.IsEmpty then
-        { From = { Row = 0; Col = 0 }; To = { Row = 0; Col = 0 } }
-    else
-        let mutable r1 = System.Int32.MaxValue
-        let mutable c1 = System.Int32.MaxValue
-        let mutable r2 = System.Int32.MinValue
-        let mutable c2 = System.Int32.MinValue
-        let cover (row: int) (col: int) =
-            if row < r1 then r1 <- row
-            if row > r2 then r2 <- row
-            if col < c1 then c1 <- col
-            if col > c2 then c2 <- col
-        for KeyValue(addr, _) in model.Cells do cover addr.Row addr.Col
-        for drawing in model.Drawings do
-            let anchor = drawing.Anchor
-            cover anchor.FromRow anchor.FromCol
-            // (A drawing that ends on the edge of a cell does not reach into it.)
-            let lastOf (first: int) (last: int option) (offset: float) =
-                match last with
-                | Some index -> max first (if offset > 0.0 then index else index - 1)
-                | None -> first
-            cover (lastOf anchor.FromRow anchor.ToRow anchor.ToOffsetY) (lastOf anchor.FromCol anchor.ToCol anchor.ToOffsetX)
-        { From = { Row = r1; Col = c1 }; To = { Row = r2; Col = c2 } }
+/// Whether a cell makes Excel print as far as it: it holds something (a value, a formula) or shows a fill or a
+/// border. A font, a number format, an alignment alone do not (make-print-pages-fixture.py "range": BoldPast and
+/// FormatPast print A1:C5, FillPast and BorderPast A1:F12; bramosman's Amortization, formatted down to row 383,
+/// prints to its last payment, row 194).
+let private printsCell (data: CellData) =
+    (match data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true)
+    || data.Format.BgColor.IsSome
+    || data.Format.BorderTop.IsSome || data.Format.BorderBottom.IsSome || data.Format.BorderLeft.IsSome
+    || data.Format.BorderRight.IsSome || data.Format.BorderDiagonal.IsSome
+
+/// The last column the text of a cell runs into (Excel prints it), or the cell's own column: text wider than its cell
+/// runs over the empty cells to its right (`Rbt.Spreadsheet.Layout.textOverflowSpan`), measured in Excel's widths of the
+/// cell's font at 100 % (`ExcelText.textWidth`) and scaled as the columns are for print.
+let private overflowEnd (model: SpreadsheetModel) (addr: CellAddress) (data: CellData) =
+    match Rbt.Spreadsheet.Layout.textOverflowSides data.Format data.Value with
+    | Some (_, true) ->
+        match unwrapFormulaValue data.Value with
+        | CellValue.String text ->
+            let format = data.Format
+            let points = defaultArg format.FontSize 11.0
+            let px = Rbt.Spreadsheet.ExcelText.pixelSize points 1.0
+            let family = defaultArg format.FontName "Calibri"
+            let screen = Rbt.Spreadsheet.ExcelText.textWidth (fun t -> float t.Length * float px * 0.5) family format.Bold format.Italic px false text
+            // (The columns here are as wide as they print: the text is too.)
+            let mdw = if model.MaxDigitWidth > 0.0 then model.MaxDigitWidth else 7.0
+            let width = screen * (if model.PrintDigitWidth > 0.0 then model.PrintDigitWidth / mdw / 6.25 else 1.0)
+            let room = getColumnWidth addr.Col model - Rbt.Spreadsheet.FontMetrics.columnPaddingPx mdw
+            let excess = width - room
+            if excess <= 0.0 then addr.Col
+            else snd (Rbt.Spreadsheet.Layout.textOverflowSpan model addr.Row addr.Col 0.0 excess)
+        | _ -> addr.Col
+    | _ -> addr.Col
+
+/// What Excel 2019 prints of a sheet without a print area: from A1 - whatever the first row and column with something
+/// in them (make-print-pages-fixture.py "range": StartC5's C5:F12 prints A1:F12; acre's MF Rents pages break at
+/// columns J, Q, ... from A, not from its first column, B) - to the last row and column with a cell that prints
+/// (`printsCell`; a formula that gives "" too: FormulaBlank), a drawing, a merged cell that holds something or shows
+/// a fill (MergePast, MergeFill: E10:H14), or text running over from a cell to its left (Overflow: C7's sentence
+/// prints to F7, OverflowFar's over three pages; acre-property's Summary). None when nothing prints: Excel has nothing
+/// to print ("Empty", acre's "Calculation Modules-->"), and a workbook's PDF leaves the sheet out.
+let private usedRange (model: SpreadsheetModel) : CellRange option =
+    let mutable r2 = -1
+    let mutable c2 = -1
+    let cover (row: int) (col: int) =
+        if row > r2 then r2 <- row
+        if col > c2 then c2 <- col
+        if r2 < 0 then r2 <- 0
+        if c2 < 0 then c2 <- 0
+    // (A row's own fill or border - `<row s customFormat>` - prints the rows down to it and across to the last column
+    // with a cell of a format of its own, whatever it is: RowFill, values to C, prints A1:C12; choudhary's Rental
+    // Assumptions, a filled row 1 and number formats to U, prints to U. A column's prints neither: ColFill, A1:C5. A
+    // cell the sheet has only for its row's style is the row's.)
+    let ofRowStyle (addr: CellAddress) (data: CellData) =
+        (match data.Value with CellValue.Empty -> true | _ -> false)
+        && (match Map.tryFind addr.Row model.RowStyles with Some format -> format = data.Format | None -> false)
+    let isPrintingFormat (format: CellFormat) = printsCell { Value = CellValue.Empty; Format = format; Comment = None }
+    if model.RowStyles |> Map.exists (fun _ format -> isPrintingFormat format) then
+        let mutable lastFormatted = 0
+        for KeyValue(addr, data) in model.Cells do
+            if addr.Col > lastFormatted && data.Format <> defaultFormat && not (ofRowStyle addr data) then lastFormatted <- addr.Col
+        for KeyValue(row, format) in model.RowStyles do
+            if isPrintingFormat format then cover row lastFormatted
+    for KeyValue(addr, data) in model.Cells do
+        if printsCell data && not (ofRowStyle addr data) then
+            cover addr.Row (overflowEnd model addr data)
+    for merge in model.MergedCells do
+        match Map.tryFind { Row = merge.StartRow; Col = merge.StartCol } model.Cells with
+        | Some data when printsCell data -> cover merge.EndRow merge.EndCol
+        | _ -> ()
+    for drawing in model.Drawings do
+        let anchor = drawing.Anchor
+        cover anchor.FromRow anchor.FromCol
+        // (A drawing that ends on the edge of a cell does not reach into it.)
+        let lastOf (first: int) (last: int option) (offset: float) =
+            match last with
+            | Some index -> max first (if offset > 0.0 then index else index - 1)
+            | None -> first
+        cover (lastOf anchor.FromRow anchor.ToRow anchor.ToOffsetY) (lastOf anchor.FromCol anchor.ToCol anchor.ToOffsetX)
+    if r2 < 0 then None else Some { From = { Row = 0; Col = 0 }; To = { Row = r2; Col = c2 } }
 
 /// Split one axis of a print range into per-page slices. Walks the axis
 /// in order, accumulating cell sizes until the next one would overflow
@@ -127,7 +185,7 @@ let private axisBreaks
     (endInc: int)
     (manualBreaks0: Set<int>)
     (sizes: int -> float)
-    (available: float)
+    (available: int -> float)
     : (int * int) list =
     if startInc > endInc then [] else
     let result = ResizeArray<int * int>()
@@ -141,7 +199,7 @@ let private axisBreaks
             result.Add(pageStart, i - 1)
             pageStart <- i
             acc <- 0.0
-        if acc + sz > available && i > pageStart then
+        if acc + sz > available pageStart && i > pageStart then
             result.Add(pageStart, i - 1)
             pageStart <- i
             acc <- sz
@@ -151,17 +209,15 @@ let private axisBreaks
     resizeArrayToList result
 
 /// Convert the model's PageSetup into the full pagination. Repeat rows /
-/// cols steal space from every page (so the available area shrinks);
-/// `Scale` applies *after* break computation, so a small scale means more
-/// content fits and breaks land later — we honor that by inflating the
-/// available size by 1/scale before computing the breaks.
+/// cols steal space from every page (so the available area shrinks); the
+/// rows and columns are laid out at their sizes times the scale.
 let paginate (model: SpreadsheetModel) : Pagination =
     let ps = model.PageSetup
     let printRanges =
         match printAreasOf ps with
-        | [] -> [ usedRange model ]
+        | [] -> Option.toList (usedRange model)
         | areas -> areas
-    let printRange = List.head printRanges
+    let printRange = match printRanges with first :: _ -> first | [] -> { From = { Row = 0; Col = 0 }; To = { Row = 0; Col = 0 } }
 
     let leftPt = ps.Margins.Left * 72.0
     let rightPt = ps.Margins.Right * 72.0
@@ -182,58 +238,63 @@ let paginate (model: SpreadsheetModel) : Pagination =
         |> Option.defaultValue 0.0
 
     let headingsColPx, headingsRowPx = headingsOffsets ps
-    let availableW = max 50.0 (printableWidthPx - repeatColsWidth - headingsColPx)
-    let availableH = max 50.0 (printableHeightPx - repeatRowsHeight - headingsRowPx)
-
-    // Resolve scale: explicit fit-to-page wins over the manual scale percent.
-    // For fit-to-page we measure the print range against `FitToWidth` ×
-    // `FitToHeight` pages of available area. Clamp to ≤ 1 (we shrink to
-    // fit but don't blow up to fill — matching Excel).
-    let scale =
-        if ps.FitToPage then
-            // (Each area has to fit the pages it is given: the smallest scale of them all.)
-            printRanges
-            |> List.map (fun printRange ->
-                let contentW = rangeSum (colWidthPx model) printRange.From.Col printRange.To.Col
-                let contentH = rangeSum (rowHeightPx model) printRange.From.Row printRange.To.Row
-                let sx =
-                    if ps.FitToWidth > 0 && contentW > 0.0
-                    then (availableW * float ps.FitToWidth) / contentW else 1.0
-                let sy =
-                    if ps.FitToHeight > 0 && contentH > 0.0
-                    then (availableH * float ps.FitToHeight) / contentH else 1.0
-                min sx sy)
-            |> List.min |> min 1.0 |> max 0.1
-        else
-            float ps.Scale / 100.0 |> max 0.1
-
-    // A smaller scale fits more content per page — equivalent to having a
-    // larger effective break budget. Inflate the available size before
-    // computing breaks rather than scaling every measurement individually.
-    let effW = availableW / scale
-    let effH = availableH / scale
-
     let manualRow = breakSet ps.ManualRowBreaks
     let manualCol = breakSet ps.ManualColBreaks
 
+    // The body of each area is the whole area; a page that begins past the repeat rows / cols carries them.
+    let bodyOf (printRange: CellRange) = printRange.From.Row, printRange.From.Col
+    let titlesBefore (titles: (int * int) option) (pageStart: int) =
+        match titles with
+        | Some (first, last) when last >= first -> pageStart > last
+        | _ -> false
+
+    // At a scale, Excel 2019 sets each row and column at its printed size times the scale in whole dots of 600 dpi
+    // and fills a page to a pixel short of its printable width / height (make-print-pages-fixture.py "fit": at 90 %
+    // ten of Calibri 11's 430-dot columns fit 511.2 pt, not eleven - 4,257 dots of 4,260; at 55 % 84 rows of 67 dots
+    // a page, not 85).
+    let dotted (size: float) (scale: float) = System.Math.Floor (size * scale * 6.25 + 0.5) / 6.25
+    let rangesAt (scale: float) (printRange: CellRange) =
+        let bodyRowStart, bodyColStart = bodyOf printRange
+        let availableW (pageStart: int) =
+            max 50.0 (printableWidthPx - (if titlesBefore ps.RepeatCols pageStart then dotted repeatColsWidth scale else 0.0) - headingsColPx) - 1.0
+        let availableH (pageStart: int) =
+            max 50.0 (printableHeightPx - (if titlesBefore ps.RepeatRows pageStart then dotted repeatRowsHeight scale else 0.0) - headingsRowPx) - 1.0
+        let colRanges = axisBreaks bodyColStart printRange.To.Col manualCol (fun c -> dotted (colWidthPx model c) scale) availableW
+        let rowRanges = axisBreaks bodyRowStart printRange.To.Row manualRow (fun r -> dotted (rowHeightPx model r) scale) availableH
+        colRanges, rowRanges
+
+    // Fit to pages: a whole percent, the largest at which every area takes no more than `FitToWidth` pages across and
+    // `FitToHeight` down - from the share of a page (a pixel short of it) the area's width / height needs, cut to a
+    // whole percent, and down from there while it takes more (Fit10's 99.07 % is 98: its 99 % takes the whole width;
+    // FitTall, 130 rows on 2 pages at 72 %). The explicit scale otherwise.
+    let scale =
+        if ps.FitToPage then
+            let share (printRange: CellRange) =
+                let bodyRowStart, bodyColStart = bodyOf printRange
+                let contentW = rangeSum (colWidthPx model) bodyColStart printRange.To.Col
+                let contentH = rangeSum (rowHeightPx model) bodyRowStart printRange.To.Row
+                let availableW = max 50.0 (printableWidthPx - repeatColsWidth - headingsColPx) - 1.0
+                let availableH = max 50.0 (printableHeightPx - repeatRowsHeight - headingsRowPx) - 1.0
+                let sx = if ps.FitToWidth > 0 && contentW > 0.0 then (availableW * float ps.FitToWidth) / contentW else 1.0
+                let sy = if ps.FitToHeight > 0 && contentH > 0.0 then (availableH * float ps.FitToHeight) / contentH else 1.0
+                min sx sy
+            let first = printRanges |> List.map share |> List.fold min 1.0
+            let fits (percent: int) =
+                printRanges |> List.forall (fun printRange ->
+                    let cols, rows = rangesAt (float percent / 100.0) printRange
+                    (ps.FitToWidth <= 0 || cols.Length <= ps.FitToWidth) && (ps.FitToHeight <= 0 || rows.Length <= ps.FitToHeight))
+            let mutable percent = int (System.Math.Floor (first * 100.0 + 1e-9)) |> min 100 |> max 10
+            while percent > 10 && not (fits percent) do
+                percent <- percent - 1
+            float percent / 100.0
+        else
+            float ps.Scale / 100.0 |> max 0.1
+
     let pagesOf (area: int) (printRange: CellRange) =
-        // Body range excludes the repeat rows / cols — they ride along on every
-        // page separately. Without this the first row / column would render
-        // twice on page 1 (once as the repeat band, once as the first body row).
-        let bodyRowStart =
-            match ps.RepeatRows with
-            | Some (_, rEnd) when rEnd >= printRange.From.Row -> max printRange.From.Row (rEnd + 1)
-            | _ -> printRange.From.Row
-        let bodyColStart =
-            match ps.RepeatCols with
-            | Some (_, cEnd) when cEnd >= printRange.From.Col -> max printRange.From.Col (cEnd + 1)
-            | _ -> printRange.From.Col
-
-        let colRanges =
-            axisBreaks bodyColStart printRange.To.Col manualCol (colWidthPx model) effW
-        let rowRanges =
-            axisBreaks bodyRowStart printRange.To.Row manualRow (rowHeightPx model) effH
-
+        let colRanges, rowRanges = rangesAt scale printRange
+        let slice rs re cs ce =
+            { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce; Area = area
+              TitleRows = titlesBefore ps.RepeatRows rs; TitleCols = titlesBefore ps.RepeatCols cs }
         // Walk order from PageSetup. DownThenOver (Excel default) emits all
         // row-pages of the first column-slice before the next column-slice;
         // OverThenDown inverts the outer/inner loops.
@@ -242,11 +303,11 @@ let paginate (model: SpreadsheetModel) : Pagination =
         | DownThenOver ->
             for (cs, ce) in colRanges do
                 for (rs, re) in rowRanges do
-                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce; Area = area }
+                    result.Add (slice rs re cs ce)
         | OverThenDown ->
             for (rs, re) in rowRanges do
                 for (cs, ce) in colRanges do
-                    result.Add { RowStart = rs; RowEnd = re; ColStart = cs; ColEnd = ce; Area = area }
+                    result.Add (slice rs re cs ce)
         resizeArrayToList result
     let pages = printRanges |> List.mapi pagesOf |> List.concat
 
@@ -259,30 +320,41 @@ let paginate (model: SpreadsheetModel) : Pagination =
           RepeatCols = ps.RepeatCols }
     result
 
-/// The width a column prints at: Excel lays the grid out with the floored
-/// screen width of a character but prints with the unfloored one, 15/14
-/// wider (see `Render.withPrintColumnWidths` in Spreadsheet.Pdf).
-/// (`mdw`: the sheet's maximum digit width. Excel's PDF lays a column out at 7.5 px a digit whatever the
-/// Normal font - Calibri 11's 7 px digits print 15/14 wider, Calibri 12's 8 px ones as many 7.5 px digits:
-/// milk-street-office's Monthly prints A1:R58 on its first page.)
-let printColumnWidthPx (mdw: float) (width: float) : float =
-    let printScale = 7.5 / (if mdw > 0.0 then mdw else 7.0)
-    if width <= 0.0 then width else width * printScale
+/// The width a column prints at, in pixels: Excel 2019's PDF sets a column of `width` pixels on the screen
+/// (`FontMetrics.columnWidthPx`, whole pixels of the Normal font's maximum digit width `mdw`) at `printDigit` / `mdw`
+/// dots of 600 dpi a pixel, `printDigit` the widest digit of the Normal font in print (`ExcelText.printDigitWidth`),
+/// rounded to whole dots: 64 px of Calibri 11 (7 / 47) print at 430 dots (68.8 px), 64 px of Calibri 12 (8 / 51) at
+/// 408 (65.28 px), 12 px of Arial 10 (7 / 46) at 79 (make-print-pages-fixture.py "widths": 144 columns of 0.1 to 25
+/// characters in Calibri 11 and 12, Arial 10 and 12, every one within a dot of Excel's PDF).
+let printColumnWidthPx (mdw: float) (printDigit: float) (width: float) : float =
+    if width <= 0.0 then width
+    else
+        let mdw = if mdw > 0.0 then mdw else 7.0
+        let digit = if printDigit > 0.0 then printDigit else mdw * 47.0 / 7.0
+        System.Math.Floor (width * digit / mdw + 0.5) / 6.25
 
-/// The height a row prints at: the automatic rows of Calibri 11 and 12
-/// print a fraction lower than the grid shows them.
-let printRowHeightPx (px: float) : float =
-    if abs (px - 20.0) < 0.01 then 19.36      // Calibri 11 auto
-    elif abs (px - 21.0) < 0.01 then 20.64    // Calibri 12 auto
-    else px
+/// The height a row of `px` pixels on the screen prints at, in pixels: Excel 2019's PDF sets it at `scale` dots of
+/// 600 dpi a pixel (`ExcelText.printRowScale`: 6.05 for a Normal font of Calibri 11), cut down to whole dots - a row
+/// of 20 px (15 pt) prints at 121 dots (14.52 pt), one of 546 px (409.5 pt) at 3303. (A height of a fraction of a
+/// pixel more than a whole one prints as that one: 0.14 of a dot is let in.) make-print-pages-fixture.py "heights":
+/// rows of 7.5 to 409.5 pt in Calibri 11 and 12, Arial 10 and 12, Cambria 14 within a dot of Excel's PDF where the
+/// height is whole pixels.
+let printRowHeightPx (scale: float) (px: float) : float =
+    if px <= 0.0 then px
+    else System.Math.Floor (px * (if scale > 0.0 then scale else 6.05) + 0.14) / 6.25
+
+/// A row's height in pixels unrounded: its points x 4/3 while they are the `px` it shows at (`FontMetrics.pointsToRowPx`),
+/// else `px` (heights 7.5 to 409.5 pt in Excel 2019's PDF: 20 pt prints as 26.67 px would, not as the 26 shown).
+let exactRowPx (points: float) (px: float) : float =
+    if points > 0.0 && px > 0.0 && Rbt.Spreadsheet.FontMetrics.pointsToRowPx points = px then points * 4.0 / 3.0 else px
 
 /// The sheet with its rows and columns at the sizes they print at.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
     { model with
-        DefaultRowHeight = printRowHeightPx model.DefaultRowHeight
-        DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.DefaultColumnWidth
-        ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth width))
-        RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)) }
+        DefaultRowHeight = printRowHeightPx model.PrintRowScale (exactRowPx model.DefaultRowPoints model.DefaultRowHeight)
+        DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth
+        ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width))
+        RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun row px -> printRowHeightPx model.PrintRowScale (exactRowPx (defaultArg (Map.tryFind row model.RowPoints) 0.0) px))) }
 
 /// The pages the sheet prints on: `paginate` of the sheet at its print
 /// sizes - what the PDF export lays out, and what a host's print preview is told.

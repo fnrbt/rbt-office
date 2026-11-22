@@ -1489,6 +1489,18 @@ type SpreadsheetModel = {
     /// The maximum digit width of the workbook's Normal font (its first font) in pixels, the unit of a
     /// file's column widths: 7 for Calibri 11 and Arial 10, 9 for Arial 12 (`FontMetrics.maxDigitWidth`).
     MaxDigitWidth: float
+    /// The widest digit of the Normal font as Excel 2019 prints it, in dots of 600 dpi (the font at its 600-dpi pixel
+    /// size, each digit a whole number of dots): 47 for Calibri 11, 46 for Arial 10, 51 for Calibri 12, 56 for Arial 12.
+    /// A column prints `PrintDigitWidth` / `MaxDigitWidth` dots a pixel of its width (`Pagination.printColumnWidthPx`).
+    PrintDigitWidth: float
+    /// Dots of 600 dpi a pixel of a row's height prints at (`ExcelText.printRowScale`: 6.05 for Calibri 11, 121 dots
+    /// for its 20-px row).
+    PrintRowScale: float
+    /// The heights of rows in points as the file gives them (`ht`), and the sheet's own default height (0: none):
+    /// the screen shows them in whole pixels (`RowHeights`, `DefaultRowHeight`), print sets them as they are
+    /// (`Pagination.withPrintSizes`, while they are still those pixels).
+    RowPoints: Map<int, float>
+    DefaultRowPoints: float
 
     /// The sizes hidden rows / columns go back to, and the outline (groups).
     Axes: SheetAxes
@@ -1732,6 +1744,10 @@ let createEmpty rowCount colCount = {
     DefaultRowHeight = 25.0
     DefaultColumnWidth = 100.0
     MaxDigitWidth = 7.0
+    PrintDigitWidth = 47.0
+    PrintRowScale = 6.05
+    RowPoints = Map.empty
+    DefaultRowPoints = 0.0
     Axes = emptySheetAxes
     SearchQuery = None
     SearchCaseSensitive = None
