@@ -701,7 +701,8 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
     let columns =
         // (Column 16384 is the last: one moved past it by an insertion is gone, as in Excel.)
         Set.unionMany [ widths |> Map.toSeq |> Seq.map fst |> Set.ofSeq; styleIds |> Map.toSeq |> Seq.map fst |> Set.ofSeq
-                        axis |> Map.toSeq |> Seq.filter (fun (_, (_, level, collapsed)) -> level > 0 || collapsed) |> Seq.map fst |> Set.ofSeq ]
+                        axis |> Map.toSeq |> Seq.filter (fun (_, (_, level, collapsed)) -> level > 0 || collapsed) |> Seq.map fst |> Set.ofSeq
+                        sheet.BestFitColumns ]
         |> Set.filter (fun col -> col < 16384)
         |> Set.toList
     if List.isEmpty columns then ""
@@ -719,6 +720,7 @@ let private colsXml (styles: StyleBook) (sheet: XlsxSheetOut) =
                 match width with
                 | Some value -> yield sprintf "width=\"%s\" customWidth=\"1\"" (invariantFixed value)
                 | None -> ()
+                if Set.contains col sheet.BestFitColumns then yield "bestFit=\"1\""
                 match Map.tryFind col styleIds with
                 | Some id -> yield sprintf "style=\"%d\"" id
                 | None -> ()
@@ -4660,6 +4662,7 @@ let private formattedToWorkbook (sheets: FormattedSheet list) =
               CellSource = XlsxReader.OnDemand<XlsxCellOut list>.Of (s.Rows |> List.mapi (fun r row -> row.Cells |> List.mapi (fun c cell -> convertCell r c cell)) |> List.concat)
               MergedCells = s.MergedCells
               ColumnWidths = []
+              BestFitColumns = Set.empty
               RowHeights = []
               FrozenRows = 0
               FrozenCols = 0

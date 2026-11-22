@@ -321,6 +321,7 @@ checks['print-pages'] = async () => {
         ['tests/real-world/lyric-multifamily.xlsx', 'Replacement-Cost', 1, 54, 'A1:I39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Main', 2, 100, 'A1:I39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Financial Model', 9, 100, 'A1:I55'], // (Excel 2019's PDF: 9 - its last page has nothing on it.)
+        ['tests/test-documents-excel/synthetic-print-pages-bestfit-refit.xlsx', 'NarrowTrigger', 2, 100, 'B1:C2'],
     ];
     for (const file of [...new Set(expected.map((e) => e[0]))]) {
         const { grid, close } = mountGrid();

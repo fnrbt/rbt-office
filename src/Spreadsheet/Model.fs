@@ -1568,6 +1568,8 @@ type SpreadsheetModel = {
 
     /// Custom column widths (default 100.0)
     ColumnWidths: Map<int, float>
+    /// Imported `<col bestFit="1"/>` columns, until explicitly resized.
+    BestFitColumns: Set<int>
 
     /// The height of a row and the width of a column that has none of its
     /// own, in pixels: 25 and 100, or what the sheet of a file says every
@@ -1579,6 +1581,9 @@ type SpreadsheetModel = {
     /// The maximum digit width of the workbook's Normal font (its first font) in pixels, the unit of a
     /// file's column widths: 7 for Calibri 11 and Arial 10, 9 for Arial 12 (`FontMetrics.maxDigitWidth`).
     MaxDigitWidth: float
+    /// The imported Normal style's face and point size, used in print AutoFit widths.
+    NormalFontName: string
+    NormalFontSize: float
     /// What one level of a cell's indent is, pixels: three spaces of the workbook's Normal font, whatever the
     /// cell's own font (Excel 2019: 9 px a level for Calibri 11, 12 for Arial 12, 21 for Verdana 14 as the Normal
     /// font; the same in cells of Calibri 16, Arial 10, Times New Roman 12, Verdana 10).
@@ -1839,9 +1844,12 @@ let createEmpty rowCount colCount = {
     FilterHiddenRows = [||]
     RowHeights = Map.empty
     ColumnWidths = Map.empty
+    BestFitColumns = Set.empty
     DefaultRowHeight = 25.0
     DefaultColumnWidth = 100.0
     MaxDigitWidth = 7.0
+    NormalFontName = "Calibri"
+    NormalFontSize = 11.0
     IndentUnit = 9.0
     PrintDigitWidth = 47.0
     PrintRowScale = 6.05
@@ -4439,6 +4447,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         ColCount = if onRows then model.ColCount else max 1 (model.ColCount + delta)
         RowHeights = if onRows then inserted model.RowHeights else model.RowHeights
         ColumnWidths = if onRows then model.ColumnWidths else inserted model.ColumnWidths
+        BestFitColumns = if onRows || model.BestFitColumns.IsEmpty then model.BestFitColumns else model.BestFitColumns |> Seq.choose moveIndex |> Set.ofSeq
         Axes =
             (let axes = model.Axes
              if obj.ReferenceEquals(axes, emptySheetAxes) then axes
@@ -4564,6 +4573,9 @@ let getColumnWidth (col: int) (model: SpreadsheetModel): float =
 
 /// Set column width
 let setColumnWidth (col: int) (width: float) (model: SpreadsheetModel): SpreadsheetModel =
+    let model =
+        if Set.contains col model.BestFitColumns then { model with BestFitColumns = Set.remove col model.BestFitColumns }
+        else model
     if width = model.DefaultColumnWidth then
         if Map.containsKey col model.ColumnWidths then { model with ColumnWidths = Map.remove col model.ColumnWidths } else model
     else

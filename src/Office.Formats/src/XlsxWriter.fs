@@ -482,6 +482,7 @@ type XlsxSheetOut = {
     CellSource: XlsxReader.OnDemand<XlsxCellOut list>
     MergedCells: MergedCellRange list
     ColumnWidths: (int * float) list
+    BestFitColumns: Set<int>
     RowHeights: (int * float) list
     FrozenRows: int
     FrozenCols: int
@@ -712,6 +713,11 @@ let packageFromReaderWorkbook (workbook: XlsxReader.Workbook) : XlsxWorkbookOut 
                         match c.Width with
                         | Some width -> [ for i in c.Index - 1 .. c.MaxIndex - 1 -> i, width ]
                         | None -> [])
+              BestFitColumns =
+                sheet.Columns
+                |> List.filter (fun c -> c.BestFit)
+                |> List.collect (fun c -> [ for i in c.Index - 1 .. c.MaxIndex - 1 -> i ])
+                |> Set.ofList
               RowHeights =
                 sheet.RowSource.Headers
                 |> List.choose (fun r ->

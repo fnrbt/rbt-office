@@ -121,6 +121,7 @@ let sameSheetContent (x: SpreadsheetModel) (y: SpreadsheetModel) =
     obj.ReferenceEquals(x, y) ||
     (obj.ReferenceEquals(x.Cells, y.Cells) && obj.ReferenceEquals(x.RichRuns, y.RichRuns)
      && obj.ReferenceEquals(x.RowHeights, y.RowHeights) && obj.ReferenceEquals(x.ColumnWidths, y.ColumnWidths)
+     && obj.ReferenceEquals(x.BestFitColumns, y.BestFitColumns)
      && x.DefaultRowHeight = y.DefaultRowHeight
      && x.DefaultColumnWidth = y.DefaultColumnWidth
      && sameAxes x.Axes y.Axes && obj.ReferenceEquals(x.Validations, y.Validations)
@@ -409,6 +410,7 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
                 RichRuns = patchMap eqOption was.RichRuns becomes.RichRuns now.RichRuns
                 RowHeights = patchMap eqOption was.RowHeights becomes.RowHeights now.RowHeights
                 ColumnWidths = patchMap eqOption was.ColumnWidths becomes.ColumnWidths now.ColumnWidths
+                BestFitColumns = chooseRef was.BestFitColumns becomes.BestFitColumns now.BestFitColumns
                 DefaultRowHeight = choose was.DefaultRowHeight becomes.DefaultRowHeight now.DefaultRowHeight
                 DefaultColumnWidth = choose was.DefaultColumnWidth becomes.DefaultColumnWidth now.DefaultColumnWidth
                 Axes = choose was.Axes becomes.Axes now.Axes

@@ -1048,6 +1048,7 @@ module Import =
             | Some width when width > 0.0 -> columnPx width
             | _ -> FontMetrics.baseColumnWidthPx mdw (sheet.Format.BaseColWidth |> Option.defaultValue 8.0)
         let mutable columnWidths = Map.empty<int, float>
+        let mutable bestFitColumns = Set.empty<int>
         // (The columns the file sizes, past the cells too: a `<col>` to the last column says what the
         // columns after the others have, `DefaultColumnWidth`.)
         let sizedCount =
@@ -1061,6 +1062,8 @@ module Import =
                     let width = if column.Hidden then 0.0 else column.Width |> Option.defaultValue 0.0 |> columnPx
                     for col = first to last do
                         widths.[col] <- width
+                        if column.BestFit then bestFitColumns <- Set.add col bestFitColumns
+                        else bestFitColumns <- Set.remove col bestFitColumns
             for col in 0 .. sizedCount - 1 do
                 if widths.[col] > 0.0 then columnWidths <- Map.add col widths.[col] columnWidths
         // Row heights: points in the file, whole pixels in the model (cut down: 20 pt is 26 px). A row
@@ -1300,11 +1303,14 @@ module Import =
                 MergedCells = merged
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
+                BestFitColumns = bestFitColumns
                 // (What the sheet says every row and column has: the rows and columns past the
                 // file's are of that size too. A sheet that hides every row - a default of 0 -
                 // keeps the grid's own.)
                 DefaultRowHeight = (if defaultRowPx > 0.0 then defaultRowPx else 25.0)
                 MaxDigitWidth = mdw
+                NormalFontName = defaultArg defaultFace "Calibri"
+                NormalFontSize = defaultPoints
                 IndentUnit = indentUnitOf (defaultFace |> Option.defaultValue "Calibri") defaultPoints mdw
                 PrintDigitWidth = ExcelText.printDigitWidth (defaultArg defaultFace "Calibri") defaultPoints
                 RowPoints = rowPoints
@@ -2058,6 +2064,7 @@ module Export =
           CellSource = XlsxWriter.sheetCells cells
           MergedCells = model.MergedCells |> List.map (fun m -> ({ StartRow = m.StartRow; StartCol = m.StartCol; EndRow = m.EndRow; EndCol = m.EndCol } : XlsxWriter.MergedCellRange))
           ColumnWidths = model.ColumnWidths |> Map.toList |> List.map (fun (c, px) -> c, FontMetrics.columnWidthOfPx model.MaxDigitWidth px)
+          BestFitColumns = model.BestFitColumns
           RowHeights = model.RowHeights |> Map.toList |> List.map (fun (r, px) -> r, px * 0.75)
           FrozenRows = model.FrozenRows
           FrozenCols = model.FrozenCols
@@ -2981,7 +2988,7 @@ module Export =
         sameRef before model
         || (sameRef before.Cells model.Cells
             && sameRef before.RichRuns model.RichRuns
-            && same (fun m -> m.RowHeights) && same (fun m -> m.ColumnWidths) && same (fun m -> m.Axes)
+            && same (fun m -> m.RowHeights) && same (fun m -> m.ColumnWidths) && same (fun m -> m.BestFitColumns) && same (fun m -> m.Axes)
             // (How many rows and columns the grid offers is not the file's to say: see the grid's `giveRoom`.)
             && before.StructureVersion = model.StructureVersion
             && same (fun m -> m.MergedCells) && same (fun m -> m.ConditionalFormats) && same (fun m -> m.Validations)
@@ -3095,7 +3102,7 @@ module Export =
                          || before.ShowGridLines <> model.ShowGridLines || before.ShowHeaders <> model.ShowHeaders || before.ShowFormulas <> model.ShowFormulas
                          || before.ShowZeros <> model.ShowZeros || before.Zoom <> model.Zoom || before.Axes.ShowSymbols <> model.Axes.ShowSymbols then yield "sheetViews"
                       if levelsOf before.Axes.RowLevels <> levelsOf model.Axes.RowLevels || levelsOf before.Axes.ColLevels <> levelsOf model.Axes.ColLevels then yield "sheetFormatPr"
-                      if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.ColumnStyles))
+                      if not (same (fun m -> m.ColumnWidths)) || not (same (fun m -> m.BestFitColumns)) || not (same (fun m -> m.ColumnStyles))
                          || not (sameMap before.Axes.HiddenColSizes model.Axes.HiddenColSizes) || not (sameMap before.Axes.ColLevels model.Axes.ColLevels)
                          || before.Axes.CollapsedCols <> model.Axes.CollapsedCols then yield "cols"
                       if not (same (fun m -> m.AutoFilter)) || not (same (fun m -> m.Filters)) then yield "autoFilter"

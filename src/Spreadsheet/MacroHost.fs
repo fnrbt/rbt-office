@@ -1064,9 +1064,12 @@ type private RangeState(book: MacroWorkbook, r: RangeRef, lines: int, areas: Ran
             else Math.Floor((256.0 * width + Math.Floor (128.0 / mdw)) / 256.0 * mdw) + padding
         if wholeRows then
             // Every column: the sheet's default width.
-            book.ChangeModel(r.Sheet, fun m -> { m with DefaultColumnWidth = px; ColumnWidths = Map.empty })
+            book.ChangeModel(r.Sheet, fun m -> { m with DefaultColumnWidth = px; ColumnWidths = Map.empty; BestFitColumns = Set.empty })
         else
-            book.ChangeModel(r.Sheet, fun m -> { m with ColumnWidths = [ r.Left .. r.Right ] |> List.fold (fun acc c -> Map.add c px acc) m.ColumnWidths })
+            book.ChangeModel(r.Sheet, fun m ->
+                { m with
+                    ColumnWidths = [ r.Left .. r.Right ] |> List.fold (fun acc c -> Map.add c px acc) m.ColumnWidths
+                    BestFitColumns = if m.BestFitColumns.IsEmpty then m.BestFitColumns else m.BestFitColumns |> Set.filter (fun col -> col < r.Left || col > r.Right) })
             book.Grow(r.Sheet, 0, r.Right)
     member _.RowHeight() =
         let px = book.Model(r.Sheet).RowHeights |> Map.tryFind r.Top |> Option.defaultValue (book.Model(r.Sheet).DefaultRowHeight)

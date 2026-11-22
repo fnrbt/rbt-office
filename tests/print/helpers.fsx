@@ -363,6 +363,64 @@ do
                 (pagination.Pages.Length = excelPages && starts (fun page -> page.RowStart) = excelRows && starts (fun page -> page.ColStart) = excelCols)
                 (sprintf "pages %d (Excel %d), rows %A (%A), columns %A (%A), scale %g" pagination.Pages.Length excelPages
                     (starts (fun page -> page.RowStart)) excelRows (starts (fun page -> page.ColStart)) excelCols pagination.Scale))
+    let refitBook = System.IO.Path.Combine(dir, "synthetic-print-pages-bestfit-refit.xlsx")
+    let refit = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes refitBook) |> Option.get)
+    let wide, narrow, textOnly = refit.Sheets.[0].Model, refit.Sheets.[1].Model, refit.Sheets.[2].Model
+    let screen = Pagination.withBestFitWidths
+    ok "print bestFit: imported flags" (Set.contains 1 wide.BestFitColumns && Set.contains 4 narrow.BestFitColumns && Set.contains 1 textOnly.BestFitColumns) ""
+    ok "print bestFit: no narrow number" (getColumnWidth 1 (screen wide) = 84.0 && getColumnWidth 3 (screen wide) = 84.0) ""
+    ok "print bestFit: whole numeric sheet re-fits"
+        ([ 1; 2; 3 ] |> List.forall (fun col -> getColumnWidth col (screen narrow) = 85.0)
+         && getColumnWidth 4 (screen narrow) = 19.0
+         && getColumnWidth 1 (screen textOnly) = getColumnWidth 1 textOnly
+         && getColumnWidth 2 (screen textOnly) = 85.0)
+        (sprintf "wide %A narrow %A text %A" (screen wide).ColumnWidths (screen narrow).ColumnWidths (screen textOnly).ColumnWidths)
+    // Excel 2019's trigger sweep (print scale 41 and 100 alike): a Calibri 12 General 2010
+    // at 37 px starts re-fitting the entire sheet (51 px; a wide companion 96 -> 97);
+    // at 38 px nothing is re-fitted, even though the 60%-zoom target is still 51.
+    let number format value = { Value = CellValue.Number value; Format = format; Comment = None }
+    let calibri12 = { defaultFormat with FontName = Some "Calibri"; FontSize = Some 12.0 }
+    let boundary =
+        { createEmpty 4 4 with
+            NormalFontName = "Calibri"; NormalFontSize = 12.0; MaxDigitWidth = 8.0
+            BestFitColumns = Set.ofList [ 0; 1 ]
+            ColumnWidths = Map.ofList [ 0, 37.0; 1, 96.0 ]
+            Cells = Map.ofList [ { Row = 0; Col = 0 }, number calibri12 2010.0
+                                 { Row = 0; Col = 1 }, number calibri12 1.0 ] }
+    let at37 = screen boundary
+    let at38 = screen { boundary with ColumnWidths = Map.add 0 38.0 boundary.ColumnWidths }
+    ok "print bestFit: screen trigger at 37 not 38"
+        (getColumnWidth 0 at37 = 51.0 && getColumnWidth 1 at37 = 97.0
+         && getColumnWidth 0 at38 = 38.0 && getColumnWidth 1 at38 = 96.0)
+        (sprintf "at37 %A at38 %A" at37.ColumnWidths at38.ColumnWidths)
+    let boldNumber = { calibri12 with Bold = true; NumberFormat = Some "#,##0" }
+    let boldCells = Map.add { Row = 0; Col = 0 } (number boldNumber 785977.0) boundary.Cells
+    let boldBoundary = { boundary with Cells = boldCells; ColumnWidths = Map.add 0 57.0 boundary.ColumnWidths }
+    let at57 = screen boldBoundary
+    let at58 = screen { boldBoundary with ColumnWidths = Map.add 0 58.0 boldBoundary.ColumnWidths }
+    ok "print bestFit: formatted trigger at 57 not 58"
+        (getColumnWidth 0 at57 = 91.0 && getColumnWidth 1 at57 = 97.0
+         && getColumnWidth 0 at58 = 58.0 && getColumnWidth 1 at58 = 96.0)
+        (sprintf "at57 %A at58 %A" at57.ColumnWidths at58.ColumnWidths)
+    ok "print bestFit: refit changes the break"
+        ((Pagination.paginatePrinted wide).Pages.Length = 1
+         && (Pagination.paginatePrinted narrow).Pages.Length = 2
+         && (Pagination.paginatePrinted narrow).Pages.[1].ColStart = 3)
+        (sprintf "wide %A narrow %A" (Pagination.paginatePrinted wide).Pages (Pagination.paginatePrinted narrow).Pages)
+    let resized = Rbt.Spreadsheet.SheetOps.setAxisSize false 1 1 40.0 narrow
+    let moved = insertColumn 1 narrow
+    ok "print bestFit: resize clears flag, insert moves it"
+        (not (Set.contains 1 resized.BestFitColumns) && Set.contains 2 resized.BestFitColumns
+         && not (Set.contains 1 moved.BestFitColumns) && Set.contains 2 moved.BestFitColumns && Set.contains 5 moved.BestFitColumns) ""
+    let output = Rbt.Spreadsheet.XlsxBridge.Export.toWorkbookOut
+                    { Sheets = [| wide; resized; textOnly |]
+                      Names = [| "WideOnly"; "NarrowTrigger"; "TextOnly" |]
+                      Visible = [| true; true; true |]
+                      ActiveSheetIndex = 0; NameInfo = Map.empty; DefinedNames = Map.empty
+                      Source = Some refit.Source; Macros = None; MacroProject = None }
+    let saved = XlsxReader.loadBytesNative (XlsxPackageWriter.writeWorkbookPackageBytes output) |> Option.get
+    let keptFlag col = saved.Sheets.[1].Columns |> List.exists (fun c -> c.Index <= col && c.MaxIndex >= col && c.BestFit)
+    ok "print bestFit: save clears resized flag" (not (keptFlag 2) && keptFlag 3 && keptFlag 5) ""
     ok "print pages: the fixtures were read" (sheets >= 40) (sprintf "%d sheets" sheets)
     // The sizes: a column of 64 px of Calibri 11 (7 px a digit on the screen, 47 dots in print) prints at 430 dots; 12 px of
     // Arial 10 (46) at 79; 12 px of Calibri 12 (8, 51) at 77 (76.5 up); a row of 20 px of Calibri 11 at 121 dots, of 546 px at 3303.

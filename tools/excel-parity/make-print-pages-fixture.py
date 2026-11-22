@@ -221,6 +221,20 @@ def sets():
     ]
     # (TwoCells: a second, longer number below two of them, a long text below another.)
     out['bestfit-chars'][-1]['cells'] += [(3, c, 1234567, cs('0')) for c in (3, 5)] + [(3, 4, 'a long text in the column', 0)]
+    # A single too-narrow numeric bestFit column activates re-fitting all numeric bestFit columns:
+    # even a 12-character-wide column of "1" gains a screen pixel. The narrow printable width
+    # fits three 84-px columns on one page, but splits three 85-px columns across two.
+    refit_margins = '<pageMargins left="4.08" right="4.08" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'
+    def refit(name, widths, values):
+        return sheet(name, [(2, c, values[c - 2], 0) for c in range(2, len(widths) + 2)],
+                     cols={c: (w, 'bestFit') for c, w in enumerate(widths, 2)},
+                     names=[('_xlnm.Print_Area', f'{name}!$B$1:${col_letter(len(widths) + 1)}$2')],
+                     setup='<pageSetup paperSize="1" orientation="landscape"/>', margins=refit_margins)
+    out['bestfit-refit'] = [
+        refit('WideOnly', [12, 12, 12], [1, 1, 1]),
+        refit('NarrowTrigger', [12, 12, 12, 1], [1, 1, 1, 1]),
+        refit('TextOnly', [1, 12, 12, 1], ['a long text', 1, 1, 1]),
+    ]
     # Every border style in print: a box of each round cells B:F of its row (rows 2, 4, ... in BORDER_STYLES' order),
     # no gridlines; a row of each style 4 columns long under a cell's bottom only (rows 30, 32, ...).
     out['borders'] = [

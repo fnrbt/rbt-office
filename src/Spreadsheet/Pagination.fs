@@ -360,6 +360,107 @@ let paginate (model: SpreadsheetModel) : Pagination =
           RepeatCols = ps.RepeatCols }
     result
 
+/// Excel 2019 re-fits `bestFit` columns when Page Break Preview lays out a sheet. Only numbers participate;
+/// if none needs more than its stored width, the sheet keeps every width. If one does, every participating
+/// column gets at least one pixel beyond its stored width. The needed width is the larger of its font at
+/// 100 % and 60 % zoom (the latter is often Small Fonts), including that font's digit-based padding.
+/// Measured on bestfit-sweep, bestfit-figures (15 Normal fonts), and bestfit-chars in Excel 2019.
+let withBestFitWidths (model: SpreadsheetModel) : SpreadsheetModel =
+    if model.BestFitColumns.IsEmpty || Map.isEmpty model.Cells then model
+    else
+        let needed = System.Collections.Generic.Dictionary<int, float>()
+        let faceOf (name: string) =
+            if name.EndsWith(" MT", System.StringComparison.OrdinalIgnoreCase) then name.Substring(0, name.Length - 3) else name
+        let zooms = [| 1.0; 0.6 |]
+        let normalFace = faceOf model.NormalFontName
+        let normalDigits =
+            zooms |> Array.map (fun zoom ->
+                let px = Rbt.Spreadsheet.ExcelText.pixelSize model.NormalFontSize zoom
+                let small = Rbt.Spreadsheet.ExcelText.isSmallFonts model.NormalFontSize zoom
+                let mutable widest = 0
+                for digit in int '0' .. int '9' do
+                    match Rbt.Spreadsheet.ExcelText.advance normalFace false false px small digit with
+                    | ValueSome width -> widest <- max widest width
+                    | ValueNone -> ()
+                widest)
+        let fittedWidth (format: CellFormat) (text: string) (figures: int) =
+            let face = faceOf (defaultArg format.FontName model.NormalFontName)
+            let points = defaultArg format.FontSize model.NormalFontSize
+            let mutable widest = 0.0
+            let mutable screenFit = 0.0
+            for pass = 0 to zooms.Length - 1 do
+                let zoom = zooms.[pass]
+                let px = Rbt.Spreadsheet.ExcelText.pixelSize points zoom
+                let small = Rbt.Spreadsheet.ExcelText.isSmallFonts points zoom
+                let advance = Rbt.Spreadsheet.ExcelText.advance face format.Bold format.Italic px small
+                let mutable mdw = 0
+                for digit in int '0' .. int '9' do
+                    match advance digit with
+                    | ValueSome width -> mdw <- max mdw width
+                    | ValueNone -> ()
+                if mdw > 0 then
+                    let mutable extent = 0
+                    let mutable measured = true
+                    if figures > 0 then extent <- figures * mdw
+                    else
+                        for ch in text do
+                            match advance (int ch) with
+                            | ValueSome width -> extent <- extent + width
+                            | ValueNone -> measured <- false
+                    if measured then
+                        // The long-line adjustment is in the measuring font's pixels, before undoing the zoom.
+                        // Its 4-digit step uses Normal's digit width at that zoom, not the cell's font:
+                        // a 60%-zoom Small Fonts extent of 60/80/100 in Calibri 11 gains 1/2/3 pixels.
+                        let longExtra =
+                            let normal = normalDigits.[pass]
+                            if normal > 0 then max 0 (extent / (4 * normal) - 2) else 0
+                        let padding = 2.0 + 2.0 * System.Math.Ceiling(float mdw / 4.0)
+                        let boldSmall = if small && format.Bold then 2.0 else 0.0
+                        let width = 1.0 + System.Math.Floor((float (extent + longExtra) + padding + boldSmall) / zoom + 0.5)
+                        if pass = 0 then screenFit <- width
+                        widest <- max widest width
+            struct (screenFit, widest)
+        let mutable grow = false
+        for KeyValue(addr, data) in model.Cells do
+            if Set.contains addr.Col model.BestFitColumns && getColumnWidth addr.Col model > 0.0 then
+                match unwrapFormulaValue data.Value with
+                | Number number ->
+                    let format = data.Format
+                    let code = defaultArg format.NumberFormat "General"
+                    let general = code.Equals("General", System.StringComparison.OrdinalIgnoreCase) || System.String.IsNullOrWhiteSpace code
+                    let shown = Rbt.Spreadsheet.CellText.formatNumberWithCodeIn model.Date1904 code number
+                    if not (System.String.IsNullOrEmpty shown) then
+                        let figures, text =
+                            if general then
+                                let mutable count = 0
+                                let mutable i = 0
+                                while i < shown.Length && shown.[i] <> '.' && shown.[i] <> 'E' && shown.[i] <> 'e' do
+                                    if System.Char.IsDigit shown.[i] then count <- count + 1
+                                    i <- i + 1
+                                max 1 count, ""
+                            else
+                                let lead, trail = Rbt.Spreadsheet.CellText.widthPads format data.Value
+                                if lead.Length + trail.Length <= shown.Length then
+                                    0, lead + shown.Substring(lead.Length, shown.Length - lead.Length - trail.Length) + trail
+                                else 0, shown
+                        let struct (screenFit, width) = fittedWidth format text figures
+                        if width > 0.0 then
+                            // Excel triggers the sheet-wide refit only when the 100%-zoom measurement
+                            // *before* its one-pixel column bias exceeds the stored width. At Calibri 12,
+                            // General 2010 triggers at 37 px, not at 38, although its 60% fit is 51 px.
+                            if screenFit - 1.0 > getColumnWidth addr.Col model then grow <- true
+                            match needed.TryGetValue addr.Col with
+                            | true, previous when previous >= width -> ()
+                            | _ -> needed.[addr.Col] <- width
+                | _ -> ()
+        if not grow then model
+        else
+            let mutable widths = model.ColumnWidths
+            for KeyValue(col, width) in needed do
+                let stored = getColumnWidth col model
+                widths <- Map.add col (max (stored + 1.0) width) widths
+            { model with ColumnWidths = widths }
+
 /// The width a column prints at, in pixels: Excel 2019's PDF sets a column of `width` pixels on the screen
 /// (`FontMetrics.columnWidthPx`, whole pixels of the Normal font's maximum digit width `mdw`) at `printDigit` / `mdw`
 /// dots of 600 dpi a pixel, `printDigit` the widest digit of the Normal font in print (`ExcelText.printDigitWidth`),
@@ -390,6 +491,7 @@ let exactRowPx (points: float) (px: float) : float =
 
 /// The sheet with its rows and columns at the sizes they print at.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
+    let model = withBestFitWidths model
     { model with
         DefaultRowHeight = printRowHeightPx model.PrintRowScale (exactRowPx model.DefaultRowPoints model.DefaultRowHeight)
         DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth

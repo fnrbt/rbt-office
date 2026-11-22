@@ -714,6 +714,7 @@ let private remapPrintRowHeightsDirect (model: SpreadsheetModel) maxRow values =
     mapped
 
 let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
+    let model = Pagination.withBestFitWidths model
     // (Every column, the default width too: `Pagination.printColumnWidthPx`.)
     let widths =
         match maxPrintCol with

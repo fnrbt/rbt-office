@@ -5510,7 +5510,7 @@ type Spreadsheet(container: Element) as this =
         pageNodes.Clear()
         if viewMode = "pageBreak" && not sheetLocked && not (isDeferredSheet model) then
             // (Worked out again when what the pages depend on changed: cells, sizes, merges, the page setup.)
-            let key : obj array = [| box model.Cells; box model.PageSetup; box model.RowHeights; box model.ColumnWidths; box model.MergedCells; box model.Drawings |]
+            let key : obj array = [| box model.Cells; box model.PageSetup; box model.RowHeights; box model.ColumnWidths; box model.BestFitColumns; box model.MergedCells; box model.Drawings |]
             let pagination =
                 match pagesKnown with
                 | Some (known, rowDefault, colDefault, pages)

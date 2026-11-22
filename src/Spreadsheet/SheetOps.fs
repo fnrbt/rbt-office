@@ -1383,7 +1383,11 @@ let rec setAxisSize (rows: bool) (first: int) (last: int) (size: float) (model: 
                 | None when isDefault -> ()
                 | _ -> sizes <- Map.add index size sizes
                 if not kept.IsEmpty && Map.containsKey index kept then kept <- Map.remove index kept
-            withAxis rows sizes kept model
+            let model = withAxis rows sizes kept model
+            if rows || model.BestFitColumns.IsEmpty then model
+            else
+                let remaining = model.BestFitColumns |> Set.filter (fun col -> col < first || col > last)
+                if remaining.Count = model.BestFitColumns.Count then model else { model with BestFitColumns = remaining }
 
 /// Hide the rows / columns `first..last`: each keeps the size it had for
 /// when it is shown again.

@@ -200,6 +200,8 @@ type ColumnInfo = {
     MaxIndex: int
     Width: float option
     Hidden: bool
+    /// Excel re-fits numeric cells in this column when laying out print pages.
+    BestFit: bool
     /// `outlineLevel` (0 = in no group) and `collapsed`.
     OutlineLevel: int
     Collapsed: bool
@@ -2774,6 +2776,7 @@ module Xlsx =
                 MaxIndex = maxIdx
                 Width = width
                 Hidden = hidden
+                BestFit = Xml.attr "bestFit" colNode |> Option.map isTrueText |> Option.defaultValue false
                 OutlineLevel = Xml.attr "outlineLevel" colNode |> Option.bind tryParseInt |> Option.defaultValue 0
                 Collapsed = Xml.attr "collapsed" colNode |> Option.map isTrueText |> Option.defaultValue false
                 Style = style
@@ -3270,6 +3273,7 @@ module Xlsx =
                 MaxIndex = maxIdx
                 Width = nativeFloatAttr reader "width"
                 Hidden = nativeBoolAttr reader "hidden"
+                BestFit = nativeBoolAttr reader "bestFit"
                 OutlineLevel = nativeIntAttr reader "outlineLevel" |> Option.defaultValue 0
                 Collapsed = nativeBoolAttr reader "collapsed"
                 Style = nativeIntAttr reader "style"
