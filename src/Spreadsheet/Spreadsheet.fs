@@ -967,8 +967,9 @@ type Spreadsheet(container: Element) as this =
     // button per group and the level buttons (1, 2, 3 ...). The strips are part
     // of the header area (`rowHeaderWidth` / `headerHeight` include them).
     let mutable showOutline = true
-    /// The width of one level of the strip (a 13 px button and its gap).
-    let outlineStep = 15.0
+    /// The width of one level of the strip, as Excel 2019's at 100 %: a column of 19 px for each level and one
+    /// more, 5 px to spare (62 px beside the row numbers for two levels of groups, 81 for three; synthetic-outline).
+    let outlineStep = 19.0
     /// The width of the rows' strip and the height of the columns' one, as drawn (0: none).
     let mutable gutterWidth = 0.0
     let mutable gutterHeight = 0.0
@@ -2228,15 +2229,15 @@ type Spreadsheet(container: Element) as this =
             outlineRowDepth <- SheetOps.outlineDepth true model
             outlineColDepth <- SheetOps.outlineDepth false model
         // (A sheet draws its strips with or without its headers, unless it hides the outline's symbols.)
-        let strip (depth: int) = if showOutline && model.Axes.ShowSymbols && depth > 0 then float (depth + 1) * outlineStep + 3.0 else 0.0
+        let strip (depth: int) = if showOutline && model.Axes.ShowSymbols && depth > 0 then float (depth + 1) * outlineStep + 5.0 else 0.0
         let wantedWidth = strip outlineRowDepth
         let wantedHeight = strip outlineColDepth
         if model.ShowHeaders <> appliedHeaders || wantedWidth <> gutterWidth || wantedHeight <> gutterHeight then
             appliedHeaders <- model.ShowHeaders
             gutterWidth <- wantedWidth
             gutterHeight <- wantedHeight
-            headBand <- if appliedHeaders then 30.0 elif gutterWidth > 0.0 then outlineStep + 3.0 else 0.0
-            sideBand <- if appliedHeaders then 50.0 elif gutterHeight > 0.0 then outlineStep + 3.0 else 0.0
+            headBand <- if appliedHeaders then 30.0 elif gutterWidth > 0.0 then outlineStep + 1.0 else 0.0
+            sideBand <- if appliedHeaders then 50.0 elif gutterHeight > 0.0 then outlineStep + 1.0 else 0.0
             headerHeight <- headBand + gutterHeight
             rowHeaderWidth <- sideBand + gutterWidth
             match cornerElement with
@@ -5126,6 +5127,11 @@ type Spreadsheet(container: Element) as this =
                         if frozen > 0 then
                             put layer.FrozenHeaders "spreadsheet-outline-strip" (rect origin prefix.[frozen] 0.0 thickness + stripBackground + edge + "z-index:4") |> ignore
                         let after = SheetOps.summaryAfter rows model
+                        // (As Excel 2019 draws them at 100 %, synthetic-outline: a level's column 19 px from 2 px in; its
+                        // groups' bars 2 px wide, 6 px into the column, a 6-px tick at the end away from the summary; a
+                        // 19-px +/- button at the top of the summary row / column; a 2-px dot in the middle of every
+                        // grouped row / column, in the column of the level below its own, unless a button is there.)
+                        let buttons = System.Collections.Generic.HashSet<int>()
                         for (groupFirst, groupLast, level, collapsed) in groups do
                             let inView = groupFirst < frozen || (groupLast >= first - 1 && groupFirst <= last + 1)
                             if inView && used < 1500 && groupLast < count then
@@ -5134,19 +5140,18 @@ type Spreadsheet(container: Element) as this =
                                 let start = origin + prefix.[groupFirst] - (if groupLast < frozen then 0.0 else shift)
                                 let length = prefix.[groupLast + 1] - prefix.[groupFirst]
                                 if length > 3.0 then
-                                    // The bracket: a line along the group with a tick at its far end.
+                                    // The bar: a line along the group with a tick at the end away from its summary.
                                     let tick =
-                                        if rows then (if after then "border-top:1px solid #666;" else "border-bottom:1px solid #666;") + "border-left:1px solid #666;"
-                                        else (if after then "border-left:1px solid #666;" else "border-right:1px solid #666;") + "border-top:1px solid #666;"
-                                    put parent "spreadsheet-outline-line" (rect (start + 1.0) (length - 2.0) (across + 6.0) 5.0 + tick + "pointer-events:none;z-index:5") |> ignore
+                                        if rows then (if after then "border-top:2px solid #999;" else "border-bottom:2px solid #999;") + "border-left:2px solid #999;"
+                                        else (if after then "border-left:2px solid #999;" else "border-right:2px solid #999;") + "border-top:2px solid #999;"
+                                    put parent "spreadsheet-outline-line" (rect (start + 1.0) (length - 1.0) (across + 6.0) 6.0 + tick + "pointer-events:none;z-index:5") |> ignore
                                 let summary = SheetOps.summaryIndex rows groupFirst groupLast model
                                 if summary >= 0 && summary < count && prefix.[summary + 1] > prefix.[summary] then
-                                    let size = prefix.[summary + 1] - prefix.[summary]
+                                    buttons.Add (summary * 8 + level) |> ignore
+                                    let size = min outlineStep (prefix.[summary + 1] - prefix.[summary])
                                     let buttonParent = if summary < frozen then layer.FrozenHeaders else scrolled
-                                    let button =
-                                        put buttonParent "spreadsheet-outline-button"
-                                            ((if rows then "left:" + px across + ";top:" + px (origin + prefix.[summary] - (if summary < frozen then 0.0 else shift) + (size - 13.0) / 2.0) + ";"
-                                              else "top:" + px across + ";left:" + px (origin + prefix.[summary] - (if summary < frozen then 0.0 else shift) + (size - 13.0) / 2.0) + ";") + cursor)
+                                    let at = origin + prefix.[summary] - (if summary < frozen then 0.0 else shift)
+                                    let button = put buttonParent "spreadsheet-outline-button" (rect at size across size + cursor)
                                     setTextContent button (if collapsed then "+" else "\u2212")
                                     setAttribute button "data-axis" (if rows then "rows" else "columns")
                                     setAttribute button "data-first" (string groupFirst)
@@ -5154,13 +5159,21 @@ type Spreadsheet(container: Element) as this =
                                     setAttribute button "data-level" (string level)
                                     setAttribute button "data-collapsed" (if collapsed then "1" else "0")
                                     setAttribute button "title" (if collapsed then "Expand" else "Collapse")
+                        let levels = if rows then model.Axes.RowLevels else model.Axes.ColLevels
+                        for KeyValue(index, level) in levels do
+                            if level > 0 && level < 8 && used < 1500 && index < count && (index < frozen || (index >= first && index <= last))
+                               && prefix.[index + 1] - prefix.[index] > 2.0 && not (buttons.Contains (index * 8 + level + 1)) then
+                                let parent = if index < frozen then layer.FrozenHeaders else scrolled
+                                let middle = origin + prefix.[index] - (if index < frozen then 0.0 else shift) + System.Math.Floor ((prefix.[index + 1] - prefix.[index]) / 2.0) - 1.0
+                                put parent "spreadsheet-outline-dot" (rect middle 2.0 (float level * outlineStep + 8.0) 2.0 + "background:#999;pointer-events:none;z-index:5") |> ignore
                         // The level buttons, in the corner beside the other axis' headers.
                         for level in 1 .. depth + 1 do
                             let across = float (level - 1) * outlineStep + 2.0
+                            let size = min outlineStep bandSize
                             let button =
                                 put layer.FrozenHeaders "spreadsheet-outline-level"
-                                    ((if rows then "left:" + px across + ";top:" + px (band + (bandSize - 13.0) / 2.0) + ";"
-                                      else "top:" + px across + ";left:" + px (band + (bandSize - 13.0) / 2.0) + ";") + cursor)
+                                    ((if rows then "left:" + px across + ";top:" + px (band + (bandSize - size) / 2.0) + ";"
+                                      else "top:" + px across + ";left:" + px (band + (bandSize - size) / 2.0) + ";") + "width:" + px size + ";height:" + px size + ";" + cursor)
                             setTextContent button (string level)
                             setAttribute button "data-axis" (if rows then "rows" else "columns")
                             setAttribute button "data-level" (string level)
@@ -6086,9 +6099,9 @@ type Spreadsheet(container: Element) as this =
              + ".spreadsheet-container .col-filter-btn{width:16px;height:16px;align-items:center;justify-content:center;cursor:pointer;font-size:10px;border-radius:2px}"
              + ".spreadsheet-container .col-filter-btn:hover{background:#d0d0d0;opacity:1 !important}"
              + ".spreadsheet-container .spreadsheet-outline{position:absolute;box-sizing:border-box;user-select:none;font-family:Arial, sans-serif}"
-             + ".spreadsheet-container .spreadsheet-outline-button,.spreadsheet-container .spreadsheet-outline-level{width:13px;height:13px;border:1px solid #777;background:#fff;color:#333;"
-             + "font-size:10px;line-height:11px;text-align:center;cursor:pointer;z-index:5}"
-             + ".spreadsheet-container .spreadsheet-outline-level{font-size:9px;background:#f8f8f8}"
+             + ".spreadsheet-container .spreadsheet-outline-button,.spreadsheet-container .spreadsheet-outline-level{border:1px solid #999;background:transparent;color:#333;"
+             + "font-size:12px;display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:5}"
+             + ".spreadsheet-container .spreadsheet-outline-level{font-size:11px}"
              + ".spreadsheet-container .col-resize-handle{position:absolute;top:0;right:0;width:4px;height:100%;cursor:col-resize;z-index:10}"
              + ".spreadsheet-container .row-resize-handle{position:absolute;bottom:0;left:0;width:100%;height:4px;cursor:row-resize;z-index:10}")
         appendChild gridDiv sheetStyle

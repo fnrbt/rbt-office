@@ -1644,7 +1644,7 @@ let openWrapLineCount (advance: int -> float) (room: float) (text: string) : int
                     lineStart <- wordStart
                     lineEnd <- wordEnd
                 // A word (or the line it starts) wider than a line is broken between its characters.
-                while lineEnd - lineStart > 1 && text.IndexOf(' ', lineStart, lineEnd - lineStart) < 0 && not (fits lineStart lineEnd) do
+                while lineEnd - lineStart > 1 && (let space = text.IndexOf(' ', lineStart) in space < 0 || space >= lineEnd) && not (fits lineStart lineEnd) do
                     let mutable cut = lineEnd - 1
                     while cut > lineStart + 1 && not (fits lineStart cut) do cut <- cut - 1
                     lines <- lines + 1
