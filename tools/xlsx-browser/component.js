@@ -2391,6 +2391,37 @@ checks['controls-move-excel-parity'] = async () => {
     return lines;
 };
 
+// ActiveX controls drawn from the pictures Excel 2019 keeps of them (synthetic-activex.xlsx from build-activex.vbs, one
+// control of each kind; Emf.svg against Excel's picture of the sheet): a pressed toggle button's and the scroll bars'
+// tracks in a monochrome pattern brush of the text and background colours; an option button's circle a mask (SRCAND)
+// and a picture painted through it (SRCPAINT), its dot drawn; a list box's items cut at its inside
+// (INTERSECTCLIPRECT), the selected one on a filled rectangle (ETO_OPAQUE); text hung from its top by the font's
+// Windows ascent (Calibri 15 px: 14 px), each character at its advance from the record.
+checks['activex-emf-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-activex.xlsx')).slice());
+        await frame(); await frame();
+        const node = (name) => host.querySelector(`.spreadsheet-form-control[title="${name}"] svg`);
+        const toggle = node('ToggleButton1'), option = node('OptionButton1'), list = node('ListBox1'), check1 = node('CheckBox1'), scroll = node('ScrollBar1');
+        check('every control drawn from its picture', [toggle, option, list, check1, scroll].map((n) => !!n), [true, true, true, true, true]);
+        if (toggle) check('the pressed toggle button: a pattern of #FFFFFF and #F0F0F0', toggle.querySelectorAll('pattern').length > 0 && /#F0F0F0/.test(toggle.innerHTML), true);
+        if (scroll) check('the scroll bar\'s track: a pattern', scroll.querySelectorAll('pattern').length > 0, true);
+        if (option) check('the chosen option button: its dot (black pixels through the mask)', [...option.querySelectorAll('rect')].filter((r) => r.getAttribute('fill') === '#000000').length > 0, true);
+        if (list) {
+            check('the list box: its items cut at its inside', list.querySelectorAll('clipPath').length > 0, true);
+            check('... the selected item on #0078D7, in white', [[...list.querySelectorAll('rect')].some((r) => r.getAttribute('fill') === '#0078D7'), [...list.querySelectorAll('text')].find((t) => t.textContent === 'South')?.getAttribute('fill')], [true, '#FFFFFF']);
+        }
+        if (check1) {
+            const text = [...check1.querySelectorAll('text')].find((t) => t.textContent === 'Include tax');
+            check('a caption hung 14 px below its point (Calibri 15 px), at its advances', [Number(text?.getAttribute('y')), (text?.getAttribute('x') ?? '').split(' ').length], [18, 11]);
+        }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 checks['controls-excel-parity'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();
