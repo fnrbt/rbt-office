@@ -533,7 +533,11 @@ ok "Excel 2019: markers in turn - the sixth series' circles (5 points and its ke
 ok "Excel 2019: ... lines that do not say are smoothed (curves)" ((markScene.Items |> List.filter (fun item -> match item with Charts.PPath (d, None, _, Some _, _) -> d.Contains "C" | _ -> false)).Length = 8) "not curves"
 let mark34 = looksScene 12 480.0 300.0
 ok "Excel 2019: ... 8 pt under style 34" (mark34.Items |> List.exists (fun item -> match item with Charts.PEllipse (_, _, rx, _, _, _, _, _) -> abs (rx - 16.0 / 3.0) < 0.01 | _ -> false)) "no 8 pt circle"
-ok "Excel 2019: the seventh and eighth automatic colours are accents 1 and 2 lighter" (let colors = markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None) in colors.Length = 8 && colors.[6] = "#8FAADC") (sprintf "%A" (markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)))
+/// Two colours within a unit of 255 each.
+let nearColor (a: string) (b: string) =
+    let part (hex: string) (at: int) = Convert.ToInt32(hex.Substring(at, 2), 16)
+    a.Length = 7 && b.Length = 7 && [ 1; 3; 5 ] |> List.forall (fun at -> abs (part a at - part b at) <= 1)
+ok "Excel 2019: the seventh and eighth automatic colours of eight: accents 1 and 2 tinted (#8FA2D4), the first six shaded (#3B64AD)" (let colors = markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None) in colors.Length = 8 && nearColor colors.[6] "#8FA2D4" && nearColor colors.[0] "#3B64AD") (sprintf "%A" (markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)))
 // On the ticks: half the first and the last labels in the plot area's box.
 let ticksScene = looksScene 15 480.0 260.0
 let areaLeft (scene: Charts.Scene) = scene.Items |> List.pick (fun item -> match item with Charts.PPolyline (points, Some "#4472C4", _, _, _, _) -> Some (points |> List.map fst |> List.min, points |> List.map fst |> List.max) | _ -> None)
@@ -651,6 +655,20 @@ ok "Excel 2019: a chart of the old API: its title 18 pt bold, its gridlines and 
      && legacy.Axes |> List.exists (fun axis -> axis.Gridlines |> Option.exists (fun g -> g.Paint = Charts.FillColor ("#898989", 1.0)))
      && legacy.Border |> Option.exists (fun b -> b.Paint = Charts.FillColor ("#898989", 1.0)))
     (sprintf "%A" (allTexts legacyScene.Items |> List.truncate 3))
+
+// Automatic colours of many series (synthetic-chart-colors.xlsx, each series' colour through COM): rounds of six
+// shaded and tinted by how many there are.
+let colorsWb, colorsBook, colorsParts, colorsTheme = openBook "test-documents-excel/synthetic-chart-colors.xlsx"
+let seriesColors (number: int) =
+    let chart = Charts.parseChart colorsTheme (text colorsParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get
+    (Charts.layoutChart colorsTheme noData chart 480.0 300.0).Items |> List.choose (fun item -> match item with Charts.PPolyline (_, None, _, Some c, w, _) when w > 1.0 -> Some c | Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)
+let expectColors (number: int) (wanted: (int * string) list) =
+    let colors = seriesColors number
+    wanted |> List.forall (fun (at, color) -> at < colors.Length && nearColor colors.[at] color)
+ok "Excel 2019: 12 series: the first six 0.65 shades (#375DA1), the next the accents; 30: 0.5 .. 0.9 shades, 0.9, 0.7 tints; 36"
+    (expectColors 4 [ 0, "#375DA1"; 6, "#4472C4"; 7, "#ED7D31" ] && expectColors 10 [ 0, "#2F528F"; 6, "#3960A7"; 12, "#406DBB"; 18, "#6D89CB"; 24, "#9EADD8" ]
+     && expectColors 1 [ 0, "#2E4F8B"; 18, "#4472C4"; 20, "#A5A5A5"; 21, "#FFC000" ])
+    (sprintf "%A %A" (seriesColors 4) (seriesColors 10))
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

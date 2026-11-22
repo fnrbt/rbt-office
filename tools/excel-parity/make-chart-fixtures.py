@@ -587,8 +587,42 @@ def build_looks():
     write_book('synthetic-chart-looks.xlsx', rows, charts)
 
 
+def build_colors():
+    """synthetic-chart-colors.xlsx: the automatic colours of line series that state none (no colours part, as these
+    files have none): 36 under chart styles 2 and 34, and 7, 12, 13, 18, 19, 24, 25, 30 of them - each series'
+    colour through COM (`chart-probe.vbs`)."""
+    rows = {}
+
+    def put(c, r, v, s=0):
+        rows.setdefault(r, {})[c] = (v, s)
+
+    n = 36
+    for i in range(4):
+        put(0, i + 1, f'C{i + 1}')
+    put(0, 0, 'Cat')
+    for k in range(n):
+        put(1 + k, 0, f'S{k + 1}')
+        for i in range(4):
+            put(1 + k, i + 1, k + i)
+    cat_ref = str_ref('Charts!$A$2:$A$5', [f'C{i + 1}' for i in range(4)])
+
+    def series(k):
+        letter = col_name(1 + k)
+        return ser(k, f'S{k + 1}', cat_ref, num_ref(f'Charts!${letter}$2:${letter}$5', [k + i for i in range(4)]), '', '<c:smooth val="0"/>')
+    def plot(count):
+        return (f'<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>{"".join(series(k) for k in range(count))}<c:marker val="1"/>'
+                '<c:axId val="1"/><c:axId val="2"/></c:lineChart>' + cat_ax(1, 2) + val_ax(2, 1))
+    charts = [('Colors2', 1, 40, 480, 300, chart_space(plot(n), legend=legend('r'))),
+              ('Colors34', 20, 40, 480, 300, chart_space(plot(n), legend=legend('r'), style=34))]
+    # (How the rounds of six go darker and lighter with the number of series.)
+    for row, count in enumerate([7, 12, 13, 18, 19, 24, 25, 30]):
+        charts.append((f'Count{count}', 40 + 20 * row, 40, 480, 300, chart_space(plot(count), legend=legend('r'))))
+    write_book('synthetic-chart-colors.xlsx', rows, charts)
+
+
 if __name__ == '__main__':
     build()
     build_lines()
     build_looks()
+    build_colors()
 

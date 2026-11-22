@@ -1827,12 +1827,33 @@ let private autoColor (theme: ThemeColors) (index: int) : string =
         let r, g, b = rgbOfHsl (h, s, l)
         "#" + hex2 r + hex2 g + hex2 b
 
+/// The colour of the n-th of `count` series (or points) that state none, under a chart style of the accents in turn,
+/// as Excel 2019 draws a part that has no colours of its own: up to six the accents; more, each round of six a shade or
+/// a tint (in linear light) of them - round p of a chart of n is (p - q / 2) x 1.4 / (q + 2) from the accent, q = n / 6
+/// (whole): below zero a shade, above a tint (synthetic-chart-colors.xlsx through COM, 7 - 36 series: 7 are 0.767 shades
+/// then 0.767 tints - #3B64AD, #8FA2D4 -; 12 are 0.65 shades then the accents; 30 are 0.5, 0.7, 0.9 shades, 0.9, 0.7
+/// tints - each to a unit of 255).
+let private autoColorOf (theme: ThemeColors) (index: int) (count: int) : string =
+    if count <= 6 then autoColor theme index
+    else
+        let name = accents.[((index % 6) + 6) % 6]
+        let hex = Map.tryFind name theme |> Option.orElse (Map.tryFind name defaultTheme) |> Option.defaultValue "4472C4"
+        let q = float (count / 6)
+        let x = (float (max 0 index / 6) - q / 2.0) * 1.4 / (q + 2.0)
+        let toLinear (c: float) = let c = c / 255.0 in if c <= 0.04045 then c / 12.92 else ((c + 0.055) / 1.055) ** 2.4
+        let toSrgb (c: float) = 255.0 * (if c <= 0.0031308 then c * 12.92 else 1.055 * (c ** (1.0 / 2.4)) - 0.055)
+        let vary (c: float) =
+            let linear = toLinear c
+            toSrgb (if x < 0.0 then linear * (1.0 + x) else 1.0 - (1.0 - linear) * (1.0 - x))
+        let r, g, b = rgbOf hex
+        "#" + hex2 (vary r) + hex2 (vary g) + hex2 (vary b)
+
 /// The colour of the n-th of `count` series (or points) under a chart style (`c:style`, 1 .. 48,
 /// in rows of eight): the first of a row is shades of grey, the second the accents in turn, the
 /// others one accent from dark to light.
 let private styleColor (theme: ThemeColors) (style: int) (index: int) (count: int) : string =
     let kind = ((max 1 style - 1) % 8)
-    if kind = 1 then autoColor theme index
+    if kind = 1 then autoColorOf theme index count
     else
         let share = if count <= 1 then 0.5 else float (((index % count) + count) % count) / float (count - 1)
         if kind = 0 then
