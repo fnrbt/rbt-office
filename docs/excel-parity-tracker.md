@@ -354,7 +354,52 @@ rounding), the line's anti-aliasing (ours bleeds a pixel above a peak), sparklin
 (drawn where the file put them); the +/- of a collapsed item is drawn from the lines (an item without lines
 under it shows +), pivot buttons do not respond to clicks, compact-form indents of 2+ levels are the cell's
 indent (Excel's ~12 px a level, ours ~10); pivot tables without `pivotTableStyleInfo` / with custom styles
-are read but not compared with Excel; slicer details (6 above).
+are read but not compared with Excel; slicer details (6 above). (Form controls, ActiveX pictures, slicers, data
+bars and compact indents: since done, "Form controls, slicers, data bars, indents" below.)
+
+## Form controls, slicers, data bars, indents against Excel 2019, 2026-11-22
+
+Items (4)-(6) of the ranking above and the compact-indent finding, each from fixtures made in Excel 2019 on the VM
+(`probe-on-vm.sh`) and pictures of them (`shoot-sheets.ps1` at 100 %) against ours (`shoot-browser-sheets.mjs`),
+compared pixel by pixel: `build-form-controls.vbs` (synthetic-form-controls.xlsx: every form control flat and with
+3-D shading, linked cells, two ActiveX controls; and copies whose linked cells hold other values), `build-slicer-looks.vbs`
+(synthetic-slicer-looks.xlsx: Region slicers sorted up / down, no data in place, hidden, a filtering Product slicer,
+an unfiltered two-column one), `make-timeline-variants.py` (synthetic-slicers.xlsx's timeline at 12 selections and
+levels; `SlicerCaches.Add2(..., xlTimeline)` is refused from a script), `build-data-bars.vbs` (synthetic-data-bars.xlsx:
+six colours, right to left, negative values with an automatic / middle / no axis, a border), `build-pivot-indent.vbs`
+(synthetic-pivot-indent.xlsx: compact pivots of CompactRowIndent 1-3, in Calibri 11 and 16 cells) and a probe of
+indent levels in five cell fonts under three Normal fonts. Checks: xlsx-browser `controls-excel-parity`,
+`databars-excel-parity`, `indent-excel-parity`; tests/formula stage56-slicers (orders, header buttons, 12 timeline
+wordings); tests/office-formats xlsx-bridge ("controls:": read, and written back byte for byte, edited or not).
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A form control is painted over its anchor grown by a pixel at the left and top (a combo box's, group box's, button's edges on the pixel left of / above the anchor and on its last pixel right / below) | Flat / Shaded: every control's edges | not drawn | `FormControls.svg` over (w + 1) x (h + 1) |
+| Check box / option button: a 13-px box or circle 4 px into the anchor, centred down; flat black, 3-D Windows' sunken edges (#A0A0A0 / #646464 above-left, #F0F0F0 inside right-below); a 7-px check mark or dot 3 px in; mixed: a chequer (flat) or a 7x7 dotted pattern (3-D); the caption (the VML text box's font, Segoe UI 8 here) 20 px into the anchor | pixel maps of both sheets | - | masks of Excel's pixels |
+| Group box: a frame on the rectangle (flat black; 3-D #A0A0A0 with white inside), open for the caption from 8 px to its GDI width + 19, caption baseline 7 px down | "Group box" | - | `svg` "GBox" |
+| Combo box: frame #828790 (flat) or sunken (3-D), a raised button 23 px wide (`dx` 22 + 1) with an 11 x 6 arrow, the item in Tahoma 8; list box: black frame (flat), items 13 px apart from 3 px down, the selected #0078D7 / white, a 21-px scroll bar (thumb visible / items of the track) when they do not fit, items cut at the frame | Drop / List | - | `svg` "Drop" / "List" |
+| Spinner: two classic raised buttons (#F0F0F0 / white, #A0A0A0 / black) with black arrows; scroll bar: Windows 10's flat look with or without shading - white line along its top (left), track #F0F0F0, #606060 chevrons in square buttons of its thickness, thumb #CDCDCD thickness - 13 px long at value / (max - min) of the track | Spin / Scroll at 70 % and 7/10 | - | `svg` "Spin" / "Scroll" |
+| Button: #F0F0F0 with #A0A0A0 / #646464 at the right and bottom, its caption (Calibri 11 here) centred | Button 1 | - | `svg` "Button" (its macro runs on a click) |
+| What a control shows is its linked cell's, not the state saved in `ctrlProps` (`checked`, `sel`, `val`): TRUE or a number not 0 checks a check box, FALSE / 0 clears it, #N/A makes it mixed; an option group, combo or list box selects the item the number's whole part gives (0 or past the buttons: none; past a combo's items: its last); a scroll bar's value is the number kept to min .. max; text or an empty cell: the saved state | 4 copies of the Flat sheet with other cell values (1, -2, 0, #N/A, "x", empty, 0 / 7 / 12, 2.7, -5, 150) | - | `FormControls.checkedOf` / `selectedOf` / `valueOf`; option groups = the smallest group box a button lies in (else the sheet), in file order |
+| A click: a check box toggles TRUE / FALSE, an option button writes its place, a list item its number, a combo box drops its list (DropLines items) and writes the item picked, a spinner's / scroll bar's arrows step by `inc`, the track by `page`, kept to min .. max - as an entry of the cell (one undo step; a linked cell on another sheet too) | (interaction: no Excel picture) | - | `pressFormControl`; without a linked cell the state is the grid's own |
+| An ActiveX control is shown by its picture (`controlPr r:id`, an EMF of Excel's drawing: fills by brush, text, a DIB) | the CheckBox1 / CommandButton1 pictures | not drawn | `Emf.svg` (EMF records to SVG: mapping, brushes, pens, rectangles, ellipses, polygons, lines, BITBLT / STRETCHDIBITS as BMP, EXTTEXTOUTW) |
+| A slicer's items: those with data first, each part sorted up or down (`sortOrder`); `showItemsWithNoData`: all in their sorted places; `x15:slicerCacheHideItemsWithNoData` (in the cache's own extLst) hides them | RegionUp East North South / Central West; RegionDown South North East / West Central; RegionInPlace; RegionHide | the no-data items of a hiding cache shown (the extension looked for in `<tabular>`) | reader fixed |
+| A slicer's header buttons: Multi-Select (three ticks before lines) 60 px and Clear Filter (a funnel) 28 px left of its right edge, 6 / 7 px down; Clear Filter has a red #D65532 cross while some item is not selected, all light grey (#B0ADB0) while none is filtered | ProductS, RegionUp (red), RegionDown, ProductAll (grey) | none | `Slicers.headerButtons` |
+| A slicer is framed a pixel wider and higher than its anchor; its buttons and header line 9 px in from the frame; buttons of whole pixels (241300 EMU = 25 px, 28 apart) with corners rounded by 2 px; the caption stops before the header's buttons | frames at 12 .. 204 of an anchor 13 .. 204, button edges 21 .. 195 | 10 px in, 25.33 px, square | `objectRect`, `margin`, rounded `PRect` |
+| A timeline's selection label says what both ends share once: "Mar - Dec 2012", "Nov 2012 - Feb 2013", "Jun 2012"; "Q2 - Q3 2012", "Q4 2012 - Q1 2013", "Q2 2012"; "Mar 5 - 20 2012" (no comma), "Mar 28 - Apr 3, 2012", "Dec 30, 2012 - Jan 2, 2013", "Mar 5, 2012"; "2012 - 2013", "2012"; a day level's month labels in capitals ("MAR 2012") | the 12 variants' labels | "Mar 2012 - Dec 2012" | `Slicers.selectionText` |
+| A gradient data bar fades from its colour to 85 % of the way to white, channel by channel (not to white), each pixel the colour at its left edge - Excel 2007-form bars (no x14 part) too | 6 colours: #638EC6 to #E7EEF6, #FF0000 to #FFD9D9, #000080 to #D9D9EC (Excel's last pixel 60/61 of the way) | to white | `ConditionalFormatting.dataBarFadeColor`, gradient stops 0.5 px in |
+| A data bar's room is 61 px of a 64-px column (from 2 px right of the left grid line to 2 short of the right one); a bar is round(fraction x room) whole pixels from where it grows (right to left: from the right end: 25 % 15 px, 50 % 31, 75 % 46); with an axis (a dashed line on the pixel floor(place x room)) a negative bar ends at the pixel before it, a positive one starts at the pixel after it | every bar's first / last pixel in synthetic-data-bars.xlsx and synthetic-icon-sets.xlsx | 60 px of percentages; RTL bars 1-2 px longer | `dataBarRoom`, the grid's bar nodes |
+| A level of indent is three spaces of the workbook's Normal font as GDI draws them, whatever the cell's font: 9 px (Calibri 11), 12 (Arial 12), 21 (Verdana 14) | indent 0-4 in Calibri 11 / 16, Arial 10, Times 12, Verdana 10 cells under three Normal fonts: 9 / 12 / 21 px a level throughout | 1.4 digit widths of the cell's font (~10 px) | `SpreadsheetModel.IndentUnit` (`XlsxBridge.indentUnitOf`) |
+| A compact pivot table moves a level of row items in by its CompactRowIndent of indent units, at least 13 px: 13 / 18 / 27 px for 1 / 2 / 3 in a Calibri 11 workbook, the same in Calibri 16 cells; the file says `indent="0"` for 1, nothing for 2, `indent="2"` for 3 (the cells' own `indent` is CompactRowIndent x level); the +/- 5 px into the cell | +/- boxes at 4, 17 / 22 / 31 px; leaves at 42 / 52 | the cells' indent (~10 px a level), the +/- 4 px in | the grid's pivot labels, `PivotStyleInfo.CompactIndent` |
+
+Left: a timeline's Clear Filter button, its scroll bar's arrows and its text sizes (Excel's selection label and period
+labels are a point or two smaller); combo and list box text is the browser's Tahoma, not GDI's ClearType; form
+controls are not moved by inserted rows or columns (drawn at the file's anchors) and not printed (the PNG / PDF
+painter does not draw them); a control's caption is one line per VML line (no wrapping); the 3-D radio and the
+check marks are Excel's pixels, the arrows' sizes at other control sizes are a rule of thumb; an ActiveX picture is
+the file's (Excel draws the live control: a check box linked to an empty cell grey); EMF clipping, ROPs and paths
+are not drawn; a combo box's list drops in the page's own look; a text cell aligned left (`horizontal="left"`)
+starts 2 px further right in Excel than ours (synthetic-cell-indent.xlsx: 8 vs 6 px at indent 0 - not looked into).
 
 ## Formula oracle on real-world models, 2026-11-21
 
