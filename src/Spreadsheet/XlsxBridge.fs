@@ -1205,6 +1205,8 @@ module Import =
                 // keeps the grid's own.)
                 DefaultRowHeight = (if defaultRowPx > 0.0 then defaultRowPx else 25.0)
                 MaxDigitWidth = mdw
+                PrintDigitWidth = ExcelText.printDigitWidth (defaultArg defaultFace "Calibri") defaultPoints
+                PrintRowScale = ExcelText.printRowScale (defaultArg defaultFace "Calibri") defaultPoints (FontMetrics.rowHeightPx defaultFace defaultPoints)
                 DefaultColumnWidth =
                     // (A <col> that runs to the last column - Excel writes one for "every column
                     // from here on" - says what the columns past the used ones have.)
@@ -1277,6 +1279,17 @@ module Import =
                     RowHeights = heights
                     DefaultRowHeight = 0.0
                     Axes = { model.Axes with DefaultRowShownHeight = shown } }
+        // A print area written as a formula (vertex42's `OFFSET(MortgageCalculator!$A$1,0,0,ROW(...)+1+$K$25,12)`)
+        // prints the area it comes to with the values as they are: Excel 2019's PDF of the opened file.
+        let model =
+            match sheet.PrintArea with
+            | Some text when model.PageSetup.PrintArea.IsNone && (Text.RegularExpressions.Regex.Replace(text, "'[^']*'", "")).Contains "(" ->
+                let context = buildWorkbookContext [| model |] [| sheet.Name |] [| true |] Map.empty Map.empty 0
+                match Rbt.Spreadsheet.Formula.evaluateFormulaArea (Some context) (Some (sheetIdOfIndex 0)) text model with
+                | Some (r0, c0, r1, c1) ->
+                    { model with PageSetup = { model.PageSetup with PrintArea = Some { From = { Row = r0; Col = c0 }; To = { Row = r1; Col = c1 } } } }
+                | None -> model
+            | _ -> model
         { Model = model
           TableColumns = tableColumns
           State = sheetStateText sheet.State }

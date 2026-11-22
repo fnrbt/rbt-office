@@ -15636,6 +15636,23 @@ let evaluateFormulaRows (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
         try Some (evalArray expr ctx |> Array.map (Array.map unwrapValue))
         with _ -> None
 
+/// The area a formula refers to - a range, or a function that gives a reference (OFFSET, INDEX, INDIRECT) - as
+/// (first row, first column, last row, last column), evaluated on `sheet` of the workbook; None for anything else.
+/// (A print area written as a formula: vertex42's `OFFSET(MortgageCalculator!$A$1,0,0,ROW(...)+1+$K$25,...)`.)
+let evaluateFormulaArea (workbook: Rbt.Spreadsheet.Workbook.Workbook option)
+                        (sheet: Rbt.Spreadsheet.Workbook.SheetId option)
+                        (formula: string) (model: SpreadsheetModel) : (int * int * int * int) option =
+    match parseFormulaShared formula with
+    | Result.Error _ -> None
+    | Ok expr ->
+        let ctx = { Model = model; Workbook = workbook; Sheet = sheet; CurrentCell = None }
+        try
+            // (`asReference` of a call that is no function: names, OFFSET / INDIRECT / INDEX as references.)
+            match referenceRect (resolveReferenceFunction "" [ expr ] ctx) ctx with
+            | Ok (_, r0, c0, r1, c1) -> Some (min r0 r1, min c0 c1, max r0 r1, max c0 c1)
+            | Result.Error _ -> None
+        with _ -> None
+
 /// Installs what Model.fs needs from this file, which compiles after it: the
 /// formula rewrites for paste, fill and row/column edits, and the evaluator
 /// for validation and conditional-format formulas. Model.fs reads this value

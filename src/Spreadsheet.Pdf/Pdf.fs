@@ -652,9 +652,9 @@ let private withCommentMarkersForPrint (model: SpreadsheetModel) : SpreadsheetMo
 let private directPrintDimensionRemapLimit = 100000
 
 // (The sizes rows and columns print at are Pagination's: a host is told the same pages.)
-let private printColumnWidthPx mdw width = Pagination.printColumnWidthPx mdw width
+let private printColumnWidthPx mdw digit width = Pagination.printColumnWidthPx mdw digit width
 
-let private printRowHeightPx px = Pagination.printRowHeightPx px
+let private printRowHeightPx scale px = Pagination.printRowHeightPx scale px
 
 let private printDimensionBounds
     (model: SpreadsheetModel)
@@ -689,67 +689,31 @@ let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
         | None -> ()
     mapped
 
-let private remapPrintColumnWidthsDirect mdw maxCol values =
-    remapPrintDimensionDirect maxCol (printColumnWidthPx mdw) values
+let private remapPrintColumnWidthsDirect mdw digit maxCol values =
+    remapPrintDimensionDirect maxCol (printColumnWidthPx mdw digit) values
 
-let private remapPrintRowHeightsDirect maxRow values =
-    remapPrintDimensionDirect maxRow printRowHeightPx values
+let private remapPrintRowHeightsDirect scale maxRow values =
+    remapPrintDimensionDirect maxRow (printRowHeightPx scale) values
 
 let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
-    if Map.isEmpty model.ColumnWidths then model else
-    // Excel's live grid lays columns out with the floored screen MDW (7 px for
-    // Calibri 11), but its PDF print path uses the non-floored width (~7.5 px),
-    // i.e. ~15/14 wider — for EVERY column, including the workbook-default
-    // width. Measured on `synthetic-diagonal-borders.xlsx`: a default 8.43-char
-    // column prints at ~68.8 px vs our 64 px; 64 × 15/14 = 68.6 px. Earlier
-    // this scale was applied only to explicit `<col>` widths, which left the
-    // default columns ~5 px narrow and drifted every cell right of column A
-    // leftward. Scale all positive widths.
+    // (Every column, the default width too: `Pagination.printColumnWidthPx`.)
     let widths =
         match maxPrintCol with
         | Some maxCol when maxCol >= 0 && maxCol <= directPrintDimensionRemapLimit ->
-            remapPrintColumnWidthsDirect model.MaxDigitWidth maxCol model.ColumnWidths
+            remapPrintColumnWidthsDirect model.MaxDigitWidth model.PrintDigitWidth maxCol model.ColumnWidths
         | _ ->
-            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth width)
-    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.DefaultColumnWidth }
+            model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width)
+    { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth }
 
-/// Excel's print PDF renders Calibri-11 auto-derived rows at 19 px (14.25 pt)
-/// even though `cell.Height` via COM still reports 15 pt (20 px). This is a
-/// long-standing Excel quirk specific to that font/size pair — verified
-/// empirically against `synthetic-print-chrome` (no styles.xml, Calibri 11
-/// default, row pitch 19.4 px) and `pandas-dimension_large` body (Calibri 11
-/// cells, row pitch 19-20 px alternating). Other auto-row heights match
-/// editor exactly: Calibri 12 → 21 px (no shift), Calibri 18 Title → 31 px
-/// (no shift). The harness must keep reporting 15 pt (matches Excel COM),
-/// so the adjustment lives only in the print path here.
-///
-/// Strategy: any row whose model height is exactly 20 px gets remapped to
-/// 19.36 px (= 14.52 pt) during PDF rendering. The fractional value
-/// matters — Excel's actual print pitch is 14.55 pt, which on the integer
-/// pixel grid alternates 19/20 px as cumulative y crosses each pixel
-/// boundary. Mapping to 19 px exactly produces a uniform 19-pitch that
-/// drifts the OTHER way from Excel; the fractional value lets the PDF
-/// rasterizer reproduce Excel's alternating pattern. Other heights pass
-/// through unchanged (preserves explicit `ht` values, Title rows, and
-/// font-derived rows from non-11pt cells).
-///
-/// The 20→19.36 mapping carries a theoretical regression risk if a
-/// workbook explicitly sets `ht="15.0" customHeight="true"` — we'd shift
-/// it to 14.52 pt when Excel would honor the stored 15 pt. No fixture in
-/// the test corpus trips that; if one does, we'll need to thread per-row
-/// "auto vs explicit" flags through the model and key the remap off that.
+/// The rows at the heights they print at (`Pagination.printRowHeightPx`).
 let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : SpreadsheetModel =
-    // Calibri 12 print pitch is similarly off — editor 21 px → print
-    // ~20.64 px (= 15.48 pt). pandas-test1 rows positioned 1 px per row
-    // below Excel because we used 21 px uniform while Excel's quantized
-    // 20/21/21/21/21/20 pattern averages to ~20.64 px.
     let heights =
         match maxPrintRow with
         | Some maxRow when maxRow >= 0 && maxRow <= directPrintDimensionRemapLimit ->
-            remapPrintRowHeightsDirect maxRow model.RowHeights
+            remapPrintRowHeightsDirect model.PrintRowScale maxRow model.RowHeights
         | _ ->
-            model.RowHeights |> Map.map (fun _ px -> printRowHeightPx px)
-    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.DefaultRowHeight }
+            model.RowHeights |> Map.map (fun _ px -> printRowHeightPx model.PrintRowScale px)
+    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.PrintRowScale model.DefaultRowHeight }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
 /// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the
@@ -1032,14 +996,14 @@ let private headingItems
     // matching column.
     let allCols = ResizeArray<int>()
     match pagination.RepeatCols with
-    | Some (a, b) when b >= a ->
+    | Some (a, b) when b >= a && slice.TitleCols ->
         for c in a .. b do allCols.Add c
     | _ -> ()
     for c in slice.ColStart .. slice.ColEnd do
         allCols.Add c
     let allRows = ResizeArray<int>()
     match pagination.RepeatRows with
-    | Some (a, b) when b >= a ->
+    | Some (a, b) when b >= a && slice.TitleRows ->
         for r in a .. b do allRows.Add r
     | _ -> ()
     for r in slice.RowStart .. slice.RowEnd do
@@ -1529,6 +1493,9 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
         let emitPageItems (i: int) (emit: PaintItem -> unit) =
             if i < pages.Length then
                 let slice = pages.[i]
+                // (The repeat bands of a page that carries them: `PageSlice.TitleRows` / `TitleCols`.)
+                let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
+                let repeatColsWidthPx = if slice.TitleCols then repeatColsWidthPx else 0.0
                 // Body: rows × cols of the slice, offset by repeat band sizes.
                 appendBand
                     emit
@@ -1537,7 +1504,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     (headingsColPx + repeatColsWidthPx) (headingsRowPx + repeatRowsHeightPx)
                 // Repeat-rows band (above body, full width): repeat rows × slice cols.
                 match pagination.RepeatRows with
-                | Some (rs, re) when re >= rs ->
+                | Some (rs, re) when re >= rs && slice.TitleRows ->
                     appendBand
                         emit
                         rs re
@@ -1546,7 +1513,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | _ -> ()
                 // Repeat-cols band (left of body, full height): slice rows × repeat cols.
                 match pagination.RepeatCols with
-                | Some (cs, ce) when ce >= cs ->
+                | Some (cs, ce) when ce >= cs && slice.TitleCols ->
                     appendBand
                         emit
                         slice.RowStart slice.RowEnd
@@ -1555,7 +1522,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | _ -> ()
                 // Repeat corner (top-left): repeat rows × repeat cols.
                 match pagination.RepeatRows, pagination.RepeatCols with
-                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs ->
+                | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs && slice.TitleRows && slice.TitleCols ->
                     appendBand emit rs re cs ce headingsColPx headingsRowPx
                 | _ -> ()
                 if printHeadings then
@@ -1708,6 +1675,8 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     if pages.Length = 0 then leftMarginPt, topMarginPt
                     else
                         let slice = pages.[pageIdx]
+                        let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
+                        let repeatColsWidthPx = if slice.TitleCols then repeatColsWidthPx else 0.0
                         let bodyWidthPx =
                             headingsColPx + repeatColsWidthPx
                             + geometry.Col.Sum slice.ColStart slice.ColEnd

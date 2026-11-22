@@ -148,3 +148,37 @@ let textWidth (measure: string -> float) (family: string) (bold: bool) (italic: 
             elif code >= 0xD800 && code <= 0xDBFF && i + 1 < text.Length then total <- total + rounded (measure (text.Substring(i, 2)))
             else total <- total + rounded (measure (string text.[i]))
     float total
+
+/// The widest digit of a font (the Normal font of a workbook) as Excel 2019 prints it, in dots of 600 dpi: each digit's
+/// advance at the font's 600-dpi pixel size (points x 600 / 72, rounded) - 47 for Calibri 11, 46 for Arial 10, 51 for
+/// Calibri 12, 56 for Arial 12 ("Arial MT" as Arial). (make-print-pages-fixture.py "widths": the PDF's columns.)
+let printDigitWidth (family: string) (points: float) : float =
+    let family = let f = family.Trim() in if f.EndsWith " MT" then f.Substring(0, f.Length - 3) else f
+    let dots = int (System.Math.Floor (points * 600.0 / 72.0 + 0.5))
+    let mutable widest = 0
+    for code in int '0' .. int '9' do
+        match advance family false false dots false code with
+        | ValueSome w when w > widest -> widest <- w
+        | _ -> ()
+    if widest > 0 then float widest else FontMetrics.maxDigitWidth (Some family) (points * 6.25)
+
+/// Dots of 600 dpi a pixel of a row's height prints at, as Excel 2019 prints a sheet whose Normal font is (family,
+/// points): the font's own row in print (121 dots for Calibri 11, 103 for Arial 10, 130 for Calibri 12, 123 for
+/// Arial 12, 145 for Cambria 14, 127 for Aptos and Aptos Narrow 11, 85 for Arial 8, 109 for Calibri 10:
+/// make-print-pages-fixture.py "heights", rows of 7.5 to 409.5 pt, their grid lines in Excel's PDF - 151 of 153 rows
+/// within a dot of floor(points x 4/3 x scale + 0.14)) over its row on the screen (`rowPx`: 20, 17, 21, 20, 24, 20, 15,
+/// 17 px). Other fonts: 6.05, Calibri 11's.
+let printRowScale (family: string) (points: float) (rowPx: float) : float =
+    let key = (let f = family.Trim().ToLowerInvariant() in if f.EndsWith " mt" then f.Substring(0, f.Length - 3) else f), points
+    let printed =
+        match key with
+        | "calibri", 11.0 -> 121.0
+        | "arial", 10.0 -> 103.0
+        | "calibri", 12.0 -> 130.0
+        | "arial", 12.0 -> 123.0
+        | "cambria", 14.0 -> 145.0
+        | "aptos narrow", 11.0 | "aptos", 11.0 -> 127.0
+        | "arial", 8.0 -> 85.0
+        | "calibri", 10.0 -> 109.0
+        | _ -> 0.0
+    if printed > 0.0 && rowPx > 0.0 then printed / rowPx else 6.05

@@ -211,8 +211,9 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
                 pagination.PrintAreas |> List.mapi (fun index area ->
                     let pages = pagination.Pages |> List.filter (fun page -> page.Area = index)
                     let cells = pages |> List.sumBy (fun page -> (page.RowEnd - page.RowStart + 1) * (page.ColEnd - page.ColStart + 1))
-                    let rows = match pagination.RepeatRows with Some (_, last) when last >= area.From.Row -> area.To.Row - max area.From.Row (last + 1) + 1 | _ -> area.To.Row - area.From.Row + 1
-                    let cols = match pagination.RepeatCols with Some (_, last) when last >= area.From.Col -> area.To.Col - max area.From.Col (last + 1) + 1 | _ -> area.To.Col - area.From.Col + 1
+                    // (The repeat rows / columns print where they are on the pages that begin at or before them.)
+                    let rows = area.To.Row - area.From.Row + 1
+                    let cols = area.To.Col - area.From.Col + 1
                     cells = max 0 rows * max 0 cols)
             ok (sprintf "pages: %s / %s cover their areas" (System.IO.Path.GetFileName file) sheet.Name) (List.forall id covered) (sprintf "%A" covered)
 // A landscape sheet is paginated the wider way round, whether its setup holds the paper's size

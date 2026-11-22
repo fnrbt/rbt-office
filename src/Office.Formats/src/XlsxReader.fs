@@ -5183,7 +5183,10 @@ module NamedRanges =
             match nr.Name, parseScope nr.Scope with
             | "_xlnm.Print_Area", Some idx ->
                 // (Several areas: `Sheet1!$A$1:$C$10,Sheet1!$E$1:$G$10`, kept as `$A$1:$C$10,$E$1:$G$10`.)
-                update idx (fun w -> { w with PrintArea = Some (splitAreas nr.RefersTo |> List.map stripSheetQualifier |> String.concat ",") })
+                // (A print area written as a formula - OFFSET(Sheet!$A$1,0,0,...) - is kept as it is: the importer
+                // evaluates it.)
+                if (System.Text.RegularExpressions.Regex.Replace(nr.RefersTo, "'[^']*'", "")).Contains "(" then update idx (fun w -> { w with PrintArea = Some nr.RefersTo })
+                else update idx (fun w -> { w with PrintArea = Some (splitAreas nr.RefersTo |> List.map stripSheetQualifier |> String.concat ",") })
             | "_xlnm.Print_Titles", Some idx ->
                 // Comma-separated rows part + cols part; either may be absent.
                 let parts = ValueText.Sheet.commaParts nr.RefersTo |> Array.map stripSheetQualifier
