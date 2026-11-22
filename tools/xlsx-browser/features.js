@@ -112,10 +112,20 @@ checks['xlsx-open-empty-formula-caches'] = async () => {
             + '<c r="I1"><f>4+5</f></c>'
             + '<c r="J1"><f>A1+10</f><v/></c>'
             + '</row></sheetData>';
-        await file.grid.ImportXlsx(await excelPackage(rows));
+        const original = await excelPackage(rows);
+        await file.grid.ImportXlsx(original.slice());
         const values = (grid) => Array.from({ length: 10 }, (_, col) => grid.GetCell(0, col).value);
         const opened = ['', 2, 99, '', '', 3, '', 3, 9, ''];
         check('opened caches: circular empty text, saved values, calculated acyclic cells', values(file.grid), opened);
+        const untouched = await file.grid.ExportXlsx();
+        check('no-edit export preserves the original package bytes',
+            untouched.length === original.length && untouched.every((byte, index) => byte === original[index]), true);
+        const untouchedAgain = mountGrid();
+        try {
+            await untouchedAgain.grid.ImportXlsx(untouched);
+            check('original uncached file recalculates again on reopen', values(untouchedAgain.grid), opened);
+        } finally { untouchedAgain.close(); }
+        file.grid.SetCell(1, 0, 'unrelated edit');
         const saved = await file.grid.ExportXlsx();
         const xml = await text(saved, 'xl/worksheets/sheet1.xml');
         const cellXml = (name) => (new RegExp(`<c\\b[^>]*\\br="${name}"[^>]*>[\\s\\S]*?<\\/c>`).exec(xml) ?? [''])[0];

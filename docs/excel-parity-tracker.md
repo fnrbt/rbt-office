@@ -646,10 +646,11 @@ calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#N
   from 0. The reader now distinguishes an empty string cache from an absent result, and
   the import calculation keeps only uncached formulas held by a cycle as empty text;
   formulas newly typed into a cycle still start at 0. Acyclic uncached formulas still
-  recalculate on import (Excel opens `=1+2` as 3); saving writes the calculated
-  caches, including empty-text cycle results, rather than reusing empty file caches
-  or bypassing the write as an unchanged package. Native import/roundtrip and
-  browser `xlsx-open-empty-formula-caches` cover open, save/reopen and breaking a cycle.
+  recalculate on import (Excel opens `=1+2` as 3). An unchanged export keeps
+  the original package byte for byte; reopening it recalculates the same
+  uncached formulas. After an edit, saving writes the calculated caches,
+  including empty-text cycle results. Native import/roundtrip and browser
+  `xlsx-open-empty-formula-caches` cover both export paths and breaking a cycle.
 
 ### Comparisons at 15 significant digits, 2026-11-21
 

@@ -825,9 +825,8 @@ type Spreadsheet(container: Element) as this =
                         { initialBook.Sheets.[initialBook.ActiveSheet] with Model = model } initialBook.Sheets },
             historyBySheet = true)
     let mutable revisionSheets: SpreadsheetModel array = Array.copy sheets
-    /// The file ImportXlsx opened; unchanged exports reuse its original bytes
-    /// only when import did not calculate any missing formula caches.
-    let mutable importedPackage: (byte[] * int * int * bool) option = None
+    /// The file ImportXlsx opened; unchanged exports reuse its original bytes.
+    let mutable importedPackage: (byte[] * int * int) option = None
     /// Undo what Mount set up outside the grid's own nodes (document-level
     /// listeners, observers, overlays appended to <body>).
     let cleanups = ResizeArray<unit -> unit>()
@@ -7993,12 +7992,7 @@ type Spreadsheet(container: Element) as this =
                     else
                         this.InstallImportedWorkbook(imported, active)
                         observeRevision ()
-                        let cachesAsOpened =
-                            Array.forall2
-                                (fun (baseline: SpreadsheetModel) (sheet: Rbt.Spreadsheet.XlsxBridge.ImportedSheet) ->
-                                    obj.ReferenceEquals(baseline.Cells, sheet.Model.Cells))
-                                imported.Source.Baseline imported.Sheets
-                        importedPackage <- Some (bytes, session.Revision, activeSheetIndex, cachesAsOpened)
+                        importedPackage <- Some (bytes, session.Revision, activeSheetIndex)
                         true)) |> unbox<JS.Promise<bool>>)
             (reportError "ImportXlsx")
 
@@ -8109,16 +8103,16 @@ type Spreadsheet(container: Element) as this =
     ///
     /// A workbook that ImportXlsx opened and in which nothing was changed
     /// since (the revision is the one it opened with - also after undoing
-    /// every change -, the same sheet is on display, zoom, grid lines,
-    /// headers, formulas and zeros are shown as when it opened, and no missing
-    /// formula caches were calculated on import) is not written anew: the
-    /// promise resolves to a copy of the bytes that were opened, byte for byte.
+    /// every change -, the same sheet is on display, and zoom, grid lines,
+    /// headers, formulas and zeros are shown as when it opened) is not written
+    /// anew: the promise resolves to a copy of the bytes that were opened, so
+    /// every part of the package is the file's, byte for byte.
     member this.ExportXlsx() : JS.Promise<byte[]> =
         observeRevision ()
         match importedPackage with
-        | Some (bytes, openedAt, shown, cachesAsOpened) when cachesAsOpened && session.Revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
+        | Some (bytes, openedAt, shown) when session.Revision = openedAt && activeSheetIndex = shown && this.ShownAsOpened() ->
             resolvedCopy bytes
-        | Some (bytes, _, _, _) ->
+        | Some (bytes, _, _) ->
             // Sheets nothing was changed in go back as the parts they were
             // read from: their bytes, and the styles and shared strings they
             // index, are taken from the file that was opened.
