@@ -487,6 +487,40 @@ shows $2,297,200.86 - format [$$-1009]#,##0.00 -, the camera's text a darker gre
 square where Excel's are rounded: not looked into); the old note that left-aligned text starts 2 px further right in Excel was the 1-px box offset
 above (synthetic-cell-indent.xlsx needs no rule of its own).
 
+## Dashboards: linked text, format colours, shape outlines, shadows, lines, hidden rows against Excel 2019, 2026-11-22
+
+The three items left on dashboard-ecommerce-sales' Dashboard by the round above, then a re-survey of the workbooks with
+shapes: the house-flipping model's five shown sheets (shapes with shadows on all of them) and dashboard-sales-analysis' Dashboard,
+each shot in Excel 2019 on the VM (`shoot-sheets.ps1 -KeepZoom`; the house-flipping sheets need the `Goto` in a `try`)
+against ours (`shoot-browser-sheets.mjs`). Each rule from a generated workbook checked in Excel: `make-shape-looks-fixture.py`
+(synthetic-shape-looks.xlsx: "Links" - cells in locale-tagged formats and shapes linked to them with stale saved text;
+"Colors" - [Black] .. [Cyan] and [Color1] .. [Color56]; "Rounds" - rounded rectangles of 8 sizes / adjustments,
+lines of 0.75-3 pt, a group with a shadow and a shadowed shape, connectors with arrowheads of every kind and size and
+no height, ellipses, a theme effect and its override, a shape of nothing; "Hidden" - shapes over hidden rows),
+pictures of it, and a probe of every shape's text, Adjustments, Line.Weight, Top / Height and every cell's
+`DisplayFormat.Font.Color`; a probe of 43 formats x 4 values with `Range.Text` and `TEXT()`. Checks: xlsx-browser
+`shape-looks-excel-parity`; tests/formula stage27 (locale tags, colours), stage52 (shapes).
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A locale tag (`[$$-1009]`, `[$-4009]` en-IN, `[$-439]` hi-IN, 1009, 409, 809, 410, 407, 40C, 411, 804, 449, 44D, 44E, 445, 420, 463, 461, 45B, 468, `-1004009`, `-404009`) never groups by lakhs: `#,##0.00` is thousands whatever the tag (`#,##,##0` is read as `###,##0`); `[$-2000000]` gives Arabic-Indic digits, `[$-F400]` the system time format (neither matched) | 2297200.86 in each: $2,297,200.86 / 2,297,200.86, by `Range.Text` and `TEXT()` alike | (already so) | the dashboard's "$22,97,200.86" was the text saved with the shape (the workbook last saved on an en-IN machine), not a format rule |
+| A shape linked to a cell (`textlink`, a `TxLink` field) shows the cell's text as it is now, the number in its format whatever the column's width (no `####`), from any sheet | "Links": eight shapes whose saved text is "$22,97,200.86" / "stale": $2,297,200.86, -$98,765.40, ..., 1,234,567.89 (a 3.7-wide column), $286,397.02 (another sheet) | the saved text when the cell's sheet was not converted yet (the dashboard's KPI sheet) | a one-cell read of a sheet not converted converts it (`chartBlock`) |
+| A line feed in a shape's text (a linked cell's CHAR(10), a field's saved text) breaks the line as `a:br` | dashboard-sales-analysis: the pie's labels on three lines | run together, wrapped by width | `shapeItems` |
+| A number format's colour names are the palette's first eight - [Green] #00FF00, not #008000 - and `[ColorN]` the palette's Nth (N 1-56) | "Colors": `DisplayFormat.Font.Color` of all 64; the dashboard's "▲20.62%" (`[Green]\▲0.00%;[Red]\▼0.00%;`) bright green | [Green] #008000; `[ColorN]` not read (and left in the text) | `CellText.colorTagValueAt` |
+| A shape's outline is centred on its edge, half of it outside the shape, `round(w)` whole pixels (at least 1); an odd one covers the pixel of the edge (1 px: the pixels of the left and right edges; 2: the pixel before too; 3: one each side; 4: two before, one after); rounded corners `adj` of the shorter side (default 1/6) | "Rounds": 0.75 / 1 / 1.25 / 1.5 / 2 / 3 pt lines 1 / 1 / 2 / 2 / 3 / 4 px, every edge pixel as Excel's; 8 rounded rectangles' corners pixel for pixel | clipped to the anchor (half the outline gone - 1 px lines grey, the cards' 2-px lines 1 px, their corners looking square), fractional | `sceneSvgSpilling` (shapes, connectors and groups draw past their rectangle; charts and pictures not), outline half a pixel over for odd widths; frozen panes: a margin round a part where the drawing ends in it |
+| Outer shadows (`a:outerShdw`): a shape's own effect list (an empty one: none), else its style's `effectRef` (the theme's effect style of that index; Office's default theme's third: 1.5 pt down, 4.5-pt blur, 63 %), a group's for its shapes; offset `dist` at `dir`, a Gaussian of deviation `blurRad` / 2, the colour at its alpha | the shadowed card: right of its 2-px line #AAAAAA #B5B5B5 #C6C6C6 #D7D7D7 #E4E4E4 #F1F1F1 #F8F8F8 #FCFCFC #FEFEFE, ours #ABABAB #B8B8B8 #C7C7C7 #D6D6D6 #E5E5E5 #F0F0F0 #F8F8F8 #FCFCFC #FEFEFE; the theme effect all round, its override none; the dashboard's KPI cards | none | `PShadow` (`feDropShadow`), `outerShadowOf`, the default scheme's effect styles |
+| Arrowheads (`headEnd` / `tailEnd`): `w` and `len` sm / med / lg 2 / 3 / 5 times the line's width, the line taken as at least 2 pt; triangle, stealth (notched), arrow (open), its tip at the line's end; oval and diamond centred on it | "Rounds": a 1-pt line's med / lg triangle 8 x 13 px, lg / lg 13 x 13, sm / sm 5 x 5; a 2.25-pt line's med / med 9 x 9 | none | `arrowhead` |
+| A line of no height (or no width) is drawn; a flow chart connector is an ellipse | "Rounds"; house-flipping's progress line and arrow on three sheets, its step circles | not drawn (an SVG of no height draws nothing; drawings under 1 px skipped); a rectangle | lines kept, their SVG a pixel at least |
+| A shape of no fill, no line (none given and no style) and no text draws nothing | "Rounds" "Empty"; house-flipping's clickable rectangles over cells on four sheets | a placeholder frame with its name ("S..." over each check box, two frames over a table) | an empty scene |
+| An anchor's offset goes no further than its row or column (none in a hidden one); a span the file gives that hidden rows take away is none - the object is not shown | "Hidden": Shape.Top / Height 45 / 0, 18.75 / 26.25, 33.75 / 33.75 pt; house-flipping's picture in hidden rows not shown | offsets inside hidden rows counted (a 12-px bar), the object's own size when nothing was left | `Layout.drawingRect` |
+
+Left: the camera's text on the dashboard's cards is narrower than Excel's (the range drawn into the picture's
+rectangle); a slicer button's caption cut ("Centr...") where Excel cuts it; the map chart; text shadows (`a:rPr`
+effects), `rotWithShape`, a group's shadow drawn for the group as a whole (alike where its shapes do not overlap),
+glows / soft edges / reflections; arrowheads' line not shortened under an open arrow; a pane part's margin can show
+a shadow past a frozen line; a camera's own outline. Converting the sheet a one-cell reference reads also converts the
+sheets a chart's one-cell series names read (sooner than before; the chart's values from its cache until then).
+
 ## Formula oracle on real-world models, 2026-11-21
 
 Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel
