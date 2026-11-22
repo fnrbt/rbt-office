@@ -1,0 +1,234 @@
+Fit10	1	setup.orientation	1
+Fit10	1	setup.paper	1
+Fit10	1	setup.zoom	False
+Fit10	1	setup.fitwide	1
+Fit10	1	setup.fittall	False
+Fit10	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit10	1	setup.center	False False
+Fit10	1	setup.printarea	
+Fit10	1	setup.titlerows	
+Fit10	1	setup.titlecols	
+Fit10	1	setup.order	1
+Fit10	1	setup.firstpage	-4105
+Fit10	1	setup.gridlines	True
+Fit10	1	setup.headings	False
+Fit10	1	setup.bw	False
+Fit10	1	setup.draft	False
+Fit10	1	setup.errors	0
+Fit10	1	used	$A$1:$J$40
+Fit10	1	pdf	synthetic-print-pages-fit-1.pdf
+Fit11	2	setup.orientation	1
+Fit11	2	setup.paper	1
+Fit11	2	setup.zoom	False
+Fit11	2	setup.fitwide	1
+Fit11	2	setup.fittall	False
+Fit11	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit11	2	setup.center	False False
+Fit11	2	setup.printarea	
+Fit11	2	setup.titlerows	
+Fit11	2	setup.titlecols	
+Fit11	2	setup.order	1
+Fit11	2	setup.firstpage	-4105
+Fit11	2	setup.gridlines	True
+Fit11	2	setup.headings	False
+Fit11	2	setup.bw	False
+Fit11	2	setup.draft	False
+Fit11	2	setup.errors	0
+Fit11	2	used	$A$1:$K$40
+Fit11	2	pdf	synthetic-print-pages-fit-2.pdf
+Fit13	3	setup.orientation	1
+Fit13	3	setup.paper	1
+Fit13	3	setup.zoom	False
+Fit13	3	setup.fitwide	1
+Fit13	3	setup.fittall	False
+Fit13	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit13	3	setup.center	False False
+Fit13	3	setup.printarea	
+Fit13	3	setup.titlerows	
+Fit13	3	setup.titlecols	
+Fit13	3	setup.order	1
+Fit13	3	setup.firstpage	-4105
+Fit13	3	setup.gridlines	True
+Fit13	3	setup.headings	False
+Fit13	3	setup.bw	False
+Fit13	3	setup.draft	False
+Fit13	3	setup.errors	0
+Fit13	3	used	$A$1:$M$40
+Fit13	3	pdf	synthetic-print-pages-fit-3.pdf
+Fit17	4	setup.orientation	1
+Fit17	4	setup.paper	1
+Fit17	4	setup.zoom	False
+Fit17	4	setup.fitwide	1
+Fit17	4	setup.fittall	False
+Fit17	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit17	4	setup.center	False False
+Fit17	4	setup.printarea	
+Fit17	4	setup.titlerows	
+Fit17	4	setup.titlecols	
+Fit17	4	setup.order	1
+Fit17	4	setup.firstpage	-4105
+Fit17	4	setup.gridlines	True
+Fit17	4	setup.headings	False
+Fit17	4	setup.bw	False
+Fit17	4	setup.draft	False
+Fit17	4	setup.errors	0
+Fit17	4	used	$A$1:$Q$40
+Fit17	4	pdf	synthetic-print-pages-fit-4.pdf
+Fit23	5	setup.orientation	1
+Fit23	5	setup.paper	1
+Fit23	5	setup.zoom	False
+Fit23	5	setup.fitwide	1
+Fit23	5	setup.fittall	False
+Fit23	5	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit23	5	setup.center	False False
+Fit23	5	setup.printarea	
+Fit23	5	setup.titlerows	
+Fit23	5	setup.titlecols	
+Fit23	5	setup.order	1
+Fit23	5	setup.firstpage	-4105
+Fit23	5	setup.gridlines	True
+Fit23	5	setup.headings	False
+Fit23	5	setup.bw	False
+Fit23	5	setup.draft	False
+Fit23	5	setup.errors	0
+Fit23	5	used	$A$1:$W$40
+Fit23	5	pdf	synthetic-print-pages-fit-5.pdf
+FitTall	6	setup.orientation	1
+FitTall	6	setup.paper	1
+FitTall	6	setup.zoom	False
+FitTall	6	setup.fitwide	1
+FitTall	6	setup.fittall	2
+FitTall	6	setup.margins	50.4 50.4 54 54 21.6 21.6
+FitTall	6	setup.center	False False
+FitTall	6	setup.printarea	
+FitTall	6	setup.titlerows	
+FitTall	6	setup.titlecols	
+FitTall	6	setup.order	1
+FitTall	6	setup.firstpage	-4105
+FitTall	6	setup.gridlines	True
+FitTall	6	setup.headings	False
+FitTall	6	setup.bw	False
+FitTall	6	setup.draft	False
+FitTall	6	setup.errors	0
+FitTall	6	used	$A$1:$D$130
+FitTall	6	hbreak	66 auto
+FitTall	6	hbreak	66 auto
+FitTall	6	pdf	synthetic-print-pages-fit-6.pdf
+Fit2x2	7	setup.orientation	1
+Fit2x2	7	setup.paper	1
+Fit2x2	7	setup.zoom	False
+Fit2x2	7	setup.fitwide	2
+Fit2x2	7	setup.fittall	2
+Fit2x2	7	setup.margins	50.4 50.4 54 54 21.6 21.6
+Fit2x2	7	setup.center	False False
+Fit2x2	7	setup.printarea	
+Fit2x2	7	setup.titlerows	
+Fit2x2	7	setup.titlecols	
+Fit2x2	7	setup.order	1
+Fit2x2	7	setup.firstpage	-4105
+Fit2x2	7	setup.gridlines	True
+Fit2x2	7	setup.headings	False
+Fit2x2	7	setup.bw	False
+Fit2x2	7	setup.draft	False
+Fit2x2	7	setup.errors	0
+Fit2x2	7	used	$A$1:$T$140
+Fit2x2	7	hbreak	71 auto
+Fit2x2	7	hbreak	71 auto
+Fit2x2	7	vbreak	15 auto
+Fit2x2	7	pdf	synthetic-print-pages-fit-7.pdf
+Scale55	8	setup.orientation	1
+Scale55	8	setup.paper	1
+Scale55	8	setup.zoom	55
+Scale55	8	setup.fitwide	1
+Scale55	8	setup.fittall	1
+Scale55	8	setup.margins	50.4 50.4 54 54 21.6 21.6
+Scale55	8	setup.center	False False
+Scale55	8	setup.printarea	
+Scale55	8	setup.titlerows	
+Scale55	8	setup.titlecols	
+Scale55	8	setup.order	1
+Scale55	8	setup.firstpage	-4105
+Scale55	8	setup.gridlines	True
+Scale55	8	setup.headings	False
+Scale55	8	setup.bw	False
+Scale55	8	setup.draft	False
+Scale55	8	setup.errors	0
+Scale55	8	used	$A$1:$L$120
+Scale55	8	hbreak	85 auto
+Scale55	8	pdf	synthetic-print-pages-fit-8.pdf
+Scale77	9	setup.orientation	1
+Scale77	9	setup.paper	1
+Scale77	9	setup.zoom	77
+Scale77	9	setup.fitwide	1
+Scale77	9	setup.fittall	1
+Scale77	9	setup.margins	50.4 50.4 54 54 21.6 21.6
+Scale77	9	setup.center	False False
+Scale77	9	setup.printarea	
+Scale77	9	setup.titlerows	
+Scale77	9	setup.titlecols	
+Scale77	9	setup.order	1
+Scale77	9	setup.firstpage	-4105
+Scale77	9	setup.gridlines	True
+Scale77	9	setup.headings	False
+Scale77	9	setup.bw	False
+Scale77	9	setup.draft	False
+Scale77	9	setup.errors	0
+Scale77	9	used	$A$1:$L$120
+Scale77	9	hbreak	62 auto
+Scale77	9	pdf	synthetic-print-pages-fit-9.pdf
+Scale90	10	setup.orientation	1
+Scale90	10	setup.paper	1
+Scale90	10	setup.zoom	90
+Scale90	10	setup.fitwide	1
+Scale90	10	setup.fittall	1
+Scale90	10	setup.margins	50.4 50.4 54 54 21.6 21.6
+Scale90	10	setup.center	False False
+Scale90	10	setup.printarea	
+Scale90	10	setup.titlerows	
+Scale90	10	setup.titlecols	
+Scale90	10	setup.order	1
+Scale90	10	setup.firstpage	-4105
+Scale90	10	setup.gridlines	True
+Scale90	10	setup.headings	False
+Scale90	10	setup.bw	False
+Scale90	10	setup.draft	False
+Scale90	10	setup.errors	0
+Scale90	10	used	$A$1:$L$120
+Scale90	10	hbreak	53 auto
+Scale90	10	hbreak	105 auto
+Scale90	10	vbreak	11 auto
+Scale90	10	pdf	synthetic-print-pages-fit-10.pdf
+Scale133	11	setup.orientation	1
+Scale133	11	setup.paper	1
+Scale133	11	setup.zoom	133
+Scale133	11	setup.fitwide	1
+Scale133	11	setup.fittall	1
+Scale133	11	setup.margins	50.4 50.4 54 54 21.6 21.6
+Scale133	11	setup.center	False False
+Scale133	11	setup.printarea	
+Scale133	11	setup.titlerows	
+Scale133	11	setup.titlecols	
+Scale133	11	setup.order	1
+Scale133	11	setup.firstpage	-4105
+Scale133	11	setup.gridlines	True
+Scale133	11	setup.headings	False
+Scale133	11	setup.bw	False
+Scale133	11	setup.draft	False
+Scale133	11	setup.errors	0
+Scale133	11	used	$A$1:$L$120
+Scale133	11	hbreak	36 auto
+Scale133	11	hbreak	71 auto
+Scale133	11	hbreak	106 auto
+Scale133	11	vbreak	8 auto
+Scale133	11	pdf	synthetic-print-pages-fit-11.pdf
+Fit10	1	pages	1
+Fit11	2	pages	1
+Fit13	3	pages	1
+Fit17	4	pages	1
+Fit23	5	pages	1
+FitTall	6	pages	2
+Fit2x2	7	pages	4
+Scale55	8	pages	2
+Scale77	9	pages	2
+Scale90	10	pages	6
+Scale133	11	pages	8

@@ -304,5 +304,37 @@ do
     ok "print: wrapped at the column less 4.48 px" (lines 95.0 = [ "aaaaaaa bbbbbbb" ] && lines 94.0 = [ "aaaaaaa"; "bbbbbbb" ]) (sprintf "%A / %A" (lines 95.0) (lines 94.0))
 
 
+// ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break
+// Preview's breaks and each sheet's pages in its PDF, probe-print-pages.vbs) -----
+do
+    let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel")
+    let mutable sheets = 0
+    for tsv in System.IO.Directory.GetFiles(dir, "synthetic-print-pages-*.excel.tsv") |> Array.sort do
+        let book = tsv.Replace(".excel.tsv", ".xlsx")
+        let facts = System.IO.File.ReadAllLines tsv |> Array.map (fun line -> line.Split '\t') |> Array.filter (fun parts -> parts.Length = 4)
+        let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes book) |> Option.get)
+        imported.Sheets |> Array.iteri (fun index sheet ->
+            let mine = facts |> Array.filter (fun parts -> parts.[1] = string (index + 1))
+            let get key = mine |> Array.tryPick (fun parts -> if parts.[2] = key then Some parts.[3] else None)
+            let pagination = Pagination.paginatePrinted sheet.Model
+            let area = pagination.PrintBounds
+            let starts (pick: Pagination.PageSlice -> int) = pagination.Pages |> List.map (fun page -> pick page + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
+            let breaks key last = mine |> Array.choose (fun parts -> if parts.[2] = key then Some (int (parts.[3].Split(' ').[0])) else None) |> Array.distinct |> Array.sort |> Array.filter (fun b -> b <= last) |> List.ofArray
+            let excelPages = match get "pages" with Some n -> int n | None -> 0
+            let excelRows, excelCols = breaks "hbreak" (area.To.Row + 1), breaks "vbreak" (area.To.Col + 1)
+            sheets <- sheets + 1
+            ok (sprintf "print pages: %s / %s" (System.IO.Path.GetFileNameWithoutExtension book) sheet.Name)
+                (pagination.Pages.Length = excelPages && starts (fun page -> page.RowStart) = excelRows && starts (fun page -> page.ColStart) = excelCols)
+                (sprintf "pages %d (Excel %d), rows %A (%A), columns %A (%A), scale %g" pagination.Pages.Length excelPages
+                    (starts (fun page -> page.RowStart)) excelRows (starts (fun page -> page.ColStart)) excelCols pagination.Scale))
+    ok "print pages: the fixtures were read" (sheets >= 40) (sprintf "%d sheets" sheets)
+    // The sizes: a column of 64 px of Calibri 11 (7 px a digit on the screen, 47 dots in print) prints at 430 dots; 12 px of
+    // Arial 10 (46) at 79; 12 px of Calibri 12 (8, 51) at 77 (76.5 up); a row of 20 px of Calibri 11 at 121 dots, of 546 px at 3303.
+    let dots (px: float) = System.Math.Round (px * 6.25, 6)
+    ok "print sizes: columns" (dots (Pagination.printColumnWidthPx 7.0 47.0 64.0) = 430.0 && dots (Pagination.printColumnWidthPx 7.0 46.0 12.0) = 79.0 && dots (Pagination.printColumnWidthPx 8.0 51.0 12.0) = 77.0) ""
+    ok "print sizes: the widest digit in print" ([ "Calibri", 11.0; "Arial", 10.0; "Calibri", 12.0; "Arial", 12.0; "Arial MT", 12.0 ] |> List.map (fun (f, p) -> Rbt.Spreadsheet.ExcelText.printDigitWidth f p) = [ 47.0; 46.0; 51.0; 56.0; 56.0 ]) ""
+    ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
+
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

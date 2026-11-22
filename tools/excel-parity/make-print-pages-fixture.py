@@ -119,6 +119,17 @@ def sets():
               cols={c + 1: w for c, w in enumerate(ws)}, setup='<pageSetup paperSize="1" orientation="landscape"/>',
               margins='<pageMargins left="0.25" right="0.25" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'),
     ]
+    # Rows / columns to repeat inside and above the print area, and a print area written as a formula.
+    out['titles'] = [
+        sheet('TitlesInside', block(1, 1, 200, 6), names=[('_xlnm.Print_Area', "OFFSET(TitlesInside!$A$1,0,0,100+TitlesInside!$H$1,6)"),
+                                                          ('_xlnm.Print_Titles', 'TitlesInside!$20:$20')]
+              ),
+        sheet('TitlesTop', block(1, 1, 200, 6), names=[('_xlnm.Print_Titles', 'TitlesTop!$1:$2')]),
+        sheet('TitlesAbove', block(1, 1, 200, 6), names=[('_xlnm.Print_Area', 'TitlesAbove!$A$10:$F$200'), ('_xlnm.Print_Titles', 'TitlesAbove!$1:$1')]),
+        sheet('TitlesCols', block(1, 1, 30, 30), names=[('_xlnm.Print_Titles', 'TitlesCols!$A:$B')]),
+        sheet('TitlesColsInside', block(1, 1, 30, 30), names=[('_xlnm.Print_Titles', 'TitlesColsInside!$E:$E')]),
+    ]
+    out['titles'][0]['cells'].append((1, 8, 37, 0))
     # A row of the Normal font as it prints: 60 rows of the default height (and gridlines), for `rowunit-<face><size>`.
     out['rowunit'] = [sheet('Rows', [(r, 1, f'r{r}', 0) for r in range(1, 61)])]
     return out

@@ -1,0 +1,125 @@
+Letter	1	setup.orientation	1
+Letter	1	setup.paper	1
+Letter	1	setup.zoom	100
+Letter	1	setup.fitwide	1
+Letter	1	setup.fittall	1
+Letter	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+Letter	1	setup.center	False False
+Letter	1	setup.printarea	
+Letter	1	setup.titlerows	
+Letter	1	setup.titlecols	
+Letter	1	setup.order	1
+Letter	1	setup.firstpage	-4105
+Letter	1	setup.gridlines	True
+Letter	1	setup.headings	False
+Letter	1	setup.bw	False
+Letter	1	setup.draft	False
+Letter	1	setup.errors	0
+Letter	1	used	$A$1:$L$200
+Letter	1	hbreak	48 auto
+Letter	1	hbreak	95 auto
+Letter	1	hbreak	142 auto
+Letter	1	hbreak	189 auto
+Letter	1	vbreak	10 auto
+Letter	1	pdf	synthetic-print-pages-breaks-1.pdf
+A4	2	setup.orientation	1
+A4	2	setup.paper	9
+A4	2	setup.zoom	100
+A4	2	setup.fitwide	1
+A4	2	setup.fittall	1
+A4	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+A4	2	setup.center	False False
+A4	2	setup.printarea	
+A4	2	setup.titlerows	
+A4	2	setup.titlecols	
+A4	2	setup.order	1
+A4	2	setup.firstpage	-4105
+A4	2	setup.gridlines	True
+A4	2	setup.headings	False
+A4	2	setup.bw	False
+A4	2	setup.draft	False
+A4	2	setup.errors	0
+A4	2	used	$A$1:$L$200
+A4	2	hbreak	51 auto
+A4	2	hbreak	101 auto
+A4	2	hbreak	151 auto
+A4	2	hbreak	151 auto
+A4	2	vbreak	10 auto
+A4	2	pdf	synthetic-print-pages-breaks-2.pdf
+Landscape	3	setup.orientation	2
+Landscape	3	setup.paper	1
+Landscape	3	setup.zoom	100
+Landscape	3	setup.fitwide	1
+Landscape	3	setup.fittall	1
+Landscape	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+Landscape	3	setup.center	False False
+Landscape	3	setup.printarea	
+Landscape	3	setup.titlerows	
+Landscape	3	setup.titlecols	
+Landscape	3	setup.order	1
+Landscape	3	setup.firstpage	-4105
+Landscape	3	setup.gridlines	True
+Landscape	3	setup.headings	False
+Landscape	3	setup.bw	False
+Landscape	3	setup.draft	False
+Landscape	3	setup.errors	0
+Landscape	3	used	$A$1:$P$200
+Landscape	3	hbreak	35 auto
+Landscape	3	hbreak	69 auto
+Landscape	3	hbreak	103 auto
+Landscape	3	hbreak	137 auto
+Landscape	3	hbreak	171 auto
+Landscape	3	vbreak	14 auto
+Landscape	3	pdf	synthetic-print-pages-breaks-3.pdf
+Narrow	4	setup.orientation	1
+Narrow	4	setup.paper	1
+Narrow	4	setup.zoom	100
+Narrow	4	setup.fitwide	1
+Narrow	4	setup.fittall	1
+Narrow	4	setup.margins	18 18 18 18 0 0
+Narrow	4	setup.center	False False
+Narrow	4	setup.printarea	
+Narrow	4	setup.titlerows	
+Narrow	4	setup.titlecols	
+Narrow	4	setup.order	1
+Narrow	4	setup.firstpage	-4105
+Narrow	4	setup.gridlines	True
+Narrow	4	setup.headings	False
+Narrow	4	setup.bw	False
+Narrow	4	setup.draft	False
+Narrow	4	setup.errors	0
+Narrow	4	used	$A$1:$L$200
+Narrow	4	hbreak	53 auto
+Narrow	4	hbreak	105 auto
+Narrow	4	hbreak	157 auto
+Narrow	4	vbreak	12 auto
+Narrow	4	pdf	synthetic-print-pages-breaks-4.pdf
+Wide	5	setup.orientation	1
+Wide	5	setup.paper	1
+Wide	5	setup.zoom	100
+Wide	5	setup.fitwide	1
+Wide	5	setup.fittall	1
+Wide	5	setup.margins	72 72 72 72 36 36
+Wide	5	setup.center	False False
+Wide	5	setup.printarea	
+Wide	5	setup.titlerows	
+Wide	5	setup.titlecols	
+Wide	5	setup.order	1
+Wide	5	setup.firstpage	-4105
+Wide	5	setup.gridlines	True
+Wide	5	setup.headings	False
+Wide	5	setup.bw	False
+Wide	5	setup.draft	False
+Wide	5	setup.errors	0
+Wide	5	used	$A$1:$L$200
+Wide	5	hbreak	45 auto
+Wide	5	hbreak	89 auto
+Wide	5	hbreak	133 auto
+Wide	5	hbreak	177 auto
+Wide	5	vbreak	10 auto
+Wide	5	pdf	synthetic-print-pages-breaks-5.pdf
+Letter	1	pages	10
+A4	2	pages	8
+Landscape	3	pages	12
+Narrow	4	pages	8
+Wide	5	pages	10

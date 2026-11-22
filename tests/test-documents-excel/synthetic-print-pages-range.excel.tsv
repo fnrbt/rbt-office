@@ -1,0 +1,323 @@
+StartC5	1	setup.orientation	1
+StartC5	1	setup.paper	1
+StartC5	1	setup.zoom	100
+StartC5	1	setup.fitwide	1
+StartC5	1	setup.fittall	1
+StartC5	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+StartC5	1	setup.center	False False
+StartC5	1	setup.printarea	
+StartC5	1	setup.titlerows	
+StartC5	1	setup.titlecols	
+StartC5	1	setup.order	1
+StartC5	1	setup.firstpage	-4105
+StartC5	1	setup.gridlines	True
+StartC5	1	setup.headings	False
+StartC5	1	setup.bw	False
+StartC5	1	setup.draft	False
+StartC5	1	setup.errors	0
+StartC5	1	used	$C$5:$F$12
+StartC5	1	pdf	synthetic-print-pages-range-1.pdf
+FillPast	2	setup.orientation	1
+FillPast	2	setup.paper	1
+FillPast	2	setup.zoom	100
+FillPast	2	setup.fitwide	1
+FillPast	2	setup.fittall	1
+FillPast	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+FillPast	2	setup.center	False False
+FillPast	2	setup.printarea	
+FillPast	2	setup.titlerows	
+FillPast	2	setup.titlecols	
+FillPast	2	setup.order	1
+FillPast	2	setup.firstpage	-4105
+FillPast	2	setup.gridlines	True
+FillPast	2	setup.headings	False
+FillPast	2	setup.bw	False
+FillPast	2	setup.draft	False
+FillPast	2	setup.errors	0
+FillPast	2	used	$A$1:$F$12
+FillPast	2	pdf	synthetic-print-pages-range-2.pdf
+BorderPast	3	setup.orientation	1
+BorderPast	3	setup.paper	1
+BorderPast	3	setup.zoom	100
+BorderPast	3	setup.fitwide	1
+BorderPast	3	setup.fittall	1
+BorderPast	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+BorderPast	3	setup.center	False False
+BorderPast	3	setup.printarea	
+BorderPast	3	setup.titlerows	
+BorderPast	3	setup.titlecols	
+BorderPast	3	setup.order	1
+BorderPast	3	setup.firstpage	-4105
+BorderPast	3	setup.gridlines	True
+BorderPast	3	setup.headings	False
+BorderPast	3	setup.bw	False
+BorderPast	3	setup.draft	False
+BorderPast	3	setup.errors	0
+BorderPast	3	used	$A$1:$F$12
+BorderPast	3	pdf	synthetic-print-pages-range-3.pdf
+BoldPast	4	setup.orientation	1
+BoldPast	4	setup.paper	1
+BoldPast	4	setup.zoom	100
+BoldPast	4	setup.fitwide	1
+BoldPast	4	setup.fittall	1
+BoldPast	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+BoldPast	4	setup.center	False False
+BoldPast	4	setup.printarea	
+BoldPast	4	setup.titlerows	
+BoldPast	4	setup.titlecols	
+BoldPast	4	setup.order	1
+BoldPast	4	setup.firstpage	-4105
+BoldPast	4	setup.gridlines	True
+BoldPast	4	setup.headings	False
+BoldPast	4	setup.bw	False
+BoldPast	4	setup.draft	False
+BoldPast	4	setup.errors	0
+BoldPast	4	used	$A$1:$F$12
+BoldPast	4	pdf	synthetic-print-pages-range-4.pdf
+FormatPast	5	setup.orientation	1
+FormatPast	5	setup.paper	1
+FormatPast	5	setup.zoom	100
+FormatPast	5	setup.fitwide	1
+FormatPast	5	setup.fittall	1
+FormatPast	5	setup.margins	50.4 50.4 54 54 21.6 21.6
+FormatPast	5	setup.center	False False
+FormatPast	5	setup.printarea	
+FormatPast	5	setup.titlerows	
+FormatPast	5	setup.titlecols	
+FormatPast	5	setup.order	1
+FormatPast	5	setup.firstpage	-4105
+FormatPast	5	setup.gridlines	True
+FormatPast	5	setup.headings	False
+FormatPast	5	setup.bw	False
+FormatPast	5	setup.draft	False
+FormatPast	5	setup.errors	0
+FormatPast	5	used	$A$1:$F$12
+FormatPast	5	pdf	synthetic-print-pages-range-5.pdf
+StartC5Wide	6	setup.orientation	1
+StartC5Wide	6	setup.paper	1
+StartC5Wide	6	setup.zoom	100
+StartC5Wide	6	setup.fitwide	1
+StartC5Wide	6	setup.fittall	1
+StartC5Wide	6	setup.margins	50.4 50.4 54 54 21.6 21.6
+StartC5Wide	6	setup.center	False False
+StartC5Wide	6	setup.printarea	
+StartC5Wide	6	setup.titlerows	
+StartC5Wide	6	setup.titlecols	
+StartC5Wide	6	setup.order	1
+StartC5Wide	6	setup.firstpage	-4105
+StartC5Wide	6	setup.gridlines	True
+StartC5Wide	6	setup.headings	False
+StartC5Wide	6	setup.bw	False
+StartC5Wide	6	setup.draft	False
+StartC5Wide	6	setup.errors	0
+StartC5Wide	6	used	$C$5:$N$60
+StartC5Wide	6	hbreak	48 auto
+StartC5Wide	6	vbreak	10 auto
+StartC5Wide	6	pdf	synthetic-print-pages-range-6.pdf
+Empty	7	setup.orientation	1
+Empty	7	setup.paper	1
+Empty	7	setup.zoom	100
+Empty	7	setup.fitwide	1
+Empty	7	setup.fittall	1
+Empty	7	setup.margins	50.4 50.4 54 54 21.6 21.6
+Empty	7	setup.center	False False
+Empty	7	setup.printarea	
+Empty	7	setup.titlerows	
+Empty	7	setup.titlecols	
+Empty	7	setup.order	1
+Empty	7	setup.firstpage	-4105
+Empty	7	setup.gridlines	True
+Empty	7	setup.headings	False
+Empty	7	setup.bw	False
+Empty	7	setup.draft	False
+Empty	7	setup.errors	0
+Empty	7	used	$A$1
+Empty	7	pdf	error We didn't find anything to print.
+Overflow	8	setup.orientation	1
+Overflow	8	setup.paper	1
+Overflow	8	setup.zoom	100
+Overflow	8	setup.fitwide	1
+Overflow	8	setup.fittall	1
+Overflow	8	setup.margins	50.4 50.4 54 54 21.6 21.6
+Overflow	8	setup.center	False False
+Overflow	8	setup.printarea	
+Overflow	8	setup.titlerows	
+Overflow	8	setup.titlecols	
+Overflow	8	setup.order	1
+Overflow	8	setup.firstpage	-4105
+Overflow	8	setup.gridlines	True
+Overflow	8	setup.headings	False
+Overflow	8	setup.bw	False
+Overflow	8	setup.draft	False
+Overflow	8	setup.errors	0
+Overflow	8	used	$A$1:$C$7
+Overflow	8	pdf	synthetic-print-pages-range-8.pdf
+OverflowFar	9	setup.orientation	1
+OverflowFar	9	setup.paper	1
+OverflowFar	9	setup.zoom	100
+OverflowFar	9	setup.fitwide	1
+OverflowFar	9	setup.fittall	1
+OverflowFar	9	setup.margins	50.4 50.4 54 54 21.6 21.6
+OverflowFar	9	setup.center	False False
+OverflowFar	9	setup.printarea	
+OverflowFar	9	setup.titlerows	
+OverflowFar	9	setup.titlecols	
+OverflowFar	9	setup.order	1
+OverflowFar	9	setup.firstpage	-4105
+OverflowFar	9	setup.gridlines	True
+OverflowFar	9	setup.headings	False
+OverflowFar	9	setup.bw	False
+OverflowFar	9	setup.draft	False
+OverflowFar	9	setup.errors	0
+OverflowFar	9	used	$A$1:$C$7
+OverflowFar	9	vbreak	10 auto
+OverflowFar	9	vbreak	19 auto
+OverflowFar	9	pdf	synthetic-print-pages-range-9.pdf
+OverflowBlocked	10	setup.orientation	1
+OverflowBlocked	10	setup.paper	1
+OverflowBlocked	10	setup.zoom	100
+OverflowBlocked	10	setup.fitwide	1
+OverflowBlocked	10	setup.fittall	1
+OverflowBlocked	10	setup.margins	50.4 50.4 54 54 21.6 21.6
+OverflowBlocked	10	setup.center	False False
+OverflowBlocked	10	setup.printarea	
+OverflowBlocked	10	setup.titlerows	
+OverflowBlocked	10	setup.titlecols	
+OverflowBlocked	10	setup.order	1
+OverflowBlocked	10	setup.firstpage	-4105
+OverflowBlocked	10	setup.gridlines	True
+OverflowBlocked	10	setup.headings	False
+OverflowBlocked	10	setup.bw	False
+OverflowBlocked	10	setup.draft	False
+OverflowBlocked	10	setup.errors	0
+OverflowBlocked	10	used	$A$1:$E$7
+OverflowBlocked	10	pdf	synthetic-print-pages-range-10.pdf
+FormulaBlank	11	setup.orientation	1
+FormulaBlank	11	setup.paper	1
+FormulaBlank	11	setup.zoom	100
+FormulaBlank	11	setup.fitwide	1
+FormulaBlank	11	setup.fittall	1
+FormulaBlank	11	setup.margins	50.4 50.4 54 54 21.6 21.6
+FormulaBlank	11	setup.center	False False
+FormulaBlank	11	setup.printarea	
+FormulaBlank	11	setup.titlerows	
+FormulaBlank	11	setup.titlecols	
+FormulaBlank	11	setup.order	1
+FormulaBlank	11	setup.firstpage	-4105
+FormulaBlank	11	setup.gridlines	True
+FormulaBlank	11	setup.headings	False
+FormulaBlank	11	setup.bw	False
+FormulaBlank	11	setup.draft	False
+FormulaBlank	11	setup.errors	0
+FormulaBlank	11	used	$A$1:$F$12
+FormulaBlank	11	pdf	synthetic-print-pages-range-11.pdf
+MergePast	12	setup.orientation	1
+MergePast	12	setup.paper	1
+MergePast	12	setup.zoom	100
+MergePast	12	setup.fitwide	1
+MergePast	12	setup.fittall	1
+MergePast	12	setup.margins	50.4 50.4 54 54 21.6 21.6
+MergePast	12	setup.center	False False
+MergePast	12	setup.printarea	
+MergePast	12	setup.titlerows	
+MergePast	12	setup.titlecols	
+MergePast	12	setup.order	1
+MergePast	12	setup.firstpage	-4105
+MergePast	12	setup.gridlines	True
+MergePast	12	setup.headings	False
+MergePast	12	setup.bw	False
+MergePast	12	setup.draft	False
+MergePast	12	setup.errors	0
+MergePast	12	used	$A$1:$H$14
+MergePast	12	pdf	synthetic-print-pages-range-12.pdf
+MergeFill	13	setup.orientation	1
+MergeFill	13	setup.paper	1
+MergeFill	13	setup.zoom	100
+MergeFill	13	setup.fitwide	1
+MergeFill	13	setup.fittall	1
+MergeFill	13	setup.margins	50.4 50.4 54 54 21.6 21.6
+MergeFill	13	setup.center	False False
+MergeFill	13	setup.printarea	
+MergeFill	13	setup.titlerows	
+MergeFill	13	setup.titlecols	
+MergeFill	13	setup.order	1
+MergeFill	13	setup.firstpage	-4105
+MergeFill	13	setup.gridlines	True
+MergeFill	13	setup.headings	False
+MergeFill	13	setup.bw	False
+MergeFill	13	setup.draft	False
+MergeFill	13	setup.errors	0
+MergeFill	13	used	$A$1:$H$14
+MergeFill	13	pdf	synthetic-print-pages-range-13.pdf
+RowFill	14	setup.orientation	1
+RowFill	14	setup.paper	1
+RowFill	14	setup.zoom	100
+RowFill	14	setup.fitwide	1
+RowFill	14	setup.fittall	1
+RowFill	14	setup.margins	50.4 50.4 54 54 21.6 21.6
+RowFill	14	setup.center	False False
+RowFill	14	setup.printarea	
+RowFill	14	setup.titlerows	
+RowFill	14	setup.titlecols	
+RowFill	14	setup.order	1
+RowFill	14	setup.firstpage	-4105
+RowFill	14	setup.gridlines	True
+RowFill	14	setup.headings	False
+RowFill	14	setup.bw	False
+RowFill	14	setup.draft	False
+RowFill	14	setup.errors	0
+RowFill	14	used	$A$1:$C$12
+RowFill	14	pdf	synthetic-print-pages-range-14.pdf
+ColFill	15	setup.orientation	1
+ColFill	15	setup.paper	1
+ColFill	15	setup.zoom	100
+ColFill	15	setup.fitwide	1
+ColFill	15	setup.fittall	1
+ColFill	15	setup.margins	50.4 50.4 54 54 21.6 21.6
+ColFill	15	setup.center	False False
+ColFill	15	setup.printarea	
+ColFill	15	setup.titlerows	
+ColFill	15	setup.titlecols	
+ColFill	15	setup.order	1
+ColFill	15	setup.firstpage	-4105
+ColFill	15	setup.gridlines	True
+ColFill	15	setup.headings	False
+ColFill	15	setup.bw	False
+ColFill	15	setup.draft	False
+ColFill	15	setup.errors	0
+ColFill	15	used	$A$1:$H$5
+ColFill	15	pdf	synthetic-print-pages-range-15.pdf
+OverflowNumber	16	setup.orientation	1
+OverflowNumber	16	setup.paper	1
+OverflowNumber	16	setup.zoom	100
+OverflowNumber	16	setup.fitwide	1
+OverflowNumber	16	setup.fittall	1
+OverflowNumber	16	setup.margins	50.4 50.4 54 54 21.6 21.6
+OverflowNumber	16	setup.center	False False
+OverflowNumber	16	setup.printarea	
+OverflowNumber	16	setup.titlerows	
+OverflowNumber	16	setup.titlecols	
+OverflowNumber	16	setup.order	1
+OverflowNumber	16	setup.firstpage	-4105
+OverflowNumber	16	setup.gridlines	True
+OverflowNumber	16	setup.headings	False
+OverflowNumber	16	setup.bw	False
+OverflowNumber	16	setup.draft	False
+OverflowNumber	16	setup.errors	0
+OverflowNumber	16	used	$A$1:$C$7
+OverflowNumber	16	pdf	synthetic-print-pages-range-16.pdf
+StartC5	1	pages	1
+FillPast	2	pages	1
+BorderPast	3	pages	1
+BoldPast	4	pages	1
+FormatPast	5	pages	1
+StartC5Wide	6	pages	4
+Overflow	8	pages	1
+OverflowFar	9	pages	3
+OverflowBlocked	10	pages	1
+FormulaBlank	11	pages	1
+MergePast	12	pages	1
+MergeFill	13	pages	1
+RowFill	14	pages	1
+ColFill	15	pages	1
+OverflowNumber	16	pages	1
