@@ -239,9 +239,28 @@ let private isTruthy (value: CellValue) =
     | Number n -> n <> 0.0
     | _ -> false
 
+/// Does `x <op> first [second]` hold, numbers compared as Excel's "cell value" rules compare them:
+/// as its `=` operator (`Formula.compareNumbers`) - equal when they agree to 15 significant digits
+/// (0.1+0.2 = 0.3, between 0.3 and 0.5), otherwise their order, with no tolerance near 0 (1E-10 > 0,
+/// 1E-10 <> 0). Checked in Excel 2019 (synthetic-cf-compare.xlsx).
+let private numberHolds (op: CompareOperator) (x: float) (first: float) (second: float option) : bool =
+    let c = Formula.compareNumbers x first
+    match op with
+    | OpGreaterThan -> c > 0
+    | OpLessThan -> c < 0
+    | OpGreaterOrEqual -> c >= 0
+    | OpLessOrEqual -> c <= 0
+    | OpEqual -> c = 0
+    | OpNotEqual -> c <> 0
+    | OpBetween | OpNotBetween ->
+        let other = defaultArg second first
+        let lo, hi = (if first <= other then first, other else other, first)
+        let inside = Formula.compareNumbers x lo >= 0 && Formula.compareNumbers x hi <= 0
+        if op = OpBetween then inside else not inside
+
 /// Does a cell's value satisfy `value <op> operand(s)`? Numbers compare with
-/// numbers and text with text (ignoring case); a blank cell counts as 0, as
-/// Excel's "cell value" rules treat it.
+/// numbers (`numberHolds`) and text with text (ignoring case); a blank cell
+/// counts as 0, as Excel's "cell value" rules treat it.
 let private cellIsHolds (op: CompareOperator) (value: CellValue) (first: CellValue) (second: CellValue option) : bool =
     let asNumber (v: CellValue) =
         match v with
@@ -269,7 +288,7 @@ let private cellIsHolds (op: CompareOperator) (value: CellValue) (first: CellVal
     | Error _, _ | _, Error _ -> false
     | _ ->
         match asNumber value, asNumber first with
-        | Some x, Some a -> compareHolds op x a (second |> Option.bind asNumber)
+        | Some x, Some a -> numberHolds op x a (second |> Option.bind asNumber)
         // Different kinds of value are never equal, and have no order.
         | _ -> op = OpNotEqual
 
@@ -306,7 +325,10 @@ let private ruleMatches (ctx: Context) (rule: PreparedRule) (addr: CellAddress) 
         ctx.Evaluate formula (addr.Row - rule.Anchor.Row) (addr.Col - rule.Anchor.Col) ctx.Model addr |> unwrapFormulaValue
     match rule.Entry.Format.Rule with
     | ContainsText _ -> evaluateRule rule.Entry.Format.Rule raw
-    | GreaterThan _ | LessThan _ | Between _ | Equal _ -> evaluateRule rule.Entry.Format.Rule value
+    | GreaterThan threshold -> (match value with Number n -> numberHolds OpGreaterThan n threshold None | _ -> false)
+    | LessThan threshold -> (match value with Number n -> numberHolds OpLessThan n threshold None | _ -> false)
+    | Between (lo, hi) -> (match value with Number n -> numberHolds OpBetween n lo (Some hi) | _ -> false)
+    | Equal target -> (match value with Number n -> numberHolds OpEqual n target None | _ -> false)
     | CellIs (op, first, second) -> cellIsHolds op value (formulaAt first) (second |> Option.map formulaAt)
     | Expression formula -> isTruthy (formulaAt formula)
     | TimePeriod period ->

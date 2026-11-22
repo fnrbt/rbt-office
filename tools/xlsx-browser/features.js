@@ -529,7 +529,9 @@ checks['cell-look-shared'] = async () => {
                 if (!cell) continue;
                 const look = cellLook(model, row, col, getCell(new CellAddress(row, col), model), undefined, cell.getBoundingClientRect().width);
                 const style = getComputedStyle(cell);
-                const shown = [...cell.childNodes].filter((child) => child.nodeType === 3 || child.matches('.spreadsheet-rotated, .spreadsheet-across')).map((child) => child.textContent).join('');
+                // (A wrapped text in its lines, `.spreadsheet-line`, as Excel breaks it.)
+                const lineSpans = [...cell.querySelectorAll(':scope > .spreadsheet-line')];
+                const shown = lineSpans.length > 0 ? lineSpans.map((span) => span.textContent).join('\n') : [...cell.childNodes].filter((child) => child.nodeType === 3 || child.matches('.spreadsheet-rotated, .spreadsheet-across')).map((child) => child.textContent).join('');
                 const align = ['left', 'center', 'right'][look.Align.tag];
                 const got = [shown, style.backgroundColor, style.color, look.Horizontal === 'centercontinuous' ? 'center' : (style.textAlign === 'start' ? 'left' : style.textAlign)];
                 const want = [look.Text, rgbOf(look.Fill) ?? 'rgb(255, 255, 255)', rgbOf(look.TextColor) ?? 'rgb(0, 0, 0)', align];

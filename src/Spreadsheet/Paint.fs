@@ -271,6 +271,8 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
                     match measure with
                     | Some m -> Some (fun (text: string) -> m text fontPt format.FontName format.Bold format.Italic)
                     | None -> None
+                // (Bold in Small Fonts is GDI's made-up bold: a pixel less room, `NumberFit.Overhang`.)
+                let fit = fit |> Option.map (fun fit -> { fit with Overhang = (if format.Bold && ExcelText.isSmallFonts fontPt fit.Zoom then 1.0 else 0.0) })
                 cellDisplayTextFitted fit model.Date1904 measureText (if format.ShrinkToFit || rotation <> 0 then 1.0e6 else fitWidth) format value
         let text =
             match format.DataBar, format.IconSet with

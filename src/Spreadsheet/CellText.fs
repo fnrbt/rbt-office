@@ -899,21 +899,34 @@ let private generalNumberFormats =
 /// there. What Excel shows depends on the zoom: `1E+06` for a 1234567 it shows whole at 100 % in a
 /// column too narrow for it at 110 %, `####` at 80 % for a `1E+06` it shows at 100 %. Checked in
 /// Excel 2019 at 50-200 % (hash-text.vbs, Range.Text at the sheet's zoom, 815 of 840 cells; the
-/// others at 50-70 %, where Excel draws in Small Fonts): the room is the cell less 5 px x the zoom;
-/// a formatted number fits when its text is no wider; a General number is the longest of its forms
-/// whose characters, each as wide as a digit (a minus sign as itself), fit; one that does not fit
-/// is as many `#` as fit in the cell less 5 px (x the zoom from 100 % up) - `#` measured, not a
-/// digit: 5 of them at 75 % in a 30-px column of Calibri 11, where a digit is 6 px and `#` 5.
+/// others at 50-70 %, where Excel draws in Small Fonts) and again for 10 fonts at 9 zooms (synthetic-
+/// font-faces): the room is the cell less a margin of the font as drawn (`fittedRoom`: 5 px for a digit of
+/// 5-8 px, 7 for 9-12 ...); a formatted number fits when its text is no wider; a General number is the
+/// longest of its forms whose characters, each as wide as a digit (a minus sign as itself), fit; one that
+/// does not fit is as many `#` as fit in the room - `#` measured, not a digit: 5 of them at 75 % in a
+/// 30-px column of Calibri 11, where a digit is 6 px and `#` 5.
 type NumberFit =
     { /// The zoom (1.0 at 100 %).
-      Zoom: float }
+      Zoom: float
+      /// What GDI's made-up bold adds to a line (1 px for bold text in Small Fonts, `fittedRoom`), else 0.
+      Overhang: float }
 
-/// The room a text has in a cell `cellWidthPx` wide (screen pixels) at a zoom (`NumberFit`).
-let private fittedRoom (fit: NumberFit) (cellWidthPx: float) = max 0.0 (System.Math.Round cellWidthPx - 5.0 * fit.Zoom)
+/// The room a number's text has in a cell `cellWidthPx` wide (screen pixels), as Excel 2019 fits it: the
+/// cell less a margin of its font as drawn there, 2 x ceil(d / 4) + 1 px where d is the font's widest digit
+/// at its size on screen (`measure`: Excel's widths at the zoom) - the padding a column width has for a
+/// font of that digit. 5 px for Calibri 11 at 100 % (d 7), 7 for Segoe UI Black 11 (d 9) or Calibri 11 at
+/// 125 %, 9 at 200 % (d 15). Checked in Excel (synthetic-font-faces "Room*": 10 fonts at 9 zooms, the #s
+/// of a number too wide and where numbers start to fit).
+/// Bold text in Small Fonts (GDI's made-up bold) has a pixel less (`NumberFit.Overhang`: Calibri 11 bold at
+/// 50 %, its digit 5 px, 6 px less; at 60 % and 67 %, its digit 6 px, 6 less).
+let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
+    let mutable widest = 0.0
+    for d in "0123456789" do widest <- max widest (measure (string d))
+    max 0.0 (System.Math.Round cellWidthPx - (2.0 * System.Math.Ceiling (widest / 4.0) + 1.0) - fit.Overhang)
 
-/// `#` as many as fit in a cell (`NumberFit`).
+/// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`).
 let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
-    let room = max 0.0 (System.Math.Round cellWidthPx - 5.0 * max 1.0 fit.Zoom)
+    let room = fittedRoom fit measure cellWidthPx
     System.String('#', max 1 (int (room / max 1.0 (measure "#"))))
 
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
@@ -954,7 +967,7 @@ let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float)
 /// `generalNumberDisplay` measured as Excel draws the text (`NumberFit`): the longest of the
 /// same forms that fits, its characters as wide as a digit (a minus sign as itself).
 let private generalNumberFitted (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) (n: float): string =
-    let room = fittedRoom fit cellWidthPx
+    let room = fittedRoom fit measure cellWidthPx
     let digit = measure "0"
     let minus = measure "-"
     let fits (text: string) =
@@ -976,6 +989,11 @@ let private generalNumberFitted (fit: NumberFit) (measure: string -> float) (cel
         let s = NumberText.numberToString generalNumberFormats.[i] n
         if fits s then result <- ValueSome s
         i <- i + 1
+    // Where no form fits so, the shortest one is shown if its own characters fit (1234567 in Calibri 11 at
+    // 75 %: "1E+06", 28 px, in a 33-px cell, its five characters 30 px as digits; synthetic-font-faces).
+    if result.IsNone then
+        let shortest = NumberText.numberToString generalNumberFormats.[generalNumberFormats.Length - 1] n
+        if measure shortest <= room + 1e-9 then result <- ValueSome shortest
     match result with
     | ValueSome s -> s
     | ValueNone -> fittedHashes fit measure cellWidthPx
@@ -1616,7 +1634,7 @@ let cellDisplayTextFitted
     // (Measured as Excel draws the text: fitted as Excel fits it, `NumberFit`.)
     let fitOrOverflow measure cellWidth fontName fontPt text =
         match fit, measure with
-        | Some fit, Some (m: string -> float) -> if m text <= fittedRoom fit cellWidth + 1e-9 then text else fittedHashes fit m cellWidth
+        | Some fit, Some (m: string -> float) -> if m text <= fittedRoom fit m cellWidth + 1e-9 then text else fittedHashes fit m cellWidth
         | _ -> fitOrOverflow measure cellWidth fontName fontPt text
     let generalNumberDisplay cellWidth fontPt n =
         match fit, measure with

@@ -2857,8 +2857,9 @@ let inline private compareFloats (x: float) (y: float) =
 /// the database functions, SWITCH: numbers that agree to 15 significant digits are equal (each
 /// rounded a half away from zero: `=0.1+0.2=0.3` is TRUE, 1+22 ulp = 1 but 1+23 ulp > 1; no
 /// absolute tolerance: 1E-16 > 0). MATCH, the LOOKUPs, RANK, MODE, FREQUENCY, DELTA, GESTEP and
-/// sorting compare the binary values (`compareFloats`). Checked in Excel 2019.
-let private compareNumbers (x: float) (y: float) =
+/// sorting compare the binary values (`compareFloats`). So does a conditional format's "cell value"
+/// rule (`ConditionalFormatting`). Checked in Excel 2019.
+let compareNumbers (x: float) (y: float) =
     if x = y then 0
     else
         let c = compareFloats x y

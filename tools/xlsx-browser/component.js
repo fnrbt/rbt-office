@@ -1902,6 +1902,96 @@ checks['grid-text-excel-parity'] = async () => {
     return lines;
 };
 
+// Segoe UI Black (acre-property-acquisition's font) measured as Excel 2019 draws it (synthetic-font-faces,
+// make-font-faces-fixture.py; Range.Text read from Excel): $1,592,811 in columns of 40 .. 85 px shows as the number
+// or as many #s as Excel shows; a number's room in its cell for 10 fonts at 9 zooms; Small Fonts' threshold.
+checks['font-faces-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-font-faces.xlsx')).slice());
+        grid.SwitchSheet(0); await frame(); await frame();
+        const text = (row, col) => [...host.querySelectorAll(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)].find((node) => node.style.display !== 'none')?.textContent;
+        const shown = (row) => Array.from({ length: 10 }, (_, i) => text(row, i + 1));
+        const n = '$1,592,811', h = (count) => '#'.repeat(count);
+        check('Segoe UI Black 9', shown(0), [h(5), h(5), h(6), h(7), h(7), h(8), n, n, n, n]);
+        check('Segoe UI Black 10', shown(1), [h(4), h(5), h(5), h(6), h(6), h(7), h(8), n, n, n]);
+        // (Its digit 9 px: the room is the cell less 7 px, `CellText.fittedRoom`.)
+        check('Segoe UI Black 11', shown(2), [h(3), h(4), h(4), h(5), h(5), h(6), h(7), h(7), h(8), n]);
+        check('Segoe UI 10', shown(3), [h(4), h(5), h(5), h(6), h(6), h(7), n, n, n, n]);
+        // A number's room: the cell less 2 x ceil(d / 4) + 1 px, d the font's widest digit as drawn (synthetic-font-faces
+        // "Room*": 10 fonts at 9 zooms, every cell's Range.Text from Excel in synthetic-font-faces.excel.json).
+        const excel = JSON.parse(new TextDecoder().decode(await bytesOf('tests/test-documents-excel/synthetic-font-faces.excel.json')));
+        const scroller = host.querySelector('.spreadsheet-container');
+        for (const [sheet, rows] of Object.entries(excel)) {
+            grid.SwitchSheet(grid.GetSheetNames().indexOf(sheet)); await frame(); await frame();
+            const seen = new Map();
+            for (const top of [0, 300, 600]) for (let left = 0; left < 8000; left += 600) {
+                scroller.scrollTop = top; scroller.scrollLeft = left; await frame(); await frame();
+                for (const node of host.querySelectorAll('.spreadsheet-cell')) {
+                    if (node.style.display === 'none') continue;
+                    seen.set(node.dataset.row + ',' + node.dataset.col, node.textContent);
+                }
+            }
+            scroller.scrollLeft = 0; scroller.scrollTop = 0;
+            let same = 0, total = 0; const wrong = [];
+            for (const [row, texts] of rows) texts.forEach((want, i) => {
+                const got = seen.get(row + ',' + (i + 1)) ?? '?';
+                const norm = typeof want === 'number' ? '#'.repeat(want) : want;
+                total++;
+                if (got.trim() === norm.trim()) same++; else if (wrong.length < 12) wrong.push(`${row},${i + 1}: ${got} want ${norm}`);
+            });
+            check(`${sheet}: every number's text as Excel's (${wrong.join('; ')})`, same, total);
+        }
+        // Small Fonts under 8 points on screen, taken to a twentieth of a point (synthetic-small-fonts, from Excel's
+        // pictures: Calibri / Arial 7 .. 16 at 23 zooms): 14 pt at 57 % (7.98) and 10.5 at 76 % are TrueType, 15 at 53 %
+        // (7.95) and 11 at 72 % (7.92) Small Fonts.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-small-fonts.xlsx')).slice());
+        const names = grid.GetSheetNames();
+        const small = async (sheet, row) => {
+            grid.SwitchSheet(names.indexOf(sheet)); await frame(); await frame();
+            const cell = [...host.querySelectorAll(`.spreadsheet-cell[data-row="${row}"][data-col="1"]`)].find((node) => node.style.display !== 'none');
+            return /Verdana/.test(cell?.style.fontFamily ?? '');
+        };
+        // (Rows: Calibri 7, 7.5, 8, 8.5, 9, 10, 10.5, 11, 12, 13, 14, 15, 16.)
+        check('Small Fonts: Calibri 14 / 13 at 57 %, 15 / 16 at 53 %, 11 / 12 at 72 %, 10.5 / 10 at 76 %',
+            [await small('Z57', 10), await small('Z57', 9), await small('Z53', 11), await small('Z53', 12), await small('Z72', 7), await small('Z72', 8), await small('Z76', 6), await small('Z76', 5)],
+            [false, true, true, false, true, false, false, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Wrapped text broken into lines where Excel 2019 breaks it on screen (synthetic-wrap-budget, make-wrap-fixture.py,
+// each column's lines read from Excel's pictures): a line fits while it is no wider than the cell on screen less 5 px,
+// in Excel's widths at the zoom (bold Calibri 11 "Releasing Cost", 90 px, one line from a 95-px column).
+checks['wrap-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-wrap-budget.xlsx')).slice());
+        const sheets = grid.GetSheetNames();
+        const linesOf = async (col) => {
+            grid.SelectCell(3, col); await frame();
+            // (The grid keeps the nodes it frees, hidden: the one shown.)
+            const cell = [...host.querySelectorAll(`.spreadsheet-cell[data-row="0"][data-col="${col}"]`)].find((node) => node.style.display !== 'none');
+            return [...(cell?.querySelectorAll(':scope > span') ?? [])].map((span) => span.textContent);
+        };
+        const columns = async (from, to) => { const all = []; for (let col = from; col <= to; col++) all.push(await linesOf(col)); return all; };
+        const repeat = (n, value) => Array.from({ length: n }, () => value);
+        for (const [name, last, ruled] of [
+            ['B100', 18, [...repeat(2, ['Releasing', 'Cost per', 'Unit']), ...repeat(9, ['Releasing', 'Cost per Unit']), ...repeat(7, ['Releasing Cost', 'per Unit'])]],
+            ['R85', 20, [...repeat(12, ['The quick', 'brown fox', 'jumps']), ...repeat(8, ['The quick brown', 'fox jumps'])]],
+            ['R70', 20, [...repeat(17, ['The quick brown', 'fox jumps']), ...repeat(3, ['The quick brown fox', 'jumps'])]],
+        ]) {
+            grid.SwitchSheet(sheets.indexOf(name)); await frame(); await frame();
+            check(`${name}: the lines of each column (a pixel wider each) as Excel draws them`, await columns(1, last), ruled);
+        }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Rows and columns as Excel 2019 opens them (tools/excel-parity/make-row-height-fixtures.py; every number read from
 // Excel 2019 on the fixtures): a height's pixels, fractional font sizes, the rows of no height of their own a sheet
 // hides (zeroHeight), columns hidden to XFD, a row's fonts meeting at their baseline, merged cells.

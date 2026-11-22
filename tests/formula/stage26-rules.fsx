@@ -63,6 +63,26 @@ let textRule = data |> withRules [ rule [ range 0 1 5 1 ] (CellIs (OpEqual, "\"A
 eq "cellis-text"        (fills 1 [ 0 .. 3 ] textRule)                                [ true; false; true; false ]
 // A blank cell counts as 0 for a "cell value" rule, as in Excel.
 eq "cellis-blank-is-zero" (fillAt 9 0 (data |> withRules [ rule [ range 0 0 9 0 ] (CellIs (OpLessThan, "5", None)) (fill "#FF0000") 1 ])) (Some "#FF0000")
+// Numbers compare as Excel's `=`: equal to 15 significant digits, otherwise their order, no tolerance near 0
+// (tests/test-documents-excel/synthetic-cf-compare.xlsx, each case's fill read from Excel 2019's DisplayFormat).
+let cfCompareCases =
+    [ "=0.1+0.2", OpEqual, "0.3", None, true; "=0.1+0.2", OpGreaterThan, "0.3", None, false
+      "=0.1+0.2", OpLessOrEqual, "0.3", None, true; "=0.1+0.2", OpNotEqual, "0.3", None, false
+      "1E-10", OpGreaterThan, "0", None, true; "1E-16", OpGreaterThan, "0", None, true
+      "1E-10", OpEqual, "0", None, false; "-1E-10", OpLessThan, "0", None, true
+      "=1*(0.1+0.2-0.3)", OpEqual, "0", None, false; "=1*(0.1+0.2-0.3)", OpNotEqual, "0", None, true
+      "=0.1+0.2", OpBetween, "0.3", Some "0.5", true; "=0.1+0.2", OpNotBetween, "0", Some "0.3", false
+      "=1+22*2^-52", OpEqual, "1", None, true; "=1+23*2^-52", OpEqual, "1", None, false
+      "=1E15+5", OpEqual, "1E15+10", None, true; "0.5", OpLessThan, "0.5+1E-10", None, true
+      "0.5", OpGreaterOrEqual, "0.5+1E-10", None, false; "1E-300", OpGreaterThan, "0", None, true
+      "100", OpBetween, "100.0000000001", Some "200", false; "100", OpBetween, "100.00000000000001", Some "200", true ]
+let cfCompareModel =
+    modelOf [ for i, (a, _, _, _, _) in List.indexed cfCompareCases ->
+                at i 0, (if a.StartsWith "=" then fml a else num (float a)) ]
+    |> withRules [ for i, (_, op, first, second, _) in List.indexed cfCompareCases ->
+                     rule [ range i 0 i 0 ] (CellIs (op, first, second)) (fill "#FF0000") (i + 1) ]
+for i, (a, op, first, second, filled) in List.indexed cfCompareCases do
+    eq (sprintf "cf-compare-%d %s %A %s" (i + 1) a op first) (fillAt i 0 cfCompareModel |> Option.isSome) filled
 
 // --- expression rules -------------------------------------------------------
 let expr f ranges = data |> withRules [ rule ranges (Expression f) (fill "#0000FF") 1 ]
