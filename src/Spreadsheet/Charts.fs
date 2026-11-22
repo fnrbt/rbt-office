@@ -3819,8 +3819,10 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
                 |> List.concat
             let sizeOf (style: TextStyle) = px (style.Size |> Option.defaultValue 11.0)
             let wraps = (bodyProps |> Option.bind (attr "wrap")) <> Some "none"
-            // (Lines are broken where Excel breaks them: by the width the text has in Calibri.)
-            let measured (style: TextStyle) (text: string) = calibriWidth (sizeOf style) (style.Bold |> Option.defaultValue false) text
+            // (A run that names no typeface is in the theme's minor font - the e-commerce dashboard's "Most Sold Items" in
+            // Tw Cen MT, two lines in Excel 2019; lines are broken by the width the text has in it.)
+            let faceIn (style: TextStyle) = style.Face |> Option.orElse (Map.tryFind "#minorFont" parts.Theme)
+            let measured (style: TextStyle) (text: string) = faceWidth (faceIn style) (sizeOf style) (style.Bold |> Option.defaultValue false) text
             let room = max 10.0 (width - padLeft - padRight)
             // Each paragraph in lines that fit the shape: broken between words.
             let wrapped : (string * (string * TextStyle) list * TextStyle) list =
@@ -3870,10 +3872,15 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
                     let spans =
                         runs |> List.map (fun (text, style) ->
                             text, sizeOf style, (style.Color |> Option.orElse fontColor |> Option.defaultValue "#000000"), (style.Bold |> Option.defaultValue false), (style.Italic |> Option.defaultValue false))
-                    yield (match align with
-                           | "ctr" -> PTextRuns (x + width / 2.0, at + high / 2.0, "middle", spans)
-                           | "r" -> PTextRuns (x + width - padRight, at + high / 2.0, "end", spans)
-                           | _ -> PTextRuns (x + padLeft, at + high / 2.0, "start", spans))
+                    let item =
+                        match align with
+                        | "ctr" -> PTextRuns (x + width / 2.0, at + high / 2.0, "middle", spans)
+                        | "r" -> PTextRuns (x + width - padRight, at + high / 2.0, "end", spans)
+                        | _ -> PTextRuns (x + padLeft, at + high / 2.0, "start", spans)
+                    // (A line of one typeface other than Calibri is drawn in it.)
+                    yield (match runs |> List.map (snd >> faceIn) |> List.distinct with
+                           | [ Some face ] when face <> "Calibri" -> PFace (face, [ item ])
+                           | _ -> item)
                 at <- at + high ]
     match props |> Option.bind (child "xfrm") |> Option.bind (attr "rot") |> Option.bind number with
     | Some turn when turn <> 0.0 ->
