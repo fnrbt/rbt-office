@@ -1575,7 +1575,7 @@ type Spreadsheet(container: Element) as this =
                         Chart = (fun id ->
                             let chart = parts.Chart id
                             (match chart with
-                             | Some read when read.Plots |> List.exists (fun plot -> match plot.Kind with SpreadsheetCharts.WaterfallPlot _ | SpreadsheetCharts.FunnelPlot -> true | _ -> false) -> uncached <- true
+                             | Some read when read.Plots |> List.exists SpreadsheetCharts.isChartExPlot -> uncached <- true
                              | _ -> ())
                             chart) }
                 chartLayouts <- chartLayouts + 1
