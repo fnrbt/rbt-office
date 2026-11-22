@@ -65,6 +65,8 @@ export function measure(file) {
     const cases = [];
     for (const b of bands) {
         if (b.bottom - b.top < 6) continue;
+        // (The markers' edges in the band's middle row: a fill's edge rows may cover a grid line more or less.)
+        b.runs = runsOf(img, (b.top + b.bottom) >> 1);
         for (let i = 0; i + 1 < b.runs.length; i += 2) {
             const left = b.runs[i][1], right = b.runs[i + 1][0];
             let inkL = Infinity, inkR = -Infinity, inkT = Infinity, inkB = -Infinity;

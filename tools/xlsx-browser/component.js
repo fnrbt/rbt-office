@@ -1823,7 +1823,8 @@ checks['grid-excel-parity'] = async () => {
         // A dxf's automatic font colour is black.
         check('a rule\'s auto font colour on a black fill: black on black', [style(node(6, 0)).color, style(node(6, 0)).backgroundColor], ['rgb(0, 0, 0)', 'rgb(0, 0, 0)']);
         // Wrapped text is set in 3 px from the cell's sides.
-        check('wrapped text: 3 px from either side', [style(node(8, 1)).paddingLeft, style(node(8, 1)).paddingRight], ['3px', '3px']);
+        // (As a line of one: 2 px after the grid line at its left - the node's box starts on it - and 3 before the one at its right: CellText.textInset.)
+        check('wrapped text: 3 px into the node, 2 short of its end', [style(node(8, 1)).paddingLeft, style(node(8, 1)).paddingRight], ['3px', '2px']);
         // Indented text that runs over its neighbours has room for its indent.
         const clip = /inset\(0px (-?\d+)px/.exec(node(12, 0).getAttribute('style') ?? '');
         check('an indented text runs on over the cells beside it, as far as it needs', clip !== null && Number(clip[1]) <= -node(12, 1).getBoundingClientRect().width, true);
@@ -1884,10 +1885,10 @@ checks['grid-text-excel-parity'] = async () => {
             check(`${name}: the text is drawn at ${px} px on screen`, near(size * zoom / (name === 'Z67' ? 1 : calibriScale), px, 0.05), px);
             check(`${name}: twenty zeros are ${zeros} px wide, as Excel draws them`, near(textBox(node(2, 1)).width, zeros), zeros);
             const cell = node(0, 1).getBoundingClientRect(), right = node(1, 1).getBoundingClientRect();
-            // (ceil(d / 4) screen px in, one more from the right, d Calibri 11's widest digit there - 7, 6, 6, Small Fonts' 5:
-            // `CellText.textInset`, text-inset-excel-parity.)
-            check(`${name}: a left-aligned line starts 2 px into the cell`, near(textBox(node(0, 1)).left - cell.left, 2), 2);
-            check(`${name}: a right-aligned line ends 3 px before the cell's end`, near(right.right - textBox(node(1, 1)).right, 3), 3);
+            // (ceil(d / 4) screen px in, one more from the right grid line, d Calibri 11's widest digit there - 7, 6, 6, Small
+            // Fonts' 5: `CellText.textInset`, text-inset-excel-parity. A node's box starts on its left grid line.)
+            check(`${name}: a left-aligned line starts 3 px into the node (2 after its grid line)`, near(textBox(node(0, 1)).left - cell.left, 3), 3);
+            check(`${name}: a right-aligned line ends 2 px before the node's end (3 before the next grid line)`, near(right.right - textBox(node(1, 1)).right, 2), 2);
         }
         await show('Z80');
         const pangram80 = textBox(node(0, 1)).width;
@@ -1945,9 +1946,10 @@ checks['text-inset-excel-parity'] = async () => {
                 const cell = node(2 * k + 1, 4 * j + 1);
                 if (!cell) { got.push('none'); want.push(q); continue; }
                 const box = cell.getBoundingClientRect(), text = textBox(cell);
-                if (i % 3 === 0) { got.push(near(text.left - box.left, q)); want.push(q); }
+                // (A node's box starts on its left grid line and ends before the next one: q + 1 and q px in.)
+                if (i % 3 === 0) { got.push(near(text.left - box.left, q + 1)); want.push(q + 1); }
                 // (The line's last character ends where its letter spacing starts: the spacing follows it.)
-                else { const spacing = parseFloat(getComputedStyle(cell).letterSpacing) || 0; got.push(near(box.right - (text.right - spacing), q + 1)); want.push(q + 1); }
+                else { const spacing = parseFloat(getComputedStyle(cell).letterSpacing) || 0; got.push(near(box.right - (text.right - spacing), q)); want.push(q); }
             }
             check(`${sheet}: every line ceil(d / 4) px from the left, one more from the right (${sizes.join(', ')} pt)`, got, want);
         }
@@ -1961,7 +1963,7 @@ checks['text-inset-excel-parity'] = async () => {
         }
         grid.SwitchSheet(sheets.indexOf('Z100')); await frame(); await frame();
         const spread = (i) => { const c = at(i), b = c.getBoundingClientRect(), t = textBox(c); return [near(t.left - b.left, Math.round(t.left - b.left)), near(b.right - t.right, Math.round(b.right - t.right))]; };
-        check('distributed "H H H" from 2 px to 3 px short of the cell\'s end; indented 1: 11 and 12 (9 px a level, both sides)', [spread(8), spread(9)], [[2, 3], [11, 12]]);
+        check('distributed "H H H" from 3 px in to 2 px short of the node\'s end; indented 1: 12 and 11 (9 px a level, both sides)', [spread(8), spread(9)], [[3, 2], [12, 11]]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

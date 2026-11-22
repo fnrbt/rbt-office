@@ -168,7 +168,7 @@ let private cellFontFamily (fontName: string option) : string =
 /// Asked once per family.
 // (What was measured before a document font finished loading is forgotten when it has: the
 // families, and the widths measured in them.)
-[<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());if(!globalThis.__rbSpreadsheetFontsWatched&&typeof document!=='undefined'&&document.fonts&&document.fonts.addEventListener){globalThis.__rbSpreadsheetFontsWatched=true;document.fonts.addEventListener('loadingdone',()=>{const f=globalThis.__rbSpreadsheetFamilies;if(f)f.clear();for(const k of ['__rbSpreadsheetCellMeasure','__rbSpreadsheetPlainMeasure']){const m=globalThis[k];if(m){m.widths.clear();m.font='';}}});}let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
+[<Emit("(function(family){const g=globalThis.__rbSpreadsheetFamilies||(globalThis.__rbSpreadsheetFamilies=new Map());if(!globalThis.__rbSpreadsheetFontsWatched&&typeof document!=='undefined'&&document.fonts&&document.fonts.addEventListener){globalThis.__rbSpreadsheetFontsWatched=true;document.fonts.addEventListener('loadingdone',()=>{const f=globalThis.__rbSpreadsheetFamilies;if(f)f.clear();for(const k of ['__rbSpreadsheetCellMeasure','__rbSpreadsheetPlainMeasure','__rbSpreadsheetFontBox']){const m=globalThis[k];if(m){m.widths.clear();m.font='';}}});}let v=g.get(family);if(v===undefined){const c=document.createElement('canvas').getContext('2d');const t='mmmmmmmmmmlli WQ 0123456789';c.font='72px monospace';const a=c.measureText(t).width;c.font=\"72px '\"+family+\"', monospace\";v=c.measureText(t).width!==a;g.set(family,v);}return v;})($0)")>]
 let private fontFamilyAvailable (family: string) : bool = jsNative
 
 /// Ask a host's loader for the bytes of a face (`SetFontLoader`) and make them a document font; once
@@ -248,6 +248,42 @@ let private excelLetterSpacing (zoom: float) (text: string) (fontPt: float) (fon
         let spacing = (excelTextWidth zoom text fontPt fontName bold italic - drawn) / float text.Length
         if abs spacing < 0.005 then 0.0 else spacing
 
+
+/// The largest GDI descent (screen pixels at the zoom, `FontMetrics.descentPx`) of the text at the bottom of its cells,
+/// by row: Excel 2019 sets the bottom-aligned lines of a row on one baseline, that descent above the row's grid line
+/// (a Calibri 11 line in a row with Arial 20 6 px above it, not its own 4: make-text-inset-fixture.py). Worked out once
+/// for a sheet's cells at a zoom.
+let private rowDescentsCache : (obj * float * System.Collections.Generic.Dictionary<int, float>) option ref = ref None
+let private gridRowDescents (model: SpreadsheetModel) (zoom: float) : System.Collections.Generic.Dictionary<int, float> =
+    match rowDescentsCache.Value with
+    | Some (cells, z, known) when obj.ReferenceEquals(cells, model.Cells) && z = zoom -> known
+    | _ ->
+        let known = System.Collections.Generic.Dictionary<int, float>()
+        let seen = System.Collections.Generic.Dictionary<string, float>()
+        let descentOf (face: string option) (points: float) (bold: bool) (italic: bool) =
+            let key = (defaultArg face "") + "|" + string points + "|" + string bold + string italic
+            match seen.TryGetValue key with
+            | true, d -> d
+            | _ ->
+                let d = FontMetrics.descentPx face (float (ExcelText.pixelSize points zoom) * 0.75) bold italic
+                seen.[key] <- d
+                d
+        for KeyValue(addr, data) in model.Cells do
+            let format = data.Format
+            if (match format.VerticalAlign with None | Some "bottom" -> true | Some _ -> false) && format.TextRotation = 0
+               && (match unwrapFormulaValue data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true) then
+                let d = descentOf format.FontName (defaultArg format.FontSize 11.0) format.Bold format.Italic
+                match known.TryGetValue addr.Row with
+                | true, was when was >= d -> ()
+                | _ -> known.[addr.Row] <- d
+        rowDescentsCache.Value <- Some (box model.Cells, zoom, known)
+        known
+
+/// Where the browser puts a line's baseline in a font of a size (pixels): its ascent and descent as it lays a line out
+/// (`fontBoundingBoxAscent` / `Descent`; the baseline of a line box L px high is (L - ascent - descent) / 2 + ascent
+/// below its top). Remembered by font, forgotten when a document font loads.
+[<Emit("(function(fontSize,family,bold,italic){const g=globalThis.__rbSpreadsheetFontBox||(globalThis.__rbSpreadsheetFontBox={ctx:document.createElement('canvas').getContext('2d'),font:'',widths:new Map()});const font=(bold?'bold ':'')+(italic?'italic ':'')+fontSize+'px '+family;let v=g.widths.get(font);if(v===undefined){g.ctx.font=font;g.font=font;const m=g.ctx.measureText('Hg');v=[m.fontBoundingBoxAscent||fontSize*0.8,m.fontBoundingBoxDescent||fontSize*0.2];g.widths.set(font,v);}return v;})($0,$1,$2,$3)")>]
+let private fontBox (fontPx: float) (family: string) (bold: bool) (italic: bool) : float array = jsNative
 
 /// Call `f` whenever the document's fonts finish loading (a face added to the page and loaded once
 /// a text asks for it); gives what stops it.
@@ -3937,13 +3973,15 @@ type Spreadsheet(container: Element) as this =
         let fontPx = float (ExcelText.pixelSize look.FontSize zoom) / zoom * drawnScale
         if look.Text <> "" then add "font-size" (cssPxFine fontPx)
         // How far in from the cell's sides the text is set (`CellText.textInset`): ceil(d / 4) screen pixels from
-        // the left, one more from the right, d the widest digit of the cell's font as Excel draws it at the zoom
-        // (2 / 3 px for Calibri 11 at 100 %: the grid's style sheet). In sheet pixels (the content's zoom scales them).
+        // the left of what is drawn of the cell, one more from its right grid line, d the widest digit of the cell's
+        // font as Excel draws it at the zoom. A node's box starts on the grid line at its left and ends on its last
+        // pixel before the next one's (Excel's cell ends on its grid line): 3 / 2 px for Calibri 11 at 100 % (the
+        // grid's style sheet). In sheet pixels (the content's zoom scales them).
         let inset =
             if look.Text = "" then 2
             else CellText.textInset (fun digit -> excelTextWidth zoom digit look.FontSize look.FontName look.Bold look.Italic)
-        let padLeft = float inset / zoom
-        let padRight = float (inset + 1) / zoom
+        let padLeft = float (inset + 1) / zoom
+        let padRight = float inset / zoom
         let ownPads = inset <> 2 || zoom <> 1.0
         // Across the cell (the style sheet's default is the left).
         match look.Horizontal with
@@ -3966,6 +4004,8 @@ type Spreadsheet(container: Element) as this =
         // look). Wrapped text is a column of lines, placed as a block, from
         // edge to edge of the cell (a row auto-fitted to n lines is n lines tall).
         let lineHeight = SheetOps.lineHeightPxOfPoints look.FontSize
+        // (How far a wrapped text's last line hangs below the box to stand on the row's baseline.)
+        let mutable lastLineDrop = 0.0
         if look.Wrap then
             // (Its own line breaks are kept.)
             add "white-space" "pre-line"
@@ -3983,15 +4023,37 @@ type Spreadsheet(container: Element) as this =
                  | SpreadsheetPaint.VAlignMiddle -> "center"
                  | SpreadsheetPaint.VAlignBottom -> "flex-end")
             if look.VerticalAlign <> SpreadsheetPaint.VAlignTop then add "padding-top" "0px"
-            add "padding-bottom" "0px"
+            match look.VerticalAlign with
+            | SpreadsheetPaint.VAlignBottom ->
+                // (Its last line on the row's baseline, as a line of one: the descent above the grid line below.)
+                let screenPx = float (ExcelText.pixelSize look.FontSize zoom)
+                let own = FontMetrics.descentPx look.FontName (screenPx * 0.75) look.Bold look.Italic
+                let descent = match (gridRowDescents model zoom).TryGetValue row with | true, d -> max own d | _ -> own
+                let box = fontBox fontPx drawnFamily look.Bold look.Italic
+                let lineBaseline = (lineHeight - box.[0] - box.[1]) / 2.0 + box.[0]
+                let baseline = (System.Math.Round (h * zoom) - descent) / zoom
+                let below = h - (baseline + lineHeight - lineBaseline)
+                add "padding-bottom" (cssPxFine (max 0.0 below))
+                // (Lower than the box's bottom: the last line hangs below it, by a negative margin.)
+                if below < 0.0 then lastLineDrop <- -below
+            | _ -> add "padding-bottom" "0px"
         else
             match look.VerticalAlign with
             | SpreadsheetPaint.VAlignTop -> add "line-height" (px lineHeight)
             | SpreadsheetPaint.VAlignBottom when h >= lineHeight ->
                 add "line-height" (px lineHeight)
-                // (A pixel lower than the line's own box: Excel's baseline is 4 px above the
-                // bottom of a 20 px row, 5 px when the line ends at the edge.)
-                add "padding-top" (px (h - lineHeight + 1.0))
+                // Excel 2019 sets a line at the bottom of its cell on the baseline GDI's descent of its font above the
+                // row's grid line (Calibri 11 at 100 %: 4 px above it in a 20-px row; Calibri 36 13): the node's box
+                // starts on the grid line above it and ends on the row's last pixel, so the baseline is the box's
+                // height less the descent from its top - where the browser's line box puts it is worked out from the
+                // font's ascent and descent as it lays it out (`fontBox`).
+                let screenPx = float (ExcelText.pixelSize look.FontSize zoom)
+                let own = FontMetrics.descentPx look.FontName (screenPx * 0.75) look.Bold look.Italic
+                let descent = match (gridRowDescents model zoom).TryGetValue row with | true, d -> max own d | _ -> own
+                let screenH = System.Math.Round (h * zoom)
+                let box = fontBox fontPx drawnFamily look.Bold look.Italic
+                let lineBaseline = (lineHeight - box.[0] - box.[1]) / 2.0 + box.[0]
+                add "padding-top" (cssPxFine (max 0.0 ((screenH - descent) / zoom - lineBaseline)))
                 add "padding-bottom" "0px"
             | _ -> add "line-height" (px (h - 4.0))
         // An indent pads the edge the text is aligned to.
@@ -4137,6 +4199,16 @@ type Spreadsheet(container: Element) as this =
         | None ->
             drawEdge 0 topRuns
             drawEdge 1 leftRuns
+        // A filled cell's fill covers the grid line at its right and below it (Excel 2019 fills from grid line to grid
+        // line): where that is this unfilled cell's first column / row of pixels, they are in that fill.
+        if look.Fill.IsNone && plainSheet then
+            let fillOf (data: CellData option) = data |> Option.bind (fun d -> d.Format.BgColor)
+            match topRuns, fillOf aboveRaw with
+            | [ (_, _, SpreadsheetLayout.EdgeGrid false) ], Some fill when above >= 0 -> shadows.Insert (0, "inset 0 " + cssPxFine (1.0 / appliedZoom) + " 0 0 " + fill)
+            | _ -> ()
+            match leftRuns, fillOf leftRaw with
+            | [ (_, _, SpreadsheetLayout.EdgeGrid false) ], Some fill when before >= 0 -> shadows.Insert (0, "inset " + cssPxFine (1.0 / appliedZoom) + " 0 0 0 " + fill)
+            | _ -> ()
         if endRow >= model.RowCount - 1 then drawEdge 2 (runsAlong col endCol columnStart (fun c -> SpreadsheetLayout.edgeBelow model endRow c))
         if endCol >= model.ColCount - 1 then drawEdge 3 (runsAlong row endRow rowStart (fun r -> SpreadsheetLayout.edgeRight model r endCol))
         // Where a border from above ends at one coming from the left (the
@@ -4164,8 +4236,24 @@ type Spreadsheet(container: Element) as this =
                     edgeChildren.Add (100, "position:absolute;pointer-events:none;left:0;top:0;width:" + string cornerWidth + "px;height:" + string cornerHeight
                                            + "px;background:" + (stronger.Color |> Option.defaultValue "#000000"))
             | _ -> ()
+        // A fill covers the grid lines at the cell's right and below it too - the first pixels of the cells there,
+        // where those have no fill of their own: Excel 2019 fills a cell from grid line to grid line (a black cell's
+        // fill a pixel wider and higher than its node, make-text-inset-fixture.py's markers).
+        match look.Fill with
+        | Some fill ->
+            let unfilled (r: int) (c: int) = match getCell { Row = r; Col = c } model with Some data -> data.Format.BgColor.IsNone | None -> true
+            let right = unfilled row (endCol + 1)
+            let below = unfilled (endRow + 1) col
+            // (A screen pixel at any zoom.)
+            let one = cssPxFine (1.0 / appliedZoom)
+            if right then shadows.Add (one + " 0 0 0 " + fill)
+            if below then shadows.Add ("0 " + one + " 0 0 " + fill)
+            if right && below && unfilled (endRow + 1) (endCol + 1) then shadows.Add (one + " " + one + " 0 0 " + fill)
+            // (Painted outside its box: `contain: strict` would cut it there.)
+            if right || below then add "contain" "size layout style"
+        | None -> ()
         // (The style sheet gives a cell the two grid lines most cells have.)
-        if not (shadows.Count = 2 && gridColor = defaultGridColor && isNull tableShadow.[0] && isNull tableShadow.[1] && shadows.[0].StartsWith "inset 0 1px" && shadows.[1].StartsWith "inset 1px") then
+        if not (shadows.Count = 2 && gridColor = defaultGridColor && isNull tableShadow.[0] && isNull tableShadow.[1] && shadows.[0].StartsWith "inset 0 1px" && shadows.[1].StartsWith "inset 1px" && shadows.[0].EndsWith gridColor && shadows.[1].EndsWith gridColor) then
             add "box-shadow" (if shadows.Count = 0 then "none" else String.concat "," shadows)
         // The data bar and the icon of its conditional formats (`Paint.cellLook`).
         let icon = look.Icon
@@ -4389,13 +4477,15 @@ type Spreadsheet(container: Element) as this =
                 match wrappedLines with
                 | Some lines ->
                     setTextContent cell ""
-                    for line in lines do
+                    let count = List.length lines
+                    lines |> List.iteri (fun index line ->
                         let span = createElement "span"
                         setClassName span "spreadsheet-line"
                         setTextContent span line
                         let lineSpacing = excelLetterSpacing zoom line look.FontSize look.FontName look.Bold look.Italic / zoom
-                        setCssText span ("display:block;white-space:pre" + (if lineSpacing = 0.0 then "" else ";letter-spacing:" + cssPxFine lineSpacing))
-                        appendChild cell span
+                        setCssText span ("display:block;white-space:pre" + (if lineSpacing = 0.0 then "" else ";letter-spacing:" + cssPxFine lineSpacing)
+                                         + (if index = count - 1 && lastLineDrop > 0.0 then ";margin-bottom:" + cssPxFine (-lastLineDrop) else ""))
+                        appendChild cell span)
                 | None -> setTextContent cell displayText
         elif rotation = 0 then
             setTextContent cell ""
@@ -6571,7 +6661,7 @@ type Spreadsheet(container: Element) as this =
             // (A cell has no border of its own: its grid lines - the edge above it and the edge
             // to its left - are an inset shadow, and borders are child elements; see drawCell.)
             // (Text a cell cannot show is cut at its edge, as Excel does: never "…".)
-            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 3px 3px 2px;overflow:hidden;white-space:nowrap;text-overflow:clip;box-sizing:border-box;font-kerning:none;"
+            (".spreadsheet-container .spreadsheet-cell{position:absolute;padding:3px 2px 3px 3px;overflow:hidden;white-space:nowrap;text-overflow:clip;box-sizing:border-box;font-kerning:none;"
              + "font-family:Arial, sans-serif;font-size:" + cssPx (SheetOps.pointsToPx 11.0) + ";cursor:default;background:white;border:none;box-shadow:inset 0 1px 0 0 " + defaultGridColor + ",inset 1px 0 0 0 " + defaultGridColor + ";contain:strict}"
              + ".spreadsheet-container .spreadsheet-col-header{position:absolute;top:0;height:30px;border-right:1px solid #d0d0d0;border-bottom:1px solid #a6a6a6;"
              + "background:linear-gradient(180deg, #f8f8f8 0%, #e8e8e8 100%);display:flex;align-items:center;justify-content:space-between;padding:0 4px;box-sizing:border-box;"
