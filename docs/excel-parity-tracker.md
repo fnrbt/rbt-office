@@ -233,7 +233,11 @@ Cambria 14; a bottom-aligned line of Calibri 11 3.58 pt above the cell's bottom,
 below its top, ours 10.47); the row of a Normal font not among the 32 measured is taken at 6.2 dots a pixel (they
 run 5.55 to 7.1); a header's vertical place (0.2-0.3 pt); houseflipping's "2 REPAIR ESTIMATOR" (fit 1 x 6 of a
 print area of 1,092 rows with hidden ones: 2 pages in Excel, 6 ours); dcf-stock-analysis's Financial Model and
-acre-property's Summary (a page more than Excel).
+acre-property's Summary (a page more than Excel). Words of the real-estate pages (354 pages, `compare-pdf-words.py`): 47 within 1 pt of
+Excel's; the rest mostly from elsewhere - rows fitted on opening a line higher than Excel's (acre's MF sheets: a
+two-line header of 28.8 pt fitted to three lines, every row below 14.7 pt lower), the PDF runner's faces (Calibri,
+Arial, Cambria, Times New Roman, Verdana: Aptos Narrow, Tahoma, Arial MT are set in Calibri - oyabayo and
+acre-property 4 pt across), the columns AutoFit left (above).
 
 ## Formula oracle on real-world models, 2026-11-21
 
