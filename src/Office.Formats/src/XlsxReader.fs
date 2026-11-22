@@ -5595,8 +5595,10 @@ module SlicerParts =
                     let tabular = data |> Option.bind (Xlsx.sElem "tabular")
                     let olap = data |> Option.bind (Xlsx.sElem "olap")
                     let tableCache = Xlsx.sElem "extLst" root |> Option.bind (fun extLst -> Xlsx.sElems "tableSlicerCache" extLst |> List.tryHead)
+                    // (Excel 2019 writes it in the cache definition's own extLst, `<x:ext><x15:slicerCacheHideItemsWithNoData/>`.)
                     let hidesNoData =
-                        tabular |> Option.bind (Xlsx.sElem "extLst") |> Option.map (fun extLst -> not (Xlsx.sElems "slicerCacheHideItemsWithNoData" extLst).IsEmpty) |> Option.defaultValue false
+                        [ Some root; tabular ]
+                        |> List.exists (fun owner -> owner |> Option.bind (Xlsx.sElem "extLst") |> Option.exists (fun extLst -> not (Ns.descendantsNs "slicerCacheHideItemsWithNoData" extLst).IsEmpty))
                     let source =
                         match tabular, olap, tableCache with
                         | Some tabular, _, _ ->

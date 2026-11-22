@@ -121,12 +121,12 @@ match sceneNamed syn drawer synData "Region" 240.0 200.0 with
     match shown with
     | [ (_, x0, y0, _, _, _); (_, x1, y1, _, _, _); (_, x2, y2, _, _, _); (_, x3, y3, _, _, _) ] ->
         ok "... North and South side by side, East and West under them" (y0 = y1 && x0 < x1 && y2 = y3 && y2 > y0 && x2 = x0 && x3 = x1) (sprintf "%A" shown)
-        ok "... as high as the slicer says (241300 EMU: 25.33 px) with a gap" (abs (y2 - y0 - (241300.0 / 9525.0 + 3.0)) < 0.01) (sprintf "%g" (y2 - y0))
-        // (Excel 2019 at 100%: the buttons 10 px in from the frame at both sides, 4 px apart, the first row
+        ok "... as high as the slicer says in whole pixels (241300 EMU: 25.33 px, 25 as Excel draws it) with a gap of 3" (abs (y2 - y0 - 28.0) < 0.01) (sprintf "%g" (y2 - y0))
+        // (Excel 2019 at 100%: the buttons 9 px in from the frame at both sides, 4 px apart, the first row
         // 32 px below the top, the header's line 27 px below it.)
-        eq "... where Excel puts them: 10 px in at both sides, 4 px apart, 32 px from the top" (x0, x1 + (x1 - x0 - 4.0), y0) (10.0, 230.0, 32.0)
-        ok "... the header's line 27 px down, from 10 px in to 10 px from the right"
-            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (10.0, 27.5, 230.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
+        eq "... where Excel puts them: 9 px in from the frame at both sides (synthetic-slicer-looks.xlsx), 4 px apart, 32 px from the top" (x0, x1 + (x1 - x0 - 4.0), y0) (9.0, 231.0, 32.0)
+        ok "... the header's line 27 px down, from 9 px in to 9 px from the right"
+            (flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (9.0, 27.5, 231.0, 27.5, _, _, _) -> true | _ -> false)) (sprintf "%A" (flat scene.Items))
     | _ -> ok "Region: four buttons" false (sprintf "%A" shown)
     eq "... in SlicerStyleLight1 in the theme: selected with data in accent 1 tint 60%, unselected white, selected without data tint 80% in grey text"
         (shown |> List.map (fun (_, _, _, fill, color, _) -> fill, color))
@@ -151,7 +151,7 @@ match sceneNamed syn drawer synData "Date" 600.0 140.0 with
 | Some scene ->
     let shown = texts scene.Items
     ok "the timeline: caption, selection in words, level, years and months"
-        ([ "Date"; "Mar 2012 - Dec 2012"; "MONTHS ▾"; "2012"; "JAN"; "FEB"; "MAR"; "DEC"; "2013" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
+        ([ "Date"; "Mar - Dec 2012"; "MONTHS ▾"; "2012"; "JAN"; "FEB"; "MAR"; "DEC"; "2013" ] |> List.forall (fun value -> List.contains value shown)) (sprintf "%A" shown)
     let blocks =
         flat scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, _, _, _) when w > 40.0 && w < 50.0 && h = 16.0 -> Some (x, y, fill) | _ -> None) |> List.sortBy (fun (x, _, _) -> x)
     // (Excel 2019: a month 48.5 px wide; the custom style has only selectedTimeBlock, so the others have no fill.)
@@ -165,6 +165,32 @@ match sceneNamed syn drawer synData "Date" 600.0 140.0 with
          | _ -> None)
         (Some (1.0, "start", true, true))
 | None -> ok "the timeline is drawn" false "a placeholder"
+// How Excel 2019 words a timeline's selection at each level (make-timeline-variants.py: synthetic-slicers.xlsx's
+// timeline in Excel, its label read off the picture).
+for level, first, last, expected in
+        [ 2, (2012, 3, 1), (2012, 12, 31), "Mar - Dec 2012"; 2, (2012, 11, 1), (2013, 2, 28), "Nov 2012 - Feb 2013"; 2, (2012, 6, 1), (2012, 6, 30), "Jun 2012"
+          1, (2012, 4, 1), (2012, 9, 30), "Q2 - Q3 2012"; 1, (2012, 10, 1), (2013, 3, 31), "Q4 2012 - Q1 2013"; 1, (2012, 4, 1), (2012, 6, 30), "Q2 2012"
+          3, (2012, 3, 5), (2012, 3, 20), "Mar 5 - 20 2012"; 3, (2012, 3, 28), (2012, 4, 3), "Mar 28 - Apr 3, 2012"
+          3, (2012, 12, 30), (2013, 1, 2), "Dec 30, 2012 - Jan 2, 2013"; 3, (2012, 3, 5), (2012, 3, 5), "Mar 5, 2012"
+          0, (2012, 1, 1), (2013, 12, 31), "2012 - 2013"; 0, (2012, 1, 1), (2012, 12, 31), "2012" ] do
+    eq (sprintf "a timeline's selection in words: %s" expected) (Slicers.selectionText { date with Level = level; Selection = Some (first, last) }) expected
+
+// ---- slicers Excel made (tools/excel-parity/build-slicer-looks.vbs: synthetic-slicer-looks.xlsx) --------------
+let _, looks, looksBook = openBook "test-documents-excel/synthetic-slicer-looks.xlsx"
+let looksDrawer = Slicers.drawer looks
+let looksData = liveData looksBook
+let labels name = match sceneNamed looks looksDrawer looksData name 193.0 254.0 with Some scene -> buttons scene.Items |> List.map (fun (label, _, _, _, _, _) -> label) | None -> []
+eq "sorted up: the items with data first, each part sorted (Excel's order)" (labels "RegionUp") [ "East"; "North"; "South"; "Central"; "West" ]
+eq "sorted down: likewise, down" (labels "RegionDown") [ "South"; "North"; "East"; "West"; "Central" ]
+eq "no data in place: every item in its sorted place" (labels "RegionInPlace") [ "Central"; "East"; "North"; "South"; "West" ]
+eq "hide items with no data (x15:slicerCacheHideItemsWithNoData in the cache's extLst): only those with data" (labels "RegionHide") [ "East"; "North"; "South" ]
+let headerRed name =
+    match sceneNamed looks looksDrawer looksData name 193.0 254.0 with
+    | Some scene -> flat scene.Items |> List.exists (fun item -> match item with Charts.PLine (_, _, _, _, "#D65532", _, _) -> true | _ -> false)
+    | None -> false
+eq "the header's Clear Filter: a red cross while the slicer filters, grey while every item is selected"
+    ([ "ProductS"; "RegionUp"; "RegionDown"; "ProductAll" ] |> List.map headerRed) [ true; true; false; false ]
+
 eq "a name the workbook has no slicer of: None (the frame says what it is)" (drawer "slicer" "Nothing" noData 100.0 100.0) None
 
 // ---- the dashboards' slicers (pivot slicers, a custom style copied from a built-in one) -----------------

@@ -4938,6 +4938,15 @@ type Spreadsheet(container: Element) as this =
     /// stays, the part beside them scrolls (and goes under the frozen cells).
     /// Rebuilt when the drawings, the sizes of rows / columns, their chart
     /// bindings or the panes change (and while a picture is dragged across panes).
+    /// Where a drawing of the sheet on display is drawn: its anchor's rectangle - a slicer's or a timeline's
+    /// a pixel wider and higher, as Excel 2019 draws them (the frame on the pixel left of the anchor and on its
+    /// last pixel at the right: synthetic-slicer-looks.xlsx, a slicer of 192 px framed over 193).
+    and objectRect (drawing: SheetDrawing) : SpreadsheetLayout.Rect =
+        let rect = SpreadsheetLayout.drawingRect model drawing
+        match drawing.Content with
+        | KeptObject (_, xml) when xml.Contains "drawing/2010/slicer" || xml.Contains "drawing/2012/timeslicer" ->
+            { rect with Width = rect.Width + 1.0; Height = rect.Height + 1.0 }
+        | _ -> rect
     and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
         ensureChartBindings ()
         let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
@@ -4972,7 +4981,7 @@ type Spreadsheet(container: Element) as this =
                 let rect =
                     match dragged with
                     | Some drag when drag.Id = drawing.Id -> drag.Current
-                    | _ -> SpreadsheetLayout.drawingRect model drawing
+                    | _ -> objectRect drawing
                 if rect.Width >= 1.0 && rect.Height >= 1.0 then
                     let label = SpreadsheetLayout.drawingLabel drawing
                     // (A shape with a macro assigned - its OnAction - runs it when clicked, once macros may run.)
@@ -5127,7 +5136,7 @@ type Spreadsheet(container: Element) as this =
                             if pendingObjects.Contains drawing.Id && inView drawing && (laidOut = 0 || nowMs () - started < 12.0) then
                                 match drawing.Content with
                                 | KeptObject (_, xml) ->
-                                    let rect = SpreadsheetLayout.drawingRect model drawing
+                                    let rect = objectRect drawing
                                     drawingSvg drawing xml rect.Width rect.Height |> ignore
                                     laidOut <- laidOut + 1
                                 | Picture _ -> ()
