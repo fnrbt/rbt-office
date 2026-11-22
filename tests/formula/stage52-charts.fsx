@@ -351,6 +351,9 @@ ok "a line of no height with a triangle at its end: 8 px wide, 13.3 long (a 1-pt
     (match arrowed |> Option.map (fun scene -> polygons scene.Items) with
      | Some [ [ (tx, ty); (_, y1); (bx, y2); _ ] ] -> tx = 240.0 && ty = 0.0 && abs (abs (y1 - y2) - 8.0) < 0.01 && abs (tx - bx - 13.33) < 0.01
      | _ -> false) (sprintf "%A" arrowed)
+let feedData = { linkData with Display = (fun _ -> "Next Look\n$1,68,20,984\n29%") }
+ok "a line feed in a linked cell's text breaks the line (dashboard-sales-analysis' pie labels, three lines in Excel 2019)"
+    (let svg = shapeSvg feedData linked in has svg ">Next Look<" && has svg ">$1,68,20,984<" && has svg ">29%<") (shapeSvg feedData linked)
 ok "a shape or a group draws past its rectangle, a chart or a picture not" (Charts.objectSpills (bareShape "" "") && not (Charts.objectSpills "<xdr:twoCellAnchor><xdr:graphicFrame macro=\"\"></xdr:graphicFrame></xdr:twoCellAnchor>")) ""
 
 // ---- a chart part that says little (as openpyxl writes them): Excel 2019's defaults ----------

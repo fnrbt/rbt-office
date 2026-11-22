@@ -4528,15 +4528,20 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
                     let defaults = paragraphProps |> Option.bind (child "defRPr") |> Option.map (runStyle parts.Theme) |> Option.defaultValue noTextStyle
                     let runs =
                         kids paragraph
-                        |> List.choose (fun run ->
+                        |> List.collect (fun run ->
                             match nameOf run with
                             | "r" | "fld" ->
                                 let style = over (child "rPr" run |> Option.map (runStyle parts.Theme) |> Option.defaultValue noTextStyle) defaults
                                 let cached = child "t" run |> Option.map innerText |> Option.defaultValue ""
                                 let linked = (attr "type" run |> Option.map (fun kind -> kind.ToLowerInvariant ())) = Some "txlink"
-                                Some (Some ((if linked then linkedText |> Option.defaultValue cached else cached), style))
-                            | "br" -> Some None
-                            | _ -> None)
+                                // (A line feed in the text - a linked cell's CHAR(10) - breaks the line, as a `a:br`: Excel 2019,
+                                // dashboard-sales-analysis' pie labels "Next Look / $1,68,20,984 / 29%" on three lines.)
+                                (if linked then linkedText |> Option.defaultValue cached else cached).Replace("\r\n", "\n").Split('\n')
+                                |> Array.toList
+                                |> List.mapi (fun index piece -> if index = 0 then [ Some (piece, style) ] else [ None; Some (piece, style) ])
+                                |> List.concat
+                            | "br" -> [ None ]
+                            | _ -> [])
                     let endStyle = child "endParaRPr" paragraph |> Option.map (runStyle parts.Theme) |> Option.defaultValue noTextStyle
                     // (A line break makes a line of its own of what follows.)
                     let broken = ResizeArray<(string * TextStyle) list>([ [] ])
