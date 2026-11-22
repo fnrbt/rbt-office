@@ -512,6 +512,40 @@ type Series = {
     Explosion: float
 }
 
+/// How a chartEx histogram cuts its values into bins (`cx:binning`): set by a width or a count, else Excel's own
+/// rule; values below an underflow / above an overflow in a bin of their own; bins closed on the right (`(a, b]`,
+/// the first `[a, b]`) unless `intervalClosed="l"`.
+type Binning = {
+    ClosedLeft: bool
+    Size: float option
+    Count: int option
+    Underflow: float option
+    Overflow: float option
+}
+
+/// What a chartEx box and whisker series shows (`cx:statistics`, `cx:visibility`).
+type BoxOptions = {
+    /// Quartiles of the median included (`quartileMethod="inclusive"`), else excluded.
+    Inclusive: bool
+    MeanLine: bool
+    MeanMarker: bool
+    /// The points between the whiskers' ends (`nonoutliers`).
+    InnerPoints: bool
+    Outliers: bool
+}
+
+/// The figures of a box: whiskers' ends, quartiles, median, mean, the points inside and outside the whiskers.
+type BoxFigures = {
+    Low: float
+    Q1: float
+    Median: float
+    Q3: float
+    High: float
+    Mean: float
+    Inner: float list
+    Outside: float list
+}
+
 type PlotKind =
     | BarPlot
     | LinePlot
@@ -526,7 +560,20 @@ type PlotKind =
     | WaterfallPlot of subtotals: int list * connectors: bool
     /// A chartEx funnel: bars centred on each other, one per category, top to bottom.
     | FunnelPlot
-    /// A chartEx chart of a kind that is not drawn (`layoutId`: "regionMap", "sunburst", ...): a placeholder.
+    /// A chartEx histogram (`clusteredColumn`): its values cut into bins - by its categories where it has them -,
+    /// a bar a bin; a Pareto chart (`paretoLine` beside it) the bins from the most to the least with their
+    /// running share on a second axis.
+    | HistogramPlot of binning: Binning * pareto: bool
+    /// A chartEx box and whisker chart: a box a series a category.
+    | BoxWhiskerPlot of BoxOptions
+    /// A box and whisker chart's boxes as laid out: the figures of each series' boxes, a category each.
+    | BoxesPlot of figures: BoxFigures option [] [] * options: BoxOptions
+    /// A chartEx treemap: its categories (levels of them) as rectangles of their values' sizes; how a parent's label
+    /// stands (`parentLabelLayout`: "overlapping" | "banner" | "none").
+    | TreemapPlot of parentLabels: string
+    /// A chartEx sunburst: its categories' levels as rings, the outer level's parts within their parent's.
+    | SunburstPlot
+    /// A chartEx chart of a kind that is not drawn (`layoutId`: "regionMap", ...): a placeholder.
     | UndrawnPlot of layoutId: string
 
 type Plot = {
@@ -652,6 +699,8 @@ type Chart = {
     /// The shapes drawn over the chart (`c:userShapes`: the drawing part the chart's relationships name), as the
     /// part's XML; None when it has none.
     UserShapes: string option
+    /// One of the newer kinds (a chartEx part's), laid out as Excel lays those out.
+    ChartEx: bool
 }
 
 // ---------------------------------------------------------------------------
@@ -882,7 +931,7 @@ let private titleRuns (theme: ThemeColors) (title: XmlDsl.XmlNode) : (string * T
                 | _ -> None))
     | None -> []
 
-let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
+let private axisOf (theme: ThemeColors) (plain: string) (node: XmlDsl.XmlNode) : Axis option =
     let kind =
         match nameOf node with
         | "catAx" -> Some "cat"
@@ -910,8 +959,8 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
                 match child "spPr" lines |> Option.bind (strokeOf theme) with
                 | Some stroke -> stroke
                 // (Without a line of their own, Excel 2019 draws them black: the files it writes
-                // always give one, as light grey.)
-                | None -> { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None })
+                // always give one, as light grey. `plain`: a part of a chart style's, below.)
+                | None -> { Paint = FillColor (plain, 1.0); Width = 1.0; Dash = None })
           Title = child "title" node |> Option.bind titleText
           TitleStyle = child "title" node |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
           TitleRuns = child "title" node |> Option.map (titleRuns theme) |> Option.defaultValue []
@@ -920,7 +969,7 @@ let private axisOf (theme: ThemeColors) (node: XmlDsl.XmlNode) : Axis option =
           Line =
             match child "spPr" node with
             | Some shape -> strokeOf theme shape
-            | None -> Some { Paint = FillColor ("#000000", 1.0); Width = 1.0; Dash = None }
+            | None -> Some { Paint = FillColor (plain, 1.0); Width = 1.0; Dash = None }
           LabelsShown = valOf "tickLblPos" node <> Some "none"
           CrossesId = valOf "crossAx" node
           OnTicks = valOf "crossBetween" node = Some "midCat"
@@ -1031,7 +1080,16 @@ let private chartExDim (names: string -> string option) (dim: XmlDsl.XmlNode) : 
         child "f" dim |> Option.map innerText |> Option.map (fun text -> text.Trim()) |> Option.filter (fun text -> text <> "")
         |> Option.bind (fun text -> if text.Contains "!" then Some text else names text)
         |> Option.map (fun text -> text.TrimStart('='))
-    let level = childrenNamed "lvl" dim |> List.tryLast
+    // (Levels of categories - a treemap's, a sunburst's -: the first names the points, the others are the levels
+    // above it, from the inner out.)
+    let levels = childrenNamed "lvl" dim
+    let level = levels |> List.tryHead
+    let outer =
+        levels |> List.skip (min 1 levels.Length)
+        |> List.map (fun level ->
+            childrenNamed "pt" level
+            |> List.choose (fun point -> attr "idx" point |> Option.bind number |> Option.map (fun index -> int index, innerText point))
+            |> Map.ofList)
     let mutable numbers = Map.empty<int, float>
     let mutable strings = Map.empty<int, string>
     let mutable count = 0
@@ -1049,7 +1107,7 @@ let private chartExDim (names: string -> string option) (dim: XmlDsl.XmlNode) : 
     | None -> ()
     { Formula = formula; Numbers = numbers; Strings = strings; Count = count
       FormatCode = level |> Option.bind (attr "formatCode") |> Option.filter (fun code -> code <> "")
-      FollowedEdit = false; LimitToCachedPoints = false; Outer = [] }
+      FollowedEdit = false; LimitToCachedPoints = false; Outer = outer }
 
 /// A chartEx chart of a kind that is not drawn: a placeholder that says what it is, with its title
 /// (or, where the title is the automatic one, its series' name).
@@ -1064,14 +1122,15 @@ let private undrawnChartEx (layoutId: string) (title: XmlDsl.XmlNode option) (se
             FirstSliceAngle = 0.0; VaryColors = false; AxisIds = []; Labels = None; Markers = false; ScatterStyle = ""; RadarStyle = ""
             HiLowLines = None; UpDownBars = None; BubbleScale = 100.0 } ]
       Axes = []; Legend = None; Background = FillAuto; Border = None; PlotBackground = FillNone; PlotBorder = None; TextStyle = noTextStyle
-      RoundedCorners = false; Date1904 = false; TitleLayout = None; TitleOverlay = false; PlotLayout = None; Style = 2; UserShapes = None }
+      RoundedCorners = false; Date1904 = false; TitleLayout = None; TitleOverlay = false; PlotLayout = None; Style = 2; UserShapes = None; ChartEx = true }
 
 /// A chartEx part read: a waterfall or a funnel as a chart of one plot, any other kind a chart that
 /// is drawn as a placeholder. `names` resolves the defined names its data refers to.
 let private parseChartEx (names: string -> string option) (theme: ThemeColors) (xml: string) : Chart option =
     match chartExOutline xml with
     | None, _, _ -> None
-    | Some layoutId, title, seriesName when layoutId <> "waterfall" && layoutId <> "funnel" -> Some (undrawnChartEx layoutId title seriesName)
+    | Some layoutId, title, seriesName when not (List.contains layoutId [ "waterfall"; "funnel"; "clusteredColumn"; "boxWhisker"; "treemap"; "sunburst" ]) ->
+        Some (undrawnChartEx layoutId title seriesName)
     | Some layoutId, title, seriesName ->
         let root = XmlDsl.parse (spacesKept xml)
         match child "chart" root with
@@ -1116,7 +1175,7 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                             | Some text -> { reference with Strings = Map.ofList [ 0, text ]; Count = max 1 reference.Count }
                             | None -> reference)
                       Categories = dim "strDim" [ "cat" ] |> Option.orElse (dim "numDim" [ "cat" ])
-                      Values = dim "numDim" [ "val"; "" ]
+                      Values = dim "numDim" [ "val"; "size"; "" ]
                       XValues = None
                       Fill = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                       Line = shape |> Option.bind (strokeOf theme)
@@ -1144,6 +1203,32 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                 |> Option.map (fun totals -> childrenNamed "idx" totals |> List.choose (attr "val" >> Option.bind number >> Option.map int))
                 |> Option.defaultValue []
             let connectors = first |> Option.bind (path [ "layoutPr"; "visibility" ]) |> Option.bind (attr "connectorLines") |> fun value -> isOn value true
+            let kind =
+                match layoutId with
+                | "funnel" -> FunnelPlot
+                | "clusteredColumn" ->
+                    let binning = first |> Option.bind (path [ "layoutPr"; "binning" ])
+                    let bound (name: string) = binning |> Option.bind (attr name) |> Option.bind number
+                    HistogramPlot
+                        ({ ClosedLeft = (binning |> Option.bind (attr "intervalClosed")) = Some "l"
+                           Size = binning |> Option.bind (child "binSize") |> Option.bind (attr "val") |> Option.bind number |> Option.filter (fun size -> size > 0.0)
+                           Count = binning |> Option.bind (child "binCount") |> Option.bind (attr "val") |> Option.bind number |> Option.map int |> Option.filter (fun count -> count > 0)
+                           Underflow = bound "underflow"; Overflow = bound "overflow" },
+                         region |> Option.map (childrenNamed "series") |> Option.defaultValue [] |> List.exists (fun node -> attr "layoutId" node = Some "paretoLine"))
+                | "boxWhisker" ->
+                    let layout = first |> Option.bind (child "layoutPr")
+                    let visibility = layout |> Option.bind (child "visibility")
+                    // (What a series that does not say shows: Excel 2019's boxes made through COM - the mean's mark,
+                    // the points inside the whiskers and outside them, no line through the means.)
+                    let shown (name: string) (otherwise: bool) = isOn (visibility |> Option.bind (attr name)) otherwise
+                    BoxWhiskerPlot
+                        { Inclusive = (layout |> Option.bind (child "statistics") |> Option.bind (attr "quartileMethod")) = Some "inclusive"
+                          MeanLine = shown "meanLine" false; MeanMarker = shown "meanMarker" true
+                          InnerPoints = shown "nonoutliers" true; Outliers = shown "outliers" true }
+                | "treemap" ->
+                    TreemapPlot (first |> Option.bind (path [ "layoutPr"; "parentLabelLayout" ]) |> Option.bind (attr "val") |> Option.defaultValue "overlapping")
+                | "sunburst" -> SunburstPlot
+                | _ -> WaterfallPlot (subtotals, connectors)
             let axes =
                 area |> Option.map (childrenNamed "axis") |> Option.defaultValue []
                 |> List.map (fun axis ->
@@ -1154,12 +1239,14 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                     { Id = attr "id" axis |> Option.defaultValue ""
                       Kind = (if isValue then "val" else "cat")
                       OnTicks = false
-                      Position = (match layoutId, isValue with "funnel", false -> "l" | "funnel", true -> "b" | _, true -> "l" | _ -> "b")
+                      // (A Pareto chart's second value axis - its running share - at the right.)
+                      Position = (match layoutId, isValue with "funnel", false -> "l" | "funnel", true -> "b" | _, true when attr "id" axis = Some "2" -> "r" | _, true -> "l" | _ -> "b")
                       Deleted = isOn (attr "hidden" axis) false
                       Min = scaled "min"; Max = scaled "max"; MajorUnit = scaled "majorUnit"
                       Reversed = false
-                      FormatCode = format |> Option.bind (attr "formatCode")
-                      SourceLinked = format |> Option.map (fun item -> isOn (attr "sourceLinked" item) false) |> Option.defaultValue true
+                      // (`cx:units unit="percentage"`: a Pareto chart's running share, 0 % .. 100 %.)
+                      FormatCode = format |> Option.bind (attr "formatCode") |> Option.orElse (if (child "units" axis |> Option.bind (attr "unit")) = Some "percentage" then Some "0%" else None)
+                      SourceLinked = format |> Option.map (fun item -> isOn (attr "sourceLinked" item) false) |> Option.defaultValue (child "units" axis |> Option.bind (attr "unit") <> Some "percentage")
                       Gridlines =
                         child "majorGridlines" axis
                         |> Option.map (fun lines ->
@@ -1181,20 +1268,21 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
             let titleText =
                 match titleNode |> Option.bind (child "tx") |> Option.bind chartExText with
                 | Some text -> Some text
-                | None when titleNode.IsSome -> series |> List.tryHead |> Option.bind (fun item -> item.Name) |> Option.bind (fun name -> Map.tryFind 0 name.Strings)
+                // (A title that says nothing is "Chart Title": Excel 2019's chartEx charts made through COM.)
+                | None when titleNode.IsSome -> Some "Chart Title"
                 | None -> None
             let shape = child "spPr" root
             let gap =
                 area |> Option.map (childrenNamed "axis") |> Option.defaultValue []
                 |> List.tryPick (fun axis -> child "catScaling" axis |> Option.bind (attr "gapWidth") |> Option.bind number)
-                |> Option.defaultValue (if layoutId = "funnel" then 0.06 else 0.5)
+                |> Option.defaultValue (match layoutId with "funnel" -> 0.06 | "clusteredColumn" -> 0.0 | "boxWhisker" -> 1.0 | _ -> 0.5)
             Some
                 { Title = titleText
                   TitleStyle = titleNode |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
                   TitleRuns = []
                   AutoTitleDeleted = titleText.IsNone
                   Plots =
-                    [ { Kind = (if layoutId = "funnel" then FunnelPlot else WaterfallPlot (subtotals, connectors))
+                    [ { Kind = kind
                         Horizontal = (layoutId = "funnel"); Grouping = "standard"; Series = series
                         GapWidth = gap * 100.0; Overlap = 0.0; HoleSize = 0.0; FirstSliceAngle = 0.0; VaryColors = false
                         AxisIds = axes |> List.map (fun axis -> axis.Id); Labels = None; Markers = false; ScatterStyle = ""; RadarStyle = ""
@@ -1206,7 +1294,8 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                         { Position = attr "pos" legend |> Option.defaultValue "t"; Style = textPropsOf theme legend; Layout = None
                           Overlay = isOn (attr "overlay" legend) false; Deleted = Set.empty; EntryStyles = Map.empty; Fill = FillNone; Border = None })
                   Background = shape |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
-                  Border = shape |> Option.bind (strokeOf theme)
+                  // (A chart that states no look of its own: the frame of Excel 2019's chartEx style, #D9D9D9.)
+                  Border = (match shape with Some shape -> strokeOf theme shape | None -> Some { Paint = FillColor ("#D9D9D9", 1.0); Width = 1.0; Dash = None })
                   PlotBackground = area |> Option.bind (child "spPr") |> Option.map (shapeFillOf theme) |> Option.defaultValue FillNone
                   PlotBorder = None
                   TextStyle = textPropsOf theme root
@@ -1216,7 +1305,8 @@ let private parseChartEx (names: string -> string option) (theme: ThemeColors) (
                   TitleOverlay = titleNode |> Option.map (fun node -> isOn (attr "overlay" node) false) |> Option.defaultValue false
                   PlotLayout = None
                   Style = 2
-                  UserShapes = None }
+                  UserShapes = None
+                  ChartEx = true }
 
 /// A chart part of the classic kind (`c:chartSpace`) read; None for a part this module does not
 /// draw (no plot of a kind it knows, a part that is not a chart).
@@ -1239,6 +1329,11 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                         name.EndsWith "Chart" && (plotOf theme item).IsNone)
                 if known.IsEmpty || unknown then None
                 else
+                    // (A part that names a chart style - `c:style`, as Excel's own old API writes one: Charts.Add, ChartObjects.Add -
+                    // and no look of its own: Excel 2019 draws its lines and frame #898989, its title 18 pt bold, its text 10 pt
+                    // - legacy-chart-probe.vbs, synthetic-chartsheets.xlsx. One that names no style - openpyxl's - black lines.)
+                    let styled = kids space |> List.collect flattened |> List.exists (fun item -> nameOf item = "style")
+                    let plain = if styled then "#898989" else "#000000"
                     let shape = child "spPr" space
                     let pivot = (child "pivotSource" space).IsSome
                     let limit (reference: DataRef option) =
@@ -1258,11 +1353,13 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                                             BubbleSizes = limit series.BubbleSizes })
                                 { plot with Series = series })
                     Some { Title = child "title" chart |> Option.bind titleText
-                           TitleStyle = child "title" chart |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
+                           TitleStyle =
+                             child "title" chart |> Option.map (titleStyle theme) |> Option.defaultValue noTextStyle
+                             |> fun style -> if styled && (child "txPr" space).IsNone then { style with Size = style.Size |> Option.orElse (Some 18.0) } else style
                            TitleRuns = child "title" chart |> Option.map (titleRuns theme) |> Option.defaultValue []
                            AutoTitleDeleted = isOn (valOf "autoTitleDeleted" chart) false || (child "title" chart).IsNone
                            Plots = plots
-                           Axes = items |> List.choose (axisOf theme)
+                           Axes = items |> List.choose (axisOf theme plain)
                            Legend =
                              child "legend" chart
                              |> Option.map (fun legend ->
@@ -1287,7 +1384,7 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                            Border =
                              match shape with
                              | Some shape -> strokeOf theme shape
-                             | None -> Some { Paint = FillColor ("#868686", 1.0); Width = 1.0; Dash = None }
+                             | None -> Some { Paint = FillColor ((if styled then "#898989" else "#868686"), 1.0); Width = 1.0; Dash = None }
                            PlotBackground = child "spPr" area |> Option.map (shapeFillOf theme) |> Option.defaultValue FillAuto
                            PlotBorder = child "spPr" area |> Option.bind (strokeOf theme)
                            TextStyle = textPropsOf theme space
@@ -1301,7 +1398,8 @@ let private parseClassicChart (theme: ThemeColors) (xml: string) : Chart option 
                              // (`c:style` of the part, or the one its `mc:AlternateContent` falls back to.)
                              kids space |> List.collect flattened |> List.tryPick (fun item -> if nameOf item = "style" then attr "val" item |> Option.bind number |> Option.map int else None)
                              |> Option.defaultValue 2
-                           UserShapes = None }
+                           UserShapes = None
+                           ChartEx = false }
     with _ -> None
 
 
@@ -1729,12 +1827,33 @@ let private autoColor (theme: ThemeColors) (index: int) : string =
         let r, g, b = rgbOfHsl (h, s, l)
         "#" + hex2 r + hex2 g + hex2 b
 
+/// The colour of the n-th of `count` series (or points) that state none, under a chart style of the accents in turn,
+/// as Excel 2019 draws a part that has no colours of its own: up to six the accents; more, each round of six a shade or
+/// a tint (in linear light) of them - round p of a chart of n is (p - q / 2) x 1.4 / (q + 2) from the accent, q = n / 6
+/// (whole): below zero a shade, above a tint (synthetic-chart-colors.xlsx through COM, 7 - 36 series: 7 are 0.767 shades
+/// then 0.767 tints - #3B64AD, #8FA2D4 -; 12 are 0.65 shades then the accents; 30 are 0.5, 0.7, 0.9 shades, 0.9, 0.7
+/// tints - each to a unit of 255).
+let private autoColorOf (theme: ThemeColors) (index: int) (count: int) : string =
+    if count <= 6 then autoColor theme index
+    else
+        let name = accents.[((index % 6) + 6) % 6]
+        let hex = Map.tryFind name theme |> Option.orElse (Map.tryFind name defaultTheme) |> Option.defaultValue "4472C4"
+        let q = float (count / 6)
+        let x = (float (max 0 index / 6) - q / 2.0) * 1.4 / (q + 2.0)
+        let toLinear (c: float) = let c = c / 255.0 in if c <= 0.04045 then c / 12.92 else ((c + 0.055) / 1.055) ** 2.4
+        let toSrgb (c: float) = 255.0 * (if c <= 0.0031308 then c * 12.92 else 1.055 * (c ** (1.0 / 2.4)) - 0.055)
+        let vary (c: float) =
+            let linear = toLinear c
+            toSrgb (if x < 0.0 then linear * (1.0 + x) else 1.0 - (1.0 - linear) * (1.0 - x))
+        let r, g, b = rgbOf hex
+        "#" + hex2 (vary r) + hex2 (vary g) + hex2 (vary b)
+
 /// The colour of the n-th of `count` series (or points) under a chart style (`c:style`, 1 .. 48,
 /// in rows of eight): the first of a row is shades of grey, the second the accents in turn, the
 /// others one accent from dark to light.
 let private styleColor (theme: ThemeColors) (style: int) (index: int) (count: int) : string =
     let kind = ((max 1 style - 1) % 8)
-    if kind = 1 then autoColor theme index
+    if kind = 1 then autoColorOf theme index count
     else
         let share = if count <= 1 then 0.5 else float (((index % count) + count) % count) / float (count - 1)
         if kind = 0 then
@@ -2050,10 +2169,12 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 let color = textColor legend.Style
                 let entries = [ "Increase", 0; "Decrease", 1; "Total", 2 ]
                 let swatch (kind: int) = match series.Fill with FillColor (fill, _) -> fill | _ -> automatic kind
-                let entryWidth (text: string) = size * 0.8 + 4.0 + textWidth size text + 12.0
+                // (A square 5.25 pt across, the text 5.25 pt after it, 6.5 pt to the next: Excel 2019's legends of
+                // synthetic-chartex-zoo's waterfalls and treemaps.)
+                let entryWidth (text: string) = px 5.25 + px 5.25 + textWidth size text + px 6.5
                 let draw (x: float) (y: float) (text: string) (kind: int) =
-                    add (PRect (x, y - size * 0.4, size * 0.8, size * 0.8, Some (swatch kind), 1.0, None, 0.0, 0.0))
-                    add (PText (x + size * 0.8 + 4.0, y, text, size, color, "start", false, false, 0.0))
+                    add (PRect (x, y - px 5.25 / 2.0, px 5.25, px 5.25, Some (swatch kind), 1.0, None, 0.0, 0.0))
+                    add (PText (x + px 5.25 + px 5.25, y, text, size, color, "start", false, false, 0.0))
                 match legend.Position with
                 | "l" | "r" ->
                     let column = entries |> List.map (fst >> entryWidth) |> List.max
@@ -2062,15 +2183,15 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                     entries |> List.iteri (fun index (text, kind) -> draw x (start + float index * size * 1.4 + size * 0.7) text kind)
                     if not legend.Overlay then (if legend.Position = "l" then left <- left + column + 6.0 else right <- right - column - 6.0)
                 | position ->
-                    // (Excel 2019 puts a legend at the top 8 px lower than below the title and the plot 24 px
-                    // further down: measured on synthetic-chartex.xlsx and the e-commerce dashboard.)
-                    let total = entries |> List.sumBy (fst >> entryWidth)
-                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6 + 8.0
+                    // (Excel 2019 puts a legend at the top 10.5 px lower than below the title and the plot 26.5 px
+                    // further down: measured on synthetic-chartex.xlsx, synthetic-chartex-zoo and the e-commerce dashboard.)
+                    let total = (entries |> List.sumBy (fst >> entryWidth)) - px 6.5
+                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6 + 10.5
                     let mutable x = (width - total) / 2.0
                     for text, kind in entries do
                         draw x y text kind
                         x <- x + entryWidth text
-                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6 + 24.0)
+                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6 + 26.5)
              | None -> ())
             // Where each bar starts and ends: a total from zero, every other point on from the last.
             let starts = Array.zeroCreate<float> count
@@ -2097,7 +2218,7 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 | _ -> match sourceFormat with Some code -> data.Format code tick | None -> generalNumber tick
             let valSize, catSize = axisSize valAxis, axisSize catAxis
             if shows valAxis then left <- left + (ticks |> List.map (tickText >> textWidth valSize) |> List.fold max 0.0) + 6.0
-            if shows catAxis then bottom <- bottom - catSize * 1.6
+            if shows catAxis then bottom <- bottom - catSize * 1.6 - 3.5
             // (Labels above the bars have the room the axis leaves over the highest; with no legend
             // above, as much room as a label.)
             if labelSpec.IsSome && not (match chart.Legend with Some legend -> legend.Position = "t" && not legend.Overlay | None -> false) then top <- top + labelSize * 1.2
@@ -2137,7 +2258,7 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
             if minimum < 0.0 && maximum > 0.0 then add (PLine (left, yOf 0.0, right, yOf 0.0, "#D9D9D9", 0.75, None))
             if shows catAxis then
                 for index in 0 .. count - 1 do
-                    add (PText (left + band * (float index + 0.5), plotBottom + catSize * 0.9, fitted catSize (band - 2.0) (category index), catSize, axisColor catAxis, "middle", false, false, 0.0))
+                    add (PText (left + band * (float index + 0.5), plotBottom + catSize * 0.9 + 6.0, fitted catSize (band - 2.0) (category index), catSize, axisColor catAxis, "middle", false, false, 0.0))
         | _ ->
             // A funnel: one bar a category, top to bottom, centred, as long as its value is of the largest.
             let catSize = axisSize catAxis
@@ -2165,11 +2286,294 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 | None -> ())
     { Width = width; Height = height; Items = List.ofSeq items }
 
-/// The scene of a chartEx chart: a waterfall, a funnel, or a placeholder that says what a chart of
-/// another kind is, with its title.
+/// The colour of the n-th point of a chartEx chart that states none: its colours part's (Excel's own, `colors*.xml`
+/// id 10) - the six accents, then again under each variation in turn: darker to 60 %, lighter (80 % + 20 %), 80 %,
+/// 60 % + 40 %, 50 %, 70 % + 30 %, 70 %, 50 % + 50 % of their luminance (synthetic-chartex-zoo "TreemapFlat": the
+/// seventh #264478).
+let chartExColor (theme: ThemeColors) (index: int) : string =
+    let name = accents.[((index % 6) + 6) % 6]
+    let hex = Map.tryFind name theme |> Option.orElse (Map.tryFind name defaultTheme) |> Option.defaultValue "4472C4"
+    let variations = [| 1.0, 0.0; 0.6, 0.0; 0.8, 0.2; 0.8, 0.0; 0.6, 0.4; 0.5, 0.0; 0.7, 0.3; 0.7, 0.0; 0.5, 0.5 |]
+    let modulate, offset = variations.[(max 0 index / 6) % variations.Length]
+    if modulate = 1.0 then "#" + hex
+    else
+        let h, s, l = hslOf (rgbOf hex)
+        let r, g, b = rgbOfHsl (h, s, min 1.0 (l * modulate + offset))
+        "#" + hex2 r + hex2 g + hex2 b
+
+/// A node of a treemap's or a sunburst's categories: its name, its value (its own, or its children's together), the
+/// place of its first row among the data (which colour it has) and its children.
+type HierarchyNode = { Name: string; Value: float; First: int; Children: HierarchyNode list }
+
+/// The rows of a hierarchy chart's categories - each the path from its outer level in, and its value - grouped into
+/// nodes in the order their names first come.
+let rec private hierarchyNodes (rows: (int * string list * float) list) : HierarchyNode list =
+    let order = ResizeArray<string>()
+    let groups = Collections.Generic.Dictionary<string, ResizeArray<int * string list * float>>()
+    for (first, path, value) in rows do
+        match path with
+        | head :: _ ->
+            if not (groups.ContainsKey head) then (order.Add head; groups.[head] <- ResizeArray())
+            groups.[head].Add (first, path, value)
+        | [] -> ()
+    [ for name in order ->
+        let members = List.ofSeq groups.[name]
+        let deeper = members |> List.choose (fun (first, path, value) -> match path with _ :: (_ :: _ as rest) -> Some (first, rest, value) | _ -> None)
+        { Name = name; Value = members |> List.sumBy (fun (_, _, value) -> value)
+          First = members |> List.map (fun (first, _, _) -> first) |> List.min
+          Children = hierarchyNodes deeper } ]
+
+/// What a treemap's or a sunburst's series holds: each row's categories (from the outer level in: the columns of its
+/// range left to right, or the levels its part caches) and its value; rows of no value above zero left out.
+let private hierarchyRows (data: ChartData) (series: Series) : (int * string list * float) list =
+    let values = numbersOf data series.Values
+    let paths : string list [] =
+        match series.Categories with
+        | None -> Array.init values.Length (fun index -> [ string (index + 1) ])
+        | Some categories ->
+            let columns =
+                categories.Formula |> Option.bind parseAreas
+                |> Option.bind (fun areas ->
+                    match areas with
+                    | [ sheet, r0, c0, r1, c1 ] -> data.Cells sheet r0 c0 r1 c1 |> Option.map (Array.map (Array.map (fun cell -> match cell with Some cell -> data.Display cell | None -> "")))
+                    | _ -> None)
+            match columns with
+            | Some rows -> rows |> Array.map Array.toList
+            | None ->
+                // (The part's cache: its first level names the points, the others are the levels above, from the inner out.)
+                let levels = (categories.Outer |> List.rev) @ [ categories.Strings ]
+                Array.init (max categories.Count values.Length) (fun index -> levels |> List.map (fun level -> Map.tryFind index level |> Option.defaultValue ""))
+    // (A path ends at its first empty level.)
+    let trimmed (path: string list) = path |> List.map (fun name -> name.Trim()) |> List.takeWhile (fun name -> name <> "")
+    [ for index in 0 .. values.Length - 1 do
+        match values.[index] with
+        | Some value when value > 0.0 ->
+            let path = if index < paths.Length then trimmed paths.[index] else []
+            yield index, (if path.IsEmpty then [ string (index + 1) ] else path), value
+        | _ -> () ]
+
+/// Rectangles for values, largest first, in a rectangle, as Excel 2019 lays out a treemap: a strip at a time along
+/// the shorter side (a column at the left of a rectangle at least as wide as high, else a row at the top), as many in
+/// it as bring the strip's smallest rectangle's width over height nearer 1 - not its ratio of longer to shorter side:
+/// 160 of 160 flat treemaps through COM as Excel (`chartex-treemap-probe.vbs`: 40 sets of 3 - 14 values in 4 chart
+/// sizes; the usual squarify rule 128).
+let squarify (values: float list) (x: float) (y: float) (w: float) (h: float) : (float * float * float * float) list =
+    let total = List.sum values
+    if total <= 0.0 || values.IsEmpty then values |> List.map (fun _ -> x, y, 0.0, 0.0)
+    else
+        let scale = w * h / total
+        let rec go (items: float list) (x: float) (y: float) (w: float) (h: float) : (float * float * float * float) list =
+            match items with
+            | [] -> []
+            | [ _ ] -> [ x, y, w, h ]
+            | _ ->
+                let column = w >= h
+                let side = if column then h else w
+                /// How far from 1 the width over height of the strip's last (smallest) rectangle is.
+                let badness (row: float list) =
+                    let thick = List.sum row / side
+                    let length = List.last row / thick
+                    abs ((if column then thick / length else length / thick) - 1.0)
+                let rec grow (row: float list) (rest: float list) =
+                    match rest with
+                    | next :: more when badness (row @ [ next ]) <= badness row -> grow (row @ [ next ]) more
+                    | _ -> row, rest
+                let row, rest = grow [ List.head items ] (List.tail items)
+                let thick = if side > 0.0 then List.sum row / side else 0.0
+                let mutable offset = 0.0
+                let placed =
+                    row |> List.map (fun area ->
+                        let length = if thick > 0.0 then area / thick else 0.0
+                        let rect = if column then x, y + offset, thick, length else x + offset, y, length, thick
+                        offset <- offset + length
+                        rect)
+                placed @ (if column then go rest (x + thick) y (w - thick) h else go rest x (y + thick) w (h - thick))
+        go (values |> List.map (fun value -> value * scale)) x y w h
+
+/// The scene of a chartEx treemap or sunburst: its title, its legend (the outer level's names), its rectangles or
+/// rings - each outer node in its colour (`chartExColor`, by the order its first row comes in), its children in its,
+/// largest first; 1.5 pt of white round each (the chartEx style's) - and its labels.
+let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (width: float) (height: float) : Scene =
+    let items = ResizeArray<Primitive>()
+    let add (item: Primitive) = items.Add item
+    let face (style: TextStyle) = (over style chart.TextStyle).Face |> Option.orElse (Map.tryFind "#minorFont" theme)
+    let sizeOf (style: TextStyle) (otherwise: float) = px ((over style chart.TextStyle).Size |> Option.defaultValue otherwise)
+    let colorOf (style: TextStyle) (otherwise: string) = (over style chart.TextStyle).Color |> Option.defaultValue otherwise
+    let text (style: TextStyle) (item: Primitive) = match face style with Some name when name <> "Calibri" -> add (PFace (name, [ item ])) | _ -> add item
+    let widthOf (style: TextStyle) (size: float) (bold: bool) (value: string) = faceWidth (face style) size bold value
+    (match chart.Background with
+     | FillColor (color, opacity) -> add (PRect (0.0, 0.0, width, height, Some color, opacity, None, 0.0, 0.0))
+     | FillAuto -> add (PRect (0.0, 0.0, width, height, Some "#FFFFFF", 1.0, None, 0.0, 0.0))
+     | FillNone -> ())
+    (match strokeColor chart.Border with
+     | Some (color, strokeWidth, _) -> add (PRect (strokeWidth / 2.0, strokeWidth / 2.0, width - strokeWidth, height - strokeWidth, None, 1.0, Some color, strokeWidth, 0.0))
+     | None -> ())
+    // (Measured on Excel 2019's pictures of synthetic-chartex-zoo at 360 x 216 pt: the title's box 4.5 pt from the top,
+    // a legend's line 8.5 pt below it, the plot 10.5 pt below that - 3 pt below the title without a legend -, 6 pt in
+    // from the other edges.)
+    let mutable top = px 6.0
+    (match (if chart.AutoTitleDeleted then None else chart.Title) with
+     | Some title ->
+        let size = sizeOf chart.TitleStyle 14.0
+        let bold = chart.TitleStyle.Bold |> Option.defaultValue false
+        let line = lineIn (face chart.TitleStyle) size
+        let mutable y = px 4.5 + px 1.5
+        for part in title.Split('\n') do
+            text chart.TitleStyle (PText (width / 2.0, y + line / 2.0, part, size, colorOf chart.TitleStyle "#595959", "middle", bold, false, 0.0))
+            y <- y + line
+        if not chart.TitleOverlay then top <- y + px 1.5 + px 3.0
+     | None -> ())
+    let rows = plot.Series |> List.tryHead |> Option.map (hierarchyRows data) |> Option.defaultValue []
+    let nodes = hierarchyNodes rows
+    let colorAt (node: HierarchyNode) =
+        let series = plot.Series |> List.tryHead
+        match series |> Option.bind (fun series -> Map.tryFind node.First series.PointFills) with
+        | Some (FillColor (color, _)) -> color
+        | _ ->
+            match series |> Option.map (fun series -> series.Fill) with
+            | Some (FillColor (color, _)) -> color
+            | _ -> chartExColor theme (nodes |> List.findIndex (fun known -> known.First = node.First))
+    (match chart.Legend with
+     | Some legend when not nodes.IsEmpty && (legend.Position = "t" || legend.Position = "b") ->
+        let size = sizeOf legend.Style 9.0
+        let line = lineIn (face legend.Style) size
+        let swatch, after, between = px 5.25, px 5.25, px 6.5
+        let entryWidth (node: HierarchyNode) = swatch + after + widthOf legend.Style size false node.Name
+        let total = (nodes |> List.sumBy entryWidth) + between * float (nodes.Length - 1)
+        let middle = if legend.Position = "b" then height - px 6.0 - line / 2.0 else top + px 5.5 + line / 2.0
+        let mutable x = (width - total) / 2.0
+        for node in nodes do
+            add (PRect (x, middle - swatch / 2.0, swatch, swatch, Some (colorAt node), 1.0, None, 0.0, 0.0))
+            text legend.Style (PText (x + swatch + after, middle, node.Name, size, colorOf legend.Style "#595959", "start", false, false, 0.0))
+            x <- x + entryWidth node + between
+        if not legend.Overlay && legend.Position = "t" then top <- middle + line / 2.0 + px 10.5
+     | _ -> ())
+    let bottom = height - px 6.0 - (match chart.Legend with Some legend when legend.Position = "b" && not legend.Overlay -> lineIn (face legend.Style) (sizeOf legend.Style 9.0) + px 6.0 | _ -> 0.0)
+    let left, right = px 5.25, width - px 6.0
+    let series = plot.Series |> List.tryHead
+    let outline = series |> Option.bind (fun series -> strokeColor series.Line) |> Option.defaultValue ("#FFFFFF", 2.0, None)
+    let lineColor, lineWidth, _ = outline
+    let labels = series |> Option.bind (fun series -> series.Labels)
+    let labelStyle = labels |> Option.map (fun spec -> spec.Style) |> Option.defaultValue noTextStyle
+    let labelSize = sizeOf labelStyle 9.0
+    let labelText (node: HierarchyNode) =
+        match labels with
+        | Some spec ->
+            let number = match spec.FormatCode |> Option.orElse (series |> Option.bind (fun series -> formatCodeOf data series.Values)) with Some code -> data.Format code node.Value | None -> generalNumber node.Value
+            [ if spec.ShowCategory then yield node.Name
+              if spec.ShowValue then yield number ]
+            |> function [] -> None | parts -> Some (String.concat (defaultArg spec.Separator ", ") parts)
+        | None -> None
+    let labelLine = lineIn (face labelStyle) labelSize
+    let labelColor = colorOf labelStyle "#FFFFFF"
+    /// A label's lines no wider than `room`: broken at its spaces, a word too long for a line at its letters.
+    let brokenTo (room: float) (label: string) : string list =
+        let fits (value: string) = widthOf labelStyle labelSize false value <= room
+        let rec letters (word: string) =
+            if word = "" then []
+            else
+                let mutable cut = word.Length
+                while cut > 1 && not (fits (word.Substring(0, cut))) do cut <- cut - 1
+                word.Substring(0, cut) :: letters (word.Substring cut)
+        label.Split(' ')
+        |> Array.fold (fun (lines: string list) word ->
+            match lines with
+            | last :: rest when fits (last + " " + word) -> (last + " " + word) :: rest
+            | _ -> (List.rev (letters word)) @ lines) []
+        |> List.rev
+    match plot.Kind with
+    | SunburstPlot ->
+        // Rings: the hole and each level as wide as the outer radius over the levels and one (synthetic-chartex-zoo: 121 px
+        // in 3, 2, 1 levels: a hole of 30, 40, 61), from twelve o'clock clockwise, largest first.
+        let rec depth (node: HierarchyNode) = 1 + (node.Children |> List.fold (fun most child -> max most (depth child)) 0)
+        let levels = nodes |> List.fold (fun most node -> max most (depth node)) 0
+        let radius = max 0.0 (min (right - left) (bottom - top) / 2.0)
+        let cx, cy = (left + right) / 2.0, (top + bottom) / 2.0
+        let ring = radius / float (levels + 1)
+        let total = nodes |> List.sumBy (fun node -> node.Value)
+        let point (r: float) (angle: float) = cx + r * Math.Sin angle, cy - r * Math.Cos angle
+        let n (value: float) = string (Math.Round (value, 2))
+        let rec draw (siblings: HierarchyNode list) (level: int) (start: float) (span: float) (color: string option) =
+            let whole = siblings |> List.sumBy (fun node -> node.Value)
+            let mutable at = start
+            for node in siblings |> List.sortBy (fun node -> -node.Value) do
+                let sweep = if whole > 0.0 then span * node.Value / whole else 0.0
+                let inner, outer = ring * float (level + 1), ring * float (level + 2)
+                let x0, y0 = point outer at
+                let x1, y1 = point outer (at + sweep)
+                let x2, y2 = point inner (at + sweep)
+                let x3, y3 = point inner at
+                let large = if sweep > Math.PI then "1" else "0"
+                let d =
+                    if sweep >= 2.0 * Math.PI - 1e-9 then
+                        let mx, my = point outer (at + Math.PI)
+                        let ix, iy = point inner (at + Math.PI)
+                        sprintf "M %s %s A %s %s 0 1 1 %s %s A %s %s 0 1 1 %s %s Z M %s %s A %s %s 0 1 0 %s %s A %s %s 0 1 0 %s %s Z"
+                            (n x0) (n y0) (n outer) (n outer) (n mx) (n my) (n outer) (n outer) (n x0) (n y0) (n x3) (n y3) (n inner) (n inner) (n ix) (n iy) (n inner) (n inner) (n x3) (n y3)
+                    else
+                        sprintf "M %s %s A %s %s 0 %s 1 %s %s L %s %s A %s %s 0 %s 0 %s %s Z" (n x0) (n y0) (n outer) (n outer) large (n x1) (n y1) (n x2) (n y2) (n inner) (n inner) large (n x3) (n y3)
+                let fill = (match color with Some given -> given | None -> colorAt node)
+                add (PPath (d, Some fill, 1.0, Some lineColor, lineWidth))
+                // (A label along its part's middle radius, reading outwards - turned over on the left half -, broken to
+                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e".)
+                (match labelText node with
+                 | Some label when sweep > 0.0 ->
+                    let middle = at + sweep / 2.0
+                    let lx, ly = point ((inner + outer) / 2.0) middle
+                    let lines = brokenTo (ring + 2.0) label
+                    let arc = sweep * (inner + outer) / 2.0
+                    if not lines.IsEmpty && float lines.Length * labelLine <= arc then
+                        let degrees = middle * 180.0 / Math.PI
+                        let turn = if degrees > 180.0 then degrees - 270.0 else degrees - 90.0
+                        let across = turn * Math.PI / 180.0
+                        lines |> List.iteri (fun index part ->
+                            let shift = (float index - float (lines.Length - 1) / 2.0) * labelLine
+                            text labelStyle (PText (lx - shift * Math.Sin across, ly + shift * Math.Cos across, part, labelSize, labelColor, "middle", false, false, turn)))
+                 | _ -> ())
+                draw node.Children (level + 1) at sweep (Some fill)
+                at <- at + sweep
+        if total > 0.0 then draw nodes 0 0.0 (2.0 * Math.PI) None
+    | TreemapPlot parentLabels ->
+        // Rectangles: the outer level's in the plot, each node's children in its rectangle, largest first (`squarify`).
+        // Labels (Excel 2019's pictures of synthetic-chartex-looks): a tile's at its bottom left, a parent's name at its
+        // top left over its children ("overlapping"), or in a grey banner (#A6A6A6) a line high above them ("banner"),
+        // 4.5 pt in from the sides, 5.25 pt from the top, 3.75 pt from the bottom.
+        let padX, padY = px 4.5, px 3.75
+        let labelAt (x: float) (y: float) (w: float) (h: float) (top: bool) (label: string) =
+            if labelLine <= h - padY && widthOf labelStyle labelSize false label <= w - 2.0 * padX then
+                let middle = if top then y + px 5.25 + labelLine / 2.0 else y + h - padY - labelLine / 2.0
+                text labelStyle (PText (x + padX, middle, label, labelSize, labelColor, "start", false, false, 0.0))
+        // (Only the outer level's names stand as a parent's: Excel 2019's "Treemap3" - Asia over Tokyo, Osaka, Delhi; no
+        // Japan, no India.)
+        let rec place (siblings: HierarchyNode list) (x: float) (y: float) (w: float) (h: float) (color: string option) =
+            let sorted = siblings |> List.sortBy (fun node -> -node.Value)
+            let rects = squarify (sorted |> List.map (fun node -> node.Value)) x y w h
+            for node, (rx, ry, rw, rh) in List.zip sorted rects do
+                let fill = (match color with Some given -> given | None -> colorAt node)
+                if node.Children.IsEmpty then
+                    add (PRect (rx, ry, rw, rh, Some fill, 1.0, Some lineColor, lineWidth, 0.0))
+                    labelText node |> Option.iter (labelAt rx ry rw rh false)
+                else
+                    match (if color.IsNone then labels else None), parentLabels with
+                    | Some _, "banner" ->
+                        let banner = min rh (labelLine + 2.0 * padY)
+                        add (PRect (rx, ry, rw, banner, Some "#A6A6A6", 1.0, Some lineColor, lineWidth, 0.0))
+                        labelAt rx ry rw banner true node.Name
+                        place node.Children rx (ry + banner) rw (rh - banner) (Some fill)
+                    | Some _, "none" | None, _ -> place node.Children rx ry rw rh (Some fill)
+                    | Some _, _ ->
+                        place node.Children rx ry rw rh (Some fill)
+                        labelAt rx ry rw rh true node.Name
+        place nodes left top (right - left) (bottom - top) None
+    | _ -> ()
+    { Width = width; Height = height; Items = List.ofSeq items }
+
+/// The scene of a chartEx chart: a waterfall, a funnel, a treemap, a sunburst, or a placeholder that says what a
+/// chart of another kind is, with its title.
 let private layoutChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) (width: float) (height: float) : Scene =
     match plot.Kind with
     | UndrawnPlot layoutId -> layoutUndrawnChartEx layoutId chart width height
+    | TreemapPlot _ | SunburstPlot -> layoutHierarchyChartEx theme data chart plot width height
     | _ -> layoutPlottedChartEx theme data chart plot width height
 
 /// A smoothed line through points (`c:smooth`): a cubic Bézier curve between each two, its handles a
@@ -2355,7 +2759,14 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     // (Excel 2019 lays a chart out from a margin: the plot area's box - with its axes' labels - 11 pt in from
     // the chart's edges, a title or a legend 6 pt in, and 11 pt between them and the plot area.)
     let edge, gap = px 6.0, px 11.0
-    let mutable top = gap
+    // (A chartEx chart - a histogram, a box and whisker chart - is laid out tighter: its title 4.5 pt from the top, its
+    // plot area's box 6 pt in from the chart's edges and 8 pt below a title, its labels 7.5 pt from a value axis and
+    // 6.5 pt below the categories' - Excel 2019's pictures of synthetic-chartex-zoo, 360 x 216 pt.)
+    let margin = if chart.ChartEx then px 6.0 else gap
+    let gap = if chart.ChartEx then px 8.0 else gap
+    let edge = if chart.ChartEx then px 4.5 else edge
+    let valueGap, categoryGap = (if chart.ChartEx then px 7.5, px 6.5 else px 3.85, px 1.5)
+    let mutable top = margin
     (match title with
      | Some text ->
         // (A title of its own text that names no size or weight: 10 pt bold, as Excel draws it; one made
@@ -2477,9 +2888,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         match chart.Legend with
         | Some legend when not legend.Deleted.IsEmpty -> all |> List.indexed |> List.filter (fun (index, _) -> not (Set.contains index legend.Deleted)) |> List.map snd
         | _ -> all
-    let mutable left = gap
-    let mutable right = width - gap
-    let mutable bottom = height - gap
+    let mutable left = margin
+    let mutable right = width - margin
+    let mutable bottom = height - margin
     (match chart.Legend with
      | Some legend when not legendEntries.IsEmpty ->
         // (Excel 2019's legend, checked on charts made in Excel: an entry is a line of its text; entries one under
@@ -2487,7 +2898,14 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         // one at the bottom or the top on its width; a box of the file's own size shares its height out evenly.)
         let sizeOf (style: TextStyle) = textSize style 10.0
         let size = sizeOf legend.Style
-        let swatch = size * 0.6
+        // (A square key 0.55 of the text's size - 4.94 pt at 9 pt, Excel 2019's LegendKey through COM -; an entry as
+        // long as its text by the face's design advances, as Excel lays chart text out: synthetic-chart-looks
+        // "LegendBottom", "Sales" 24.7 px of Calibri 9 pt, GDI's 30.)
+        let swatch = size * 0.55
+        let entryTextWidth (style: TextStyle) (textSize: float) (bold: bool) (text: string) =
+            match ExcelText.idealWidth (defaultArg (faceOf style) "Calibri") bold (style.Italic |> Option.defaultValue false) textSize text with
+            | Some ideal -> ideal
+            | None -> widthIn style textSize bold text
         // (The legend's own fill and outline, `c:spPr`, under its entries.)
         let legendAt = items.Count
         let boxed (boxX: float) (boxY: float) (boxW: float) (boxH: float) =
@@ -2503,7 +2921,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         // whatever the size of the text; else a square swatch.)
         let lineKeys = legendEntries |> List.exists (fun (_, _, key, _) -> key.Line.IsSome || key.Marker.IsSome)
         let keyWidth = if lineKeys then 26.0 else swatch
-        let entryWidth (text: string, _: string, _: KeyLook, style: TextStyle) = keyWidth + px 3.0 + widthIn style (sizeOf style) (style.Bold |> Option.defaultValue false) text
+        let entryWidth (text: string, _: string, _: KeyLook, style: TextStyle) = keyWidth + px 3.0 + entryTextWidth style (sizeOf style) (style.Bold |> Option.defaultValue false) text
         let pitch = lineFor legend.Style size + px 5.85
         let padding = px 3.0
         let drawEntryIn (wrap: bool) (x: float) (y: float) (room: float) (text: string, entryColor: string, key: KeyLook, style: TextStyle) =
@@ -2514,12 +2932,12 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             // the first line, the lines about the entry's middle - dashboard-ecommerce-sales' "KI Adjustable- /
             // Height Table", "GBC Premium / Transparent / Covers"; elsewhere it ends in an ellipsis.)
             let lines =
-                if wrap && textRoom > 12.0 && widthIn style textSize bold text > textRoom + 2.0 && text.Trim().Contains " " then
+                if wrap && textRoom > 12.0 && entryTextWidth style textSize bold text > textRoom + 2.0 && text.Trim().Contains " " then
                     let broken = ResizeArray<string>()
                     let mutable current = ""
                     for word in text.Split(' ') |> Array.filter (fun word -> word <> "") do
                         let joined = if current = "" then word else current + " " + word
-                        if current = "" || widthIn style textSize bold joined <= textRoom then current <- joined
+                        if current = "" || entryTextWidth style textSize bold joined <= textRoom then current <- joined
                         else
                             broken.Add current
                             current <- word
@@ -2537,9 +2955,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             lines |> List.iteri (fun index text ->
                 // (A text longer than its place ends in an ellipsis.)
                 let shownText =
-                    if textRoom > 12.0 && widthIn style textSize bold text > textRoom + 2.0 && text.Length > 3 then
+                    if textRoom > 12.0 && entryTextWidth style textSize bold text > textRoom + 2.0 && text.Length > 3 then
                         let mutable keep = text.Length - 1
-                        while keep > 1 && widthIn style textSize bold (text.Substring(0, keep) + "…") > textRoom do keep <- keep - 1
+                        while keep > 1 && entryTextWidth style textSize bold (text.Substring(0, keep) + "…") > textRoom do keep <- keep - 1
                         text.Substring(0, keep) + "…"
                     else text
                 addText style (PText (x + keyWidth + px 3.0, y + float index * lineFor style textSize, shownText, textSize, textColor style, "start", bold, (style.Italic |> Option.defaultValue false), 0.0)))
@@ -2553,8 +2971,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 Some (boxLeft, boxTop, (w |> Option.map (fun value -> min (width - boxLeft) (value * width))), (h |> Option.map (fun value -> min (height - boxTop) (value * height))))
             | _ -> None
         if horizontal then
-            // Rows of entries, centred.
-            let between = px 8.0
+            // Rows of entries, centred, 5.85 pt apart (Excel 2019's "LegendBottom": keys at 183, 226, 266 px).
+            let between = px 5.85
             let room = match box with Some (_, _, Some boxWidth, _) -> boxWidth - 2.0 * padding | _ -> right - left
             let rows = ResizeArray<ResizeArray<string * string * KeyLook * TextStyle>>()
             let mutable current = ResizeArray<string * string * KeyLook * TextStyle>()
@@ -2608,7 +3026,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             let shown = legendEntries |> List.truncate (max 1 (int ((boxHeight + 1.0) / max 1.0 (min rowHeight (size * 1.05)))))
             let startY = if spread then boxTop else boxTop + padding - px 5.85 / 2.0
             boxed boxLeft boxTop boxWidth boxHeight
-            shown |> List.iteri (fun index entry -> drawEntryIn spread (boxLeft + padding) (startY + rowHeight * (float index + 0.5)) (boxWidth - 2.0 * padding) entry)
+            // (The entries 1.5 pt further in than the box's padding: Excel 2019's "LegendRight", keys 7 px from its box.)
+            shown |> List.iteri (fun index entry -> drawEntryIn spread (boxLeft + padding + px 1.5) (startY + rowHeight * (float index + 0.5)) (boxWidth - 2.0 * padding - px 1.5) entry)
             if not legend.Overlay then
                 if position = "l" then left <- max left (boxLeft + boxWidth + gap) else right <- min right (boxLeft - gap)
      | _ -> ())
@@ -2920,8 +3339,20 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                         positive |> Array.iter see
                         negative |> Array.iter see
                     else
-                        for item in members do
-                            for value in item.Values do (match value with Some v -> see v | None -> ())
+                        match plot.Kind with
+                        | BoxesPlot (figures, options) ->
+                            // (A box and whisker chart's axis spans the whiskers, and the points shown beyond them.)
+                            for boxes in figures do
+                                for box in boxes do
+                                    match box with
+                                    | Some box ->
+                                        see box.Low
+                                        see box.High
+                                        if options.Outliers then box.Outside |> List.iter see
+                                    | None -> ()
+                        | _ ->
+                            for item in members do
+                                for value in item.Values do (match value with Some v -> see v | None -> ())
             if lo > hi then None else Some (lo, hi)
         /// A logarithmic scale over lo .. hi (both above zero): whole powers of the base.
         let logScale (logBase: float) (lo: float) (hi: float) (axis: Axis) : AxisScale =
@@ -3026,13 +3457,13 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             let longest = shownTexts |> Array.fold (fun most text -> max most (widthIn style size false text)) 0.0
             let line = lineFor style size
             match plan with
-            | Flat -> line + px 1.5
+            | Flat -> line + categoryGap
             | Wrapped lines ->
                 let most = lines |> Array.indexed |> Array.filter (fun (index, _) -> index % every = 0) |> Array.fold (fun most (_, broken) -> max most broken.Length) 1
-                float most * line + px 1.5
+                float most * line + categoryGap
             | Turned angle ->
                 let turn = abs angle * Math.PI / 180.0
-                (if abs angle >= 90.0 then longest else (longest + line) * Math.Sin turn) + px 1.5
+                (if abs angle >= 90.0 then longest else (longest + line) * Math.Sin turn) + categoryGap
         // Axis titles (and what says that an axis is in thousands, millions ...).
         let axisTitle (axis: Axis option) =
             axis |> Option.bind (fun axis ->
@@ -3096,7 +3527,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             else
                 match turned with
                 | Some _ -> widest categoryStyle categoryLabels categorySize + px 4.0
-                | None -> lineFor baseStyle baseSize + px 1.5
+                | None -> lineFor baseStyle baseSize + categoryGap
         // The plot area's box with its axes' labels: where the file puts it, or what the title, the legend and the
         // axes' titles leave. Excel cuts a value axis into as many intervals as its labels allow in it (`axisIntervals`).
         let boxWidth, boxHeight =
@@ -3137,8 +3568,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             if isScatter || dated.IsSome || not (shown categoryAxis) then []
             else series |> List.tryPick (fun item -> match item.Source.Categories with Some source when not source.Outer.IsEmpty -> Some source.Outer | _ -> None) |> Option.defaultValue []
         let outerRow = lineFor categoryStyle categorySize + px 3.0
-        let sideRoom = if sideShown then min (width * 0.4) (widest sideStyle sideLabels sideSize) + px 3.85 + (if horizontal then float outerLevels.Length * outerRow else 0.0) else 4.0
-        let secondaryRoom = if secondaryAxis.IsSome && shown secondaryAxis then widest valueStyle secondaryLabels valueSize + px 3.85 else 0.0
+        let sideRoom = if sideShown then min (width * 0.4) (widest sideStyle sideLabels sideSize) + valueGap + (if horizontal then float outerLevels.Length * outerRow else 0.0) else 4.0
+        let secondaryRoom = if secondaryAxis.IsSome && shown secondaryAxis then widest valueStyle secondaryLabels valueSize + valueGap else 0.0
         // (The last label of a value axis along the bottom is centred on the plot's edge: half of it is beyond.)
         let overhang =
             if baseShown && (horizontal || isScatter) && secondaryRoom = 0.0 then
@@ -3395,6 +3826,41 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                             for (x, y, _, _) in points do drawMarker symbol x y (max 4.0 size) fill stroke
                         | None -> ()
                     for (x, y, index, raw) in points do labelAt item index raw (x + 6.0) y "start" false
+            | BoxesPlot (figures, options) ->
+                // A box a series a category: from the first quartile to the third, the median across it, whiskers to
+                // the farthest points within 1.5 times the box's height of it, capped; the mean's mark (x), the points
+                // inside the whiskers and outside them - their outlines and the box's the series' colour darker (80 %:
+                // Excel 2019's #365B9D round #4472C4). The boxes of a category stand side by side in the band less its
+                // gap, a tenth of a box apart.
+                let n = max 1 members.Length
+                let group = band / (1.0 + max 0.0 plot.GapWidth / 100.0)
+                let boxWidth = group / (float n + float (n - 1) * 0.1)
+                let darker (color: string) = let r, g, b = rgbOf (solidOf color) in "#" + hex2 (r * 0.8) + hex2 (g * 0.8) + hex2 (b * 0.8)
+                members |> List.iteri (fun memberIndex item ->
+                    let color = item.Look.Color
+                    let edge = darker color
+                    let means = ResizeArray<float * float>()
+                    let boxes = if memberIndex < figures.Length then figures.[memberIndex] else [||]
+                    for index in 0 .. min (count - 1) (boxes.Length - 1) do
+                        match boxes.[index] with
+                        | Some box ->
+                            let left = bandStart index + (band - group) / 2.0 + float memberIndex * boxWidth * 1.1
+                            let centre = left + boxWidth / 2.0
+                            let y (value: float) = valueAt item.Secondary value
+                            let cap = boxWidth / 4.0
+                            add (PLine (centre, y box.Q3, centre, y box.High, edge, 1.0, None))
+                            add (PLine (centre - cap, y box.High, centre + cap, y box.High, edge, 1.0, None))
+                            add (PLine (centre, y box.Q1, centre, y box.Low, edge, 1.0, None))
+                            add (PLine (centre - cap, y box.Low, centre + cap, y box.Low, edge, 1.0, None))
+                            add (PRect (left, y box.Q3, boxWidth, max 0.0 (y box.Q1 - y box.Q3), (if item.Look.Filled then Some color else None), item.Look.Opacity, Some edge, 1.0, 0.0))
+                            add (PLine (left, y box.Median, left + boxWidth, y box.Median, edge, 1.0, None))
+                            let dot (value: float) = add (PEllipse (centre, y value, 2.5, 2.5, Some color, 1.0, Some edge, 1.0))
+                            if options.InnerPoints then for value in box.Inner do dot value
+                            if options.Outliers then for value in box.Outside do dot value
+                            if options.MeanMarker then drawMarker "x" centre (y box.Mean) 7.0 None (Some edge)
+                            means.Add (centre, y box.Mean)
+                        | None -> ()
+                    if options.MeanLine && means.Count > 1 then add (PPolyline (List.ofSeq means, None, 1.0, Some edge, 1.0, None)))
             | _ -> ()
         // ---- axes: lines and labels ----
         let axisLine (axis: Axis option) = axis |> Option.bind (fun axis -> if axis.Deleted then None else strokeColor axis.Line)
@@ -3416,19 +3882,19 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         let thinned (style: TextStyle) (labels: string list) (spacing: float) (alongAxis: bool) (size: float) : int =
             let need = if alongAxis then widest style labels size + 8.0 else size * 1.15
             if spacing <= 0.0 then 1 else max 1 (int (Math.Ceiling (need / spacing)))
-        let below = plotBottom + px 1.5 + lineFor baseStyle baseSize / 2.0
+        let below = plotBottom + categoryGap + lineFor baseStyle baseSize / 2.0
         if shown primaryValueAxis then
             let every = thinned valueStyle valueLabels ((if horizontal then plotWidth else plotHeight) / float (max 1 (valueLabels.Length - 1))) horizontal valueSize
             List.zip (ticksOf primaryScale) valueLabels |> List.iteri (fun index (value, text) ->
                 if index % every = 0 then
                     let at = along primaryScale primaryReversed value
                     if horizontal then addText valueStyle (PText (at, below, text, valueSize, valueColor, "middle", false, false, 0.0))
-                    else addText valueStyle (PText (plotLeft - px 3.85, at, text, valueSize, valueColor, "end", false, false, 0.0)))
+                    else addText valueStyle (PText (plotLeft - valueGap, at, text, valueSize, valueColor, "end", false, false, 0.0)))
         if secondaryAxis.IsSome && shown secondaryAxis then
             let style = styleOf secondaryAxis
             let every = thinned style secondaryLabels (plotHeight / float (max 1 (secondaryLabels.Length - 1))) false valueSize
             List.zip (ticksOf secondaryScale) secondaryLabels |> List.iteri (fun index (value, text) ->
-                if index % every = 0 then addText style (PText (plotRight + px 3.85, along secondaryScale secondaryReversed value, text, valueSize, valueColor, "start", false, false, 0.0)))
+                if index % every = 0 then addText style (PText (plotRight + valueGap, along secondaryScale secondaryReversed value, text, valueSize, valueColor, "start", false, false, 0.0)))
         if isScatter then
             if shown xAxis then
                 let size = textSize xStyle 10.0
@@ -3442,10 +3908,10 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 // (The labels have the room left of the plot to the chart's edge, whatever placed the plot: dashboard-sales-analysis'
                 // "Womens", "Accessories" whole in Excel.)
                 let outerWidth = float outerLevels.Length * outerRow
-                let room = max 10.0 (plotLeft - px 3.85 - 2.0 - outerWidth)
+                let room = max 10.0 (plotLeft - valueGap - 2.0 - outerWidth)
                 if not outerLevels.IsEmpty then
                     let lineColor, lineWidth = (match axisLine categoryAxis with Some (color, strokeWidth, _) -> color, strokeWidth | None -> "#D9D9D9", 1.0)
-                    let labelsLeft = plotLeft - px 3.85 - min room (widest categoryStyle categoryLabels categorySize)
+                    let labelsLeft = plotLeft - valueGap - min room (widest categoryStyle categoryLabels categorySize)
                     outerLevels |> List.iteri (fun level groups ->
                         let starts = groups |> Map.toList |> List.filter (fun (index, _) -> index < count)
                         let x = labelsLeft - float (level + 1) * outerRow
@@ -3459,7 +3925,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                     if index % every = 0 then
                         let long = widthIn categoryStyle categorySize false text
                         let text = if long > room && text.Length > 4 then text.Substring(0, max 1 (int (float text.Length * room / long) - 1)) + "…" else text
-                        addText categoryStyle (PText (plotLeft - px 3.85, bandStart index + band / 2.0, text, categorySize, categoryColor, "end", false, false, 0.0)))
+                        addText categoryStyle (PText (plotLeft - valueGap, bandStart index + band / 2.0, text, categorySize, categoryColor, "end", false, false, 0.0)))
             else
                 match turned with
                 | Some rotation ->
@@ -3476,7 +3942,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                         lines |> Array.iteri (fun index broken ->
                             if index % every = 0 then
                                 broken |> List.iteri (fun at text ->
-                                    if text <> "" then addText categoryStyle (PText (pointAt index, plotBottom + px 1.5 + line / 2.0 + float at * line, text, categorySize, categoryColor, "middle", false, false, 0.0))))
+                                    if text <> "" then addText categoryStyle (PText (pointAt index, plotBottom + categoryGap + line / 2.0 + float at * line, text, categorySize, categoryColor, "middle", false, false, 0.0))))
                     | Some (every, Turned angle) ->
                         // (Turned labels: their ends at the axis, below the middle of their band.)
                         categories |> Array.iteri (fun index text ->
@@ -3507,8 +3973,175 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     { Width = width; Height = height; Items = List.ofSeq items }
 
 /// The scene of a chart in a rectangle of `width` x `height` pixels.
+/// A number to `digits` significant digits.
+let private roundSignificant (digits: int) (value: float) : float =
+    if value = 0.0 || Double.IsNaN value || Double.IsInfinity value then value
+    else
+        let scale = Math.Pow (10.0, float (digits - 1 - int (Math.Floor (Math.Log10 (abs value)))))
+        Math.Round (value * scale, MidpointRounding.AwayFromZero) / scale
+
+/// The bins of a chartEx histogram as Excel 2019 makes them, each its label and how many values it holds (by
+/// category: the sum of each category's values, in the order the categories come). Values are cut from the least
+/// (or the underflow) in bins of the set width, of the set count, or - set neither - of Scott's width, 3.5 times
+/// the values' standard deviation (of a sample) over the cube root of their count, to two significant digits;
+/// as many as reach the greatest (or the overflow). Checked: build-chartex-zoo.vbs, 8 data sets of 5 - 200 values
+/// (12.654 is 13 wide: [11.87, 24.87] .. (76.87, 89.87]; 183.1 is 180; 0.304 is 0.3).
+let histogramBins (binning: Binning) (values: float list) (categories: string list option) : (string * float) list =
+    match categories with
+    | Some names ->
+        let order = ResizeArray<string>()
+        let sums = Collections.Generic.Dictionary<string, float>()
+        names |> List.iteri (fun index name ->
+            let value = if index < values.Length then values.[index] else 0.0
+            if not (sums.ContainsKey name) then (order.Add name; sums.[name] <- 0.0)
+            sums.[name] <- sums.[name] + value)
+        order |> Seq.map (fun name -> name, sums.[name]) |> List.ofSeq
+    | None when values.IsEmpty -> []
+    | None ->
+        let tidy (value: float) = generalNumber (roundSignificant 12 value)
+        let lowest, highest = List.min values, List.max values
+        let start = defaultArg binning.Underflow lowest
+        let stop = defaultArg binning.Overflow highest
+        let n = float values.Length
+        let width =
+            match binning.Size, binning.Count with
+            | Some size, _ -> size
+            | None, Some count -> (stop - start) / float count
+            | None, None ->
+                let mean = List.average values
+                let deviation = if values.Length > 1 then sqrt ((values |> List.sumBy (fun value -> (value - mean) ** 2.0)) / (n - 1.0)) else 0.0
+                roundSignificant 2 (3.5 * deviation / Math.Pow (n, 1.0 / 3.0))
+        let width = if width > 0.0 && not (Double.IsNaN width) then width else max 1.0 (stop - start)
+        let count =
+            match binning.Count with
+            | Some count when binning.Size.IsNone -> count
+            | _ -> max 1 (int (Math.Ceiling ((stop - start) / width - 1e-9)))
+        // (The last bin ends at the overflow: Excel 2019's "(700, 800]" of 150 wide from 100.)
+        let edge (index: int) = roundSignificant 12 (if binning.Overflow.IsSome then min stop (start + width * float index) else start + width * float index)
+        let counts = Array.zeroCreate<float> count
+        let mutable under, over = 0.0, 0.0
+        for value in values do
+            match binning.Underflow, binning.Overflow with
+            | Some limit, _ when (if binning.ClosedLeft then value < limit else value <= limit) -> under <- under + 1.0
+            | _, Some limit when (if binning.ClosedLeft then value >= limit else value > limit) -> over <- over + 1.0
+            | _ ->
+                let at = (value - start) / width
+                let index = if binning.ClosedLeft then int (Math.Floor (at + 1e-9)) else int (Math.Ceiling (at - 1e-9)) - 1
+                let index = max 0 (min (count - 1) index)
+                counts.[index] <- counts.[index] + 1.0
+        let label (index: int) =
+            let a, b = tidy (edge index), tidy (edge (index + 1))
+            if binning.ClosedLeft then (if index = count - 1 && binning.Overflow.IsNone then sprintf "[%s, %s]" a b else sprintf "[%s, %s)" a b)
+            else (if index = 0 && binning.Underflow.IsNone then sprintf "[%s, %s]" a b else sprintf "(%s, %s]" a b)
+        [ if binning.Underflow.IsSome then yield ((if binning.ClosedLeft then "< " else "≤ ") + tidy start), under
+          for index in 0 .. count - 1 do yield label index, counts.[index]
+          if binning.Overflow.IsSome then yield ((if binning.ClosedLeft then "≥ " else "> ") + tidy stop), over ]
+
+/// A quartile of sorted values: QUARTILE.INC's (inclusive) or QUARTILE.EXC's place among them, between two
+/// values in proportion - as Excel 2019's boxes (1 .. 9, 30: 2.75 .. 8.25 exclusive, 3.25 .. 7.75 inclusive).
+let private quartileOf (inclusive: bool) (sorted: float []) (share: float) : float =
+    let n = sorted.Length
+    let place = if inclusive then share * float (n - 1) + 1.0 else share * float (n + 1)
+    let place = max 1.0 (min (float n) place)
+    let below = int (Math.Floor place)
+    if below >= n then sorted.[n - 1] else sorted.[below - 1] + (place - float below) * (sorted.[below] - sorted.[below - 1])
+
+/// A box's figures: the quartiles, the whiskers to the farthest values within 1.5 times the box's height of it, the
+/// values inside and outside them, the mean.
+let boxFiguresOf (inclusive: bool) (values: float list) : BoxFigures option =
+    if values.IsEmpty then None
+    else
+        let sorted = values |> List.sort |> List.toArray
+        let q1, median, q3 = quartileOf inclusive sorted 0.25, quartileOf true sorted 0.5, quartileOf inclusive sorted 0.75
+        let reach = 1.5 * (q3 - q1)
+        let inside, outside = sorted |> Array.toList |> List.partition (fun value -> value >= q1 - reach && value <= q3 + reach)
+        let low, high = (match inside with [] -> q1, q3 | _ -> min q1 (List.min inside), max q3 (List.max inside))
+        Some { Low = low; Q1 = q1; Median = median; Q3 = q3; High = high; Mean = List.average values; Inner = inside; Outside = outside }
+
+/// A chartEx histogram, Pareto or box and whisker chart as a chart of the classic kind, its bins or boxes worked
+/// out from its data, in the look of Excel 2019's chartEx charts: text #595959, the title 14 pt, axes' labels 9 pt,
+/// axes' lines and gridlines #D9D9D9.
+let private classicOfChartEx (theme: ThemeColors) (data: ChartData) (chart: Chart) (plot: Plot) : Chart =
+    let literal (texts: string list) (numbers: float option list) : DataRef =
+        { Formula = None
+          Strings = texts |> List.mapi (fun index text -> index, text) |> Map.ofList
+          Numbers = numbers |> List.mapi (fun index value -> index, value) |> List.choose (fun (index, value) -> value |> Option.map (fun v -> index, v)) |> Map.ofList
+          Count = max texts.Length numbers.Length; FormatCode = None; FollowedEdit = false; LimitToCachedPoints = false; Outer = [] }
+    let grey = { Paint = FillColor ("#D9D9D9", 1.0); Width = 1.0; Dash = None }
+    let text (style: TextStyle) (size: float) = over style { noTextStyle with Size = Some size }
+    let axes =
+        chart.Axes |> List.map (fun axis ->
+            { axis with
+                LabelStyle = text axis.LabelStyle 9.0
+                Line = axis.Line |> Option.orElse (Some grey)
+                Gridlines = axis.Gridlines |> Option.map (fun lines -> match lines.Paint with FillColor _ -> lines | _ -> grey) })
+    let numbers (series: Series) = numbersOf data series.Values |> Array.toList |> List.choose id
+    let named (series: Series) = textsOf data series.Categories |> Array.toList |> function [] -> None | names -> Some names
+    let plots =
+        match plot.Kind with
+        | HistogramPlot (binning, pareto) ->
+            let series = plot.Series |> List.head
+            // (Categories that are text: a bar each, by its values' sum; numbers: binned.)
+            let isNumber (name: string) = fst (Double.TryParse(name, Globalization.NumberStyles.Float, Globalization.CultureInfo.InvariantCulture))
+            let categories = named series |> Option.filter (List.exists (fun name -> name.Trim() <> "" && not (isNumber name)))
+            let values = match categories with Some _ -> numbersOf data series.Values |> Array.toList |> List.map (Option.defaultValue 0.0) | None -> numbers series
+            let bins = histogramBins binning values categories
+            // (A Pareto chart's bars from the most to the least, its line their running share.)
+            let bins = if pareto then bins |> List.sortBy (fun (_, count) -> -count) else bins
+            let total = bins |> List.sumBy snd
+            let bars =
+                { series with
+                    Categories = Some (literal (List.map fst bins) [])
+                    Values = Some (literal [] (bins |> List.map (snd >> Some)))
+                    // (The bars touch, a pixel of white between them.)
+                    Line = series.Line |> Option.orElse (Some { Paint = FillColor ("#FFFFFF", 1.0); Width = 1.0; Dash = None }) }
+            let barPlot = { plot with Kind = BarPlot; Grouping = "clustered"; Series = [ bars ]; AxisIds = [ "0"; "1" ] }
+            let running = bins |> List.scan (fun sum (_, count) -> sum + count) 0.0 |> List.tail |> List.map (fun sum -> Some (if total > 0.0 then sum / total else 0.0))
+            let line =
+                { bars with
+                    Order = 1; Index = 1; Name = None
+                    Values = Some (literal [] running)
+                    Fill = FillAuto
+                    Line = Some { Paint = FillColor (autoColor theme 1, 1.0); Width = linePixels 28575.0; Dash = None }
+                    MarkerSymbol = Some "none"; Smooth = false; Labels = None; PointFills = Map.empty; PointLines = Map.empty }
+            if pareto then [ barPlot; { plot with Kind = LinePlot; Grouping = "standard"; Series = [ line ]; AxisIds = [ "0"; "2" ] } ] else [ barPlot ]
+        | BoxWhiskerPlot options ->
+            // (A box a category a series: the categories in the order they come, else one, "1".)
+            let groups =
+                plot.Series |> List.map (fun series ->
+                    let values = numbersOf data series.Values
+                    match named series with
+                    | Some names -> names |> List.mapi (fun index name -> name, (if index < values.Length then values.[index] else None))
+                    | None -> values |> Array.toList |> List.map (fun value -> "1", value))
+            let categories = groups |> List.collect (List.map fst) |> List.filter (fun name -> name <> "") |> List.distinct
+            let categories = if categories.IsEmpty then [ "1" ] else categories
+            let figures =
+                groups |> List.map (fun pairs ->
+                    categories |> List.map (fun name -> pairs |> List.filter (fun (known, _) -> known = name) |> List.choose snd |> boxFiguresOf options.Inclusive) |> List.toArray)
+                |> List.toArray
+            let series =
+                List.zip plot.Series (Array.toList figures) |> List.map (fun (series, boxes) ->
+                    { series with Categories = Some (literal categories []); Values = Some (literal [] (boxes |> Array.toList |> List.map (Option.map (fun box -> box.Median)))) })
+            [ { plot with Kind = BoxesPlot (figures, options); Grouping = "clustered"; Series = series; AxisIds = [ "0"; "1" ] } ]
+        | _ -> [ plot ]
+    { chart with
+        Plots = plots
+        Axes = axes
+        TitleStyle = over (text chart.TitleStyle 14.0) { noTextStyle with Bold = Some false }
+        TextStyle = over chart.TextStyle { noTextStyle with Color = Some "#595959" }
+        RoundedCorners = false
+        Style = 2 }
+
+/// Whether a plot is one of a chartEx part's (a waterfall, a funnel, a histogram ...): such a part keeps no copy of
+/// its data.
+let isChartExPlot (plot: Plot) : bool =
+    match plot.Kind with
+    | WaterfallPlot _ | FunnelPlot | HistogramPlot _ | BoxWhiskerPlot _ | TreemapPlot _ | SunburstPlot | UndrawnPlot _ -> true
+    | _ -> false
+
 let layoutChart (theme: ThemeColors) (data: ChartData) (chart: Chart) (width: float) (height: float) : Scene =
-    match chart.Plots |> List.tryFind (fun plot -> match plot.Kind with WaterfallPlot _ | FunnelPlot | UndrawnPlot _ -> true | _ -> false) with
+    match chart.Plots |> List.tryFind isChartExPlot with
+    | Some ({ Kind = HistogramPlot _ | BoxWhiskerPlot _ } as plot) -> layoutClassicChart theme data (classicOfChartEx theme data chart plot) width height
     | Some plot -> layoutChartEx theme data chart plot width height
     | None -> layoutClassicChart theme data chart width height
 
@@ -3822,7 +4455,12 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
             // (A run that names no typeface is in the theme's minor font - the e-commerce dashboard's "Most Sold Items" in
             // Tw Cen MT, two lines in Excel 2019; lines are broken by the width the text has in it.)
             let faceIn (style: TextStyle) = style.Face |> Option.orElse (Map.tryFind "#minorFont" parts.Theme)
-            let measured (style: TextStyle) (text: string) = faceWidth (faceIn style) (sizeOf style) (style.Bold |> Option.defaultValue false) text
+            // (Measured by the face's design advances, as shapes' text is laid out: `ExcelText.idealWidth`.)
+            let measured (style: TextStyle) (text: string) =
+                let bold = style.Bold |> Option.defaultValue false
+                match ExcelText.idealWidth (defaultArg (faceIn style) "Calibri") bold (style.Italic |> Option.defaultValue false) (sizeOf style) text with
+                | Some ideal -> ideal
+                | None -> faceWidth (faceIn style) (sizeOf style) bold text
             let room = max 10.0 (width - padLeft - padRight)
             // Each paragraph in lines that fit the shape: broken between words.
             let wrapped : (string * (string * TextStyle) list * TextStyle) list =
@@ -4036,3 +4674,49 @@ let chartSheets (chart: Chart) : string list =
     |> List.choose (fun source -> source.Formula |> Option.bind parseAreas)
     |> List.collect (fun areas -> areas |> List.map (fun (sheet, _, _, _, _) -> sheet))
     |> List.distinct
+
+// ---------------------------------------------------------------------------
+// Chart sheets
+// ---------------------------------------------------------------------------
+
+/// How a chart sheet is shown (its part's `sheetView`) and the page it prints on (`pageSetup`, `pageMargins`).
+type ChartSheetView = {
+    /// The chart's page fitted to the window (`zoomToFit`, what Excel writes for a chart sheet by default).
+    ZoomToFit: bool
+    /// The zoom otherwise (`zoomScale`), in per cent.
+    ZoomScale: float
+    /// The page less its margins, in points.
+    PageWidth: float
+    PageHeight: float
+}
+
+/// A chart sheet's view from its part: a page of Letter (`paperSize`), landscape unless it says portrait (a chart
+/// sheet's default), less margins of 0.7 in left and right and 0.75 in top and bottom unless it names its own.
+let chartSheetView (xml: string) : ChartSheetView =
+    let root = try Some (XmlDsl.parse xml) with _ -> None
+    let find (name: string) = root |> Option.bind (fun node -> descendants name node |> List.tryHead)
+    let view = find "sheetView"
+    let setup = find "pageSetup"
+    let margins = find "pageMargins"
+    let margin (name: string) (otherwise: float) = margins |> Option.bind (attr name) |> Option.bind number |> Option.defaultValue otherwise
+    let paperWidth, paperHeight = paperSizePoints (setup |> Option.bind (attr "paperSize") |> Option.bind number |> Option.map int |> Option.defaultValue 1)
+    let portrait = (setup |> Option.bind (attr "orientation")) = Some "portrait"
+    let pageWidth, pageHeight = if portrait then paperWidth, paperHeight else paperHeight, paperWidth
+    { ZoomToFit = isOn (view |> Option.bind (attr "zoomToFit")) false
+      ZoomScale = view |> Option.bind (attr "zoomScale") |> Option.bind number |> Option.filter (fun zoom -> zoom >= 10.0) |> Option.defaultValue 100.0
+      PageWidth = max 1.0 (pageWidth - 72.0 * (margin "left" 0.7 + margin "right" 0.7))
+      PageHeight = max 1.0 (pageHeight - 72.0 * (margin "top" 0.75 + margin "bottom" 0.75)) }
+
+/// Where Excel 2019 shows a chart sheet's chart of `chartWidth` x `chartHeight` px (at 100 %) in a window of
+/// `windowWidth` x `windowHeight` px: the zoom, the chart's left and top. Fitted to the window (`zoomToFit`), the zoom
+/// is the whole per cent at which the page less its margins fits it; the page is centred in the window, the chart in
+/// the page (chartsheet-probe.ps1: Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in 149 % in a
+/// window of 1898 x 787 px - each the page's fit, not the chart's -; the chart at 415 px of 1898, 5 px down).
+let chartSheetPlacement (view: ChartSheetView) (windowWidth: float) (windowHeight: float) (chartWidth: float) (chartHeight: float) : float * float * float =
+    let pageWidth, pageHeight = view.PageWidth * 4.0 / 3.0, view.PageHeight * 4.0 / 3.0
+    let zoom =
+        if view.ZoomToFit then max 0.1 (Math.Floor (100.0 * min (windowWidth / pageWidth) (windowHeight / pageHeight) + 1e-9) / 100.0)
+        else view.ZoomScale / 100.0
+    let left = max 0.0 ((windowWidth - pageWidth * zoom) / 2.0) + (pageWidth - chartWidth) * zoom / 2.0
+    let top = max 0.0 ((windowHeight - pageHeight * zoom) / 2.0) + (pageHeight - chartHeight) * zoom / 2.0
+    zoom, max 0.0 left, max 0.0 top

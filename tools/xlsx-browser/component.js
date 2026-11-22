@@ -2132,6 +2132,32 @@ checks['charts-excel-parity'] = async () => {
         check('a legend\'s own fill and outline', legendBox, true);
         const faces2 = lsvgs.flatMap((svg) => [...svg.querySelectorAll('g[font-family]')]).map((g) => g.getAttribute('font-family').split(',')[0]);
         check('Tw Cen MT and Garamond labels', [faces2.includes("'Tw Cen MT'"), faces2.includes("'Garamond'")], [true, true]);
+        // synthetic-chartex-looks.xlsx (Excel's own chartEx charts): a histogram's bins, a treemap's labels.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-chartex-looks.xlsx')).slice());
+        const exTexts = new Set();
+        for (const sheet of ['Hist', 'Tree']) {
+            grid.SwitchSheet(grid.GetSheetNames().indexOf(sheet)); await frame();
+            await everyObjectSeen(host);
+            for (const [row, col] of [[0, 13], [15, 13], [30, 13], [45, 13], [60, 13], [75, 13]]) {
+                grid.SelectCell(row, col); await frame();
+                for (let i = 0; i < 30 && host.querySelector('.spreadsheet-object-pending'); i++) await frame();
+                for (const t of host.querySelectorAll('svg text')) exTexts.add(t.textContent);
+            }
+        }
+        check('chartEx: histogram bins of Scott\'s width ([11.87, 24.87]), under- and overflow bins, a treemap\'s labels',
+            ['[11.87, 24.87]', '≤ 100', '> 800', 'Milk', 'Dairy', 'A, 50'].map((t) => exTexts.has(t)), [true, true, true, true, true, true]);
+        // synthetic-chartsheets.xlsx: a chart sheet as Excel shows one - no cells, its page fitted to the window, the
+        // chart in its middle.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-chartsheets.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Portrait')); await frame(); await frame();
+        const layer = host.querySelector('.spreadsheet-chartsheet');
+        const chartBox = layer?.firstElementChild?.getBoundingClientRect();
+        const layerBox = layer?.getBoundingClientRect();
+        check('a chart sheet: a grey window over the grid, the chart in its middle, the portrait page fitted to it',
+            [!!layer && getComputedStyle(layer).display !== 'none', !!chartBox && Math.abs((chartBox.left + chartBox.right) / 2 - (layerBox.left + layerBox.right) / 2) < 2,
+             !!chartBox && chartBox.height > layerBox.height * 0.9 && chartBox.height <= layerBox.height, !!layer?.querySelector('svg')], [true, true, true, true]);
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Data')); await frame();
+        check('... gone on a worksheet', !layer || getComputedStyle(layer).display === 'none', true);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;

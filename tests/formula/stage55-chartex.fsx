@@ -13,9 +13,10 @@ module Bridge = Rbt.Spreadsheet.XlsxBridge
 // - their data from the cells the defined names they name refer to (`_xlchart.v1.0`), else from
 // the points the part caches - and drawn: a waterfall's bars from where the last one ended, the
 // totals from zero, increases, decreases and totals in the theme's first three accents, lines
-// between the bars; a funnel's bars centred, as long as their value is of the largest. A chart of
-// another kind (a map, a sunburst, a treemap ...) is a placeholder that says what it is, with its
-// title - read without reading the megabytes of a map's geography. The parts go back as they were.
+// between the bars; a funnel's bars centred, as long as their value is of the largest; a treemap's
+// rectangles (histograms, Pareto, box and whisker and sunburst charts: stage52 "Excel 2019: chartEx"). A
+// map is a placeholder that says what it is, with its title - read without reading the megabytes of
+// its geography. The parts go back as they were.
 
 let mutable pass = 0
 let mutable fail = 0
@@ -92,7 +93,7 @@ match Charts.parseChart Charts.defaultTheme funnelXml with
     ok "funnel: the categories and the values" ([ "Visits"; "Carts"; "Orders"; "500"; "300"; "120" ] |> List.forall (fun item -> List.contains item (texts scene))) (sprintf "%A" (texts scene))
 | None -> ok "a funnel part is read" false "not read"
 
-// ---- a kind that is not drawn: a placeholder with its title ----------------------------------------
+// ---- a treemap: a rectangle a category, the largest first, its title, the values as labels ------------------
 let treemapXml =
     chartEx "treemap" [ "A"; "B" ] [ "1"; "2" ] ""
         ("<cx:title pos=\"t\" align=\"ctr\" overlay=\"0\"><cx:tx><cx:txData><cx:v>Stock by shelf</cx:v></cx:txData></cx:tx></cx:title>"
@@ -100,8 +101,10 @@ let treemapXml =
 match Charts.parseChart Charts.defaultTheme treemapXml with
 | Some chart ->
     let scene = Charts.layoutChart Charts.defaultTheme noData chart 400.0 300.0
-    eq "a treemap: a box that says what it is, with its title" (texts scene) [ "Stock by shelf"; "Treemap chart (not drawn)" ]
-| None -> ok "a treemap part is read as a placeholder" false "not read"
+    eq "a treemap: its title and its values" (texts scene) [ "Stock by shelf"; "2"; "1" ]
+    let tiles = rects scene |> List.filter (fun (_, _, w, h, fill) -> fill <> "#FFFFFF" && w < 390.0)
+    ok "... a rectangle a category, the larger (B) at the left, in the first two accents" (match tiles with [ (x1, _, w1, _, c1); (x2, _, w2, _, _) ] -> x1 < x2 && w1 > w2 && c1 = "#ED7D31" | _ -> false) (sprintf "%A" tiles)
+| None -> ok "a treemap part is read" false "not read"
 
 // dashboard-sales-analysis.xlsx has a map chart of 8 MB: it is a placeholder named for its series, read in no time.
 let openBook (file: string) =
@@ -224,9 +227,9 @@ do
         let scene = Charts.layoutChart theme data chart 480.0 288.0
         let textAt (value: string) = scene.Items |> List.tryPick (fun item -> match item with Charts.PText (_, y, known, _, _, _, _, _, _) when known = value -> Some y | _ -> None)
         let topGridline = lines scene |> List.filter (fun (x1, y1, x2, y2, _) -> y1 = y2 && x2 - x1 > 300.0) |> List.map (fun (_, y, _, _, _) -> y) |> List.fold min 1000.0
-        // (Excel: the legend's middle 50 px down, the axis' top - 180 - 78 px down.)
-        ok "Excel's waterfall: its legend under the title where Excel puts it (50 px down), the plot's top 78 px down"
-            (match textAt "Increase" with Some y -> abs (y - 50.0) <= 2.0 && abs (topGridline - 78.0) <= 2.0 | None -> false)
+        // (Excel: the legend's middle 51.5 px down, the axis' top - 180 - 80 px down: synthetic-chartex-zoo's waterfalls too.)
+        ok "Excel's waterfall: its legend under the title where Excel puts it (51.5 px down), the plot's top 80 px down"
+            (match textAt "Increase" with Some y -> abs (y - 51.5) <= 1.5 && abs (topGridline - 80.0) <= 1.0 | None -> false)
             (sprintf "legend %A, top gridline %g" (textAt "Increase") topGridline)
     | None -> ok "synthetic-chartex's waterfall is read" false "not read"
 

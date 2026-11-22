@@ -533,7 +533,11 @@ ok "Excel 2019: markers in turn - the sixth series' circles (5 points and its ke
 ok "Excel 2019: ... lines that do not say are smoothed (curves)" ((markScene.Items |> List.filter (fun item -> match item with Charts.PPath (d, None, _, Some _, _) -> d.Contains "C" | _ -> false)).Length = 8) "not curves"
 let mark34 = looksScene 12 480.0 300.0
 ok "Excel 2019: ... 8 pt under style 34" (mark34.Items |> List.exists (fun item -> match item with Charts.PEllipse (_, _, rx, _, _, _, _, _) -> abs (rx - 16.0 / 3.0) < 0.01 | _ -> false)) "no 8 pt circle"
-ok "Excel 2019: the seventh and eighth automatic colours are accents 1 and 2 lighter" (let colors = markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None) in colors.Length = 8 && colors.[6] = "#8FAADC") (sprintf "%A" (markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)))
+/// Two colours within a unit of 255 each.
+let nearColor (a: string) (b: string) =
+    let part (hex: string) (at: int) = Convert.ToInt32(hex.Substring(at, 2), 16)
+    a.Length = 7 && b.Length = 7 && [ 1; 3; 5 ] |> List.forall (fun at -> abs (part a at - part b at) <= 1)
+ok "Excel 2019: the seventh and eighth automatic colours of eight: accents 1 and 2 tinted (#8FA2D4), the first six shaded (#3B64AD)" (let colors = markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None) in colors.Length = 8 && nearColor colors.[6] "#8FA2D4" && nearColor colors.[0] "#3B64AD") (sprintf "%A" (markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)))
 // On the ticks: half the first and the last labels in the plot area's box.
 let ticksScene = looksScene 15 480.0 260.0
 let areaLeft (scene: Charts.Scene) = scene.Items |> List.pick (fun item -> match item with Charts.PPolyline (points, Some "#4472C4", _, _, _, _) -> Some (points |> List.map fst |> List.min, points |> List.map fst |> List.max) | _ -> None)
@@ -559,6 +563,118 @@ let turnedLabels (n: int) (widthPt: float) =
 ok "Excel 2019: 60 categories in a chart of 100 pt: every 12th turned -90 (5 labels), not every 11th (6 labels of 10.1 pt each)"
     (let shown = turnedLabels 60 100.0 in shown.Length = 5 && shown |> List.forall (fun (_, t) -> t = -90.0)) (sprintf "%A" (turnedLabels 60 100.0))
 ok "Excel 2019: ... in 106 pt every 10th (6 labels of 11.1 pt)" ((turnedLabels 60 106.0).Length = 6) (sprintf "%A" (turnedLabels 60 106.0))
+
+// ---- Excel 2019: chartEx charts (synthetic-chartex-zoo.xlsx, made in Excel through COM by build-chartex-zoo.vbs;
+// synthetic-chartex-looks.xlsx, make-chartex-looks.py; each checked on Excel's pictures - Chart.Export - and the
+// points' rectangles through COM; docs/excel-parity-tracker.md "chartEx and chart sheets") ----
+let chartExBook (file: string) =
+    let wb, book, parts, theme = openBook file
+    let names (name: string) = wb.NamedRanges |> List.tryPick (fun known -> if known.Name = name then Some known.RefersTo else None)
+    let data = dataOf (book.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, resolveSheet sheet.Model))
+    let scene (number: int) = Charts.layoutChart theme data (Charts.parseChartWith names theme (text parts.[sprintf "xl/charts/chartEx%d.xml" number]) |> Option.get) 480.0 288.0
+    scene
+let zooScene = chartExBook "test-documents-excel/synthetic-chartex-zoo.xlsx"
+let looksExScene = chartExBook "test-documents-excel/synthetic-chartex-looks.xlsx"
+let exTexts (scene: Charts.Scene) = allTexts scene.Items |> List.map (fun (value, _, _, _, _, _, _) -> value)
+ok "Excel 2019: a histogram's bins of Scott's width to two digits: 100 values 12.654 -> 13 wide from the least"
+    (hasAll (exTexts (zooScene 5)) [ "[11.87, 24.87]"; "(24.87, 37.87]"; "(76.87, 89.87]"; "Chart Title" ] [ "(89.87, 102.87]" ]) (sprintf "%A" (exTexts (zooScene 5)))
+ok "Excel 2019: ... 183.1 -> 180 ([1, 181] .. (901, 1081]); 0.304 -> 0.3 ([0, 0.3] .. (0.9, 1.2]); 5 values one bin [2, 97]"
+    (hasAll (exTexts (zooScene 6)) [ "[1, 181]"; "(901, 1081]" ] [] && hasAll (exTexts (zooScene 7)) [ "[0, 0.3]"; "(0.9, 1.2]" ] [] && hasAll (exTexts (zooScene 1)) [ "[2, 97]" ] [ "(97, 192]" ])
+    (sprintf "%A %A %A" (exTexts (zooScene 6)) (exTexts (zooScene 7)) (exTexts (zooScene 1)))
+ok "Excel 2019: bins closed on the left [10, 49) .. [88, 127]; five bins [29.8, 214.24] .. (767.56, 952]; 150 wide from <= 100 to > 800"
+    (hasAll (exTexts (looksExScene 2)) [ "[10, 49)"; "[88, 127]" ] [] && hasAll (exTexts (looksExScene 9)) [ "[29.8, 214.24]"; "(767.56, 952]" ] []
+     && hasAll (exTexts (looksExScene 10)) [ "≤ 100"; "(100, 250]"; "(700, 800]"; "> 800" ] [])
+    (sprintf "%A %A %A" (exTexts (looksExScene 2)) (exTexts (looksExScene 9)) (exTexts (looksExScene 10)))
+let histBars = rects (zooScene 5) |> List.filter (fun (_, _, w, _, fill) -> fill = "#4472C4" && w > 40.0) |> List.sortBy (fun (x, _, _, _, _) -> x)
+ok "Excel 2019: ... the bars touch, the plot from 28 to 471 px of 480 (labels 7.5 pt from the axis, the box 6 pt in)"
+    (histBars.Length = 6 && (let x, _, _, _, _ = histBars.Head in abs (x - 28.5) < 2.5) && (let x, _, w, _, _ = List.last histBars in abs (x + w - 471.0) < 2.0)) (sprintf "%A" histBars)
+let paretoTexts = allTexts (zooScene 12).Items
+ok "Excel 2019: a Pareto chart's bars from the most down (Wrong item, Late, Billing ...), its running share 0 % .. 100 % at the right"
+    (let cats = paretoTexts |> List.filter (fun (v, _, _, _, _, _, _) -> List.contains v [ "Wrong item"; "Late"; "Billing"; "Other" ]) |> List.sortBy (fun (_, x, _, _, _, _, _) -> x) |> List.map (fun (v, _, _, _, _, _, _) -> v)
+     cats = [ "Wrong item"; "Late"; "Billing"; "Other" ] && paretoTexts |> List.exists (fun (v, x, _, _, _, _, _) -> v = "100%" && x > 420.0)) (sprintf "%A" paretoTexts)
+ok "Excel 2019: ... the binned one in bins from the most ((44.2, 61.2] first, (78.2, 95.2] last)"
+    (let cats = allTexts (zooScene 13).Items |> List.filter (fun (v, _, _, _, _, _, _) -> v.StartsWith "(" || v.StartsWith "[") |> List.sortBy (fun (_, x, _, _, _, _, _) -> x) |> List.map (fun (v, _, _, _, _, _, _) -> v)
+     cats = [ "(44.2, 61.2]"; "(27.2, 44.2]"; "(61.2, 78.2]"; "[10.2, 27.2]"; "(78.2, 95.2]" ]) (sprintf "%A" (exTexts (zooScene 13)))
+let exclusiveBox = Charts.boxFiguresOf false [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
+let inclusiveBox = Charts.boxFiguresOf true [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
+ok "Excel 2019: a box's quartiles QUARTILE.EXC's (2.75 .. 8.25) or .INC's (3.25 .. 7.75); whiskers 1 .. 9, 30 beyond"
+    (exclusiveBox.Q1 = 2.75 && exclusiveBox.Q3 = 8.25 && inclusiveBox.Q1 = 3.25 && inclusiveBox.Q3 = 7.75 && exclusiveBox.High = 9.0 && exclusiveBox.Low = 1.0 && exclusiveBox.Outside = [ 30.0 ] && exclusiveBox.Median = 5.5)
+    (sprintf "%A %A" exclusiveBox inclusiveBox)
+ok "Excel 2019: boxes outlined in the series' colour 80 % (#365B9D), three categories' boxes half a band wide"
+    (let boxes = rects (zooScene 14) |> List.filter (fun (_, _, _, _, fill) -> fill = "#4472C4")
+     boxes.Length = 3 && boxes |> List.forall (fun (_, _, w, _, _) -> abs (w - 72.7) < 3.0)
+     && (zooScene 14).Items |> List.exists (fun item -> match item with Charts.PRect (_, _, _, _, Some "#4472C4", _, Some "#365B9D", _, _) -> true | _ -> false))
+    (sprintf "%A" (rects (zooScene 14)))
+// A treemap laid out as Excel 2019 lays it out (the points' rectangles through COM, in points).
+let near (a: float) (b: float) = abs (a - b) < 0.6
+let flat = Charts.squarify [ 50.0; 40.0; 30.0; 20.0; 10.0; 8.0; 5.0 ] 0.0 0.0 348.4 154.8
+ok "Excel 2019: a treemap a strip at a time along the shorter side (A, B, C columns; D over E beside F over G)"
+    (List.zip flat [ 0.0, 0.0, 106.9, 154.8; 106.9, 0.0, 85.5, 154.8; 192.4, 0.0, 64.1, 154.8; 256.5, 0.0, 91.9, 72.0; 256.5, 72.0, 40.0, 82.8; 296.5, 72.0, 52.0, 51.0; 296.5, 123.0, 52.0, 31.8 ]
+     |> List.forall (fun ((x, y, w, h), (ex, ey, ew, eh)) -> near x ex && near y ey && near w ew && near h eh)) (sprintf "%A" flat)
+let tall = Charts.squarify (List.replicate 10 10.0) 0.0 0.0 204.45 348.45
+ok "Excel 2019: ... ten equal values in a tall plot rows of three (68.2 x 104.5), not of two: width over height nearer 1"
+    (match tall with (_, _, w, h) :: (x2, _, _, _) :: (x3, _, _, _) :: (_, y4, _, _) :: _ -> near w 68.15 && near h 104.5 && x3 > x2 && near y4 104.5 | _ -> false) (sprintf "%A" tall)
+let flatScene = zooScene 19
+ok "Excel 2019: a treemap's seventh colour the first accent 60 % (#264478); a legend of its categories at the top"
+    (rects flatScene |> List.exists (fun (_, _, _, _, fill) -> fill = "#264478") && hasAll (exTexts flatScene) [ "A"; "G" ] []) (sprintf "%A" (rects flatScene))
+let treemapLabels = allTexts (looksExScene 17).Items
+ok "Excel 2019: a treemap's labels: a tile's at its bottom left (Milk), its parent's at its top left (Dairy), white"
+    (match treemapLabels |> List.tryFind (fun (v, _, _, _, c, _, _) -> v = "Milk" && c = "#FFFFFF"), treemapLabels |> List.tryFind (fun (v, _, _, _, c, _, _) -> v = "Dairy" && c = "#FFFFFF") with
+     | Some (_, x1, y1, _, c1, _, _), Some (_, x2, y2, _, _, _, _) -> abs (x1 - x2) < 1.0 && x1 < 20.0 && y1 > 260.0 && y2 < 95.0 && c1 = "#FFFFFF"
+     | _ -> false) (sprintf "%A" treemapLabels)
+ok "Excel 2019: ... a parent's in a grey banner (#A6A6A6) over its children, the outer level's only"
+    (let scene = looksExScene 21 in rects scene |> List.exists (fun (_, _, _, _, fill) -> fill = "#A6A6A6") && hasAll (exTexts scene) [ "Asia"; "Tokyo" ] [ "Japan" ]) (sprintf "%A" (exTexts (looksExScene 21)))
+ok "Excel 2019: ... a category and its value 'A, 50'" (hasAll (exTexts (looksExScene 19)) [ "A, 50"; "G, 5" ] []) (sprintf "%A" (exTexts (looksExScene 19)))
+let sunPaths (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PPath (d, Some fill, _, _, _) -> Some (d, fill) | _ -> None)
+ok "Excel 2019: a sunburst of one level: a ring from half the radius (61 of 121 px), largest first from twelve o'clock"
+    (match sunPaths (zooScene 20) with (d, fill) :: _ -> fill = "#4472C4" && d.Contains "A 121." && d.Contains "A 60.8" | [] -> false) (sprintf "%A" (sunPaths (zooScene 20) |> List.truncate 2))
+ok "Excel 2019: ... of three levels rings of a quarter of the radius, labels along their parts' radius"
+    (sunPaths (zooScene 22) |> List.exists (fun (d, _) -> d.Contains "A 30.4") && allTexts (looksExScene 22).Items |> List.exists (fun (v, _, _, _, _, _, t) -> v = "Tokyo" && t < -10.0 && t > -80.0))
+    (sprintf "%A" (allTexts (looksExScene 22).Items))
+
+// Chart sheets (chartsheet-probe.ps1 on synthetic-chartsheets.xlsx, a window of 1898 x 787 px): the page less its
+// margins fitted to the window at a whole per cent (Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in
+// 149 %), the chart in the middle of the page.
+let sheetView (setup: string) = Charts.chartSheetView (sprintf "<chartsheet><sheetViews><sheetView zoomScale=\"111\" zoomToFit=\"1\"/></sheetViews>%s</chartsheet>" setup)
+let fitted (setup: string) (chartW: float) (chartH: float) = Charts.chartSheetPlacement (sheetView setup) 1898.0 787.0 chartW chartH
+ok "Excel 2019: a chart sheet's page fitted to its window: Letter landscape 117 %, portrait 86 %, A4 121 %, margins of 2 in 149 %"
+    ([ fitted "" 909.4 660.7; fitted "<pageSetup orientation=\"portrait\"/>" 670.9 901.2; fitted "<pageSetup paperSize=\"9\" orientation=\"landscape\"/>" 976.9 638.0
+       fitted "<pageMargins left=\"2\" right=\"2\" top=\"1.5\" bottom=\"1.5\" header=\"0.3\" footer=\"0.3\"/>" 661.1 517.5 ]
+     |> List.map (fun (zoom, _, _) -> Math.Round (zoom * 100.0)) = [ 117.0; 86.0; 121.0; 149.0 ])
+    (sprintf "%A" (fitted "" 909.4 660.7))
+ok "Excel 2019: ... the chart in the middle of the page, the page of the window (Excel: 415 px, 5 px down)"
+    (let _, left, top = fitted "" 909.4 660.7 in abs (left - 417.0) < 3.0 && abs (top - 5.6) < 2.0) (sprintf "%A" (fitted "" 909.4 660.7))
+ok "Excel 2019: ... a chart sheet not fitted to its window at its own zoom" ((let zoom, _, _ = Charts.chartSheetPlacement (Charts.chartSheetView "<chartsheet><sheetViews><sheetView zoomScale=\"119\"/></sheetViews></chartsheet>") 1898.0 787.0 909.0 660.0 in zoom) = 1.19) ""
+// A chart of Excel's old API (ChartObjects.Add, Charts.Add: a part naming a chart style and no look): its title 18 pt
+// bold, lines and frame #898989 (legacy-chart-probe.vbs).
+let legacyWb, legacyBook, legacyParts, legacyTheme = openBook "test-documents-excel/synthetic-chartsheets.xlsx"
+let legacy = Charts.parseChart legacyTheme (text legacyParts.["xl/charts/chart1.xml"]) |> Option.get
+let legacyScene = Charts.layoutChart legacyTheme noData legacy 909.0 660.0
+ok "Excel 2019: a chart of the old API: its title 18 pt bold, its gridlines and frame #898989"
+    (allTexts legacyScene.Items |> List.exists (fun (v, _, _, size, _, bold, _) -> v = "Landscape" && abs (size - 24.0) < 0.01 && bold)
+     && legacy.Axes |> List.exists (fun axis -> axis.Gridlines |> Option.exists (fun g -> g.Paint = Charts.FillColor ("#898989", 1.0)))
+     && legacy.Border |> Option.exists (fun b -> b.Paint = Charts.FillColor ("#898989", 1.0)))
+    (sprintf "%A" (allTexts legacyScene.Items |> List.truncate 3))
+
+// Automatic colours of many series (synthetic-chart-colors.xlsx, each series' colour through COM): rounds of six
+// shaded and tinted by how many there are.
+let colorsWb, colorsBook, colorsParts, colorsTheme = openBook "test-documents-excel/synthetic-chart-colors.xlsx"
+let seriesColors (number: int) =
+    let chart = Charts.parseChart colorsTheme (text colorsParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get
+    (Charts.layoutChart colorsTheme noData chart 480.0 300.0).Items |> List.choose (fun item -> match item with Charts.PPolyline (_, None, _, Some c, w, _) when w > 1.0 -> Some c | Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)
+let expectColors (number: int) (wanted: (int * string) list) =
+    let colors = seriesColors number
+    wanted |> List.forall (fun (at, color) -> at < colors.Length && nearColor colors.[at] color)
+ok "Excel 2019: 12 series: the first six 0.65 shades (#375DA1), the next the accents; 30: 0.5 .. 0.9 shades, 0.9, 0.7 tints; 36"
+    (expectColors 4 [ 0, "#375DA1"; 6, "#4472C4"; 7, "#ED7D31" ] && expectColors 10 [ 0, "#2F528F"; 6, "#3960A7"; 12, "#406DBB"; 18, "#6D89CB"; 24, "#9EADD8" ]
+     && expectColors 1 [ 0, "#2E4F8B"; 18, "#4472C4"; 20, "#A5A5A5"; 21, "#FFC000" ])
+    (sprintf "%A %A" (seriesColors 4) (seriesColors 10))
+
+// Text in a shape is laid out by the face's design advances (the e-commerce dashboard's "Most Sold Items" over its
+// doughnut: "Most Sold" 59.7 px in Tw Cen MT bold 11 pt, a line of its own in Excel 2019's box of 60 px; GDI's 61 px).
+ok "Excel 2019: a shape's text measured by design advances: 'Most Sold' 59.7 px in Tw Cen MT bold 11 pt"
+    (match Rbt.Spreadsheet.ExcelText.idealWidth "Tw Cen MT" true false (11.0 * 4.0 / 3.0) "Most Sold" with Some w -> abs (w - 59.73) < 0.05 | None -> false)
+    (sprintf "%A" (Rbt.Spreadsheet.ExcelText.idealWidth "Tw Cen MT" true false (11.0 * 4.0 / 3.0) "Most Sold"))
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

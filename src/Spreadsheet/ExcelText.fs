@@ -138,6 +138,22 @@ let advance (family: string) (bold: bool) (italic: bool) (px: int) (smallFonts: 
                         else plain
                     ValueSome (hinted + (if madeBold then 1 else 0))
 
+/// The width of `text` in a family / style at `size` pixels from the face's design advances - no hinting, no rounding:
+/// how text in a shape (DrawingML) is laid out (the e-commerce dashboard's "Most Sold" 59.7 px in Tw Cen MT bold 11 pt,
+/// in a line of its own in Excel 2019's box of 60 px, where GDI's hinted 61 px would break it); None where the tables
+/// do not know a character.
+let idealWidth (family: string) (bold: bool) (italic: bool) (size: float) (text: string) : float option =
+    match findFace family bold italic with
+    | None -> None
+    | Some (face, _) ->
+        let mutable total = 0.0
+        let mutable known = true
+        for ch in text do
+            let index = GdiAdvances.charIndex (int ch)
+            if index < 0 || face.Design.[index] < 0 then known <- false
+            else total <- total + float face.Design.[index] * size / face.UnitsPerEm
+        if known then Some total else None
+
 /// The width in screen pixels of `text` as Excel draws it in a family / style at pixel size `px`
 /// (`smallFonts`: in Small Fonts): the sum of its characters' advances; `measure` gives the
 /// browser's width of a character the tables do not know at that size (rounded here, as GDI's are
