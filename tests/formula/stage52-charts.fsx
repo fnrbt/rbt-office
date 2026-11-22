@@ -437,5 +437,29 @@ ok "Excel 2019: 12 of them in 236 px: all, turned -90" (l90.Length = 12 && l90 |
 let lSkip = labelsOf (linesScene 13 462.0 303.0) |> List.map (fun (v, _, _, _, _, _, _) -> v)
 ok "Excel 2019: 1 .. 60 in 462 px (oyabayo's): every second, in a line" (lSkip.Length = 30 && List.contains "59" lSkip && not (List.contains "60" lSkip)) (sprintf "%A" lSkip)
 
+// ---- Excel 2019 on the corpus' charts (chart-probe.vbs exports of the dashboards and phpsp-32) ----
+let corpusScene (file: string) (number: int) (w: float) (h: float) =
+    let _, book, parts, theme = openBook file
+    let data = dataOf (book.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
+    Charts.layoutChart theme data (Charts.parseChart theme (text parts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get) w h
+let chain = corpusScene "real-world/dashboard-sales-analysis.xlsx" 1 626.0 195.0
+let chainTexts = allTexts chain.Items
+ok "Excel 2019: a pivot chart of months in years: the months (not the year rows) a point each, the years below, in the theme's Garamond"
+    (hasAll (chainTexts |> List.map (fun (v, _, _, _, _, _, _) -> v)) [ "Jan"; "Aug"; "2016"; "2017"; "Thousands" ] [ "24,000"; "20000" ] && faces chain = [ "Garamond" ]
+     && (let y v = chainTexts |> List.pick (fun (t, _, y, _, _, _, _) -> if t = v then Some y else None) in y "2016" > y "Jan")) (sprintf "%A %A" chainTexts (faces chain))
+ok "Excel 2019: \"Thousands\" alone at the top of its axis" (chainTexts |> List.exists (fun (v, _, y, _, _, _, turn) -> v = "Thousands" && turn = -90.0 && y < 80.0)) (sprintf "%A" chainTexts)
+let manager = corpusScene "real-world/dashboard-sales-analysis.xlsx" 3 457.0 736.0
+let managerBars = manager.Items |> List.choose (fun item -> match item with Charts.PRect (_, _, w, h, Some "#83992A", _, _, _, _) when w > 20.0 -> Some h | _ -> None)
+ok "Excel 2019: two series, a gap of 182 %: bars a band / 3.82 (7 - 8 px), the states turned beside the managers"
+    (managerBars |> List.forall (fun h -> h > 6.5 && h < 8.5) && allTexts manager.Items |> List.exists (fun (v, _, _, _, _, _, turn) -> v = "NSW" && turn = -90.0)) (sprintf "%A" managerBars)
+let combo79 = corpusScene "real-world/dashboard-ecommerce-sales.xlsx" 7 476.0 164.0
+ok "Excel 2019: the primary axis is the first written (sales, $ 400K at the left), not the first plot's (profit)"
+    (allTexts combo79.Items |> List.exists (fun (v, x, _, _, _, _, _) -> v = "$ 400K" && x < 100.0)) (sprintf "%A" (allTexts combo79.Items))
+let top5 = corpusScene "real-world/dashboard-ecommerce-sales.xlsx" 14 536.0 285.0
+ok "Excel 2019: a pivot chart's series named as the file has it (\"Total\")" (List.contains "Total" (texts top5 @ (allTexts top5.Items |> List.map (fun (v, _, _, _, _, _, _) -> v))) && not (List.contains "Sum of Sales" (allTexts top5.Items |> List.map (fun (v, _, _, _, _, _, _) -> v)))) "not so"
+let pieChart = corpusScene "real-world/dashboard-ecommerce-sales.xlsx" 11 544.0 285.0
+let ringRadius = pieChart.Items |> List.tryPick (fun item -> match item with Charts.PPath (d, Some _, _, _, _) -> (let m = Text.RegularExpressions.Regex.Match(d, "A([0-9.]+) ") in if m.Success then Some (float m.Groups.[1].Value) else None) | _ -> None)
+ok "Excel 2019: a doughnut with labels an eighth of the chart's shorter side smaller (165 pt of 186.75: 110 px across)" (match ringRadius with Some r -> abs (r - 110.0) < 3.0 | None -> false) (sprintf "%A" ringRadius)
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
