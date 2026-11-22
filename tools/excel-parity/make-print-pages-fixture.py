@@ -42,6 +42,22 @@ DATE_XF = '<xf numFmtId="15" fontId="0" fillId="0" borderId="0" xfId="0" applyNu
 FIGURE_NUMFMTS = ('<numFmts count="3"><numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0"/>'
                   '<numFmt numFmtId="165" formatCode="#,##0_);\\(#,##0\\)"/><numFmt numFmtId="166" formatCode="0.0%"/></numFmts>')
 FIGURE_XFS = [f'<xf numFmtId="{n}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' for n in (3, 164, 165, 166, 2, 15)]
+# Styles 8 on of the bestfit-chars sets: a number with literal characters after it (which characters an AutoFit
+# column's print width counts, and how wide), percentages, and fonts other than the Normal one (2: Calibri 20, 3: Arial 10,
+# 1: the Normal font bold).
+CHAR_LITS = ['i', 'ii', 'iiii', 'iiiiiiii', 'W', 'WW', 'WWWW', 'WWWWWWWW', '.', '....', '........', ',,,,', '%%%%',
+             '    ', '0000', 'MMMM', '----']
+CHAR_FMTS = ['0'] + [f'0"{t}"' for t in CHAR_LITS] + ['0.0%', '0.00', '#,##0', '0%', '0.000%', '"$"#,##0_)']
+CHAR_FONTS = ['<sz val="20"/><name val="Calibri"/><family val="2"/>', '<sz val="10"/><name val="Arial"/><family val="2"/>']
+
+
+BORDER_STYLES = ['hair', 'thin', 'dotted', 'dashDotDot', 'dashDot', 'dashed', 'mediumDashDotDot', 'slantDashDot',
+                 'mediumDashDot', 'mediumDashed', 'medium', 'thick', 'double']
+
+
+def char_style(fmt, font=0):
+    """The style index (bestfit-chars sets) of a number format of CHAR_FMTS in a font (0 Normal, 2, 3, 1 as above)."""
+    return 8 + CHAR_FMTS.index(fmt) + len(CHAR_FMTS) * [0, 2, 3, 1].index(font)
 
 
 def col_letter(c):
@@ -185,6 +201,40 @@ def sets():
         swept('Wide', [12] * 6, lambda i, w: [1, 12345, 'x', (1234567, 8), (0.125, 11), 99999999][i]),
         swept('Letters', [1] * 8, lambda i, w: int('1' * (i + 1)) if i < 4 else int('8' * (i - 3))),
     ]
+    # Which characters of a number's text the print width of a column AutoFit left counts, and by how much: a 1 with
+    # literal characters after it, percentages of other values, figures of other digits, other fonts, wide columns.
+    cs = char_style
+    lit = lambda ts: [(1, cs('0'))] + [(1, cs(f'0"{t}"')) for t in ts]
+    out['bestfit-chars'] = [
+        swept('LitI', [1] * 9, lambda i, w: lit(['i', 'ii', 'iiii', 'iiiiiiii', 'W', 'WW', 'WWWW', 'WWWWWWWW'])[i]),
+        swept('LitDot', [1] * 10, lambda i, w: lit(['.', '....', '........', ',,,,', '%%%%', '    ', '0000', 'MMMM', '----'])[i]),
+        swept('Pct', [1] * 10, lambda i, w: [(0.125, cs('0.0%')), (0.5, cs('0.0%')), (0.111, cs('0.0%')), (0.999, cs('0.0%')),
+                                             (0, cs('0.0%')), (0.05, cs('0.0%')), (0.5, 0), (0.125, 0), (0.5, cs('0%')), (0.5, cs('0.000%'))][i]),
+        swept('Digits', [1] * 10, lambda i, w: [(v, cs('0')) for v in (1, 5, 7, 9, 11111, 55555, 99999, 10000, 44444, 77777)][i]),
+        swept('Decimals', [1] * 8, lambda i, w: [(1.5, cs('0.00')), (5.5, cs('0.00')), (1.25, 0), (5.25, 0), (1234567, cs('#,##0')),
+                                                  (5555555, cs('#,##0')), (1234567, cs('"$"#,##0_)')), (5555555, cs('"$"#,##0_)'))][i]),
+        swept('Fonts', [1] * 9, lambda i, w: [(12345, cs('0')), (12345, cs('0', 2)), (12345, cs('0', 3)), (12345, cs('0', 1)),
+                                               (1234567, cs('"$"#,##0_)', 1)), (1, cs('0', 2)), (1, cs('0', 3)), (1, cs('0"WWWW"', 2)),
+                                               (1, cs('0"WWWW"', 3))][i]),
+        swept('WideCols', [8, 10, 12, 15, 8, 10, 12, 15], lambda i, w: ([(1, cs('0'))] * 4 + [(1234567, cs('"$"#,##0_)'))] * 4)[i]),
+        swept('TwoCells', [1] * 4, lambda i, w: (12345, cs('0'))),
+    ]
+    # (TwoCells: a second, longer number below two of them, a long text below another.)
+    out['bestfit-chars'][-1]['cells'] += [(3, c, 1234567, cs('0')) for c in (3, 5)] + [(3, 4, 'a long text in the column', 0)]
+    # Every border style in print: a box of each round cells B:F of its row (rows 2, 4, ... in BORDER_STYLES' order),
+    # no gridlines; a row of each style 4 columns long under a cell's bottom only (rows 30, 32, ...).
+    out['borders'] = [
+        sheet('Borders', [(1, 1, 'x', 0)] + [(2 + 2 * i, c, None, 8 + i) for i in range(len(BORDER_STYLES)) for c in range(2, 7)]
+              + [(30 + 2 * i, c, None, 8 + len(BORDER_STYLES) + i) for i in range(len(BORDER_STYLES)) for c in range(2, 6)]
+              + [(2 + 2 * i, 8, s, 0) for i, s in enumerate(BORDER_STYLES)], options=''),
+    ]
+    # A list validation's cells (Excel shows its arrow beside the selected cell only): what prints of them. (The
+    # <dataValidations> goes where the autoFilter would: there are no merged cells after it.)
+    dv = ('<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" '
+          'sqref="B2:B6 D2"><formula1>"Yes,No,Maybe"</formula1></dataValidation></dataValidations>')
+    out['validation'] = [
+        sheet('Validation', [(1, 1, 'x', 0)] + [(r, 2, 'Yes', 0) for r in range(2, 5)] + [(2, 4, 'No', 2)], autofilter=dv),
+    ]
     # Rows hidden in an AutoFilter's range by a filter of no criteria (its buttons hidden, as houseflipping's REPAIR
     # ESTIMATOR): fit to a page wide and 6 tall, and broken by height.
     hide = set(range(12, 181))
@@ -222,6 +272,8 @@ BESTFIT_FONTS = [('Calibri', 11), ('Calibri', 9), ('Calibri', 10), ('Calibri', 1
                  ('Arial', 8), ('Arial', 10), ('Arial', 12), ('Arial', 14), ('Times New Roman', 12), ('Verdana', 10),
                  ('Segoe UI Black', 11), ('Aptos Narrow', 11), ('Tahoma', 10)]
 NORMAL.update({f'bestfit-figures-{f.lower().replace(" ", "")}{z}': ('bestfit-figures', f, z) for f, z in BESTFIT_FONTS})
+NORMAL.update({f'bestfit-chars-{f.lower().replace(" ", "")}{z}': ('bestfit-chars', f, z) for f, z in
+               [('Calibri', 11), ('Calibri', 20), ('Arial', 10), ('Arial', 8), ('Calibri', 12)]})
 NORMAL.update({f'rowunit-{f.lower().replace(" ", "")}{z}': ('rowunit', f, z) for f, z in ROWUNIT_FONTS})
 
 
@@ -231,12 +283,33 @@ def build(out, which):
         which, face, size = NORMAL[which]
         fonts = [f'<sz val="{size}"/><name val="{face}"/><family val="2"/>', f'<b/><sz val="{size}"/><name val="{face}"/><family val="2"/>']
     sheets = sets()[which]
-    xfs = XFS + ([DATE_XF] if which.startswith('bestfit') else []) + (FIGURE_XFS if which.startswith('bestfit-figures') else [])
+    xfs = XFS + ([DATE_XF] if which.startswith('bestfit') or which == 'borders' else []) + (FIGURE_XFS if which.startswith('bestfit-figures') else [])
+    numfmts = FIGURE_NUMFMTS if which.startswith('bestfit-figures') else ''
+    if which == 'bestfit-chars':
+        fonts = fonts + CHAR_FONTS
+        builtin = {'0': 1, '0.00': 2, '#,##0': 3, '0%': 9, '0.00%': 10}
+        ids = {}
+        custom = []
+        for f in CHAR_FMTS:
+            if f in builtin:
+                ids[f] = builtin[f]
+            else:
+                ids[f] = 164 + len(custom)
+                custom.append(f'<numFmt numFmtId="{ids[f]}" formatCode="{escape(f, {chr(34): "&quot;"})}"/>')
+        numfmts = f'<numFmts count="{len(custom)}">' + ''.join(custom) + '</numFmts>'
+        xfs = xfs + [f'<xf numFmtId="{ids[f]}" fontId="{font}" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>'
+                     for font in (0, 2, 3, 1) for f in CHAR_FMTS]
+    borders = BORDERS
+    if which == 'borders':
+        box = lambda st: f'<border><left style="{st}"><color indexed="64"/></left><right style="{st}"><color indexed="64"/></right><top style="{st}"><color indexed="64"/></top><bottom style="{st}"><color indexed="64"/></bottom><diagonal/></border>'
+        under = lambda st: f'<border><left/><right/><top/><bottom style="{st}"><color indexed="64"/></bottom><diagonal/></border>'
+        borders = BORDERS + [box(st) for st in BORDER_STYLES] + [under(st) for st in BORDER_STYLES]
+        xfs = xfs + [f'<xf numFmtId="0" fontId="0" fillId="0" borderId="{2 + i}" xfId="0" applyBorder="1"/>' for i in range(2 * len(BORDER_STYLES))]
     styles = DECL + (
-        f'<styleSheet xmlns="{MAIN}">' + (FIGURE_NUMFMTS if which.startswith('bestfit-figures') else '') +
+        f'<styleSheet xmlns="{MAIN}">' + numfmts +
         f'<fonts count="{len(fonts)}">' + ''.join(f'<font>{f}</font>' for f in fonts) + '</fonts>'
         f'<fills count="{len(FILLS)}">' + ''.join(FILLS) + '</fills>'
-        f'<borders count="{len(BORDERS)}">' + ''.join(BORDERS) + '</borders>'
+        f'<borders count="{len(borders)}">' + ''.join(borders) + '</borders>'
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
         f'<cellXfs count="{len(xfs)}">' + ''.join(xfs) + '</cellXfs>'
         '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles></styleSheet>')
