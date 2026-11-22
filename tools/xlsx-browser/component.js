@@ -2260,3 +2260,58 @@ checks['sizing-excel-parity'] = async () => {
     close();
     return lines;
 };
+
+// Form controls as Excel 2019 draws them (tools/excel-parity/build-form-controls.vbs: synthetic-form-controls.xlsx, checked
+// with shoot-sheets.ps1): each control a node over its anchor grown by a pixel at the left and the top, what it shows
+// read from its linked cell, and a click changing that cell as an entry (one undoable step).
+checks['controls-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const nodes = () => [...host.querySelectorAll('[data-form-control]')];
+    const node = (id) => host.querySelector(`[data-form-control="${id}"]`);
+    const click = async (id, x, y) => {
+        const target = node(id), r = target.getBoundingClientRect();
+        (target.firstElementChild || target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: r.left + x, clientY: r.top + y }));
+        await frame();
+    };
+    const value = (a1) => { const m = /^([A-Z])(\d+)$/.exec(a1); return grid.GetCell(Number(m[2]) - 1, m[1].charCodeAt(0) - 65).value; };
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-form-controls.xlsx')).slice());
+        await frame();
+        check('15 controls on Flat, drawn', nodes().length, 15);
+        const box = node(1025).getBoundingClientRect();
+        check('a check box over its anchor (133 x 23 px) and a pixel more', [Math.round(box.width), Math.round(box.height)], [134, 24]);
+        check('checked by TRUE in J1: the box and its mark', (node(1025).innerHTML.match(/<rect/g) || []).length > 6, true);
+        await click(1025, 10, 12);
+        check('a click on the check box: J1 FALSE', value('J1'), false);
+        grid.Undo(); await frame();
+        check('... undone: TRUE', value('J1'), true);
+        await click(1031, 10, 10);
+        check('an option button: its place in the group to J4', value('J4'), 3);
+        await click(1034, 12, 8);
+        check('the spinner\'s upper button: J7 + 5', value('J7'), 45);
+        await click(1034, 12, 40);
+        await click(1034, 12, 40);
+        check('... its lower one twice: 35', value('J7'), 35);
+        await click(1035, 5, 10);
+        check('the scroll bar\'s left arrow: J8 - 1', value('J8'), 69);
+        await click(1035, 220, 10);
+        check('... the track right of the thumb: + 10 (a page)', value('J8'), 79);
+        await click(1033, 30, 3 + 13 + 5);
+        check('the list box\'s second item: J6 2', value('J6'), 2);
+        await click(1032, 30, 10);
+        const list = document.getElementById('form-control-list-dropdown');
+        check('the combo box opens its 8 items', list ? list.children.length : 0, 8);
+        if (list) { list.children[6].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); await frame(); }
+        check('... its 7th picked: J5 7', value('J5'), 7);
+        const thumb = () => /fill="#CDCDCD"/.test(node(1036).innerHTML) ? Number(/<rect x="1" y="(\d+)" width="\d+" height="\d+" fill="#CDCDCD"/.exec(node(1036).innerHTML)[1]) : -1;
+        grid.SetCell(8, 9, '-5'); await frame();
+        check('a linked cell below the minimum: the thumb at the track\'s start (23 px down)', thumb(), 23);
+        grid.SetCell(8, 9, '10'); await frame();
+        check('... at the maximum: at its end (161 - 23 - 10)', thumb(), 128);
+        grid.SwitchSheet(2); await frame();
+        check('ActiveX controls drawn from their EMF pictures', nodes().map((n) => n.querySelector('svg image, svg text') !== null), [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};

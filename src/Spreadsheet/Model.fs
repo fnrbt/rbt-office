@@ -1218,6 +1218,43 @@ type SheetDrawing = {
     Content: DrawingContent
 }
 
+/// A form control of a sheet (check box, option button, combo / list box, spinner, scroll bar, group
+/// box, label, button) or an ActiveX control, drawn over the cells as Excel draws it (`FormControls`).
+/// What it shows comes from its linked cell when it has one (Excel reads the cell, not the saved state);
+/// the file's parts for it are kept and written back as they were.
+type FormControl = {
+    ShapeId: int
+    Name: string
+    /// CheckBox | Radio | Drop | List | Spin | Scroll | GBox | Label | Button | EditBox | ActiveX.
+    Kind: string
+    Anchor: DrawingAnchor
+    Text: string
+    /// Face, size (points), colour ("#RRGGBB", None automatic), bold, italic.
+    Font: string * float * string option * bool * bool
+    TextHAlign: string
+    TextVAlign: string
+    /// As saved: 0 unchecked, 1 checked, 2 mixed.
+    Checked: int
+    LinkedCell: string option
+    InputRange: string option
+    /// The selected item as saved (from 1; 0 none).
+    Selected: int
+    Value: int
+    Min: int
+    Max: int
+    Inc: int
+    Page: int
+    Horizontal: bool
+    DropLines: int
+    ThreeD: bool
+    FirstButton: bool
+    Hidden: bool
+    /// The picture an ActiveX control is shown by: content type, data.
+    Picture: (string * byte[]) option
+    /// The macro a click runs.
+    Macro: string option
+}
+
 /// A threaded comment: a comment with an author, a date and replies.
 type CommentThread = {
     Id: string
@@ -1671,6 +1708,8 @@ type SpreadsheetModel = {
     Pivots: PivotLayout list
     /// The sheet's sparklines, by group (drawn, not edited).
     Sparklines: SparklineGroup list
+    /// The sheet's form controls and ActiveX controls (drawn; a click on one changes its linked cell).
+    FormControls: FormControl list
 
     /// Pictures and other drawing objects, back to front. They move with
     /// their anchor cells when rows or columns are inserted or deleted.
@@ -1828,6 +1867,7 @@ let createEmpty rowCount colCount = {
     Macros = ""
     Pivots = []
     Sparklines = []
+    FormControls = []
     Drawings = []
     AuthoredCharts = Map.empty
     Threads = Map.empty

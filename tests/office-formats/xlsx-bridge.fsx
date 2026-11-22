@@ -1182,6 +1182,55 @@ do
         [ "#######"; "-100.00%"; "#####"; "-100.00%" ]
     eq "numbers: no # where not one fits" (shown "Calibri" 11.0 true 0.57 20.0 -1.0) ""
 
+// ---- form controls: read for drawing, written back as the file had them -------
+// (synthetic-form-controls.xlsx: built in Excel 2019 by tools/excel-parity/build-form-controls.vbs.)
+let controlsWb = load "test-documents-excel/synthetic-form-controls.xlsx"
+let controlsImported = Bridge.Import.importWorkbook controlsWb
+let flatControls = controlsImported.Sheets.[0].Model.FormControls
+eq "controls: the kinds on Flat, in the file's order"
+    (flatControls |> List.map (fun c -> c.Kind))
+    [ "CheckBox"; "CheckBox"; "CheckBox"; "GBox"; "Radio"; "Radio"; "Radio"; "Drop"; "List"; "Spin"; "Scroll"; "Scroll"; "Label"; "Button"; "CheckBox" ]
+eq "controls: captions (the VML text box)" (flatControls |> List.map (fun c -> c.Text) |> List.filter (fun t -> t <> "") |> List.truncate 5) [ "Checked"; "Unchecked"; "Mixed"; "Group box"; "Option one" ]
+eq "controls: links, ranges and saved states (ctrlProps)"
+    (flatControls |> List.map (fun c -> c.LinkedCell, c.InputRange, c.Checked, c.Selected, c.Value) |> List.take 10 |> List.skip 7)
+    [ Some "$J$5", Some "$L$1:$L$8", 0, 3, 0; Some "$J$6", Some "$L$1:$L$8", 0, 5, 0; Some "$J$7", None, 0, 0, 40 ]
+eq "controls: flat on Flat, 3-D shading on Shaded (check boxes)"
+    ([ 0; 1 ] |> List.map (fun i -> controlsImported.Sheets.[i].Model.FormControls.[0].ThreeD)) [ false; true ]
+eq "controls: the spinner's and scroll bars' limits, across"
+    (flatControls |> List.filter (fun c -> c.Kind = "Spin" || c.Kind = "Scroll") |> List.map (fun c -> c.Min, c.Max, c.Inc, c.Page, c.Horizontal))
+    [ 0, 100, 5, 10, false; 0, 100, 1, 10, true; 0, 10, 1, 10, false ]
+eq "controls: the button's caption font (Calibri 11, black)" (flatControls.[13].Font) ("Calibri", 11.0, Some "#000000", false, false)
+eq "controls: ActiveX controls by their pictures (EMF)"
+    (controlsImported.Sheets.[2].Model.FormControls |> List.map (fun c -> c.Kind, c.Name, c.Picture |> Option.map fst, c.LinkedCell))
+    [ "ActiveX", "CheckBox1", Some "image/x-emf", Some "$J$1"; "ActiveX", "CommandButton1", Some "image/x-emf", None ]
+let flatAnchor = flatControls.[0].Anchor
+eq "controls: the anchor (x14 controlPr) in pixels" (flatAnchor.FromCol, flatAnchor.FromOffsetX, flatAnchor.FromRow, flatAnchor.FromOffsetY, flatAnchor.ToCol, flatAnchor.ToOffsetX) (0, 13.0, 0, 13.0, Some 2, 18.0)
+// Written back - unedited, and with the linked cells changed as a click would - the controls' parts are the file's.
+let controlParts (bytes: byte[]) =
+    use zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
+    zip.Entries
+    |> Seq.filter (fun e -> e.FullName.StartsWith "xl/ctrlProps/" || e.FullName.StartsWith "xl/activeX/" || e.FullName.StartsWith "xl/drawings/vmlDrawing" || e.FullName.StartsWith "xl/media/")
+    |> Seq.map (fun e -> use s = e.Open() in use m = new MemoryStream() in s.CopyTo m; e.FullName, m.ToArray())
+    |> Seq.sortBy fst
+    |> List.ofSeq
+let sheetControls (bytes: byte[]) (path: string) =
+    use zip = new System.IO.Compression.ZipArchive(new MemoryStream(bytes))
+    use reader = new StreamReader(zip.GetEntry(path).Open())
+    let xml = reader.ReadToEnd()
+    let at = xml.IndexOf "<controls>"
+    if at < 0 then "" else xml.Substring(at, xml.IndexOf("</controls>", at) - at)
+let controlsOriginal = File.ReadAllBytes(Path.Combine(root, "test-documents-excel/synthetic-form-controls.xlsx"))
+let controlsUnedited = XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf controlsImported (modelsOf controlsImported) controlsImported.Context.Names))
+let controlsEdited =
+    let models = modelsOf controlsImported |> Array.copy
+    models.[0] <- models.[0] |> setCell (addr 0 9) { Value = CellValue.Boolean false; Format = defaultFormat; Comment = None } |> setCell (addr 6 9) { Value = CellValue.Number 45.0; Format = defaultFormat; Comment = None }
+    XlsxPackageWriter.writeWorkbookPackageBytes (Bridge.Export.toWorkbookOut (inputOf controlsImported models controlsImported.Context.Names))
+for label, bytes in [ "unedited", controlsUnedited; "linked cells edited", controlsEdited ] do
+    ok ("controls: ctrlProps, VML, ActiveX parts as the file's, " + label) (controlParts bytes = controlParts controlsOriginal) "parts differ"
+    eq ("controls: the sheet's <controls> as the file's, " + label) (sheetControls bytes "xl/worksheets/sheet1.xml") (sheetControls controlsOriginal "xl/worksheets/sheet1.xml")
+    let again = XlsxReader.loadBytesNative bytes |> Option.get
+    eq ("controls: read back alike, " + label) (again.Sheets |> List.map (fun s -> s.Extras.FormControls.Length)) [ 15; 15; 2 ]
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

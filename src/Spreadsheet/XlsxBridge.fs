@@ -328,6 +328,15 @@ let private anchorOfReader (anchor: XlsxReader.SheetAnchor) : DrawingAnchor =
       Height = anchor.Height |> Option.map (fun emu -> emu / emuPerPixel)
       EditAs = anchor.EditAs }
 
+/// A form control as the reader has it, in the model (its anchor in pixels).
+let private formControlOfReader (control: XlsxReader.SheetFormControl) : FormControl =
+    { ShapeId = control.ShapeId; Name = control.Name; Kind = control.Kind; Anchor = anchorOfReader control.Anchor
+      Text = control.Text; Font = control.Font; TextHAlign = control.TextHAlign; TextVAlign = control.TextVAlign
+      Checked = control.Checked; LinkedCell = control.LinkedCell; InputRange = control.InputRange; Selected = control.Selected
+      Value = control.Value; Min = control.Min; Max = control.Max; Inc = control.Inc; Page = control.Page
+      Horizontal = control.Horizontal; DropLines = control.DropLines; ThreeD = control.ThreeD; FirstButton = control.FirstButton
+      Hidden = control.Hidden; Picture = control.Picture; Macro = control.Macro }
+
 /// A model anchor as a reader anchor; `order` is its z-order on the sheet.
 let private anchorToReader (order: int) (anchor: DrawingAnchor) : XlsxReader.SheetAnchor =
     let emu (pixels: float) = Math.Round (pixels * emuPerPixel)
@@ -1320,6 +1329,7 @@ module Import =
                 ConditionalFormats = conditionalFormats wb sheet
                 PageSetup = pageSetup sheet
                 Drawings = drawingsOfExtras sheet.Extras
+                FormControls = sheet.Extras.FormControls |> List.map formControlOfReader
                 Threads = threads
                 Spill = spill
                 ArrayMarks = arrayMarks
