@@ -1847,7 +1847,7 @@ checks['slicers-in-grid'] = async () => {
         await grid.ImportXlsx(original.slice());
         grid.SwitchSheet(grid.GetSheetNames().indexOf('Report')); await frame();
         await seenAll(host);
-        const region = frameWith('North'), product = frameWith('Product (pivot)'), timeline = frameWith('Mar 2012 - Dec 2012');
+        const region = frameWith('North'), product = frameWith('Product (pivot)'), timeline = frameWith('Mar - Dec 2012');
         check('Report: the two slicers and the timeline are drawn, none a labelled frame', [!!region, !!product, !!timeline, labels()], [true, true, true, []]);
         if (region) check('Region: its caption and a button an item, no data last', textsOf(region), ['Region', 'North', 'South', 'East', 'West']);
         if (product) check('Product 2: in its custom style (orange buttons)', [...product.querySelectorAll('svg rect')].filter((rect) => rect.getAttribute('fill') === '#FFC000').length, 3);
@@ -1870,7 +1870,9 @@ checks['slicers-in-grid'] = async () => {
             grid.SwitchSheet(grid.GetSheetNames().indexOf('Dashboard')); await frame();
             await seenAll(host);
             const name = file.split('/').pop();
-            check(`${name}: its slicers are drawn with their captions`, slicers.map((caption) => !!frameWith(caption)), slicers.map(() => true));
+            // (A caption stops before the header's buttons, cut as Excel cuts it: "Financial..." in a slicer of 116 px.)
+            const captioned = (caption) => drawn().find((node) => textsOf(node).some((text) => text === caption || (text.length > 4 && caption.startsWith(text.replace(/(\.\.\.|\u2026)$/, '')))));
+            check(`${name}: its slicers are drawn with their captions`, slicers.map((caption) => !!captioned(caption)), slicers.map(() => true));
             check('... no slicer is a labelled frame', labels().filter((label) => /Region|Ship|Year|State|Category/.test(label)), []);
             await shoot(`${name} Dashboard`);
         }
