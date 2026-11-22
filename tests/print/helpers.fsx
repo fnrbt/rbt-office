@@ -489,6 +489,14 @@ do
     ok "sparklines: quoted cross-sheet, gaps"
         (match resolved with Some (_,v,(lo,hi)) -> v = [|Some 1.0;None;Some 3.0|] && lo = 1.0 && hi = 3.0 | _ -> false)
         (sprintf "%A" resolved)
+    let absolute : Rbt.Spreadsheet.Sparklines.Source =
+        fun name ->
+            if name = Some "Sparklines" then
+                Some (fun row col -> if row = 18 && col = 2 then Some (cell (Number 42.0)) else None)
+            else None
+    ok "sparklines: absolute $C$19 source"
+        (Rbt.Spreadsheet.Sparklines.values absolute "Sparklines!$C$19:$D$19" = [|Some 42.0;None|])
+        "the native PNG fixture's absolute range no longer crashes"
     let grouped =
         { group with MinAxis = "group"; MaxAxis = "group"
                      Items = group.Items @ [{ Row = 3; Col = 3 }, "'Sheet ''B'''!$A$2:$C$2"] }
