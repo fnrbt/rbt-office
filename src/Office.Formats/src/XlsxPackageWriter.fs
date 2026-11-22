@@ -169,10 +169,10 @@ let private builtInNumFmtId (code: string) =
     | "h:mm" -> Some 20
     | "h:mm:ss" -> Some 21
     | "m/d/yyyy h:mm" -> Some 22
-    | "#,##0;(#,##0)" -> Some 37
-    | "#,##0;[Red](#,##0)" -> Some 38
-    | "#,##0.00;(#,##0.00)" -> Some 39
-    | "#,##0.00;[Red](#,##0.00)" -> Some 40
+    | "#,##0_);(#,##0)" -> Some 37
+    | "#,##0_);[Red](#,##0)" -> Some 38
+    | "#,##0.00_);(#,##0.00)" -> Some 39
+    | "#,##0.00_);[Red](#,##0.00)" -> Some 40
     | "mm:ss" -> Some 45
     | "[h]:mm:ss" -> Some 46
     | "mmss.0" -> Some 47

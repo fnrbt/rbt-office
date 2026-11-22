@@ -123,6 +123,36 @@ let conflict first second =
 eq "the painter: the stronger border of the two" (coloured (conflict (line "thin" "#ff0000") (line "thick" "#0000ff")) "#0000ff", coloured (conflict (line "thin" "#ff0000") (line "thick" "#0000ff")) "#ff0000") ([ 3.0 ], [])
 eq "the painter: the upper cell's when it is stronger" (coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#ff0000", coloured (conflict (line "thick" "#ff0000") (line "thin" "#0000ff")) "#0000ff") ([ 3.0 ], [])
 eq "the painter: the later cell's on a tie" (coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#0000ff", coloured (conflict (line "medium" "#ff0000") (line "medium" "#0000ff")) "#ff0000") ([ 2.0 ], [])
+// Print uses Excel's 600-dpi solid rules, while snapshots keep screen geometry.
+let widths build style =
+    let model = createEmpty 20 10 |> setCell (at2 2 2) (cellWith (fun f -> { f with BorderTop = line style "#123456" }))
+    build model (Layout.defaultViewport 800.0 500.0)
+    |> List.choose (function Paint.GridLine (_, _, _, _, "#123456", width) -> Some width | _ -> None)
+eq "print solid widths in printer dots"
+    ([ "hair"; "thin"; "medium"; "thick" ] |> List.map (widths (Paint.buildPrintPaintItems (0.0, 0.0, 1.0))))
+    [ [ 0.16 ]; [ 1.28 ]; [ 2.56 ]; [ 3.84 ] ]
+eq "print double has two eight-dot rules" (widths (Paint.buildPrintPaintItems (0.0, 0.0, 1.0)) "double") [ 1.28; 1.28 ]
+eq "hair stays one physical dot at half scale" (widths (Paint.buildPrintPaintItems (0.0, 0.0, 0.5)) "hair") [ 0.32 ]
+eq "screen solid widths unchanged"
+    ([ "thin"; "medium"; "thick" ] |> List.map (widths Paint.buildPaintItems))
+    [ [ 1.0 ]; [ 2.0 ]; [ 3.0 ] ]
+let printSegments style =
+    let model = createEmpty 20 10 |> setCell (at2 2 2) (cellWith (fun f -> { f with BorderTop = line style "#123456" }))
+    Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model (Layout.defaultViewport 800.0 500.0)
+    |> List.choose (function Paint.GridLine (x1, y1, x2, y2, "#123456", width) when y1 = y2 -> Some (x1, x2, width) | _ -> None)
+let near a b = abs (a - b) < 0.00001
+let hasLength length segments = segments |> List.exists (fun (a, b, _) -> near (b - a) length)
+eq "dotted print uses four-dot marks" (printSegments "dotted" |> hasLength 0.64) true
+eq "dashed print uses 24-dot marks" (printSegments "dashed" |> hasLength 3.84) true
+eq "medium dashed print uses 72-dot marks" (printSegments "mediumDashed" |> hasLength 11.52) true
+let dashDot = printSegments "dashDotDot"
+eq "dash-dot-dot print has long and short marks" (hasLength 11.52 dashDot, hasLength 3.84 dashDot) (true, true)
+let slantModel = createEmpty 20 10 |> setCell (at2 2 2) (cellWith (fun f -> { f with BorderTop = line "slantDashDot" "#123456" }))
+let slantItems = Paint.buildPrintPaintItems (0.0, 0.0, 1.0) slantModel (Layout.defaultViewport 800.0 500.0)
+eq "slant prints clipped sheared paths"
+    (slantItems |> List.exists (function Paint.Clipped (_, paths) -> paths |> List.exists (function Paint.VecPath (_, Some "#123456", Some _) -> true | _ -> false) | _ -> false)) true
+
+
 
 // The painter draws the edges the web grid draws (Layout.edgeAbove / edgeLeft): no grid line where a fill hides it, as Excel.
 let gridLinesOn (model: SpreadsheetModel) row col =

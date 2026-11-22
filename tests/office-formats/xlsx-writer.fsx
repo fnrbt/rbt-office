@@ -219,6 +219,7 @@ let syntheticSheet : XlsxWriter.XlsxSheetOut =
           { Row = 1; Col = 1; Value = XlsxWriter.XlsxFormula ("A2*2", Some (XlsxWriter.XlsxNumber 85.0)); Format = syntheticFormat; Comment = None } ]
       MergedCells = [ { StartRow = 0; StartCol = 0; EndRow = 0; EndCol = 1 } ]
       ColumnWidths = [ 0, 20.0; 1, 16.0 ]
+      BestFitColumns = Set.empty
       RowHeights = [ 0, 24.0 ]
       FrozenRows = 1
       FrozenCols = 1
@@ -329,6 +330,35 @@ match XlsxReader.loadBytesNative builtinBytes with
     ok "filter-database-single"
         (wb.NamedRanges |> List.filter (fun name -> name.Name = "_xlnm._FilterDatabase") |> List.length = 1)
         (sprintf "%A" wb.NamedRanges)
+let paddedCodes =
+    [ "#,##0_);(#,##0)"; "#,##0_);[Red](#,##0)"
+      "#,##0.00_);(#,##0.00)"; "#,##0.00_);[Red](#,##0.00)" ]
+let formatCodes = paddedCodes @ [ "#,##0;(#,##0)" ]
+let formatSheet =
+    { syntheticSheet with
+        CellSource =
+            XlsxWriter.sheetCells
+                [ for col, code in List.indexed formatCodes ->
+                    { Row = 0; Col = col; Value = XlsxWriter.XlsxNumber 1234.0
+                      Format = { XlsxWriter.defaultXlsxCellFormat with NumberFormat = Some code }; Comment = None } ]
+        Tables = []; MergedCells = []; Extras = XlsxReader.emptySheetExtras }
+let formatBytes = XlsxPackageWriter.writeWorkbookPackageBytes { synthetic with Sheets = [ formatSheet ]; VbaProjectSource = None }
+let formatsXml = partText formatBytes "xl/styles.xml"
+ok "padded builtins saved as IDs 37-40"
+   ([ 37; 38; 39; 40 ] |> List.forall (fun id -> formatsXml.Contains(sprintf "numFmtId=\"%d\"" id)))
+   formatsXml
+ok "unpadded format remains custom" (formatsXml.Contains("formatCode=\"#,##0;(#,##0)\"")) formatsXml
+match XlsxReader.loadBytesNative formatBytes with
+| None -> ok "padded formats reload" false "reader returned None"
+| Some wb ->
+    let cells = cellMap wb wb.Sheets.Head
+    let actual =
+        [ for col in 0 .. 4 ->
+            cells |> Map.tryFind (sprintf "%c1" (char (int 'A' + col)))
+            |> Option.bind (fun cell -> cell.Style)
+            |> Option.bind (fun style -> style.NumberFormat) ]
+    ok "padded formats reload" (actual = List.map Some formatCodes) (sprintf "%A" actual)
+
 
 let cfRule (kind: string) : XlsxReader.ConditionalFormatRule =
     { Type = kind; Operator = None; Formulas = []; DxfId = None; ColorScale = []; DataBarColor = None; DataBarCfvo = []

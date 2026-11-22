@@ -1400,3 +1400,21 @@ Fixes that landed via the harness this round:
 - `spreadsheet-vba-layout` now walks every sheet and skips
   formatted-but-empty cells to match `extract-excel-layout.vbs`'s
   `IsEmptyCell` filter, eliminating spurious `ours-only` rows.
+
+## Print round 3: validation and borders
+
+- Excel 2019's `synthetic-print-pages-validation-1.pdf` has no list-validation
+  dropdown arrows. Static PNG/PDF cell painting no longer draws them; the
+  selected-cell interactive control and table filter indicators are separate.
+- In `synthetic-print-pages-borders-1.pdf`, hair, thin, medium and thick
+  solid rules measure 1, 8, 16 and 24 dots at 600 dpi (0.12, 0.96, 1.92
+  and 2.88 pt). PDF painting uses these widths; screen/PNG geometry is unchanged.
+  Dotted, dashed and dash-dot patterns use measured 600-dpi mark/gap lengths,
+  with page-origin phase and continuity across cell edges. Hair remains one
+  physical dot under scaling. Double rules are each 8 dots with an 8-dot gap.
+  Slant rules use clipped sheared marks; at 100% dotted gaps paint white,
+  matching Excel's opaque tile. Double-border joins and exact printer-dot
+  positioning remain open.
+- Excel 2019 COM reports built-in formats 37–40 with `_ )` padding (without
+  the space: `_)`) in the positive section. Import and save now preserve that
+  padding; the visually similar unpadded codes remain custom formats.

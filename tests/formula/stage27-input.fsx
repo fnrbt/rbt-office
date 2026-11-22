@@ -59,6 +59,8 @@ eq "currency-neg-2"   (parse "$-5.25")        (N -5.25, Some "$#,##0.00_);[Red](
 eq "currency-paren"   (parse "($1,000)")      (N -1000.0, Some "$#,##0_);[Red]($#,##0)")
 eq "currency-padded"  (Rbt.Spreadsheet.CellText.formatNumberWithCode "$#,##0.00_);[Red]($#,##0.00)" 10.0) "$10.00 "
 eq "currency-negative" (Rbt.Spreadsheet.CellText.formatNumberWithCode "$#,##0.00_);[Red]($#,##0.00)" -10.0) "($10.00)"
+eq "builtin 37 positive padding" (Rbt.Spreadsheet.CellText.formatNumberWithCode "#,##0_);(#,##0)" 1234.0) "1,234 "
+eq "builtin 37 negative parentheses" (Rbt.Spreadsheet.CellText.formatNumberWithCode "#,##0_);(#,##0)" -1234.0) "(1,234)"
 // (Typed in exponent notation: Excel shows it so, 0.00E+00 - Excel 2019, tools/vba-parity.)
 eq "scientific"       (parse "1.23E+04")      (N 12300.0, Some "0.00E+00")
 eq "scientific-shown" (Rbt.Spreadsheet.CellText.formatNumberWithCode "0.00E+00" 1e16) "1.00E+16"

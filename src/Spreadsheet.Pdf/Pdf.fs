@@ -745,7 +745,7 @@ let private isDegenerate (item: PaintItem) : bool =
     | GridLine (x1, y1, x2, y2, _, _) ->
         // A real gridline has length in exactly one axis; only drop the
         // genuinely zero-length point.
-        abs (x2 - x1) < 0.5 && abs (y2 - y1) < 0.5
+        abs (x2 - x1) < 1e-9 && abs (y2 - y1) < 1e-9
     | VecPath _ | VecGroup _ | Clipped _ -> false
     | DrawImage (r, _) -> r.Width < 0.5 || r.Height < 0.5
 
@@ -867,6 +867,7 @@ let rec private shiftItem (dx: float) (dy: float) (item: PaintItem) : PaintItem 
 /// the body for print.
 let private iterSliceItems
     (geometry: PrintGeometry)
+    (originX: float) (originY: float) (scale: float)
     (model: SpreadsheetModel)
     (measurer: TextMeasurer)
     (includeText: bool)
@@ -898,7 +899,7 @@ let private iterSliceItems
     let dx = offsetX - scrollX
     let dy = offsetY - scrollY
     let commentMarkerKeys = commentMarkerStrokeKeysForSlice geometry model rowStart rowEnd colStart colEnd
-    for item in buildPaintItems model viewport do
+    for item in buildPrintPaintItems (dx + originX, dy + originY, scale) model viewport do
         if not (isDegenerate item)
            && not (isDefaultPrintCellFill item)
            && not (isInteractiveCellStroke item)
@@ -918,7 +919,7 @@ let private sliceItems
     let rowCount = max 0 (rowEnd - rowStart + 1)
     let colCount = max 0 (colEnd - colStart + 1)
     let shifted = ResizeArray<PaintItem>(max 16 (rowCount * colCount + rowCount + colCount + 2))
-    iterSliceItems geometry model measurer true rowStart rowEnd colStart colEnd offsetX offsetY shifted.Add
+    iterSliceItems geometry 0.0 0.0 1.0 model measurer true rowStart rowEnd colStart colEnd offsetX offsetY shifted.Add
     resizeArrayToList shifted
 
 /// Near-black cell-boundary lines for a slice, used when
@@ -1492,7 +1493,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
             if List.isEmpty overlays then model
             else { model with Drawings = model.Drawings |> List.filter (fun drawing -> match drawing.Content with KeptObject _ -> false | _ -> true) }
 
-        let appendBand (emit: PaintItem -> unit)
+        let appendBand (originX, originY, scale) (emit: PaintItem -> unit)
                        (rowStart: int) (rowEnd: int)
                        (colStart: int) (colEnd: int)
                        (offsetX: float) (offsetY: float) =
@@ -1503,7 +1504,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     if not addedGrid then
                         iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
                         addedGrid <- true
-                iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
+                iterSliceItems geometry originX originY scale paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
                     if not sawContent then
                         sawContent <- true
                         match item with
@@ -1518,16 +1519,16 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 if not sawContent then
                     addGrid ()
             else
-                iterSliceItems geometry paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
+                iterSliceItems geometry originX originY scale paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
 
-        let emitPageItems (i: int) (emit: PaintItem -> unit) =
+        let emitPageItems phase (i: int) (emit: PaintItem -> unit) =
             if i < pages.Length then
                 let slice = pages.[i]
                 // (The repeat bands of a page that carries them: `PageSlice.TitleRows` / `TitleCols`.)
                 let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
                 let repeatColsWidthPx = if slice.TitleCols then repeatColsWidthPx else 0.0
                 // Body: rows × cols of the slice, offset by repeat band sizes.
-                appendBand
+                appendBand phase
                     emit
                     slice.RowStart slice.RowEnd
                     slice.ColStart slice.ColEnd
@@ -1535,7 +1536,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 // Repeat-rows band (above body, full width): repeat rows × slice cols.
                 match pagination.RepeatRows with
                 | Some (rs, re) when re >= rs && slice.TitleRows ->
-                    appendBand
+                    appendBand phase
                         emit
                         rs re
                         slice.ColStart slice.ColEnd
@@ -1544,7 +1545,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 // Repeat-cols band (left of body, full height): slice rows × repeat cols.
                 match pagination.RepeatCols with
                 | Some (cs, ce) when ce >= cs && slice.TitleCols ->
-                    appendBand
+                    appendBand phase
                         emit
                         slice.RowStart slice.RowEnd
                         cs ce
@@ -1553,7 +1554,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 // Repeat corner (top-left): repeat rows × repeat cols.
                 match pagination.RepeatRows, pagination.RepeatCols with
                 | Some (rs, re), Some (cs, ce) when re >= rs && ce >= cs && slice.TitleRows && slice.TitleCols ->
-                    appendBand emit rs re cs ce headingsColPx headingsRowPx
+                    appendBand phase emit rs re cs ce headingsColPx headingsRowPx
                 | _ -> ()
                 if printHeadings then
                     for item in headingItems geometry model slice pagination do
@@ -1579,7 +1580,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
 
         if canDrawText then
             for pageIdx in 0 .. totalPages - 1 do
-                emitPageItems pageIdx recordPaintItemGids
+                emitPageItems (0.0, 0.0, 1.0) pageIdx recordPaintItemGids
 
         // Pick the (header, footer) variant for a 1-indexed page number. When
         // DifferentFirst is set, page 1 uses FirstHeader/FirstFooter; when
@@ -1764,7 +1765,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     | _ ->
                         flushGridBatch ()
                         appendTranslatedItem options faceTtfMap faceResourceMap faceRemapMap placement ops item
-                emitPageItems pageIdx appendItem
+                emitPageItems (leftPtOffset / (pxToPt * pagination.Scale), topPtOffset / (pxToPt * pagination.Scale), pagination.Scale) pageIdx appendItem
                 flushGridBatch ()
                 let header, footer = resolvedHFs.[pageIdx]
                 match header with

@@ -47,6 +47,19 @@ eq "the first one is cut around the second" (two.Validations.Head.Ranges) [ bloc
 eq "the cut one keeps its anchor" two.Validations.Head.Validation.Anchor (Some (at 0 0))
 eq "each cell has one" ((getValidation (at 3 0) two).Value.Rule, (getValidation (at 9 0) two).Value.Rule) (ListValues [ "a"; "b" ], WholeNumber (Some 1.0, Some 10.0))
 eq "a list offers its dropdown" (showsListDropdown (at 3 0) two, showsListDropdown (at 9 0) two) (true, false)
+// Static exports have no selection: validation affordances are not printed.
+// Table filter indicators remain independent of validation dropdowns.
+let snapshot model = Rbt.Spreadsheet.Paint.buildPaintItems model (Rbt.Spreadsheet.Layout.defaultViewport 800.0 500.0)
+let validationFlagged =
+    two |> setCell (at 3 0) { str "a" with Format = { defaultFormat with HasListDropdown = true } }
+let greyArrows model =
+    snapshot model |> List.filter (function Rbt.Spreadsheet.Paint.GridLine (_, _, _, _, "#666666", _) -> true | _ -> false)
+eq "static validation arrows absent" (greyArrows two, greyArrows validationFlagged) ([], [])
+let filterHeader =
+    empty |> setCell (at 0 0) { str "Header" with Format = { defaultFormat with FilterButton = true; TextColor = Some "#123456" } }
+eq "static table filter indicator remains"
+    (snapshot filterHeader |> List.filter (function Rbt.Spreadsheet.Paint.GridLine (_, _, _, _, "#123456", _) -> true | _ -> false) |> List.length) 4
+
 let covered = two |> setValidationRanges [ column 0; block 0 2 0 2 ] (validationOf AnyValue)
 eq "covering both removes them" (covered.Validations |> List.map (fun v -> v.Id, v.Ranges)) [ 3, [ column 0; block 0 2 0 2 ] ]
 let cleared = two |> clearValidationRanges [ block 0 0 2 0 ]

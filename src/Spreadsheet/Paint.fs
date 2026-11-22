@@ -482,9 +482,10 @@ let private rowDescentsOf (model: SpreadsheetModel) : int -> float =
             known
     fun row -> match descents.TryGetValue row with | true, d -> d | _ -> 0.0
 
-let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
+let private buildCellPaintItems (printOffset: (float * float * float) option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
     let padX = printPadXOf model
+    let printing = printOffset.IsSome
     let rowDescent = rowDescentsOf model
     let cells = visibleCells model viewport
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
@@ -565,8 +566,20 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
         // the borderStrokeWidth weight.
         let emitBorderSide (isHorizontal: bool) (side: BorderStyle) (x1: float, y1: float) (x2: float, y2: float) =
             let color = borderColor side
-            let w = borderStrokeWidth side.Style
             let style = side.Style.ToLowerInvariant()
+            // Excel 2019's 600-dpi PDF uses solid rules of 1, 8, 16 and
+            // 24 printer dots for hair, thin, medium and thick respectively.
+            let w =
+                if printing then
+                    match style with
+                    | "hair" -> let _, _, scale = printOffset.Value in 0.16 / scale
+                    | "thin" -> 1.28
+                    | "medium" -> 2.56
+                    | "thick" -> 3.84
+                    | "dotted" | "dashed" | "dashdot" | "dashdotdot" -> 1.28
+                    | "mediumdashed" | "mediumdashdot" | "mediumdashdotdot" -> 2.56
+                    | _ -> borderStrokeWidth side.Style
+                else borderStrokeWidth side.Style
             // Excel's dashed / dotted / dash-dot variants render as a
             // pattern of on/off chunks. We approximate by chunking the
             // line into short solid segments separated by gaps — the
@@ -588,7 +601,71 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         segs.Add(GridLine (x1, y, x2, segEnd, color, w))
                         y <- segEnd + offLen
                 List.ofSeq segs
-            if style = "double" then
+            let printPattern phase (dots: int list) =
+                let pattern = dots |> List.map (fun n -> float n * 0.16) |> List.toArray
+                let period = Array.sum pattern
+                let start = if isHorizontal then x1 else y1
+                let finish = if isHorizontal then x2 else y2
+                let dx, dy, _ = Option.defaultValue (0.0, 0.0, 1.0) printOffset
+                let pageOffset = (if isHorizontal then dx else dy) - phase * 0.16
+                let shifted = start + pageOffset
+                let mutable pos = start - ((shifted % period + period) % period)
+                let mutable index = 0
+                let segs = ResizeArray<PaintItem>()
+                while pos < finish do
+                    let next = pos + pattern.[index]
+                    if index % 2 = 0 && next > start then
+                        let a = max start pos
+                        let b = min finish next
+                        if b > a then
+                            if isHorizontal then segs.Add (GridLine (a, y1, b, y2, color, w))
+                            else segs.Add (GridLine (x1, a, x2, b, color, w))
+                    pos <- next
+                    index <- (index + 1) % pattern.Length
+                List.ofSeq segs
+            if printing && style = "dotted" then
+                let _, _, scale = printOffset.Value
+                let marks = printPattern 0.0 [ 4; 4 ]
+                if abs (scale - 1.0) < 1e-9 then
+                    GridLine (x1, y1, x2, y2, "#ffffff", w) :: marks
+                else marks
+            elif printing && style = "slantdashdot" then
+                // Sheared 16-dot rule, clipped at the cell edge; the half-dot
+                // vertex inset and 0.14 pt outline are physical printer units.
+                let dx, dy, scale = printOffset.Value
+                let physicalDot = 0.16 / scale
+                let shear = 2.56
+                let half = 1.28 - physicalDot / 2.0
+                let start = if isHorizontal then x1 else y1
+                let finish = if isHorizontal then x2 else y2
+                let offset = if isHorizontal then dx else dy
+                let period = 23.04
+                let mutable basePos = start - ((start + offset) % period + period) % period - period
+                let paths = ResizeArray<PaintItem>()
+                while basePos < finish + shear do
+                    for mark, length in [ 0.0, 11.52; 15.36, 3.84 ] do
+                        let a = basePos + mark + physicalDot / 2.0
+                        let b = a + length
+                        let points =
+                            if isHorizontal then
+                                [ VMove (a + shear, y1 - half); VLine (b + shear, y1 - half)
+                                  VLine (b, y1 + half); VLine (a, y1 + half); VClose ]
+                            else
+                                [ VMove (x1 - half, a + shear); VLine (x1 - half, b + shear)
+                                  VLine (x1 + half, b); VLine (x1 + half, a); VClose ]
+                        paths.Add (VecPath (points, Some color, Some (color, 0.14 / (0.75 * scale))))
+                    basePos <- basePos + period
+                let clip =
+                    if isHorizontal then { X = x1; Y = y1 - 2.0; Width = x2 - x1; Height = 4.0 }
+                    else { X = x1 - 2.0; Y = y1; Width = 4.0; Height = y2 - y1 }
+                [ Clipped (clip, List.ofSeq paths) ]
+            elif printing && style = "dashed" then
+                let _, _, scale = printOffset.Value
+                printPattern (if abs (scale - 1.0) < 1e-9 then 4.0 else 0.0) [ 24; 8 ]
+            elif printing && style = "mediumdashed" then printPattern 0.0 [ 72; 24 ]
+            elif printing && (style = "dashdot" || style = "mediumdashdot") then printPattern 0.0 [ 72; 24; 24; 24 ]
+            elif printing && (style = "dashdotdot" || style = "mediumdashdotdot") then printPattern 0.0 [ 72; 24; 24; 24; 24; 24 ]
+            elif style = "double" then
                 // Excel renders double borders straddling the cell edge
                 // (one stroke just outside, one just inside). When the
                 // adjacent cell has a wider border (e.g. `thick`, 3 px),
@@ -597,13 +674,14 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 // a `doubleInset` adjusted pair of y / x values — see
                 // the per-cell emission loop for the direction-aware
                 // offsets.
-                let off = 1.0
+                let off = if printing then 1.28 else 1.0
+                let lineWidth = if printing then 1.28 else 1.0
                 if isHorizontal then
-                    [ GridLine (x1, y1 - off, x2, y2 - off, color, 1.0)
-                      GridLine (x1, y1 + off, x2, y2 + off, color, 1.0) ]
+                    [ GridLine (x1, y1 - off, x2, y2 - off, color, lineWidth)
+                      GridLine (x1, y1 + off, x2, y2 + off, color, lineWidth) ]
                 else
-                    [ GridLine (x1 - off, y1, x2 - off, y2, color, 1.0)
-                      GridLine (x1 + off, y1, x2 + off, y2, color, 1.0) ]
+                    [ GridLine (x1 - off, y1, x2 - off, y2, color, lineWidth)
+                      GridLine (x1 + off, y1, x2 + off, y2, color, lineWidth) ]
             elif style = "dotted" || style = "mediumdotted" then
                 dashChunks 1.0 1.5
             elif style = "dashed" || style = "mediumdashed" then
@@ -631,8 +709,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                 dashChunks 3.0 5.0  // simplification; main dash with bigger gap
             elif style = "slantdashdot" then
                 dashChunks 3.0 3.0
-            elif style = "hair" then
-                // Hair = very thin dotted. Simulate with tiny dots.
+            elif style = "hair" && not printing then
                 dashChunks 0.5 1.0
             else
                 // A solid line runs half its width past both ends, so that two
@@ -1008,27 +1085,6 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     let leftX = rightX - (triSize - float k)
                     yield zone, GridLine (leftX, topY + float k + 0.5, rightX, topY + float k + 0.5, color, 1.0)
 
-        // Pass 6: data-validation list dropdown arrow. Excel only shows
-        // this when the cell is selected, but for static export we
-        // always paint it so the visual cue carries through to PNG /
-        // PDF snapshots. Drawn as a small 7-px-wide triangle just
-        // inside the cell's right edge, vertically centered, in gray.
-        // FilterButton already owns the dropdown styling for table
-        // header cells; skip those to avoid doubled triangles.
-        let hasValidations = not model.Validations.IsEmpty
-        for (cell, look, zone) in states do
-            let format = look.Format
-            if (format.HasListDropdown || (hasValidations && showsListDropdown cell.Address model)) && not format.FilterButton then
-                let color = "#666666"
-                let buttonWidth = 16.0
-                let centerX = cell.Rect.X + cell.Rect.Width - buttonWidth / 2.0
-                let triHalfWidth = 3.5
-                let triTopY = cell.Rect.Y + cell.Rect.Height / 2.0 - 2.0
-                for i in 0 .. 3 do
-                    let shrink = float i * (triHalfWidth / 4.0)
-                    let y = triTopY + float i
-                    yield zone, GridLine (centerX - triHalfWidth + shrink, y, centerX + triHalfWidth - shrink, y, color, 1.0)
-
         // Pass 7: conditional-formatting icon-set indicator. The renderer
         // has no icon artwork or circle primitive, so approximate with a
         // small filled square in a low→high color (red → amber → green
@@ -1321,14 +1377,14 @@ let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : Pain
                     yield DrawImage (placed, { ContentType = contentType; Data = data; Label = drawingLabel drawing })
                 | KeptObject _ -> yield! drawingFrameItems placed (drawingLabel drawing) ]
 
-let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+let private buildStaticPaintItems printing (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> applyFilterRowHeights
     [
         yield FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff")
         yield! buildHeaderPaintItems model viewport
         // Static (PNG/PDF) path: drop the zone tag; everything paints at
         // absolute cell coordinates because ScrollX/Y are zero.
-        for (_zone, item) in buildCellPaintItems model viewport do
+        for (_zone, item) in buildCellPaintItems printing model viewport do
             yield item
         // Pictures and placeholders for kept objects float over the cells.
         yield! buildDrawingPaintItems model viewport
@@ -1338,6 +1394,12 @@ let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport): PaintItem li
         // system that's already baked into the cell rects above.
         yield! buildFreezeDividerItems model viewport
     ]
+/// Paint a static screen snapshot, retaining screen border geometry.
+let buildPaintItems model viewport = buildStaticPaintItems None model viewport
+
+/// Paint a print slice using printer-dot border geometry.
+let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some offset) model viewport
+
 
 let private translatePaintItem viewport zone item =
     let tx = toViewportRect viewport zone
@@ -1440,7 +1502,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                         })
                 }
 
-        for (zone, item) in buildCellPaintItems model viewport do
+        for (zone, item) in buildCellPaintItems None model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
 
         // Drawing objects float over the cells and scroll with the body.
