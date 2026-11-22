@@ -2760,12 +2760,13 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
     // the chart's edges, a title or a legend 6 pt in, and 11 pt between them and the plot area.)
     let edge, gap = px 6.0, px 11.0
     // (A chartEx chart - a histogram, a box and whisker chart - is laid out tighter: its title 4.5 pt from the top, its
-    // plot area's box 6 pt in from the chart's edges and 8 pt below a title, its labels 7.5 pt from a value axis and
-    // 6.5 pt below the categories' - Excel 2019's pictures of synthetic-chartex-zoo, 360 x 216 pt.)
+    // plot area's box 6 pt in from the chart's edges and 8 pt below a title, its labels' GDI widths 6 pt from a value
+    // axis and 6.5 pt below the categories' - Excel 2019's pictures of synthetic-chartex-zoo, 360 x 216 pt, and of
+    // build-pareto-layout.vbs' Pareto charts of labels 1 to 7 figures wide: their plots from 36, 42, 49 .. 67 px.)
     let margin = if chart.ChartEx then px 6.0 else gap
     let gap = if chart.ChartEx then px 8.0 else gap
     let edge = if chart.ChartEx then px 4.5 else edge
-    let valueGap, categoryGap = (if chart.ChartEx then px 7.5, px 6.5 else px 3.85, px 1.5)
+    let valueGap, categoryGap = (if chart.ChartEx then px 6.0, px 6.5 else px 3.85, px 1.5)
     let mutable top = margin
     (match title with
      | Some text ->
@@ -2888,8 +2889,13 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         match chart.Legend with
         | Some legend when not legend.Deleted.IsEmpty -> all |> List.indexed |> List.filter (fun (index, _) -> not (Set.contains index legend.Deleted)) |> List.map snd
         | _ -> all
-    let mutable left = margin
-    let mutable right = width - margin
+    // (A chartEx chart with a second value axis - a Pareto chart's running share - keeps 12 pt at its sides, not 6:
+    // build-pareto-layout.vbs, Excel 2019's pictures of Pareto charts whose labels are 1 to 7 figures wide - the left
+    // labels from 17 px, the right ones to 462 of 480, whatever their widths.)
+    let sideMargin =
+        if chart.ChartEx && chart.Plots |> List.exists (fun plot -> plot.AxisIds |> List.contains "2") then px 12.0 else margin
+    let mutable left = sideMargin
+    let mutable right = width - sideMargin
     let mutable bottom = height - margin
     (match chart.Legend with
      | Some legend when not legendEntries.IsEmpty ->

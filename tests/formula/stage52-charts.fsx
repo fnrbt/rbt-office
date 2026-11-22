@@ -586,7 +586,7 @@ ok "Excel 2019: bins closed on the left [10, 49) .. [88, 127]; five bins [29.8, 
      && hasAll (exTexts (looksExScene 10)) [ "≤ 100"; "(100, 250]"; "(700, 800]"; "> 800" ] [])
     (sprintf "%A %A %A" (exTexts (looksExScene 2)) (exTexts (looksExScene 9)) (exTexts (looksExScene 10)))
 let histBars = rects (zooScene 5) |> List.filter (fun (_, _, w, _, fill) -> fill = "#4472C4" && w > 40.0) |> List.sortBy (fun (x, _, _, _, _) -> x)
-ok "Excel 2019: ... the bars touch, the plot from 28 to 471 px of 480 (labels 7.5 pt from the axis, the box 6 pt in)"
+ok "Excel 2019: ... the bars touch, the plot from 28 to 471 px of 480 (labels 6 pt from the axis, the box 6 pt in)"
     (histBars.Length = 6 && (let x, _, _, _, _ = histBars.Head in abs (x - 28.5) < 2.5) && (let x, _, w, _, _ = List.last histBars in abs (x + w - 471.0) < 2.0)) (sprintf "%A" histBars)
 let paretoTexts = allTexts (zooScene 12).Items
 ok "Excel 2019: a Pareto chart's bars from the most down (Wrong item, Late, Billing ...), its running share 0 % .. 100 % at the right"
@@ -595,6 +595,16 @@ ok "Excel 2019: a Pareto chart's bars from the most down (Wrong item, Late, Bill
 ok "Excel 2019: ... the binned one in bins from the most ((44.2, 61.2] first, (78.2, 95.2] last)"
     (let cats = allTexts (zooScene 13).Items |> List.filter (fun (v, _, _, _, _, _, _) -> v.StartsWith "(" || v.StartsWith "[") |> List.sortBy (fun (_, x, _, _, _, _, _) -> x) |> List.map (fun (v, _, _, _, _, _, _) -> v)
      cats = [ "(44.2, 61.2]"; "(27.2, 44.2]"; "(61.2, 78.2]"; "[10.2, 27.2]"; "(78.2, 95.2]" ]) (sprintf "%A" (exTexts (zooScene 13)))
+// A Pareto chart's plot between its two axes (build-pareto-layout.vbs: synthetic-pareto-layout.xlsx, counts 0.1 to 10000
+// times six causes', Excel 2019's pictures): 12 pt kept at either side (not 6), the labels' GDI widths 6 pt from the
+// plot - Excel's plots from 36, 42, 49, 55, 61, 67 px to 428 (a pixel either way with 4 figures and more).
+let gridSpan (scene: Charts.Scene) =
+    scene.Items |> List.tryPick (fun item -> match item with Charts.PLine (x1, y1, x2, y2, "#D9D9D9", _, _) when y1 = y2 && x2 - x1 > 200.0 -> Some (x1, x2) | _ -> None)
+let paretoLayout = chartExBook "test-documents-excel/synthetic-pareto-layout.xlsx"
+eq "Excel 2019: a Pareto chart's plot 12 pt in at both sides, its labels 6 pt from it: from 36, 42, 48 (Excel 49), .. 66 (67) to 429 px"
+    ([ for k in 0 .. 5 -> gridSpan (paretoLayout (2 * k + 1)) ] @ [ gridSpan (zooScene 12); gridSpan (zooScene 13) ])
+    ([ for left in [ 36.0; 42.0; 48.0; 54.0; 60.0; 66.0; 42.0; 36.0 ] -> Some (left, 429.0) ])
+eq "Excel 2019: ... a histogram's from 28 to 472 px (labels 6 pt from the plot)" (gridSpan (zooScene 5)) (Some (28.0, 472.0))
 let exclusiveBox = Charts.boxFiguresOf false [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
 let inclusiveBox = Charts.boxFiguresOf true [ 1.0; 2.0; 3.0; 4.0; 5.0; 6.0; 7.0; 8.0; 9.0; 30.0 ] |> Option.get
 ok "Excel 2019: a box's quartiles QUARTILE.EXC's (2.75 .. 8.25) or .INC's (3.25 .. 7.75); whiskers 1 .. 9, 30 beyond"
