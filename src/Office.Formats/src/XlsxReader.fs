@@ -559,6 +559,10 @@ type PivotTable = {
     /// caption. `ShowHeaders`: the captions of its fields shown, with their buttons (`showHeaders`).
     Compact: bool
     ShowHeaders: bool
+    /// The characters a level of the row fields' items is moved in, in compact form (Excel's CompactRowIndent): the
+    /// file's `indent` + 1 - Excel 2019 writes `indent="0"` for 1, none for 2, `indent="2"` for 3
+    /// (synthetic-pivot-indent.xlsx).
+    CompactIndent: int
 }
 
 /// sheetFormatPr defaults captured at parse time so renderers can fall back
@@ -5398,6 +5402,7 @@ module PivotTables =
                 PageFieldCount = Ns.childNs "pageFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pageField") |> List.length) |> Option.defaultValue 0
                 Compact = Xml.attr "compact" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
                 ShowHeaders = Xml.attr "showHeaders" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
+                CompactIndent = (Xml.attr "indent" ptNode |> Option.bind tryParseInt |> Option.defaultValue 1) + 1
                 RowFieldTabular =
                     let fields = Ns.childNs "pivotFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pivotField") |> List.toArray) |> Option.defaultValue [||]
                     fieldIndexes "rowFields" |> List.map (fun index ->

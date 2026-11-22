@@ -3857,11 +3857,24 @@ type Spreadsheet(container: Element) as this =
         let look =
             SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0 } : SpreadsheetCellText.NumberFit)) model row col cellData
                 (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
-        // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019).
+        // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019). In compact
+        // form a level of items is moved in by the pivot's `indent` (CompactRowIndent) of indent units, at least 13 px
+        // (the +/- and its gap): 13, 18, 27 px for 1, 2, 3 in a Calibri 11 workbook, whatever the cells' font
+        // (synthetic-pivot-indent.xlsx: the cells' own indent is that count of characters a level).
         let pivotButton = if model.Pivots.IsEmpty then None else pivotButtonAt model row col
         let look =
             match pivotButton with
-            | Some (PivotToggle _ | PivotLabel) when look.IndentRight = 0.0 -> { look with IndentLeft = look.IndentLeft + 14.0 }
+            | Some (PivotToggle _ | PivotLabel) when look.IndentRight = 0.0 ->
+                let indent = match cellData with Some data -> data.Format.Indent | None -> 0
+                let characters =
+                    model.Pivots
+                    |> List.tryPick (fun pivot ->
+                        if row >= pivot.Top && row <= pivot.Bottom && col >= pivot.Left && col <= pivot.Right then
+                            pivot.Style |> Option.map (fun style -> max 1 style.CompactIndent)
+                        else None)
+                    |> Option.defaultValue 1
+                let step = max (model.IndentUnit * float characters) 13.0
+                { look with IndentLeft = float indent / float characters * step + 14.0 }
             | _ -> look
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
@@ -4495,7 +4508,7 @@ type Spreadsheet(container: Element) as this =
          | Some (PivotToggle expanded) ->
             let box = createElement "div"
             setCssText box
-                ("position:absolute;left:" + string (4.0 + max 0.0 (look.IndentLeft - 14.0)) + "px;top:calc(50% - 5px);width:9px;height:9px;box-sizing:border-box;border:1px solid;"
+                ("position:absolute;left:" + string (5.0 + max 0.0 (look.IndentLeft - 14.0)) + "px;top:calc(50% - 5px);width:9px;height:9px;box-sizing:border-box;border:1px solid;"
                  + "border-color:#AAB5C9 #8A9EBF #8A9EBF #AAB5C9;border-radius:1px;background:linear-gradient(135deg,#EBEDED 0%,#D8D8D8 100%);pointer-events:none")
             setAttribute box "data-pivot-button" (if expanded then "collapse" else "expand")
             let bar = createElement "div"

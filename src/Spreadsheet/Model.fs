@@ -1462,6 +1462,8 @@ type PivotStyleInfo = {
     /// The row fields' items in one column (compact form), and the captions of the fields shown.
     Compact: bool
     ShowHeaders: bool
+    /// The characters a level of the row items moves in, in compact form (CompactRowIndent: the file's `indent` + 1).
+    CompactIndent: int
 }
 
 /// A pivot table as it stands on its sheet, as much of it as GETPIVOTDATA reads: where it is
@@ -1577,6 +1579,10 @@ type SpreadsheetModel = {
     /// The maximum digit width of the workbook's Normal font (its first font) in pixels, the unit of a
     /// file's column widths: 7 for Calibri 11 and Arial 10, 9 for Arial 12 (`FontMetrics.maxDigitWidth`).
     MaxDigitWidth: float
+    /// What one level of a cell's indent is, pixels: three spaces of the workbook's Normal font, whatever the
+    /// cell's own font (Excel 2019: 9 px a level for Calibri 11, 12 for Arial 12, 21 for Verdana 14 as the Normal
+    /// font; the same in cells of Calibri 16, Arial 10, Times New Roman 12, Verdana 10).
+    IndentUnit: float
     /// The widest digit of the Normal font as Excel 2019 prints it, in dots of 600 dpi (the font at its 600-dpi pixel
     /// size, each digit a whole number of dots): 47 for Calibri 11, 46 for Arial 10, 51 for Calibri 12, 56 for Arial 12.
     /// A column prints `PrintDigitWidth` / `MaxDigitWidth` dots a pixel of its width (`Pagination.printColumnWidthPx`).
@@ -1836,6 +1842,7 @@ let createEmpty rowCount colCount = {
     DefaultRowHeight = 25.0
     DefaultColumnWidth = 100.0
     MaxDigitWidth = 7.0
+    IndentUnit = 9.0
     PrintDigitWidth = 47.0
     PrintRowScale = 6.05
     RowPoints = Map.empty

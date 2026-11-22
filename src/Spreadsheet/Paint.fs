@@ -184,9 +184,9 @@ let private lowerAlign (align: string option) : string =
     | Some ("left" | "center" | "right" | "top" | "bottom" | "general" | "fill" | "justify" | "distributed" as known) -> known
     | Some other -> other.ToLowerInvariant()
 
-/// What one level of indent is, in pixels: about 1.4 of the font's digit width (measured against
-/// Excel: about 10 px at 11 pt).
-let indentUnit (fontPt: float) : float = mdwPx fontPt * 1.4
+/// What one level of indent is, in pixels, where the workbook's is not known: 9 px, three spaces of Calibri 11
+/// (`SpreadsheetModel.IndentUnit`).
+let indentUnit (_fontPt: float) : float = 9.0
 
 /// The look of a cell with nothing in it, no table and no conditional format.
 let private emptyLook : CellLook =
@@ -297,7 +297,7 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
         let indentLeft, indentRight =
             if format.Indent <= 0 then 0.0, 0.0
             else
-                let indent = float format.Indent * indentUnit fontPt
+                let indent = float format.Indent * model.IndentUnit
                 match horizontal with
                 | "left" | "distributed" -> indent, 0.0
                 | "right" -> 0.0, indent

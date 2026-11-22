@@ -2316,6 +2316,30 @@ checks['controls-excel-parity'] = async () => {
     return lines;
 };
 
+// Indents as Excel 2019 draws them (tools/excel-parity/build-pivot-indent.vbs: synthetic-pivot-indent.xlsx, checked with
+// shoot-sheets.ps1): a level of indent is three spaces of the Normal font (9 px in Calibri 11) whatever the cell's font;
+// a compact pivot table moves a level of row items in by its CompactRowIndent of them, at least 13 px.
+checks['indent-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const cell = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+    const toggleLeft = (row, col) => parseFloat(cell(row, col)?.querySelector('[data-pivot-button="collapse"], [data-pivot-button="expand"]')?.style.left);
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-pivot-indent.xlsx')).slice());
+        grid.SwitchSheet(1); await frame();
+        check('compact form, CompactRowIndent 1 / 2 / 3 (indent="0", none, "2"): the second level\'s +/- 13 / 18 / 27 px right of the first\'s',
+            [0, 3, 6].map((col) => toggleLeft(3, col) - toggleLeft(2, col)), [13, 18, 27]);
+        grid.SwitchSheet(2); await frame();
+        check('... the same in cells of Calibri 16 (the Normal font\'s units)', [0, 3, 6].map((col) => toggleLeft(3, col) - toggleLeft(2, col)), [13, 18, 27]);
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-cell-indent.xlsx')).slice());
+        await frame();
+        const pad = (row) => parseFloat(getComputedStyle(cell(row, 0)).paddingLeft);
+        check('a cell indented 1, 2, 4 levels: 9, 18, 36 px more (Calibri 11)', [1, 2, 3].map((row) => pad(row) - pad(0)), [9, 18, 36]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Data bars as Excel 2019 draws them (tools/excel-parity/build-data-bars.vbs: synthetic-data-bars.xlsx, checked with
 // shoot-sheets.ps1): a bar's room 61 px of a 64-px column from 2 px right of the left grid line, a bar a whole number of
 // pixels of it (from where it grows), a gradient fading to 85 % of the way to white, an axis on a pixel of its own.
