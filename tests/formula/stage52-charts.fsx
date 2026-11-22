@@ -155,7 +155,7 @@ let combo = parsed (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 100.0; 300.0
 let comboScene = Charts.layoutChart Charts.defaultTheme noData combo 400.0 300.0
 eq "combination: a bar plot and a line plot" (combo.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.BarPlot; Charts.LinePlot ]
 ok "combination: the line has its own scale, in per cent, at the right" (List.contains "50%" (texts comboScene) && List.contains "300" (texts comboScene) && (comboScene.Items |> List.exists (fun item -> match item with Charts.PText (x, _, "50%", _, _, "start", _, _, _) -> x > 300.0 | _ -> false))) (sprintf "%A" (texts comboScene))
-ok "combination: the line is drawn over the columns, with a marker per point" (let drawn = lines comboScene in drawn.Length = 1 && snd drawn.Head = "#00AA00" && (comboScene.Items |> List.filter (fun item -> match item with Charts.PEllipse _ -> true | _ -> false)).Length = 3 && (let lineAt = comboScene.Items |> List.findIndex (fun item -> match item with Charts.PPolyline _ -> true | _ -> false) in let lastBar = comboScene.Items |> List.findIndexBack (fun item -> match item with Charts.PRect (_, _, w, _, Some "#FF0000", _, _, _, _) -> w > 20.0 | _ -> false) in lineAt > lastBar)) "not so"
+ok "combination: the line is drawn over the columns, with a marker per point (and one in its legend key)" (let drawn = lines comboScene in drawn.Length = 1 && snd drawn.Head = "#00AA00" && (comboScene.Items |> List.filter (fun item -> match item with Charts.PEllipse _ -> true | _ -> false)).Length = 4 && (let lineAt = comboScene.Items |> List.findIndex (fun item -> match item with Charts.PPolyline _ -> true | _ -> false) in let lastBar = comboScene.Items |> List.findIndexBack (fun item -> match item with Charts.PRect (_, _, w, h, Some "#FF0000", _, _, _, _) -> w > 20.0 && h > 20.0 | _ -> false) in lineAt > lastBar)) "not so"
 ok "combination: the line reaches its 50 % near the top (its own scale)" (let points, _ = (lines comboScene).Head in let ys = points |> List.map snd in List.min ys < 80.0) (sprintf "%A" (lines comboScene))
 // A doughnut with data labels in per cent.
 let doughnut = parsed (chartXml ("<c:doughnutChart><c:varyColors val=\"1\"/>" + ser 0 "FF0000" [ 1.0; 1.0; 2.0 ] "<c:dLbls><c:showVal val=\"0\"/><c:showPercent val=\"1\"/></c:dLbls>" + "<c:firstSliceAng val=\"0\"/><c:holeSize val=\"60\"/></c:doughnutChart>") "")
@@ -402,6 +402,40 @@ ok "Excel 2019: legend parityEntries spread evenly over the legend's box, in the
      && (parityEntries |> List.map (fun (_, _, _, _, color, bold, _) -> color, bold)) = [ "#333399", true; "#008000", true; "#800080", true ]) (sprintf "%A" parityEntries)
 let parityPointLabels = allTexts parityLegendScene.Items |> List.filter (fun (v, _, _, _, _, _, _) -> v.EndsWith "%")
 ok "Excel 2019: a point's label of its own colour and weight (c:dLbl)" ((parityPointLabels |> List.map (fun (v, _, _, _, color, bold, _) -> v, color, bold) |> List.sort) = [ "13.30%", "#333399", true; "6.83%", "#800080", true; "79.87%", "#008000", true ]) (sprintf "%A" parityPointLabels)
+
+// ---- Excel 2019: synthetic-chart-lines.xlsx (make-chart-fixtures.py; chart-probe.vbs, style-probe and pictures) ----
+let linesWb, linesBook, linesParts, linesTheme = openBook "test-documents-excel/synthetic-chart-lines.xlsx"
+let linesData = dataOf (linesBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
+let linesScene (number: int) (w: float) (h: float) =
+    Charts.layoutChart linesTheme linesData (Charts.parseChart linesTheme (text linesParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get) w h
+let strokeWidths (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PPolyline (_, None, _, Some _, w, _) -> Some w | _ -> None)
+let keyLines (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PLine (x1, y1, x2, y2, color, w, _) when y1 = y2 && abs (x2 - x1 - 26.0) < 0.01 -> Some (color, w) | _ -> None)
+let widthsScene = linesScene 1 480.0 360.0
+eq "Excel 2019: lines of 0.25, 0.5, 0.75, 1, 1.5, 2.25, 3, 4.5 pt are 1, 1, 1, 1, 2, 3, 4, 6 px" (strokeWidths widthsScene) [ 1.0; 1.0; 1.0; 1.0; 2.0; 3.0; 4.0; 6.0 ]
+eq "Excel 2019: ... their legend keys 26 px long, as wide as the lines" (keyLines widthsScene |> List.map snd) [ 1.0; 1.0; 1.0; 1.0; 2.0; 3.0; 4.0; 6.0 ]
+eq "Excel 2019: a line stating none: 1.5 pt (2 px) under style 2, 2.5 pt (3 px) under style 34" (strokeWidths (linesScene 2 400.0 260.0) @ strokeWidths (linesScene 3 400.0 260.0)) [ 2.0; 2.0; 2.0; 3.0; 3.0; 3.0 ]
+let keysScene = linesScene 6 480.0 260.0
+ok "Excel 2019: beside line keys a column's key is a box 26 px long; a marker in the middle of its series' key"
+    (keysScene.Items |> List.exists (fun item -> match item with Charts.PRect (_, _, w, h, Some "#4472C4", _, _, _, _) -> abs (w - 26.0) < 0.01 && h < 10.0 | _ -> false)
+     && keysScene.Items |> List.exists (fun item -> match item with Charts.PRect (x, _, w, _, Some "#00B050", _, _, _, _) -> x > 380.0 && w < 10.0 | _ -> false)) "not so"
+let sliceOutlines (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PPath (_, Some fill, _, stroke, w) -> Some (fill, stroke, w) | _ -> None)
+eq "Excel 2019: a slice's outline is its point's own (1 pt red, none, a look without a line: none, 4.5 pt white)"
+    (sliceOutlines (linesScene 8 360.0 300.0)) [ "#4472C4", Some "#FF0000", 1.0; "#ED7D31", None, 0.0; "#A5A5A5", None, 0.0; "#FFC000", Some "#FFFFFF", 6.0 ]
+ok "Excel 2019: a pie stating no lines under style 2 has none" (sliceOutlines (linesScene 9 360.0 300.0) |> List.forall (fun (_, stroke, _) -> stroke.IsNone)) "outlined"
+// Category labels: in a line when they fit, broken at spaces, turned -45, -90, every s-th.
+/// The category labels (those right of the value axis' labels).
+let labelsOf (scene: Charts.Scene) =
+    let all = allTexts scene.Items
+    let valueRight = all |> List.filter (fun (v, _, _, _, _, _, _) -> v = "0") |> List.map (fun (_, x, _, _, _, _, _) -> x) |> List.fold max 0.0
+    all |> List.filter (fun (v, x, _, _, _, _, _) -> x > valueRight + 4.0 && (v.StartsWith "Cat" || (v.Length <= 2 && Char.IsDigit v.[0])))
+let wrapLabels = labelsOf (linesScene 10 157.0 293.0)
+ok "Excel 2019: \"Cat 1\" .. \"Cat 6\" in 157 px: each broken at its space, none left out" (wrapLabels |> List.filter (fun (v, _, _, _, _, _, _) -> v = "Cat") |> List.length = 6 && wrapLabels |> List.forall (fun (_, _, _, _, _, _, turn) -> turn = 0.0)) (sprintf "%A" wrapLabels)
+let l45 = labelsOf (linesScene 11 133.0 293.0)
+eq "Excel 2019: \"Category 1\" .. 6 in 133 px: every second, turned -45" (l45 |> List.map (fun (v, _, _, _, _, _, turn) -> v, turn)) [ "Category 1", -45.0; "Category 3", -45.0; "Category 5", -45.0 ]
+let l90 = labelsOf (linesScene 12 236.0 293.0)
+ok "Excel 2019: 12 of them in 236 px: all, turned -90" (l90.Length = 12 && l90 |> List.forall (fun (_, _, _, _, _, _, turn) -> turn = -90.0)) (sprintf "%A" l90)
+let lSkip = labelsOf (linesScene 13 462.0 303.0) |> List.map (fun (v, _, _, _, _, _, _) -> v)
+ok "Excel 2019: 1 .. 60 in 462 px (oyabayo's): every second, in a line" (lSkip.Length = 30 && List.contains "59" lSkip && not (List.contains "60" lSkip)) (sprintf "%A" lSkip)
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

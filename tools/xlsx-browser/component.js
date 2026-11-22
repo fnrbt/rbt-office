@@ -2000,6 +2000,28 @@ checks['charts-excel-parity'] = async () => {
         check('pie labels a line a part, broken to a fifth of the chart', [['Two', 'BR/One', 'BA', '14%'].every((t) => texts.includes(t)), texts.some((t) => t.includes('; '))], [true, false]);
         const faces = [...host.querySelectorAll('svg g[font-family]')].map((g) => g.getAttribute('font-family').split(',')[0]);
         check('chart text in its typeface (Arial, Segoe UI)', [faces.includes("'Arial'"), faces.includes("'Segoe UI'")], [true, true]);
+        // synthetic-chart-lines.xlsx: lines and legend keys in whole pixels of their width, category labels
+        // broken, turned and left out as Excel 2019 sets them.
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-chart-lines.xlsx')).slice());
+        await everyObjectSeen(host);
+        // (Each chart's SVG, as the grid shows it when its cells are in view.)
+        const seen = new Map();
+        for (const [row, col] of [[0, 12], [19, 12], [57, 12], [76, 12], [0, 30], [0, 34], [19, 30], [19, 34]]) {
+            grid.SelectCell(row, col); await frame();
+            for (let i = 0; i < 30 && host.querySelector('.spreadsheet-object-pending'); i++) await frame();
+            for (const svg of host.querySelectorAll('svg')) seen.set(svg.outerHTML, svg);
+        }
+        const svgs = [...seen.values()];
+        const all = (selector) => svgs.flatMap((svg) => [...svg.querySelectorAll(selector)]);
+        const widths = all('polyline').map((l) => l.getAttribute('stroke-width'));
+        check('lines of 0.25 .. 4.5 pt: 1, 1, 1, 1, 2, 3, 4, 6 px', ['1', '2', '3', '4', '6'].map((w) => widths.includes(w)), [true, true, true, true, true]);
+        const keys = all('line').filter((l) => Math.abs(Number(l.getAttribute('x2')) - Number(l.getAttribute('x1')) - 26) < 0.01).map((l) => l.getAttribute('stroke-width'));
+        check('legend keys 26 px long, as wide as their lines', ['1', '4', '6'].map((w) => keys.includes(w)), [true, true, true]);
+        const labels = all('text');
+        const turned = (angle) => labels.filter((t) => (t.getAttribute('transform') ?? '').startsWith(`rotate(${angle} `)).map((t) => t.textContent);
+        check('labels turned -45 (every second), -90 (all twelve)', [turned(-45).includes('Category 3'), turned(-45).includes('Category 2'), turned(-90).includes('Category 12')], [true, false, true]);
+        const texts2 = labels.map((t) => t.textContent);
+        check('"Cat 1" broken at its space; 60 numbers every second', [texts2.includes('Cat'), texts2.includes('59'), texts2.includes('60')], [true, true, false]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;
