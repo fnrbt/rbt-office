@@ -153,7 +153,7 @@ eq "format-databar" ((formatAt bars (at 4 0) defaultFormat).DataBar) (Some { pla
 eq "format-fill"    ((formatAt scale2 (at 0 0) defaultFormat).BgColor) (Some "#FF0000")
 eq "format-untouched" (formatAt scale2 (at 0 1) defaultFormat) defaultFormat
 
-// The portable painter draws them: fill, bar and icon rectangles.
+// The portable painter draws the fill, bar and icon geometry.
 let viewport : Rbt.Spreadsheet.Layout.Viewport =
     { ScrollX = 0.0; ScrollY = 0.0; Width = 600.0; Height = 300.0; HeaderHeight = 20.0; RowHeaderWidth = 30.0; Measurer = None }
 let fillColors (m: SpreadsheetModel) =
@@ -164,7 +164,22 @@ eq "paint-color-scale"     (fillColors scale2 |> List.filter (fun (c, _) -> c = 
 eq "paint-cellis-fill"     (fillColors (cellIs OpGreaterThan "30" None) |> List.filter (fun (c, _) -> c = "#FF0000") |> List.length) 2
 let barWidths = fillColors bars |> List.filter (fun (c, _) -> c = "#638EC6") |> List.map snd |> List.sort
 eq "paint-data-bars"       (barWidths.Length, barWidths.Head < barWidths.[barWidths.Length - 1]) (6, true)
-eq "paint-icons"           (fillColors icons |> List.filter (fun (_, w) -> w = 9.0) |> List.length) 6
+let iconGeometry (m: SpreadsheetModel) =
+    Rbt.Spreadsheet.Paint.buildPaintItems m viewport
+    |> List.choose (function
+        | Rbt.Spreadsheet.Paint.VecGroup ((_, _, _, _, x, y), parts) ->
+            let colors = parts |> List.choose (function
+                | Rbt.Spreadsheet.Paint.VecPath (segments, Some color, _) when not segments.IsEmpty -> Some color
+                | _ -> None)
+            if colors.IsEmpty then None else Some (x, y, colors)
+        | _ -> None)
+let iconItems = iconGeometry icons
+for row, color in [ 0, "#D65532"; 2, "#EAC282"; 4, "#68A490" ] do
+    let rect = Rbt.Spreadsheet.Layout.cellRect icons viewport row 0
+    ok (sprintf "paint-icon-row-%d" row)
+        (iconItems |> List.exists (fun (x, y, colors) -> x >= rect.X && x < rect.X + rect.Width && y >= rect.Y && y < rect.Y + rect.Height && List.contains color colors))
+        (sprintf "no visible %s icon in row %d" color row)
+eq "paint-icons-no-rule" (iconGeometry data) []
 
 // --- priority, merging, stop-if-true ---------------------------------------
 let red = rule colA (CellIs (OpGreaterThan, "15", None)) { defaultFormat with BgColor = Some "#FF0000"; Bold = true } 2
