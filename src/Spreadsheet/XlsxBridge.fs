@@ -3591,6 +3591,9 @@ module Export =
                             match sourceOf index with
                             | Some (_, _, before) ->
                                 sameRef before.Cells model.Cells
+                                // (A sheet still standing in for the file's - converted for a drawing to read a cell
+                                // since it was opened, the baseline then the converted one - is the file's as it was.)
+                                || model.Deferred.IsSome
                                 || (before.StructureVersion = model.StructureVersion
                                     && (let was = formulaCells before.Cells
                                         let now = formulaCells model.Cells

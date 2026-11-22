@@ -444,10 +444,10 @@ let drawingRect (model: SpreadsheetModel) (drawing: SheetDrawing) : Rect =
     let height = anchor.Height |> Option.defaultValue 0.0
     if anchor.Kind = "absolute" then { X = anchor.X; Y = anchor.Y; Width = width; Height = height }
     else
-        // (An offset goes no further than its row or column: none in a hidden one - Excel 2019, synthetic-shape-looks
-        // "Hidden": a shape from a shown row to an offset in a hidden one ends where the hidden rows are.)
-        let colAt (col: int) (offset: float) = columnLeft model col + min offset (max 0.0 (columnLeft model (col + 1) - columnLeft model col))
-        let rowAt (row: int) (offset: float) = rowTop model row + min offset (max 0.0 (rowTop model (row + 1) - rowTop model row))
+        // (An offset in a hidden row or column is none - Excel 2019, synthetic-shape-looks "Hidden": a shape from a shown
+        // row to an offset in a hidden one ends where the hidden rows are.)
+        let colAt (col: int) (offset: float) = columnLeft model col + (if columnLeft model (col + 1) - columnLeft model col <= 0.0 then 0.0 else offset)
+        let rowAt (row: int) (offset: float) = rowTop model row + (if rowTop model (row + 1) - rowTop model row <= 0.0 then 0.0 else offset)
         let left = colAt anchor.FromCol anchor.FromOffsetX
         let top = rowAt anchor.FromRow anchor.FromOffsetY
         match anchor.Kind, anchor.ToCol, anchor.ToRow with
