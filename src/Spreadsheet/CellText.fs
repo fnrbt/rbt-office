@@ -264,7 +264,7 @@ let private trimmedStartsWithIgnoreCase (text: string) (prefix: string) =
 let private colorTagValueAt (text: string) start length =
     if sliceEqualsIgnoreCase text start length "red" then Some "#FF0000"
     elif sliceEqualsIgnoreCase text start length "black" then Some "#000000"
-    elif sliceEqualsIgnoreCase text start length "green" then Some "#008000"
+    elif sliceEqualsIgnoreCase text start length "green" then Some "#00FF00"
     elif sliceEqualsIgnoreCase text start length "white" then Some "#FFFFFF"
     elif sliceEqualsIgnoreCase text start length "blue" then Some "#0000FF"
     elif sliceEqualsIgnoreCase text start length "magenta" then Some "#FF00FF"

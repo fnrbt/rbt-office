@@ -14,7 +14,7 @@ And the advance widths of Small Fonts' faces by their em height in pixels (the 9
 installed: Excel's 10 px is the 120-dpi 6-pt face, 10.5 px its 7-pt face of 11 px).
 
 Needs freetype-py, the Windows fonts (artifacts/fonts/windows, windows-extra) and Windows' smalle.fon / smallf.fon
-(C:\\Windows\\Fonts, in artifacts/fonts/raster):
+(C:\\Windows\\Fonts, in artifacts/fonts/raster; RB_FONTS_DIR: another artifacts/fonts):
 
     FREETYPE_PROPERTIES=truetype:interpreter-version=35 python3 tools/excel-parity/make-gdi-advances.py
 """
@@ -29,7 +29,7 @@ import freetype  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, '..', '..'))
-FONTS = os.path.join(REPO, 'artifacts', 'fonts')
+FONTS = os.environ.get('RB_FONTS_DIR') or os.path.join(REPO, 'artifacts', 'fonts')
 OUT = os.path.join(REPO, 'src', 'Spreadsheet', 'GdiAdvances.fs')
 CHARS = list(range(0x20, 0x7F)) + list(range(0xA0, 0x100))
 PPEMS = range(11, 37)
@@ -67,6 +67,8 @@ FACES = [
     ('Aptos Narrow', 0, 1, 'windows-extra/aptosnarrow-28903934312.ttf', 0),
     ('Tw Cen MT', 0, 0, 'windows-extra/TCM_____.TTF', 0), ('Tw Cen MT', 1, 0, 'windows-extra/TCB_____.TTF', 0),
     ('Tw Cen MT', 0, 1, 'windows-extra/TCMI____.TTF', 0), ('Tw Cen MT', 1, 1, 'windows-extra/TCBI____.TTF', 0),
+    # (Lato: an Office cloud font, downloaded by Office into %LOCALAPPDATA%\Microsoft\FontCache\4\CloudFonts\Lato.)
+    ('Lato', 0, 0, 'windows-extra/lato-28221965252.ttf', 0), ('Lato', 1, 0, 'windows-extra/lato-25090817022.ttf', 0),
 ]
 
 

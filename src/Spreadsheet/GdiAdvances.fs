@@ -201,6 +201,12 @@ let faces : (string * bool * bool * int * string * string[])[] = [|
     ("tw cen mt", true, true, 2048,
      "0f50bu0qz1200u71ii1040dj0ht0ht0oa11y0bu0ht0bu0ks0u70u70u70u70u70u70u70u70u70u70bu0bu11y11y11y0r91jh1040u70x60x60oa0oa1350x60bu0oa0x60oa1641041640r91640u70oa0oa0x41041920x60x60u70ht0ks0ht0x80sg0iy0r90r90oa0r90r90es0r90o40bu0bu0oa0bu1350o40r90r90r90ht0ht0fz0r70r91640r90q20oa0m50xg0m511b0f50bu0oa0x611y0x60xg0r90iy15z0ht0sg11y0ht15z0sg0mr11y0ks0ks0iy0yr0vn0es0iy0ks0ht0sg1fj1fj1fj0r91041041041041041041920x60oa0oa0oa0oa0bu0bu0bu0bu0x610416416416416416411y1640x40x40x40x40x60r90r90r90r90r90r90r90r91610oa0r90r90r90r90bu0bu0bu0bu0r90o40r90r90r90r90r911y0r90r70r70r70r70q20r90q2",
      [| "29k49k4ak4ck53k8bk8ck8dk8ekabkackadkaek"; "01k05k0ck0ek1ak1bk29k48k49k4ak4ck4ek59k60k8bk8ck8dk8ekabkackadkaekb0kbckbek"; ""; ""; ""; "04k10k11k12k13k14k15k16k17k18k19k22k32k3ak54k5ek7bk7ck7dk"; ""; "23k24k28k2bk38k39k62k64k86k8fk9ck"; ""; ""; "68k6dk"; ""; ""; "1fk30k41k42k44k45k47k4fk50k51k56k58k66k7ek9dk9ek9fka0ka1ka2ka3ka4ka7ka8ka9kaakafkb1kb2kb3kb4kb5kb7kbdk"; "46k76k"; "0fk3ck71k72k78k"; "74k"; ""; ""; ""; ""; ""; ""; ""; ""; "" |])
+    ("lato", false, false, 2000,
+     "0di0fm0lz0w80w819j1470br0f90f90nm0w80d00kq0d70pw0w80w80w80w80w80w80w80w80w80w80eb0f10w80w80w80pk1av12l10l10r1690vy0vg14c16t0gh0nv1230sv1gi16t18w0ye18w0zq0uh0xc15912l1me1191000xn0hf0pw0hf0w80px0m80s70vj0qs0vj0to0jx0tc0vc0e40e40tp0dt1aj0vc0vx0vk0vj0kq0of0ko0vc0tc18l0t00tb0pj0h00ei0h00w80di0f00w80w80w80w80eo0rz0m819s0ke0pb0w80kq19s0m80n30w80ik0ik0m810o14y0f90m80ik0m90pb15a14v15n0pa12l12l12l12l12l12l1fu10r0vy0vy0vy0vy0gh0gh0gh0gh16s16t18w18w18w18w18w0w818w1591591591591000y70xh0s70s70s70s70s70s718z0qu0to0to0to0to0e40e50e40e40vp0vc0vx0vx0vx0vx0vx0w80vw0vc0vc0vc0vc0tb0vk0tb",
+     [| ""; ""; ""; "7dk"; ""; "01k20k"; ""; "59kbckbek"; ""; ""; ""; "50kbdk"; ""; ""; ""; "07k"; "39k9ckb7k"; "43k"; ""; ""; ""; ""; "1ak"; ""; ""; "" |])
+    ("lato", true, false, 2000,
+     "0e80ey0kl0w80w818j13k0bc0eu0eu0nm0w80cm0kn0d40p40w80w80w80w80w80w80w80w80w80w80dw0ej0w80w80w80ov1ah11m0zx1141690w30vf14l16f0fk0nh10t0sj1fl16f18h0xd18h0yt0u50wt14v11m1lj1020yo0xg0h00p40h00w80pi0m80rm0v40qj0v40tc0jh0sw0v00dc0dc0s80d419p0v00vi0v50v40k80o20jx0uz0so17n0ro0sn0p40gq0dx0gq0w80e80e00w80w80w80w80e30ri0m81a70kf0nu0w80kn1a70m80n10w80ik0ik0m810312x0eg0m80ik0mc0nv14s14b1580og11m11m11m11m11m11m1fp1140w30w30w30w30fk0fk0fk0fk16p16f18h18h18h18h18h0w818h14v14v14v14v0yo0x90w80rm0rm0rm0rm0rm0rm18q0qk0tc0tc0tc0tc0dc0dc0dc0dc0vg0v00vi0vi0vi0vi0vi0w80vh0uz0uz0uz0uz0sn0v50sn",
+     [| "0ck34k"; ""; "01k27k2ak"; "37k"; "53kb7k"; ""; ""; ""; ""; ""; "2dk57k"; ""; ""; ""; ""; "55kb8kb9kbakbbk"; ""; ""; ""; ""; "4dk"; "59kbckbek"; "06k50kbdk"; "69k"; "2dk57k"; "0ek4ck85k" |])
 |]
 
 /// A line of each family (its regular face) as GDI spaces lines, tmHeight + tmExternalLeading: (family lower case, the line in font units, units per em).
@@ -224,6 +230,7 @@ let lineExtents : (string * int * int)[] = [|
     ("lucida console", 2048, 2048)
     ("aptos narrow", 2631, 2048)
     ("tw cen mt", 2230, 2048)
+    ("lato", 2832, 2000)
 |]
 
 /// Small Fonts by em height in pixels (the 96-dpi face where both have one): (em, advances of U+0020-00FF).

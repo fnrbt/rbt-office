@@ -26,7 +26,8 @@ let private parsed =
 /// its substitute, Arial ("Arial MT", Helvetica and a name no font has measure as Arial in Excel 2019).
 let private entriesOf (face: string option) =
     let key = (defaultArg face "Calibri").Trim().ToLowerInvariant()
-    let key = if key.EndsWith " mt" then key.Substring(0, key.Length - 3) else key
+    // ("Tw Cen MT" is a face of its own; "Arial MT" Arial.)
+    let key = if key.EndsWith " mt" && not (parsed.Value.ContainsKey key) then key.Substring(0, key.Length - 3) else key
     match parsed.Value.TryGetValue key with
     | true, entries -> entries
     | false, _ ->
@@ -64,7 +65,7 @@ let rowHeightPx (face: string option) (points: float) : float =
 /// The face of the tables a face is measured as (`entriesOf`'s): its own, its family's, Arial.
 let private tableFace (face: string option) =
     let key = (defaultArg face "Calibri").Trim().ToLowerInvariant()
-    let key = if key.EndsWith " mt" then key.Substring(0, key.Length - 3) else key
+    let key = if key.EndsWith " mt" && not (parsed.Value.ContainsKey key) then key.Substring(0, key.Length - 3) else key
     if parsed.Value.ContainsKey key then key
     else
         match parsed.Value.Keys |> Seq.filter (fun family -> key.StartsWith (family + " ")) |> Seq.sortByDescending (fun family -> family.Length) |> Seq.tryHead with
