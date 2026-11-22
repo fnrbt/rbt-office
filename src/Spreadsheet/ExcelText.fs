@@ -162,23 +162,25 @@ let printDigitWidth (family: string) (points: float) : float =
         | _ -> ()
     if widest > 0 then float widest else FontMetrics.maxDigitWidth (Some family) (points * 6.25)
 
+/// The row of a Normal font (family, points) as Excel 2019 prints it, in dots of 600 dpi: a row of the font's
+/// default height in its PDF (make-print-pages-fixture.py "heights" and "rowunit-*": 32 fonts and sizes).
+let private printedRows : (string * float * float) list =
+    [ "calibri", 9.0, 99.0; "calibri", 10.0, 109.0; "calibri", 11.0, 121.0; "calibri", 12.0, 130.0; "calibri", 14.0, 150.0
+      "calibri light", 11.0, 121.0; "arial", 8.0, 85.0; "arial", 9.0, 93.0; "arial", 10.0, 103.0; "arial", 11.0, 114.0
+      "arial", 12.0, 123.0; "arial narrow", 10.0, 106.0; "aptos", 11.0, 127.0; "aptos", 12.0, 137.0
+      "aptos narrow", 10.0, 116.0; "aptos narrow", 11.0, 127.0; "aptos narrow", 12.0, 137.0; "cambria", 14.0, 145.0
+      "tahoma", 8.0, 89.0; "tahoma", 9.0, 98.0; "tahoma", 10.0, 108.0; "tahoma", 11.0, 119.0; "verdana", 10.0, 108.0
+      "segoe ui", 9.0, 114.0; "segoe ui", 10.0, 124.0; "segoe ui", 11.0, 138.0; "times new roman", 10.0, 106.0
+      "times new roman", 12.0, 126.0; "book antiqua", 10.0, 110.0; "century gothic", 10.0, 108.0; "garamond", 11.0, 111.0
+      "georgia", 10.0, 104.0; "trebuchet ms", 10.0, 113.0 ]
+
 /// Dots of 600 dpi a pixel of a row's height prints at, as Excel 2019 prints a sheet whose Normal font is (family,
-/// points): the font's own row in print (121 dots for Calibri 11, 103 for Arial 10, 130 for Calibri 12, 123 for
-/// Arial 12, 145 for Cambria 14, 127 for Aptos and Aptos Narrow 11, 85 for Arial 8, 109 for Calibri 10:
-/// make-print-pages-fixture.py "heights", rows of 7.5 to 409.5 pt, their grid lines in Excel's PDF - 151 of 153 rows
-/// within a dot of floor(points x 4/3 x scale + 0.14)) over its row on the screen (`rowPx`: 20, 17, 21, 20, 24, 20, 15,
-/// 17 px). Other fonts: 6.05, Calibri 11's.
+/// points): the font's own row in print (`printedRows`: 121 dots for Calibri 11, 103 for Arial 10, 127 for Aptos
+/// Narrow 11, 108 for Tahoma 10) over its row on the screen (`rowPx`: 20, 17, 20, 17 px) - rows of 7.5 to 409.5 pt
+/// in 9 of them within a dot of floor(points x 4/3 x scale + 0.14) (151 of 153). A font not measured: 6.2, about
+/// the middle of those measured (5.55 for Garamond 11 to 7.1 for Segoe UI 9).
 let printRowScale (family: string) (points: float) (rowPx: float) : float =
-    let key = (let f = family.Trim().ToLowerInvariant() in if f.EndsWith " mt" then f.Substring(0, f.Length - 3) else f), points
-    let printed =
-        match key with
-        | "calibri", 11.0 -> 121.0
-        | "arial", 10.0 -> 103.0
-        | "calibri", 12.0 -> 130.0
-        | "arial", 12.0 -> 123.0
-        | "cambria", 14.0 -> 145.0
-        | "aptos narrow", 11.0 | "aptos", 11.0 -> 127.0
-        | "arial", 8.0 -> 85.0
-        | "calibri", 10.0 -> 109.0
-        | _ -> 0.0
-    if printed > 0.0 && rowPx > 0.0 then printed / rowPx else 6.05
+    let family = let f = family.Trim().ToLowerInvariant() in if f.EndsWith " mt" then f.Substring(0, f.Length - 3) else f
+    match printedRows |> List.tryFind (fun (f, p, _) -> f = family && p = points) with
+    | Some (_, _, dots) when rowPx > 0.0 -> dots / rowPx
+    | _ -> 6.2

@@ -53,9 +53,9 @@ imported.Sheets |> Array.iteri (fun index sheet ->
         let ourCols = ourP.Pages |> List.map (fun p -> p.ColStart + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
         let area = ourP.PrintBounds
         let excelPages = match get "pdf" with Some name when name.EndsWith ".pdf" -> pdfPages (Path.Combine(excelDir, name)) | other -> -1
-        let xr, xc = breaks "hbreak", breaks "vbreak"
+        let xr, xc = breaks "hbreak" |> List.filter (fun r -> r <= area.To.Row + 1), breaks "vbreak" |> List.filter (fun c -> c <= area.To.Col + 1)
         // (Excel's breaks of Page Break Preview are the sheet's; ours are the print area's.)
-        let ok = excelPages = ourP.Pages.Length && xr = ourRows && xc = ourCols
+        let ok = (excelPages = ourP.Pages.Length || (excelPages = -1 && ourP.Pages.IsEmpty)) && xr = ourRows && xc = ourCols
         sheets <- sheets + 1
         if ok then same <- same + 1
         let show xs = xs |> List.map string |> String.concat ","

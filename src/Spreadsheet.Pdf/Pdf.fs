@@ -1744,6 +1744,15 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 | None -> ()
                 PdfDoc.addPage builder (pageWidthPt, pageHeightPt) loadedFaceNames (imageNames.TakePageNames ()) (resizeArrayToList ops) |> ignore
 
+    // (A sheet with nothing to print is left out of a workbook's PDF, as Excel 2019 leaves it out; a document of
+    // that sheet alone is a blank page.)
+    let sheets =
+        match sheets with
+        | _ :: _ :: _ ->
+            match sheets |> List.filter (fun sheet -> not (Pagination.paginatePrinted sheet.Model).Pages.IsEmpty) with
+            | [] -> [ List.head sheets ]
+            | printing -> printing
+        | _ -> sheets
     let addSheets = sheets |> List.map planSheet
     // An empty list of sheets is a document of one blank page.
     let faceRemap = System.Collections.Generic.Dictionary<string, Map<int, int>>()
