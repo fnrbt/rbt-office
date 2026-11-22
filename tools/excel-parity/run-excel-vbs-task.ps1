@@ -3,9 +3,7 @@ param(
   [Parameter(Mandatory = $true)][string]$InputPath,
   [Parameter(Mandatory = $true)][string]$OutputPath,
   [int]$TimeoutSeconds = 180,
-  [ValidateSet("cscript", "powershell")][string]$Engine = "cscript",
-  # Leave every Excel running when done (the script quits its own): another job may share the VM's Excel.
-  [switch]$KeepExcel
+  [ValidateSet("cscript", "powershell")][string]$Engine = "cscript"
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,35 +31,6 @@ if ($outputParent -and -not (Test-Path -LiteralPath $outputParent)) {
   New-Item -ItemType Directory -Force -Path $outputParent | Out-Null
 }
 
-function Stop-InteractiveExcel {
-  $cleanupCmd = Join-Path $workDir ("kill-excel-" + ([guid]::NewGuid().ToString("N")) + ".cmd")
-  Set-Content -LiteralPath $cleanupCmd -Encoding ASCII -Value @(
-    "@echo off",
-    "for /L %%i in (1,1,5) do (",
-    "  taskkill /F /T /IM EXCEL.EXE >nul 2>nul",
-    "  ping 127.0.0.1 -n 2 >nul",
-    ")"
-  )
-
-  try {
-    $cleanupTaskName = "RbtExcelParity-KillExcel-" + ([guid]::NewGuid().ToString("N"))
-    try {
-      $cleanupRun = 'cmd.exe /c "' + $cleanupCmd + '"'
-      $cleanupStartArgs = New-TaskStartArgs 10
-      & schtasks.exe /Create /TN $cleanupTaskName /TR $cleanupRun @cleanupStartArgs /F /IT 2>$null | Out-Null
-      if ($LASTEXITCODE -eq 0) {
-        & schtasks.exe /Run /TN $cleanupTaskName 2>$null | Out-Null
-        Start-Sleep -Seconds 7
-      }
-    }
-    finally {
-      & schtasks.exe /Delete /TN $cleanupTaskName /F 2>$null | Out-Null
-    }
-  }
-  finally {
-    Remove-Item -LiteralPath $cleanupCmd -Force -ErrorAction SilentlyContinue
-  }
-}
 
 $invocation =
   if ($Engine -eq "powershell") {
@@ -118,11 +87,9 @@ try {
     Get-Content -LiteralPath $logPath | Write-Error
   }
   & schtasks.exe /End /TN $taskName 2>$null | Out-Null
-  if (-not $KeepExcel) { Stop-InteractiveExcel }
   throw "Timed out waiting for VBS task after $TimeoutSeconds seconds"
 }
 finally {
   & schtasks.exe /Delete /TN $taskName /F 2>$null | Out-Null
   Remove-Item -LiteralPath $cmdPath -Force -ErrorAction SilentlyContinue
-  if (-not $KeepExcel) { Stop-InteractiveExcel }
 }
