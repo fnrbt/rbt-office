@@ -885,6 +885,7 @@ let private iterSliceItems
     (originX: float) (originY: float) (scale: float)
     (model: SpreadsheetModel)
     (measurer: TextMeasurer)
+    (fitMeasurer: TextMeasurer option)
     (includeText: bool)
     (rowStart: int) (rowEnd: int)
     (colStart: int) (colEnd: int)
@@ -914,7 +915,8 @@ let private iterSliceItems
     let dx = offsetX - scrollX
     let dy = offsetY - scrollY
     let commentMarkerKeys = commentMarkerStrokeKeysForSlice geometry model rowStart rowEnd colStart colEnd
-    for item in buildPrintPaintItems (dx + originX, dy + originY, scale) model viewport do
+    for item in buildPrintPaintItemsFitted (dx + originX, dy + originY, scale)
+                    (defaultArg fitMeasurer measurer) model viewport do
         if not (isDegenerate item)
            && not (isDefaultPrintCellFill item)
            && not (isInteractiveCellStroke item)
@@ -934,7 +936,7 @@ let private sliceItems
     let rowCount = max 0 (rowEnd - rowStart + 1)
     let colCount = max 0 (colEnd - colStart + 1)
     let shifted = ResizeArray<PaintItem>(max 16 (rowCount * colCount + rowCount + colCount + 2))
-    iterSliceItems geometry 0.0 0.0 1.0 model measurer true rowStart rowEnd colStart colEnd offsetX offsetY shifted.Add
+    iterSliceItems geometry 0.0 0.0 1.0 model measurer None true rowStart rowEnd colStart colEnd offsetX offsetY shifted.Add
     resizeArrayToList shifted
 
 /// Near-black cell-boundary lines for a slice, used when
@@ -1519,7 +1521,9 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     if not addedGrid then
                         iterGridLineItems geometry model rowStart rowEnd colStart colEnd offsetX offsetY emit
                         addedGrid <- true
-                iterSliceItems geometry originX originY scale paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
+                iterSliceItems geometry originX originY scale paintedModel measurePdf
+                    (Some (fun text pt family bold italic -> measurePdf text (pt * scale) family bold italic))
+                    canDrawText rowStart rowEnd colStart colEnd offsetX offsetY (fun item ->
                     if not sawContent then
                         sawContent <- true
                         match item with
@@ -1534,7 +1538,9 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 if not sawContent then
                     addGrid ()
             else
-                iterSliceItems geometry originX originY scale paintedModel measurePdf canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
+                iterSliceItems geometry originX originY scale paintedModel measurePdf
+                    (Some (fun text pt family bold italic -> measurePdf text (pt * scale) family bold italic))
+                    canDrawText rowStart rowEnd colStart colEnd offsetX offsetY emit
 
         let emitPageItems phase (i: int) (emit: PaintItem -> unit) =
             if i < pages.Length then

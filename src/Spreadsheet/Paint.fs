@@ -539,7 +539,7 @@ let sparklineCellItems (source: Rbt.Spreadsheet.Sparklines.Source) (model: Sprea
                             yield zoneForCell model addr.Row addr.Col,item
                     | None -> ()]
 
-let private buildCellPaintItems (printOffset: (float * float * float) option) (range: VisibleRange option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
+let private buildCellPaintItems (printOffset: (float * float * float) option) (printFitMeasurer: TextMeasurer option) (range: VisibleRange option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = range |> Option.defaultWith (fun () -> visibleRange model viewport)
     let padX = printPadXOf model
     let printing = printOffset.IsSome
@@ -548,12 +548,27 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (r
         else None
     let rowDescent = rowDescentsOf normalPrintLevels.IsSome model
     let cells = visibleCellsInRange model viewport visible
+    let printScale = match printOffset with Some (_, _, scale) -> scale | None -> 1.0
+    let printMeasure =
+        match printFitMeasurer with
+        | Some _ -> printFitMeasurer
+        | None when printing ->
+            viewport.Measurer
+            |> Option.map (fun measure ->
+                fun text pt family bold italic -> measure text pt family bold italic * printScale)
+        | None -> None
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.
     let cellState (cell: CellGeometry) =
         let addr = cell.Address
-        // Its look (`cellLook`): its format with its table's look under it and its conditional formats over it.
-        let look = cellLook model addr.Row addr.Col (SheetOps.shownCell model addr) viewport.Measurer cell.Rect.Width
+        // A printed column and its glyphs both use 600-dpi geometry. Numeric
+        // overflow must be decided in that geometry, before page scaling.
+        let look =
+            if not printing then
+                cellLook model addr.Row addr.Col (SheetOps.shownCell model addr) viewport.Measurer cell.Rect.Width
+            else
+                cellLookFitted (Some { Zoom = printScale; Overhang = 0.0; Print = true }) model addr.Row addr.Col
+                    (SheetOps.shownCell model addr) printMeasure (cell.Rect.Width * printScale)
         cell, look, zoneForCell model addr.Row addr.Col
 
     let states = cells |> List.map cellState
@@ -1445,14 +1460,14 @@ let buildDrawingPaintItems (model: SpreadsheetModel) (viewport: Viewport) : Pain
                     yield DrawImage (placed, { ContentType = contentType; Data = data; Label = drawingLabel drawing })
                 | KeptObject _ -> yield! drawingFrameItems placed (drawingLabel drawing) ]
 
-let private buildStaticPaintItems printing (source: Rbt.Spreadsheet.Sparklines.Source option) (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
+let private buildStaticPaintItems printing printFitMeasurer (source: Rbt.Spreadsheet.Sparklines.Source option) (model: SpreadsheetModel) (viewport: Viewport): PaintItem list =
     let model = model |> applyFilterRowHeights
     [
         yield FillRect ({ X = 0.0; Y = 0.0; Width = viewport.Width; Height = viewport.Height }, "#ffffff")
         yield! buildHeaderPaintItems model viewport
         // Static (PNG/PDF) path: drop the zone tag; everything paints at
         // absolute cell coordinates because ScrollX/Y are zero.
-        for (_zone, item) in buildCellPaintItems printing None model viewport do
+        for (_zone, item) in buildCellPaintItems printing printFitMeasurer None model viewport do
             yield item
         match source with
         | Some source ->
@@ -1468,10 +1483,15 @@ let private buildStaticPaintItems printing (source: Rbt.Spreadsheet.Sparklines.S
         yield! buildFreezeDividerItems model viewport
     ]
 /// Paint a static screen snapshot, retaining screen border geometry.
-let buildPaintItemsWithSource source model viewport = buildStaticPaintItems None (Some source) model viewport
+let buildPaintItemsWithSource source model viewport = buildStaticPaintItems None None (Some source) model viewport
 
 /// Paint a print slice using printer-dot border geometry. Workbook sparkline overlays are supplied separately.
-let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some offset) None model viewport
+let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some offset) None None model viewport
+
+/// Measure the fit at the printer's page scale without changing the glyph
+/// widths used to place text and wraps in the unscaled paint geometry.
+let buildPrintPaintItemsFitted offset fitMeasurer model viewport =
+    buildStaticPaintItems (Some offset) (Some fitMeasurer) None model viewport
 
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport) =
@@ -1516,7 +1536,7 @@ let cameraRangePaintItems (source: SpreadsheetModel) (range: CellRange) (picture
             { StartRow = range.From.Row; EndRowExclusive = range.To.Row + 1
               StartCol = range.From.Col; EndColExclusive = range.To.Col + 1 }
         let cells =
-            buildCellPaintItems None (Some exact) source viewport
+            buildCellPaintItems None None (Some exact) source viewport
             |> List.map (snd >> mapItem)
         let frame = { X = 0.0; Y = 0.0; Width = pictureWidth; Height = pictureHeight }
         Some [ Clipped (frame, cells) ]
@@ -1623,7 +1643,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                         })
                 }
 
-        for (zone, item) in buildCellPaintItems None None model viewport do
+        for (zone, item) in buildCellPaintItems None None None model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
         for (zone, item) in sparklineCellItems source model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }

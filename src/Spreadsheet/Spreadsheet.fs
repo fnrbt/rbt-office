@@ -3913,7 +3913,7 @@ type Spreadsheet(container: Element) as this =
         let zoom = appliedZoom
         let screenWidth = System.Math.Floor (System.Math.Round (System.Math.Round w * zoom, 9) + 0.5)
         let look =
-            SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0 } : SpreadsheetCellText.NumberFit)) model row col cellData
+            SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0; Print = false } : SpreadsheetCellText.NumberFit)) model row col cellData
                 (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
         // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019). In compact
         // form a level of items is moved in by the pivot's `indent` (CompactRowIndent) of indent units, at least 13 px

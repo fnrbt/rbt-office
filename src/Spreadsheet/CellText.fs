@@ -929,7 +929,9 @@ type NumberFit =
     { /// The zoom (1.0 at 100 %).
       Zoom: float
       /// What GDI adds to a line of a slanted or made-up bold font (`ExcelText.overhang`: italic, bold in Small Fonts), else 0.
-      Overhang: float }
+      Overhang: float
+      /// Printed formats can reserve leading `_x` width while drawing hashes.
+      Print: bool }
 
 /// The room a number's text has in a cell `cellWidthPx` wide (screen pixels), as Excel 2019 fits it: the
 /// cell less a margin of its font as drawn there, 2 x ceil(d / 4) + 1 px where d is the font's widest digit
@@ -952,13 +954,16 @@ let textInset (measure: string -> float) : int =
     int (System.Math.Ceiling (widest / 4.0))
 
 let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
-    max 0.0 (System.Math.Round cellWidthPx - float (2 * textInset measure + 1) - fit.Overhang)
+    let margin = float (2 * textInset measure + 1)
+    // On paper the column, advances and cell inset are scaled together.
+    // The screen path retains its whole-pixel GDI margin.
+    max 0.0 (System.Math.Round cellWidthPx - margin * (if fit.Print then fit.Zoom else 1.0) - fit.Overhang)
 
 /// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`) - none where not one fits (Excel shows nothing: a 20-px
 /// column of italic Calibri 11 at 57 %, make-number-room-fixture.py).
-let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
+let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) (reservedSlots: int) =
     let room = fittedRoom fit measure cellWidthPx
-    System.String('#', max 0 (int (room / max 1.0 (measure "#"))))
+    System.String('#', max 0 (int (room / max 1.0 (measure "#")) - reservedSlots))
 
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
     // Excel's General-format digit budget = floor((cellWidthPx - 5) / MDW).
@@ -1027,7 +1032,7 @@ let private generalNumberFitted (fit: NumberFit) (measure: string -> float) (cel
         if measure shortest <= room + 1e-9 then result <- ValueSome shortest
     match result with
     | ValueSome s -> s
-    | ValueNone -> fittedHashes fit measure cellWidthPx
+    | ValueNone -> fittedHashes fit measure cellWidthPx 0
 
 let private fractionDenominatorDigits (code: string) : int option =
     let mutable i = 0
@@ -1682,6 +1687,18 @@ let private textUnderFormat (code: string) (text: string) : string =
         // (The literals unwrapped before the text goes in: a text's own quotes stay.)
         (unwrapTextPlaceholderLiterals ((stripExcelWidthPlaceholders section).Replace("@", "\u0001"))).Replace("\u0001", text)
 
+/// A leading `_x` before a printed number retains one hash position when
+/// the value overflows. A trailing `_x` does not change the hash count.
+let private leadingPrintHashSlots (section: string) =
+    let mutable i = 0
+    while i < section.Length && section.[i] = '[' && section.IndexOf(']', i) > i do
+        i <- section.IndexOf(']', i) + 1
+    let mutable slots = 0
+    while i + 1 < section.Length && section.[i] = '_' do
+        slots <- slots + 1
+        i <- i + 2
+    slots
+
 /// Per-cell display text logic, in a workbook's date system (`date1904`). Public so the VBA-style API surface
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied
@@ -1693,9 +1710,11 @@ let cellDisplayTextFitted
     (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     let fontPt = format.FontSize |> Option.defaultValue 11.0
     // (Measured as Excel draws the text: fitted as Excel fits it, `NumberFit`.)
-    let fitOrOverflow measure cellWidth fontName fontPt text =
+    let fitOrOverflow measure cellWidth fontName fontPt text hashReserve =
         match fit, measure with
-        | Some fit, Some (m: string -> float) -> if m text <= fittedRoom fit m cellWidth + 1e-9 then text else fittedHashes fit m cellWidth
+        | Some fit, Some (m: string -> float) ->
+            if m text <= fittedRoom fit m cellWidth + 1e-9 then text
+            else fittedHashes fit m cellWidth hashReserve
         | _ -> fitOrOverflow measure cellWidth fontName fontPt text
     let generalNumberDisplay cellWidth fontPt n =
         match fit, measure with
@@ -1715,7 +1734,7 @@ let cellDisplayTextFitted
             // commands. Keep these on the original Model.formatNumber path.
             // Matched before the date test, which would read "date" and
             // "currency" as Excel date tokens.
-            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumberIn date1904 format.NumberFormat n)
+            fitOrOverflow measure cellWidth format.FontName fontPt (formatNumberIn date1904 format.NumberFormat n) 0
         | Some code when isDateOrTimeFormat code || hasElapsedBracket code ->
             // Out-of-range serials (e.g. testdateoverflow's 1E+20) can't be
             // formatted as a date; Excel renders ##### overflow for those
@@ -1723,15 +1742,19 @@ let cellDisplayTextFitted
             // the None branch as "doesn't fit" by passing an oversized
             // text that fitOrOverflow will hash-render.
             match formatExcelDateOpt date1904 code n with
-            | Some s -> fitOrOverflow measure cellWidth format.FontName fontPt s
-            | None -> fitOrOverflow measure cellWidth format.FontName fontPt (System.String('M', 1000))
+            | Some s -> fitOrOverflow measure cellWidth format.FontName fontPt s 0
+            | None -> fitOrOverflow measure cellWidth format.FontName fontPt (System.String('M', 1000)) 0
         | Some code when System.String.IsNullOrWhiteSpace code ||
                          code.Equals("general", System.StringComparison.OrdinalIgnoreCase) ->
             generalNumberDisplay cellWidth fontPt n
         | Some code ->
             // Real Excel format code (0.000, #,##0.00, 0%, 0.00E+00, etc.).
             let formatted, selectedSection = formatExcelNumber code n
-            let fitted = fitOrOverflow measure cellWidth format.FontName fontPt formatted
+            let hashReserve =
+                match fit with
+                | Some fit when fit.Print -> leadingPrintHashSlots selectedSection
+                | _ -> 0
+            let fitted = fitOrOverflow measure cellWidth format.FontName fontPt formatted hashReserve
             if selectedSection.IndexOf("* ") < 0 then fitted
             else expandAccountingFill measure cellWidth selectedSection fitted
         | None -> generalNumberDisplay cellWidth fontPt n

@@ -1,0 +1,25 @@
+# Excel 2019, fresh workbook direct ExportAsFixedFormat, 100% print scale; widths in Excel character units; the generator defines all values and formats.
+font	format	value	last_hash_width	first_full_width	hash_counts_at_8.00_8.25_8.50_8.75_9.00_9.25_9.50	neighbor
+Calibri 11	currency	1234567	9.50	9.75	7,7,7,8,8,8,8	occupied and free match
+Arial 10	currency	1234567	9.50	9.75	7,7,7,8,8,8,8	occupied and free match
+Calibri 11	accounting	1234567	10.75	11.00	6,6,6,7,7,7,7	occupied and free match
+Arial 10	accounting	1234567	10.50	10.75	6,6,6,7,7,7,7	occupied and free match
+Calibri 11	general	1234567	<8.00	<=8.00	0,0,0,0,0,0,0	occupied and free match
+Arial 10	general	1234567	<8.00	<=8.00	0,0,0,0,0,0,0	occupied and free match
+Calibri 11	0.00% holdout	12345.6789	11.50	11.75	7,7,7,8,8,8,8	occupied and free match
+Arial 10	0.00% holdout	12345.6789	11.50	11.75	7,7,7,8,8,8,8	occupied and free match
+Calibri 11 bold	currency with parenthesis reserve	1234567	10.00	10.25	7,7,7,8,8,8,8	occupied and free match
+# pdftotext -bbox at 100%: Calibri 11 currency text $1,234,567 = 50.53pt; ####### = 38.62pt; ######## = 44.14pt.
+# Arial 10 currency text $1,234,567 = 49.68pt; ####### = 38.66pt; ######## = 44.18pt.
+# PDF gridline separation at Calibri currency widths 9.50 and 9.75: 53.16pt and 54.84pt respectively.
+# Factorial controls: width vector 9.25,9.50,9.625,9.75,9.875,10.00,10.125,10.25,10.50; Hn = n hashes, F = full.
+# 100% regular plain: H8,H8,H9,F,F,F,F,F,F
+# 100% bold plain: H8,H8,H9,F,F,F,F,F,F
+# 100% regular reserve: H8,H8,H9,H9,H9,H9,H9,F,F
+# 100% bold reserve: H8,H8,H9,H9,H9,H9,H9,F,F
+# 100% regular and bold accounting without fill: H7,H7,H8,H8,H8,H8,H8,H8,H9
+# 75% regular plain: H8,H9,F,F,F,F,F,F,F
+# 75% bold plain: H8,H9,H9,F,F,F,F,F,F
+# 75% regular reserve: H8,H9,H9,H9,H9,H9,H9,F,F
+# 75% bold reserve: H8,H9,H9,H9,H9,H9,H9,F,F
+# 75% regular and bold accounting without fill: H7,H8,H8,H8,H8,H8,H8,H8,H9

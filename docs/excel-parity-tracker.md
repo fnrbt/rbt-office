@@ -356,6 +356,48 @@ Found, not matched:
   ("31‐Jan‐16"), from Rbt.Pdf's ToUnicode (its extra glyph mappings do not override the cmap's); words differ.
 - Fonts the machine has no file of (Aptos, Book Antiqua, Century Gothic, Myriad Pro) are set in Calibri.
 
+### Direct-PDF numeric overflow, 2026-11-22
+
+Fresh Excel 2019 direct exports, not Page Break Preview, of `synthetic-print-overflow.xlsx`
+(`make-print-overflow-fixture.py`, oracle `print-overflow-direct.excel.tsv`): a
+Calibri 11 `$1,234,567` prints as eight hashes at column width 9.50 and as the
+value at 9.75; a holdout `0.00%` value `1234567.89%` hashes through 11.50 and
+prints at 11.75. Arial 10 has the same transitions. General `1234567` prints
+at width 8.00. Empty versus occupied neighbours make no difference. At 9.50
+the Calibri cell is 53.16 pt wide and the printed currency glyphs take 50.53
+pt; their 2.63 pt remainder is smaller than the existing five-pixel cell
+inset (3.75 pt), while the 9.75 cell's 54.84 pt leaves 4.31 pt and fits.
+That same printer-space comparison, with the font measured at 600 dpi,
+explains the holdout; using screen GDI widths or a generous PDF glyph-only
+check does not.
+
+Formats matter independently of the number: a trailing `_)` delays the full
+value through width 10.00 (10.25 fits) but does **not** reduce the number of
+hashes. A leading `_(` in an accounting format occupies one hash position
+before overflow (one fewer hash at a given width), even without `*` fill.
+At 75% print scale both the column and printer advances change: some
+thresholds and hash counts differ from 100%, so the PDF fit measures its font
+at the page's scale before choosing text. The browser grid's screen fitting
+rule is unchanged.
+
+The remaining printer-rounding uncertainty in the public occupied-row controls:
+at 100% width 10.50 the accounting format prints eight hashes here versus
+Excel's nine, and the percentage holdout prints nine versus Excel's ten.
+At 75% the trailing-`_)` format at width 10.125 shows the value here where
+Excel prints nine hashes (both show the value at 10.25). The other 117 of
+120 occupied controls match, with no value erroneously hashed. Do not change
+the browser's screen rule or add a workbook-specific width allowance to
+conceal these narrow print-rounding differences.
+
+
+On the private apartment acquisition workbook's Annual Cash Flow direct PDF,
+the 27 million-dollar values in G6:O6, G8:O8 and G12:O12 print as nine
+hashes (Year 3 through Year 11); the former native export printed all 27
+values. The cells are numeric, Calibri 11 bold, number format
+`"$"#,##0_);\("$"#,##0\)` and width 10. They are not text-overflow
+candidates; their printed 50-point glyphs plus the format's trailing space
+do not fit the column with its cell inset. This workbook remains local-only.
+
 ## Rich grid objects: pivot styles, sparklines, icon sets, data bars against Excel 2019, 2026-11-22
 
 The objects "fancy" templates are made of, against Excel 2019 on the VM: the dashboards' pivot tables and sparklines

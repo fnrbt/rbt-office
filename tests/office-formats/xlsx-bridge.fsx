@@ -1171,7 +1171,7 @@ do
             fun text fontPt family bold italic ->
                 let px = Rbt.Spreadsheet.ExcelText.pixelSize fontPt zoom
                 Rbt.Spreadsheet.ExcelText.textWidth (fun _ -> 0.0) (defaultArg family "Calibri") bold italic px (Rbt.Spreadsheet.ExcelText.isSmallFonts fontPt zoom) text
-        let fit : Rbt.Spreadsheet.CellText.NumberFit = { Zoom = zoom; Overhang = 0.0 }
+        let fit : Rbt.Spreadsheet.CellText.NumberFit = { Zoom = zoom; Overhang = 0.0; Print = false }
         (Rbt.Spreadsheet.Paint.cellLookFitted (Some fit) model 0 0 (Map.tryFind (addr 0 0) model.Cells) (Some measure) (Math.Floor (width * zoom + 0.5))).Text
     // oyabayo's italic Aptos Narrow 14 at 57 %: -100.00% from a 91-px column, upright from 86.
     eq "numbers: italic has round(px x 0.16) less room (Aptos Narrow 14 italic at 57 %: 2 px)"

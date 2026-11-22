@@ -524,6 +524,56 @@ do
     ok "print bestFit: direct numeric overflow stays as hashes"
         (List.contains "####" directText)
         (sprintf "%A" directText)
+    // Fresh direct Excel PDF: formatted numbers fit in printer-dot geometry,
+    // not in the screen's GDI metrics and not across an empty neighbour.
+    // The public synthetic-print-overflow.xlsx sweeps column widths; its
+    // print-overflow-direct.excel.tsv includes a separate percentage holdout.
+    let overflow =
+        Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook
+            (XlsxReader.loadBytesNative
+                (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-overflow.xlsx"))) |> Option.get)
+    let printed = overflow.Sheets |> Array.map (fun sheet -> Pagination.withPrintSizes sheet.Model)
+    let printMeasure scale : Rbt.Spreadsheet.Layout.TextMeasurer =
+        fun text pt family bold italic ->
+            let dots = int (System.Math.Floor(pt * scale * 600.0 / 72.0 + 0.5))
+            let face = defaultArg family "Calibri"
+            Rbt.Spreadsheet.ExcelText.textWidth (fun _ -> 0.0) face bold italic dots false text * 96.0 / 600.0
+    let printShown sheet col scale =
+        let model = printed.[sheet]
+        let address = { Row = 2; Col = col }
+        let cell = Map.tryFind address model.Cells
+        let width = getColumnWidth col model * scale
+        (Painter.cellLookFitted (Some { Zoom = scale; Overhang = 0.0; Print = true })
+            model 2 col cell (Some (printMeasure scale)) width).Text
+    let currencyShown = [ printShown 0 7 1.0; printShown 0 8 1.0; printShown 0 1 1.0 ]
+    ok "print overflow: currency threshold and hash budget"
+        (currencyShown = [ "########"; "$1,234,567"; "#######" ]) (sprintf "%A" currencyShown)
+    ok "print overflow: accounting reserves a leading placeholder"
+        (printShown 1 1 1.0 = "######" && printShown 1 12 1.0 = "#########"
+         && (printShown 1 13 1.0).Contains("1,234,567"))
+        (sprintf "%A" [ printShown 1 1 1.0; printShown 1 12 1.0; printShown 1 13 1.0 ])
+    ok "print overflow: General is not currency"
+        (printShown 2 1 1.0 = "1234567") ""
+    let percentShown = [ printShown 3 15 1.0; printShown 3 16 1.0 ]
+    ok "print overflow: percentage holdout"
+        (percentShown = [ "###########"; "1234567.89%" ]) (sprintf "%A" percentShown)
+    ok "print overflow: trailing placeholder changes fit, not hashes"
+        (printShown 8 9 1.0 = "#########"
+         && (printShown 8 10 1.0).Trim() = "$1,234,567")
+        (sprintf "%A" [ printShown 8 9 1.0; printShown 8 10 1.0 ])
+    let scaledShown =
+        [ printShown 15 1 0.75; printShown 15 2 0.75; printShown 15 3 0.75
+          printShown 18 3 0.75; printShown 18 4 0.75 ]
+    ok "print overflow: 75% font advances and column scale"
+        (scaledShown = [ "########"; "#########"; "$1,234,567"; "#########"; "$1,234,567" ])
+        (sprintf "%A" scaledShown)
+    ok "print overflow: 75% leading reserve, trailing reserve"
+        (printShown 16 2 0.75 = "#########"
+         && printShown 17 1 0.75 = "#######"
+         && printShown 17 2 0.75 = "########"
+         && (printShown 16 8 0.75).Trim() = "$1,234,567")
+        (sprintf "%A" [ printShown 16 2 0.75; printShown 17 1 0.75;
+                         printShown 17 2 0.75; printShown 16 8 0.75 ])
     let resized = Rbt.Spreadsheet.SheetOps.setAxisSize false 1 1 40.0 narrow
     let moved = insertColumn 1 narrow
     ok "print bestFit: resize clears flag, insert moves it"
