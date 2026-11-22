@@ -170,7 +170,7 @@ do
         let drawing : Charts.DrawingParts =
             { Theme = ecommerceTheme
               Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path ecommerceParts) |> Option.bind (fun bytes -> Charts.parseChartWith names ecommerceTheme (text bytes)))
-              Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None) }
+              Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None); Camera = (fun _ _ _ -> None) }
         for item in sheet.Extras.Objects do
             if item.Xml.Contains "chartex" then
                 match Charts.objectScene drawing live item.Xml 600.0 400.0 with

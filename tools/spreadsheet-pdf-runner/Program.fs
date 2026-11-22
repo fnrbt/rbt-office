@@ -89,7 +89,8 @@ let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.
                 Charts.parseChart theme (text bytes)
                 |> Option.map (Charts.withUserShapes (fun name -> Map.tryFind name parts |> Option.map text) path)))
           Picture = (fun id -> partOf id |> Option.map (fun (name, bytes) -> "data:image/" + Path.GetExtension(name).TrimStart('.') + ";base64," + Convert.ToBase64String bytes))
-          Slicer = Rbt.Spreadsheet.Slicers.drawer workbook }
+          Slicer = Rbt.Spreadsheet.Slicers.drawer workbook
+          Camera = (fun _ _ _ -> None) }
     let drawn = (snd models.[sheetIndex]).Value
     // (Anchored to cells: as wide as those cells print.)
     drawn.Drawings, Rbt.Spreadsheet.Paint.drawingOverlays (Charts.objectScene drawing data) (Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes drawn)

@@ -35,7 +35,7 @@ for sheet in wb.Sheets do
     let drawing : Charts.DrawingParts =
         { Theme = theme
           Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path parts |> Option.bind (fun bytes -> Charts.parseChartWith names theme (text bytes) |> Option.map (Charts.withUserShapes (fun name -> Map.tryFind name parts |> Option.map text) path))))
-          Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None) }
+          Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None); Camera = (fun _ _ _ -> None) }
     for item in sheet.Extras.Objects |> List.filter (fun item -> item.Kind = "chart") do
         match Charts.objectScene drawing data item.Xml w h with
         | Some scene ->

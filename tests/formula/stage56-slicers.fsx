@@ -98,7 +98,7 @@ eq "the custom timeline's selected periods: its <x15:dxfs> format (accent 6), th
 let drawer = Slicers.drawer syn
 let synData = liveData synBook
 let partsFor (wb: XlsxReader.Workbook) (draw: string -> string -> Charts.ChartData -> float -> float -> Charts.Primitive list option) : Charts.DrawingParts =
-    { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None); Slicer = draw }
+    { Theme = Charts.defaultTheme; Chart = (fun _ -> None); Picture = (fun _ -> None); Slicer = draw; Camera = (fun _ _ _ -> None) }
 let anchorsOf (wb: XlsxReader.Workbook) =
     [ for sheet in wb.Sheets do
         for item in sheet.Extras.Objects do
