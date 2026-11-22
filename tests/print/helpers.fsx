@@ -342,6 +342,21 @@ do
     let heights = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-pages-heights.xlsx"))) |> Option.get)
     let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = "Heights"; FileName = "f" }
     let text = System.Text.Encoding.Latin1.GetString (Render.toBytes options heights.Sheets.[0].Model)
+    // A page prints its own rows' text, not the row after its last nor before its first (rows of 121 dots summed in
+    // floating point): synthetic-print-pages-titles' page 1 is rows 1-47, page 3 rows 94-137 under row 20.
+    let calibri = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "artifacts", "fonts", "windows", "calibri.ttf")
+    if System.IO.File.Exists calibri then
+        let titles = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-pages-titles.xlsx"))) |> Option.get)
+        let face = Render.fontFace "Calibri" "Calibri" false false (System.IO.File.ReadAllBytes calibri)
+        let withFont : Render.RenderOptions = { DefaultFontFamily = "Calibri"; Fonts = [ face ]; CjkFallback = []; SheetName = "TitlesInside"; FileName = "f" }
+        let pdf = Render.toBytes withFont titles.Sheets.[0].Model
+        let path = System.IO.Path.GetTempFileName()
+        System.IO.File.WriteAllBytes(path, pdf)
+        let pageText (n: int) =
+            let p = System.Diagnostics.Process.Start(System.Diagnostics.ProcessStartInfo("pdftotext", sprintf "-f %d -l %d \"%s\" -" n n path, RedirectStandardOutput = true))
+            let t = p.StandardOutput.ReadToEnd() in p.WaitForExit(); t
+        let p1, p3 = pageText 1, pageText 3
+        ok "print: a page's own rows" (p1.Contains "r47c1" && not (p1.Contains "r48c1") && p3.Contains "r94c1" && p3.Contains "r20c1" && not (p3.Contains "r93c1")) ""
     ok "print: the grid 0.48 pt inside the margins" (text.Contains "50.88 " && text.Contains (sprintf "%g " (792.0 - 54.48))) ""
     ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
 

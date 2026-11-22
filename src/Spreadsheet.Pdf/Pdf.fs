@@ -878,11 +878,14 @@ let private iterSliceItems
     let scrollY = geometry.Row.Sum 0 (rowStart - 1)
     let width = geometry.Col.Sum colStart colEnd
     let height = geometry.Row.Sum rowStart rowEnd
+    // (A hair inside the slice: rows of a fraction of a pixel - 121 dots of 600 dpi - summed in floating point put the
+    // next row's top, or the row before's bottom, a rounding error inside it, and its text was drawn under the page's
+    // last row / over its first: synthetic-print-pages-titles.)
     let viewport =
-        { ScrollX = scrollX
-          ScrollY = scrollY
-          Width = width
-          Height = height
+        { ScrollX = scrollX + 1e-6
+          ScrollY = scrollY + 1e-6
+          Width = width - 2e-6
+          Height = height - 2e-6
           HeaderHeight = 0.0
           RowHeaderWidth = 0.0
           Measurer = Some measurer }
