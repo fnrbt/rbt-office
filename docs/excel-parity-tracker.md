@@ -270,7 +270,55 @@ acre-property's Summary (a page more than Excel). Words of the real-estate pages
 Excel's; the rest mostly from elsewhere - rows fitted on opening a line higher than Excel's (acre's MF sheets: a
 two-line header of 28.8 pt fitted to three lines, every row below 14.7 pt lower), the PDF runner's faces (Calibri,
 Arial, Cambria, Times New Roman, Verdana: Aptos Narrow, Tahoma, Arial MT are set in Calibri - oyabayo and
-acre-property 4 pt across), the columns AutoFit left (above).
+acre-property 4 pt across), the columns AutoFit left (above). (Most of this is matched now: "Print text and pages,
+round 2" below.)
+
+## Print text and pages against Excel 2019's PDF, round 2, 2026-11-22
+
+What "Print pages" left: the words of the real-estate pages, AutoFit columns in print, where text stands in its cell,
+the three sheets still paged otherwise. Each rule found on generated workbooks exported by Excel 2019 on the VM
+(`excel-print-pages.sh`), then implemented. Fixtures: `make-print-place-fixture.py` (Place: 7 cell fonts in rows of
+15 - 45 pt at the bottom, middle and top, right aligned; Pads: `_x` widths; Blank*: pages with nothing on them),
+checked in as synthetic-print-pages-place / -blank; `make-print-pages-fixture.py` "filter" (synthetic-print-pages-filter),
+"bestfit-sweep", "bestfit-figures-<face><size>" (15 Normal fonts, not checked in: the rule is not found). Checks:
+tests/print/helpers.fsx ("print pages:" reads every synthetic-print-pages-*.excel.tsv; "print: the text's inset by the
+Normal font", "a format's widths of characters", "text at the bottom of a row on one baseline", "... the top and in
+the middle"). Measured with `compare-print-pages.fsx` and `compare-pdf-words.py` (a page is within 1 pt when its
+paired words' median move is, across and down).
+
+Real-estate PDFs, word by word: 306 of 370 pages within 1 pt of Excel's (before: 49 of 354 by the same count - the
+previous round's 47 - with Excel's PDFs of that round; more pages compare now that they pair). Sheets paged as Excel: 183 of 186 (before 181): Annual Cash Flow, Rental (AutoFit columns) and oyabayo (below) differ.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| The PDF runner prints the workbook as the browser has it: rows fitted on opening by Excel's rule | acre's MF sheets (Excel's row 5 30 pt; our runner's native geometry fitted it to 45 with the renderer's widths, every row below 14.7 pt lower) | `ExcelNativeRunner.buildWorkbookContext` | `XlsxBridge.Import.importWorkbook`'s model (tools/spreadsheet-pdf-runner) |
+| Text is set and measured in its own face where the machine has it | Excel's PDFs embed Segoe UI Black, Aptos, Tahoma ...; acre-property's words 4 pt across in Calibri | Calibri, Arial, Cambria, Times, Verdana only | `Fonts`: a family found by the name tables (Windows family, OS/2 style) of the files in the font directories, before the known sets' prefixes; RB_WORD_FONT_DIR a PATH-separated list (windows:windows-extra); the runner embeds the faces `Pdf.requiredFaces` names |
+| A row an AutoFilter hides prints nothing, as a hidden row | houseflipping's "2 REPAIR ESTIMATOR" (1,051 rows hidden in the filter's range, columns of no criteria): fit 1 x 6 at 55 % on 2 pages; "filter": FilterFit / FilterBreaks 1 page | the rows printed (6 pages at 24 %) | `Pagination.rowHeightPx` |
+| Pages at the end with nothing on them are left out (no cell that prints, no text running in, no merged cell, no drawing); a blank page before one with something prints; &N counts the pages printed; a column's or row's own fill or font, gridlines, a drawing in another column of pages do not count | Blank (pages 2-3 of 4 blank, printed), BlankLast 3 of 4, BlankLastTwo 4 of 6, BlankLastGrid, -ColFill, -RowFill, -Shape 3, -ColFont 4 of 6; acre-property Summary 7, dcf Financial Model 9 | every page | `Pagination.paginate` |
+| A cell's text stands ceil(d / 4) + 4 dots in from its sides, d the Normal font's widest digit in print, whatever the cell's font | the rowunit / heights fixtures' first text, 33 Normal fonts: Calibri 9 14 dots, Calibri 11 16, Calibri 14 19, Cambria 14 21, Verdana 10 18; the print-text fixture's Arial and Times cells under Calibri 11 16 | 16 dots | `Paint.printPadXOf`; all 33 to the dot |
+| A format's `_x` leaves the width of x in the cell's font | Pads: `0_)` 28 dots of Calibri 11, `0_W` 82, `0_.` 23, a literal space 21; acre's MF sheets' `"$"#,##0_)` | a space | `CellText.widthPads`, Paint (within 2 dots) |
+| Text at the bottom of its cell: every such cell of a row on one baseline, (the row's largest descent of that text, `FontMetrics.lineOf`, + 1) screen px above the bottom, scaled as the row (`PrintRowScale`) | Place: a row with Calibri 20 sets Calibri 11, Arial, Segoe UI, Times, Trebuchet 51.5 dots up under Calibri 11 (8.4 - 8.5 px at each Normal font's row scale: 54.5 under Segoe UI 10, 50.5 Times 12); rowunit: 22 of 24 fonts within a pixel | each cell by its own font's Windows descent, 21 - 28 dots low in such rows | `PaintText.Baseline`; within 2 dots |
+| At the top and in the middle by the font's own metrics in print whatever the Normal font (at the top 4.5 dots lower), from the grid's lines | Place: Calibri 11 90.5 dots below the top, Arial 10 79.5, Segoe UI 10 91.5 under Calibri 11 and Segoe UI 10 alike | raised 4 dots with the rest of the text (`TextRaisePt`) | top within 4.5 dots, middle 1 (Segoe UI 5) |
+
+Found, not matched:
+- AutoFit columns (`bestFit="1"`): one with text alone prints as its width; one with a number prints wider - a pixel
+  more on some sheets (bestfit-sweep's One, Fixed2, Dates: 85 px for 84) but not others (bestfit-figures' Wide, the
+  same columns and values), or as wide as its numbers "need" in print: a General number of k figures needs
+  round(k a) + 11 px, a = 8.33 px for Calibri 10 / 11, Arial 10, Tahoma 10, Verdana 10, Aptos Narrow 11, 10 for
+  Calibri 12 / Arial 12 / Times 12, 6.67 Calibri 9, 11.67 Calibri 16, else the screen digit (Arial 8, Arial 14,
+  Calibri 20, Segoe UI Black 11) - not the digit's width at the screen or in print, nor Excel's own AutoFit on the
+  screen (General 7 px a figure there); formatted numbers need less a character than figures, and 50.0% more than
+  12.5%. acre's Annual Cash Flow ("$"#,##0_) values of 7 figures, bold totals) prints its columns at 106 px for 70,
+  more than any of these. Data: bestfit-sweep / bestfit-figures PDFs (generator sets checked in); left for another
+  round. acre's Annual Cash Flow and choudhary's Rental page otherwise for it.
+- oyabayo's last page (rows 74 - 116 x column CD, nothing on it) is in Excel's PDF though blank pages at the end are
+  left out everywhere else (no fill, drawing or text running there found); ours leaves it out: 38 pages, Excel 39.
+- Text placement: Segoe UI and Segoe UI Black a pixel lower than Excel at the bottom (their descent in the GDI table
+  a pixel short of what Excel places them by): acre-property's words 0.7 pt low; at the top Trebuchet 1 px.
+- oyabayo's right-aligned numbers in some columns 4.6 pt right of Excel's (not found).
+- The PDF's text of a glyph two characters share is the other one: Calibri's hyphen is U+2010 in our PDFs' text
+  ("31‐Jan‐16"), from Rbt.Pdf's ToUnicode (its extra glyph mappings do not override the cmap's); words differ.
+- Fonts the machine has no file of (Aptos, Book Antiqua, Century Gothic, Myriad Pro) are set in Calibri.
 
 ## Formula oracle on real-world models, 2026-11-21
 
