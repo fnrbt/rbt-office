@@ -7,12 +7,22 @@
 ' manual or auto), pdf (the PDF's name, or "error ..."), col / colafter (each column of the used range and one more:
 ' its index, ColumnWidth and Width in points, before and after the export). Run it in the desktop session (excel-print-pages.sh).
 Option Explicit
-Dim fso, x, wb, s, out, base, n, i, b, ps, pdf, t, lastc
+Dim fso, x, wb, s, out, base, n, i, b, ps, pdf, t, lastc, openErrNumber, openErrDescription
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set x = CreateObject("Excel.Application")
 x.Visible = True : x.DisplayAlerts = False : x.AutomationSecurity = 3 : x.ScreenUpdating = True
 x.AskToUpdateLinks = False
+On Error Resume Next
 Set wb = x.Workbooks.Open(WScript.Arguments(0), 0, True)
+openErrNumber = Err.Number
+openErrDescription = Err.Description
+If openErrNumber <> 0 Then
+  x.Quit
+  On Error GoTo 0
+  WScript.StdErr.WriteLine "Workbooks.Open failed (" & openErrNumber & "): " & openErrDescription
+  WScript.Quit 1
+End If
+On Error GoTo 0
 Set out = fso.OpenTextFile(WScript.Arguments(1), 2, True, -1)
 base = fso.BuildPath(fso.GetParentFolderName(WScript.Arguments(1)), fso.GetBaseName(WScript.Arguments(1)))
 
