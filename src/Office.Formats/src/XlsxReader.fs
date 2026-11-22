@@ -559,6 +559,10 @@ type PivotTable = {
     /// caption. `ShowHeaders`: the captions of its fields shown, with their buttons (`showHeaders`).
     Compact: bool
     ShowHeaders: bool
+    /// The characters a level of the row fields' items is moved in, in compact form (Excel's CompactRowIndent): the
+    /// file's `indent` + 1 - Excel 2019 writes `indent="0"` for 1, none for 2, `indent="2"` for 3
+    /// (synthetic-pivot-indent.xlsx).
+    CompactIndent: int
 }
 
 /// sheetFormatPr defaults captured at parse time so renderers can fall back
@@ -1091,6 +1095,53 @@ type NoteGeometry = {
     FinalColumns: NoteAxisSnapshot
 }
 
+/// A form control of a sheet (a check box, option button, combo / list box, spinner, scroll bar, group box,
+/// label, button) or an ActiveX control, as the file has it, for drawing: its kind, where it is, its caption
+/// and what its `ctrlProps` part (or, without one, its VML `x:ClientData`) says. The parts themselves are
+/// kept as they are (`KeptElements`, `KeptRelationships`) and written back unchanged.
+type SheetFormControl = {
+    /// The control's number (`shapeId`, the VML shape `_x0000_s<n>`).
+    ShapeId: int
+    Name: string
+    /// The `objectType` of its `ctrlProps`: CheckBox, Radio, Drop, List, Spin, Scroll, GBox, Label, Button,
+    /// EditBox, Dialog; "ActiveX" for an ActiveX control (drawn as its picture).
+    Kind: string
+    Anchor: SheetAnchor
+    /// The caption (the VML text box), lines split at "\n".
+    Text: string
+    /// The caption's font: face, size in points, colour ("#RRGGBB"; None: automatic), bold, italic.
+    Font: string * float * string option * bool * bool
+    /// The caption's alignment: Left / Center / Right / Justify, Top / Center / Bottom.
+    TextHAlign: string
+    TextVAlign: string
+    /// 0 unchecked, 1 checked, 2 mixed (a check box or option button as saved).
+    Checked: int
+    /// The cell the control's value is (`fmlaLink`) and the items of a combo / list box (`fmlaRange`).
+    LinkedCell: string option
+    InputRange: string option
+    /// The selected item of a combo / list box (from 1; 0 none) as saved.
+    Selected: int
+    Value: int
+    Min: int
+    Max: int
+    Inc: int
+    Page: int
+    /// A scroll bar across (else down).
+    Horizontal: bool
+    /// The lines a combo box drops down.
+    DropLines: int
+    /// Drawn with 3-D shading (no `noThreeD`).
+    ThreeD: bool
+    /// The first option button of a group (`firstButton`).
+    FirstButton: bool
+    /// Not shown (VML `visibility:hidden`).
+    Hidden: bool
+    /// An ActiveX control's picture (or a form control's, when it has one): content type, data.
+    Picture: (string * byte[]) option
+    /// The macro a click runs (`fmlaMacro`, `x:FmlaMacro`: "[0]!Name" or "Name").
+    Macro: string option
+}
+
 type SheetExtras = {
     Images: SheetImage list
     Objects: SheetObject list
@@ -1210,13 +1261,15 @@ type SheetExtras = {
     Moves: (bool * bool * int * int) list option
     /// Original, per-edit and final axes for VML note-box reprojection.
     NoteAxes: NoteGeometry option
+    /// The sheet's form controls and ActiveX controls, for drawing (their parts are kept as they are).
+    FormControls: SheetFormControl list
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []; IgnoredErrors = []; Protected = false
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None }
+      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None; FormControls = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -5349,6 +5402,7 @@ module PivotTables =
                 PageFieldCount = Ns.childNs "pageFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pageField") |> List.length) |> Option.defaultValue 0
                 Compact = Xml.attr "compact" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
                 ShowHeaders = Xml.attr "showHeaders" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
+                CompactIndent = (Xml.attr "indent" ptNode |> Option.bind tryParseInt |> Option.defaultValue 1) + 1
                 RowFieldTabular =
                     let fields = Ns.childNs "pivotFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pivotField") |> List.toArray) |> Option.defaultValue [||]
                     fieldIndexes "rowFields" |> List.map (fun index ->
@@ -5546,8 +5600,10 @@ module SlicerParts =
                     let tabular = data |> Option.bind (Xlsx.sElem "tabular")
                     let olap = data |> Option.bind (Xlsx.sElem "olap")
                     let tableCache = Xlsx.sElem "extLst" root |> Option.bind (fun extLst -> Xlsx.sElems "tableSlicerCache" extLst |> List.tryHead)
+                    // (Excel 2019 writes it in the cache definition's own extLst, `<x:ext><x15:slicerCacheHideItemsWithNoData/>`.)
                     let hidesNoData =
-                        tabular |> Option.bind (Xlsx.sElem "extLst") |> Option.map (fun extLst -> not (Xlsx.sElems "slicerCacheHideItemsWithNoData" extLst).IsEmpty) |> Option.defaultValue false
+                        [ Some root; tabular ]
+                        |> List.exists (fun owner -> owner |> Option.bind (Xlsx.sElem "extLst") |> Option.exists (fun extLst -> not (Ns.descendantsNs "slicerCacheHideItemsWithNoData" extLst).IsEmpty))
                     let source =
                         match tabular, olap, tableCache with
                         | Some tabular, _, _ ->
@@ -5946,6 +6002,208 @@ let private readDrawing (source: PartSource) (drawingPath: string) : SheetImage 
                 r.Id, r.Type, (if isPart then "/" + relTargetPath drawingPath r else r.Target), not (isInternal r))
         List.ofSeq images, List.ofSeq objects, keptRels
     | _ -> [], [], []
+
+// ---- form controls -------------------------------------------------------------
+
+/// The shapes of a VML drawing part, read leniently (VML need not be well formed): the shape's number
+/// (`o:spid` or `id` `_x0000_s<n>`), its `ClientData` type and elements (name -> text, "" for an empty
+/// element), its text box's text and font, its style's `visibility:hidden`, and its picture's relationship.
+type private VmlShape = {
+    Number: int
+    ObjectType: string
+    Data: Map<string, string>
+    Text: string
+    Font: string * float * string option * bool * bool
+    Align: string option
+    Hidden: bool
+    ImageRel: string option
+}
+
+let private vmlRegex (pattern: string) =
+    System.Text.RegularExpressions.Regex(pattern, System.Text.RegularExpressions.RegexOptions.Singleline ||| System.Text.RegularExpressions.RegexOptions.IgnoreCase)
+
+/// A VML text box's text: white space between words one space (a line break of the part's text too),
+/// `<br>` and each further `<div>` a new line, the entities decoded.
+let private decodeVmlText (text: string) =
+    let text = (vmlRegex "<br\\s*/?>").Replace(text, "\u0001")
+    let text = (vmlRegex "</div>\\s*<div[^>]*>").Replace(text, "\u0001")
+    let text = (vmlRegex "<[^>]*>").Replace(text, "")
+    let lines = text.Split('\u0001') |> Array.map (fun line -> (vmlRegex "\\s+").Replace(line, " ").Trim())
+    let joined = System.String.Join("\n", lines).Trim('\n')
+    (vmlRegex "&(#x[0-9a-f]+|#[0-9]+|amp|lt|gt|quot|apos|nbsp);").Replace(joined, fun (m: System.Text.RegularExpressions.Match) ->
+        match m.Groups.[1].Value.ToLowerInvariant() with
+        | "amp" -> "&" | "lt" -> "<" | "gt" -> ">" | "quot" -> "\"" | "apos" -> "'" | "nbsp" -> "\u00a0"
+        | code when code.StartsWith "#x" -> string (char (System.Convert.ToInt32(code.Substring 2, 16)))
+        | code -> string (char (int (code.Substring 1))))
+
+let private readVmlShapes (vml: string) : VmlShape list =
+    let attrOf (tag: string) (name: string) =
+        let m = (vmlRegex ("\\s" + System.Text.RegularExpressions.Regex.Escape name + "\\s*=\\s*(\"([^\"]*)\"|'([^']*)')")).Match tag
+        if m.Success then Some (if m.Groups.[2].Success then m.Groups.[2].Value else m.Groups.[3].Value) else None
+    let numberOf (id: string) =
+        let m = (vmlRegex "_x0000_s(\\d+)").Match id
+        if m.Success then tryParseInt m.Groups.[1].Value else None
+    [ for shape in (vmlRegex "<v:shape\\b([^>]*)>(.*?)</v:shape>").Matches vml do
+        let tag = shape.Groups.[1].Value
+        let body = shape.Groups.[2].Value
+        let number = attrOf tag "o:spid" |> Option.bind numberOf |> Option.orElse (attrOf tag "id" |> Option.bind numberOf)
+        let data = (vmlRegex "<x:ClientData\\b([^>]*)>(.*?)</x:ClientData>").Match body
+        match number with
+        | Some number when data.Success ->
+            let objectType = attrOf data.Groups.[1].Value "ObjectType" |> Option.defaultValue ""
+            let elements =
+                [ for element in (vmlRegex "<x:(\\w+)\\s*(/>|>(.*?)</x:\\1>)").Matches data.Groups.[2].Value ->
+                    element.Groups.[1].Value, (if element.Groups.[3].Success then element.Groups.[3].Value.Trim() else "") ]
+                |> Map.ofList
+            let box = (vmlRegex "<v:textbox\\b[^>]*>(.*?)</v:textbox>").Match body
+            let boxXml = if box.Success then box.Groups.[1].Value else ""
+            let font = (vmlRegex "<font\\b([^>]*)>").Match boxXml
+            let fontAttr name = if font.Success then attrOf font.Groups.[1].Value name else None
+            let face = fontAttr "face" |> Option.defaultValue "Tahoma"
+            // (The size in twentieths of a point.)
+            let size = fontAttr "size" |> Option.bind tryParseFloat |> Option.map (fun twentieths -> twentieths / 20.0) |> Option.defaultValue 8.0
+            let color = fontAttr "color" |> Option.filter (fun c -> c.StartsWith "#" && c.Length = 7)
+            let align = (vmlRegex "text-align\\s*:\\s*(\\w+)").Match boxXml
+            let style = attrOf tag "style" |> Option.defaultValue ""
+            let image = (vmlRegex "<v:imagedata\\b[^>]*o:relid\\s*=\\s*\"([^\"]*)\"").Match body
+            yield { Number = number
+                    ObjectType = objectType
+                    Data = elements
+                    Text = decodeVmlText boxXml
+                    Font = face, size, color, (vmlRegex "<b\\b").IsMatch boxXml, (vmlRegex "<i\\b").IsMatch boxXml
+                    Align = (if align.Success then Some align.Groups.[1].Value else None)
+                    Hidden = (vmlRegex "visibility\\s*:\\s*hidden").IsMatch style
+                    ImageRel = (if image.Success then Some image.Groups.[1].Value else None) }
+        | _ -> () ]
+
+/// The form controls and ActiveX controls of a sheet (`SheetFormControl`): the `<control>`s of its
+/// `<controls>` (Excel 2010 and later: each with its `ctrlProps` part, or an ActiveX part and its
+/// picture, and its anchor), else the form controls of its VML drawing (`x:ClientData`, `x:Anchor`).
+/// The caption, font and visibility are the VML shape's of the same number.
+let private readFormControls (source: PartSource) (sheetPath: string) (sheetRels: Relationship list) (sheet: XmlNode) : SheetFormControl list =
+    let relOf (id: string) = sheetRels |> List.tryFind (fun r -> r.Id = id && isInternal r)
+    let vmlPath =
+        Xml.descendants "legacyDrawing" sheet
+        |> List.tryHead
+        |> Option.bind (Xml.attr "r:id")
+        |> Option.bind relOf
+        |> Option.map (relTargetPath sheetPath)
+    let vml = vmlPath |> Option.bind source.Text |> Option.map (fun text -> try readVmlShapes text with _ -> []) |> Option.defaultValue []
+    let vmlByNumber = vml |> List.map (fun shape -> shape.Number, shape) |> Map.ofList
+    let kindOf (objectType: string) =
+        match objectType with
+        | "Checkbox" -> "CheckBox"
+        | "Edit" -> "EditBox"
+        | other -> other
+    let formKinds = set [ "CheckBox"; "Radio"; "Drop"; "List"; "Spin"; "Scroll"; "GBox"; "Label"; "Button"; "EditBox" ]
+    let pictureOf (ownerPath: string) (rel: Relationship option) =
+        rel
+        |> Option.bind (fun r ->
+            let path = relTargetPath ownerPath r
+            source.Bytes path |> Option.map (fun data -> snd (imageContentType path), data))
+    let int' (text: string option) (fallback: int) = text |> Option.bind tryParseInt |> Option.defaultValue fallback
+    let pixelsAnchor (text: string) : SheetAnchor option =
+        // (x:Anchor: left column, its offset, top row, its offset, right column, its offset, bottom row, its offset - pixels.)
+        let parts = text.Split(',') |> Array.map (fun part -> part.Trim()) |> Array.choose tryParseInt
+        if parts.Length <> 8 then None
+        else
+            Some { Kind = "twoCell"
+                   FromCol = parts.[0]; FromColOffset = float parts.[1] * 9525.0; FromRow = parts.[2]; FromRowOffset = float parts.[3] * 9525.0
+                   ToCol = Some parts.[4]; ToColOffset = float parts.[5] * 9525.0; ToRow = Some parts.[6]; ToRowOffset = float parts.[7] * 9525.0
+                   X = 0.0; Y = 0.0; Width = None; Height = None; EditAs = None; Order = 0 }
+    let markerAnchor (anchor: XmlNode) : SheetAnchor option =
+        let marker name =
+            Ns.childNs name anchor
+            |> Option.map (fun m ->
+                let field child = Ns.childNs child m |> Option.bind Xml.text |> Option.defaultValue "0"
+                (tryParseInt (field "col") |> Option.defaultValue 0), (tryParseFloat (field "colOff") |> Option.defaultValue 0.0),
+                (tryParseInt (field "row") |> Option.defaultValue 0), (tryParseFloat (field "rowOff") |> Option.defaultValue 0.0))
+        match marker "from", marker "to" with
+        | Some (fc, fco, fr, fro), Some (tc, tco, tr, tro) ->
+            Some { Kind = "twoCell"; FromCol = fc; FromColOffset = fco; FromRow = fr; FromRowOffset = fro
+                   ToCol = Some tc; ToColOffset = tco; ToRow = Some tr; ToRowOffset = tro
+                   X = 0.0; Y = 0.0; Width = None; Height = None; EditAs = None; Order = 0 }
+        | _ -> None
+    let plain (number: int) (name: string) (kind: string) (anchor: SheetAnchor) : SheetFormControl =
+        let shape = Map.tryFind number vmlByNumber
+        let data key = shape |> Option.bind (fun s -> Map.tryFind key s.Data)
+        { ShapeId = number; Name = name; Kind = kind; Anchor = anchor
+          Text = shape |> Option.map (fun s -> s.Text) |> Option.defaultValue ""
+          Font = shape |> Option.map (fun s -> s.Font) |> Option.defaultValue ("Tahoma", 8.0, None, false, false)
+          TextHAlign = data "TextHAlign" |> Option.orElse (shape |> Option.bind (fun s -> s.Align)) |> Option.defaultValue "Left"
+          TextVAlign = data "TextVAlign" |> Option.defaultValue (if kind = "Label" || kind = "GBox" then "Top" else "Center")
+          Checked = int' (data "Checked") 0
+          LinkedCell = data "FmlaLink" |> Option.filter (fun t -> t <> "")
+          InputRange = data "FmlaRange" |> Option.filter (fun t -> t <> "")
+          Selected = int' (data "Sel") 0
+          Value = int' (data "Val") 0
+          Min = int' (data "Min") 0
+          Max = int' (data "Max") 100
+          Inc = int' (data "Inc") 1
+          Page = int' (data "Page") 10
+          Horizontal = (data "Horiz").IsSome
+          DropLines = int' (data "DropLines") 8
+          ThreeD = (data "NoThreeD").IsNone && (data "NoThreeD2").IsNone
+          FirstButton = (data "FirstButton").IsSome
+          Hidden = shape |> Option.exists (fun s -> s.Hidden)
+          Picture = None
+          Macro = data "FmlaMacro" |> Option.filter (fun t -> t <> "") }
+    let capital (text: string) = if text = "" then text else string (System.Char.ToUpperInvariant text.[0]) + text.Substring 1
+    let controls =
+        Xml.descendants "control" sheet
+        |> List.filter (fun control -> (Ns.childNs "controlPr" control).IsSome)
+        |> List.distinctBy (fun control -> Xml.attr "shapeId" control)
+    if not controls.IsEmpty then
+        controls
+        |> List.choose (fun control ->
+            let number = Xml.attr "shapeId" control |> Option.bind tryParseInt
+            let props = Ns.childNs "controlPr" control
+            let anchor = props |> Option.bind (Ns.childNs "anchor") |> Option.bind markerAnchor
+            let rel = Xml.attr "r:id" control |> Option.bind relOf
+            match number, anchor, rel with
+            | Some number, Some anchor, Some rel ->
+                let name = Xml.attr "name" control |> Option.defaultValue ""
+                if ValueText.isRelationshipType "/ctrlProp" rel.Type then
+                    match source.Text (relTargetPath sheetPath rel) |> Option.map XmlDsl.parse with
+                    | Some pr ->
+                        let a key = Xml.attr key pr
+                        let kind = a "objectType" |> Option.defaultValue ""
+                        let basic = plain number name kind anchor
+                        Some { basic with
+                                Checked = (match a "checked" with Some "Checked" -> 1 | Some "Mixed" -> 2 | _ -> 0)
+                                LinkedCell = a "fmlaLink"
+                                InputRange = a "fmlaRange"
+                                Selected = int' (a "sel") 0
+                                Value = int' (a "val") 0
+                                Min = int' (a "min") 0
+                                Max = int' (a "max") 100
+                                Inc = int' (a "inc") 1
+                                Page = int' (a "page") 10
+                                Horizontal = a "horiz" |> Option.exists isTrueText
+                                DropLines = int' (a "dropLines") 8
+                                ThreeD = not (a "noThreeD" |> Option.exists isTrueText)
+                                FirstButton = a "firstButton" |> Option.exists isTrueText
+                                TextHAlign = a "textHAlign" |> Option.map capital |> Option.defaultValue basic.TextHAlign
+                                TextVAlign = a "textVAlign" |> Option.map capital |> Option.defaultValue basic.TextVAlign
+                                Macro = a "fmlaMacro" |> Option.orElse basic.Macro }
+                    | None -> None
+                elif ValueText.isRelationshipType "/control" rel.Type then
+                    let picture = props |> Option.bind (Xml.attr "r:id") |> Option.bind relOf |> pictureOf sheetPath
+                    Some { plain number name "ActiveX" anchor with
+                            LinkedCell = props |> Option.bind (Xml.attr "linkedCell")
+                            InputRange = props |> Option.bind (Xml.attr "listFillRange")
+                            Picture = picture }
+                else None
+            | _ -> None)
+    else
+        vml
+        |> List.choose (fun shape ->
+            let kind = kindOf shape.ObjectType
+            if not (formKinds.Contains kind) then None
+            else
+                Map.tryFind "Anchor" shape.Data
+                |> Option.bind pixelsAnchor
+                |> Option.map (fun anchor -> plain shape.Number "" kind anchor))
 
 // ---- threaded comments ---------------------------------------------------------
 
@@ -6395,6 +6653,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
                 let extras =
                     { emptySheetExtras with
                         Images = images; Objects = objects; ThreadedComments = threads; DrawingRelationships = drawingRels
+                        FormControls = (try outline |> Option.map (fun sheet -> readFormControls source sheetPath sheetRels sheet.Node) |> Option.defaultValue [] with _ -> [])
                         SheetId = tryParseInt info.SheetId
                         KeptRelationships = keptRels
                         KeptExtensions = keptExtensions

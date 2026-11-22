@@ -206,10 +206,12 @@ let private box (dxf: Dxf) (x: float) (y: float) (width: float) (height: float) 
     (match dxf.Fill with Some fill -> [ PRect (x, y, width, height, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
     @ edges dxf x y width height
 
-/// Margins of a slicer, pixels (Excel's are not in the file). Measured on Excel 2019's own picture of
-/// synthetic-slicers.xlsx at 100%: the buttons and the header's line 10 px in from the frame at the sides,
-/// the line 27 px below the top, the first row of buttons 32 px below it, a button's text 8 px into it.
-let private margin = 10.0
+/// Margins of a slicer, pixels (Excel's are not in the file). Measured on Excel 2019's own pictures of
+/// synthetic-slicers.xlsx and synthetic-slicer-looks.xlsx at 100%: the buttons and the header's line 9 px in
+/// from the frame at the sides (the slicer drawn a pixel wider than its anchor, `objectRect`), the line 27 px
+/// below the top, the first row of buttons 32 px below it, a button's text 8 px into it, its corners rounded
+/// by 2 px.
+let private margin = 9.0
 let private bottomMargin = 6.0
 let private headerHeight = 30.0
 let private buttonPadding = 8.0
@@ -255,19 +257,47 @@ let slicerButtons (data: ChartData) (info: XlsxReader.SlicerInfo) : XlsxReader.S
     | "showItemsWithNoData" -> items
     | _ -> (items |> List.filter (fun item -> item.HasData)) @ (items |> List.filter (fun item -> not item.HasData))
 
+/// The two buttons at the right of a slicer's header, as Excel 2019 draws them (16 px pictures 60 and 28 px left
+/// of the slicer's right edge, 6 / 7 px down): Multi-Select (three ticks, each before a line) and Clear Filter
+/// (a funnel with a red cross while the slicer filters - some item not selected -, all in light grey while it
+/// does not). Their pixels are Excel's, without the anti-aliasing.
+let private headerButtons (width: float) (filtering: bool) : Primitive list =
+    let pixels (x0: float) (y0: float) (rows: string list) (color: string) =
+        rows
+        |> List.mapi (fun j row ->
+            row |> Seq.mapi (fun i c -> i, c) |> Seq.filter (fun (_, c) -> c = 'x')
+            |> Seq.map (fun (i, _) -> PRect (x0 + float i, y0 + float j, 1.0, 1.0, Some color, 1.0, None, 0.0, 0.0)) |> List.ofSeq)
+        |> List.concat
+    let tick = [ ".....x"; "....x."; ".x.xx."; ".xxx.."; "..x..." ]
+    let multi = width - 60.0
+    let ticks =
+        [ for k in 0 .. 2 do
+            yield! pixels multi (6.0 + 5.0 * float k) tick "#727272"
+            yield PRect (multi + 7.0, 8.0 + 5.0 * float k, 9.0, 1.0, Some "#727272", 1.0, None, 0.0, 0.0) ]
+    let clear = width - 28.0
+    let funnel = [ "xxxxxxxxxxx"; "xxxxxxxxxxx"; ".xxxxxxxxx."; "..xxxxxxx.."; "...xxxxx..."; "....xxx...."; "....xx....."; "....x......"; "....x......"; "....x......"; "....xxx...." ]
+    let gray, red = (if filtering then "#727272", "#D65532" else "#B0ADB0", "#B0ADB0")
+    ticks
+    @ pixels clear 7.0 funnel gray
+    @ [ PLine (clear + 7.0, 14.5, clear + 13.5, 21.0, red, 1.6, None)
+        PLine (clear + 13.5, 14.5, clear + 7.0, 21.0, red, 1.6, None) ]
+
 /// A slicer for a rectangle of that width and height (pixels), its origin at the top left.
 let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInfo) (width: float) (height: float) : Primitive list =
+    let buttons = slicerButtons data info
     let header =
         if not info.ShowCaption then []
         else
             let bold = look.Header.Bold |> Option.defaultValue false
             let color = look.Header.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
             (match look.Header.Fill with Some fill -> [ PRect (0.0, 0.0, width, headerHeight, Some (hash fill), 1.0, None, 0.0, 0.0) ] | None -> [])
-            @ [ PText (margin, headerHeight / 2.0, fitted textSize bold (width - 2.0 * margin - 4.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
+            // (The caption stops before the header's buttons.)
+            @ [ PText (margin, headerHeight / 2.0, fitted textSize bold (width - margin - 64.0) info.Caption, textSize, hash color, "start", bold, false, 0.0) ]
             @ edges { plain with Bottom = look.Header.Bottom } margin 0.0 (width - 2.0 * margin) (headerHeight - 2.0)
-    let buttons = slicerButtons data info
+            @ headerButtons width (buttons |> List.exists (fun item -> not item.Selected))
     let top = if info.ShowCaption then headerHeight + 2.0 else bottomMargin
-    let buttonHeight = max 4.0 (info.RowHeight / 9525.0)
+    // (Whole pixels: 241300 EMU, 25.33 px, is 25 in Excel - buttons 28 px apart.)
+    let buttonHeight = max 4.0 (Math.Round (info.RowHeight / 9525.0))
     let columns = max 1 info.ColumnCount
     let rows = (buttons.Length + columns - 1) / columns
     let fit = max 1 (int (floor ((height - top - bottomMargin + rowGap) / (buttonHeight + rowGap))))
@@ -291,7 +321,14 @@ let slicerItems (look: SlicerLook) (data: ChartData) (info: XlsxReader.SlicerInf
                 | false, false -> look.UnselectedWithNoData
             let bold = format.Bold |> Option.defaultValue false
             let color = format.FontColor |> Option.orElse look.Whole.FontColor |> Option.defaultValue "000000"
-            box format x y buttonWidth buttonHeight
+            // (A button framed alike on its four sides has its corners rounded by 2 px, as Excel draws it.)
+            let rounded =
+                match format.Top, format.Bottom, format.Left, format.Right with
+                | Some top, Some bottom, Some left, Some right when top = bottom && top = left && top = right && top.Color.IsSome ->
+                    Some [ PRect (x, y, buttonWidth, buttonHeight, format.Fill |> Option.map hash, 1.0, None, 0.0, 2.0)
+                           PRect (x + 0.5, y + 0.5, buttonWidth - 1.0, buttonHeight - 1.0, None, 1.0, Some (hash top.Color.Value), 1.0, 2.0) ]
+                | _ -> None
+            (match rounded with Some button -> button | None -> box format x y buttonWidth buttonHeight)
             // (The text at the button's left, as Excel sets it.)
             @ [ PText (x + buttonPadding, y + buttonHeight / 2.0, fitted textSize bold (buttonWidth - buttonPadding - 4.0) item.Label, textSize, hash color, "start", bold, format.Italic |> Option.defaultValue false, 0.0) ])
     let scrollBar =
@@ -332,7 +369,7 @@ let private periodAt (level: int) (start: int * int * int) (offset: int) : (int 
     | 3 ->
         let date = DateTime(year, month, day).AddDays(float offset)
         (date.Year, date.Month, date.Day), (date.Year, date.Month, date.Day), string date.Day,
-        (if date.Day = 1 || offset = 0 then sprintf "%s %d" monthNames.[date.Month - 1] date.Year else "")
+        (if date.Day = 1 || offset = 0 then sprintf "%s %d" (monthNames.[date.Month - 1].ToUpperInvariant()) date.Year else "")
     | _ ->
         let index = year * 12 + (month - 1) + offset
         let y, m = index / 12, index % 12
@@ -340,19 +377,31 @@ let private periodAt (level: int) (start: int * int * int) (offset: int) : (int 
 
 let private dateKey ((year, month, day): int * int * int) = year * 10000 + month * 100 + day
 
-/// What a timeline's selection says in words at its level ("All Periods", "Mar 2012", "Q1 - Q3 2012" ...).
+/// What a timeline's selection says in words at its level, as Excel 2019 words it (make-timeline-variants.py,
+/// synthetic-slicers.xlsx's timeline at each level in Excel): what the two ends share is said once - "Mar 5, 2012",
+/// "Mar 5 - 20 2012" (no comma), "Mar 28 - Apr 3, 2012", "Dec 30, 2012 - Jan 2, 2013"; "Jun 2012", "Mar - Dec 2012",
+/// "Nov 2012 - Feb 2013"; "Q2 2012", "Q2 - Q3 2012", "Q4 2012 - Q1 2013"; "2012", "2012 - 2013"; "All Periods".
 let selectionText (info: XlsxReader.TimelineInfo) : string =
     match info.Selection with
     | None -> "All Periods"
-    | Some (first, last) ->
-        let name level ((year, month, day): int * int * int) =
-            match level with
-            | 0 -> string year
-            | 1 -> sprintf "Q%d %d" ((month - 1) / 3 + 1) year
-            | 3 -> sprintf "%s %d, %d" monthNames.[month - 1] day year
-            | _ -> sprintf "%s %d" monthNames.[month - 1] year
-        let a, b = name info.Level first, name info.Level last
-        if a = b then a else a + " - " + b
+    | Some ((y0, m0, d0), (y1, m1, d1)) ->
+        let month m = monthNames.[m - 1]
+        match info.Level with
+        | 0 -> if y0 = y1 then string y0 else sprintf "%d - %d" y0 y1
+        | 1 ->
+            let q0, q1 = (m0 - 1) / 3 + 1, (m1 - 1) / 3 + 1
+            if y0 = y1 && q0 = q1 then sprintf "Q%d %d" q0 y0
+            elif y0 = y1 then sprintf "Q%d - Q%d %d" q0 q1 y0
+            else sprintf "Q%d %d - Q%d %d" q0 y0 q1 y1
+        | 3 ->
+            if (y0, m0, d0) = (y1, m1, d1) then sprintf "%s %d, %d" (month m0) d0 y0
+            elif y0 = y1 && m0 = m1 then sprintf "%s %d - %d %d" (month m0) d0 d1 y0
+            elif y0 = y1 then sprintf "%s %d - %s %d, %d" (month m0) d0 (month m1) d1 y0
+            else sprintf "%s %d, %d - %s %d, %d" (month m0) d0 y0 (month m1) d1 y1
+        | _ ->
+            if y0 = y1 && m0 = m1 then sprintf "%s %d" (month m0) y0
+            elif y0 = y1 then sprintf "%s - %s %d" (month m0) (month m1) y0
+            else sprintf "%s %d - %s %d" (month m0) y0 (month m1) y1
 
 /// Where a timeline's parts are, pixels from its top left - measured on Excel 2019's own picture of
 /// synthetic-slicers.xlsx at 100% (a month 48.5 px wide; its label at its left, above its block).

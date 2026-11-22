@@ -109,6 +109,10 @@ let blendColors (a: string) (b: string) (t: float) : string =
     let mix x y = int (Math.Floor (float x + (float y - float x) * t + 0.5))
     "#" + hexByte (mix ar br) + hexByte (mix ag bg) + hexByte (mix ab bb)
 
+/// The colour a gradient data bar fades to at its far end: 85 % of the way from its colour to white, channel by
+/// channel (Excel 2019, synthetic-data-bars.xlsx: #638EC6 to #E7EEF6, #FF0000 to #FFD9D9, #000080 to #D9D9EC ...).
+let dataBarFadeColor (color: string) : string = blendColors color "#FFFFFF" 0.85
+
 /// What two cells must share to count as the same value (duplicates).
 let private valueKey (value: CellValue) : string option =
     match value with

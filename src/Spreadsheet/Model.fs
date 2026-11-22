@@ -1218,6 +1218,43 @@ type SheetDrawing = {
     Content: DrawingContent
 }
 
+/// A form control of a sheet (check box, option button, combo / list box, spinner, scroll bar, group
+/// box, label, button) or an ActiveX control, drawn over the cells as Excel draws it (`FormControls`).
+/// What it shows comes from its linked cell when it has one (Excel reads the cell, not the saved state);
+/// the file's parts for it are kept and written back as they were.
+type FormControl = {
+    ShapeId: int
+    Name: string
+    /// CheckBox | Radio | Drop | List | Spin | Scroll | GBox | Label | Button | EditBox | ActiveX.
+    Kind: string
+    Anchor: DrawingAnchor
+    Text: string
+    /// Face, size (points), colour ("#RRGGBB", None automatic), bold, italic.
+    Font: string * float * string option * bool * bool
+    TextHAlign: string
+    TextVAlign: string
+    /// As saved: 0 unchecked, 1 checked, 2 mixed.
+    Checked: int
+    LinkedCell: string option
+    InputRange: string option
+    /// The selected item as saved (from 1; 0 none).
+    Selected: int
+    Value: int
+    Min: int
+    Max: int
+    Inc: int
+    Page: int
+    Horizontal: bool
+    DropLines: int
+    ThreeD: bool
+    FirstButton: bool
+    Hidden: bool
+    /// The picture an ActiveX control is shown by: content type, data.
+    Picture: (string * byte[]) option
+    /// The macro a click runs.
+    Macro: string option
+}
+
 /// A threaded comment: a comment with an author, a date and replies.
 type CommentThread = {
     Id: string
@@ -1425,6 +1462,8 @@ type PivotStyleInfo = {
     /// The row fields' items in one column (compact form), and the captions of the fields shown.
     Compact: bool
     ShowHeaders: bool
+    /// The characters a level of the row items moves in, in compact form (CompactRowIndent: the file's `indent` + 1).
+    CompactIndent: int
 }
 
 /// A pivot table as it stands on its sheet, as much of it as GETPIVOTDATA reads: where it is
@@ -1540,6 +1579,10 @@ type SpreadsheetModel = {
     /// The maximum digit width of the workbook's Normal font (its first font) in pixels, the unit of a
     /// file's column widths: 7 for Calibri 11 and Arial 10, 9 for Arial 12 (`FontMetrics.maxDigitWidth`).
     MaxDigitWidth: float
+    /// What one level of a cell's indent is, pixels: three spaces of the workbook's Normal font, whatever the
+    /// cell's own font (Excel 2019: 9 px a level for Calibri 11, 12 for Arial 12, 21 for Verdana 14 as the Normal
+    /// font; the same in cells of Calibri 16, Arial 10, Times New Roman 12, Verdana 10).
+    IndentUnit: float
     /// The widest digit of the Normal font as Excel 2019 prints it, in dots of 600 dpi (the font at its 600-dpi pixel
     /// size, each digit a whole number of dots): 47 for Calibri 11, 46 for Arial 10, 51 for Calibri 12, 56 for Arial 12.
     /// A column prints `PrintDigitWidth` / `MaxDigitWidth` dots a pixel of its width (`Pagination.printColumnWidthPx`).
@@ -1671,6 +1714,8 @@ type SpreadsheetModel = {
     Pivots: PivotLayout list
     /// The sheet's sparklines, by group (drawn, not edited).
     Sparklines: SparklineGroup list
+    /// The sheet's form controls and ActiveX controls (drawn; a click on one changes its linked cell).
+    FormControls: FormControl list
 
     /// Pictures and other drawing objects, back to front. They move with
     /// their anchor cells when rows or columns are inserted or deleted.
@@ -1797,6 +1842,7 @@ let createEmpty rowCount colCount = {
     DefaultRowHeight = 25.0
     DefaultColumnWidth = 100.0
     MaxDigitWidth = 7.0
+    IndentUnit = 9.0
     PrintDigitWidth = 47.0
     PrintRowScale = 6.05
     RowPoints = Map.empty
@@ -1828,6 +1874,7 @@ let createEmpty rowCount colCount = {
     Macros = ""
     Pivots = []
     Sparklines = []
+    FormControls = []
     Drawings = []
     AuthoredCharts = Map.empty
     Threads = Map.empty

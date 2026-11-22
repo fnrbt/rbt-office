@@ -481,6 +481,11 @@ let private observeResize (el: Element) (callback: unit -> unit): unit -> unit =
 [<Emit("($0.parentNode ? $0.parentNode.removeChild($0) : undefined)")>]
 let private detach (el: Element): unit = jsNative
 
+/// The room of a cell's data bar, pixels: from 2 px right of the cell's left grid line to 2 px short of its right one
+/// - 61 px of a 64-px column, as Excel 2019 draws a full bar (synthetic-data-bars.xlsx: 456 .. 516 between the lines
+/// at 454 and 518); a bar is a whole number of pixels of it (25 % 15 px, 50 % 31, 75 % 46).
+let private dataBarRoom (cellWidth: float) = max 0.0 (cellWidth - 3.0)
+
 [<Emit("$0.addEventListener($1, $2)")>]
 let private addListenerRaw (target: Element) (eventName: string) (handler: obj): unit = jsNative
 
@@ -3305,6 +3310,115 @@ type Spreadsheet(container: Element) as this =
                     if editStateListeners.Contains listener then (try listener state with error -> reportError "OnEditStateChange" (box error))
 
 
+    // --- form controls ------------------------------------------------------------
+    // A sheet's form controls (`model.FormControls`) are drawn over its cells (`FormControls.svg`), each
+    // showing its linked cell as it is now; a click on one changes that cell as an entry would.
+    /// The control nodes on display, and what they were drawn from (the sheet's controls, its cells and
+    /// every sheet's, the metrics, the panes, the origin).
+    let controlNodes = ResizeArray<Element>()
+    let mutable renderedControls : obj array = [||]
+    /// What a click changed of a control that has no linked cell, by sheet and shape id (an option group by
+    /// its group: "g" and the group's id).
+    let controlStates = System.Collections.Generic.Dictionary<string, int>()
+    /// A sheet's model by index (a sheet not read yet is read for it).
+    let controlSheetModel (index: int) : SpreadsheetModel option =
+        if index = activeSheetIndex then Some model
+        elif index >= 0 && index < sheets.Length then
+            if isDeferredSheet sheets.[index] then convertInPlace index
+            Some sheets.[index]
+        else None
+    /// The cells a control's reference names ("$J$1", "Sheet 2!$A$1:$A$8", "'My sheet'!B2"): the sheet's
+    /// index and the first and last row and column.
+    let controlRange (reference: string) : (int * int * int * int * int) option =
+        let text = reference.Trim().TrimStart('=')
+        let bang = text.LastIndexOf '!'
+        let sheetPart, rangePart = if bang < 0 then None, text else Some (text.Substring(0, bang)), text.Substring(bang + 1)
+        let index =
+            match sheetPart with
+            | None -> Some activeSheetIndex
+            | Some name ->
+                let name = (if name.StartsWith "'" && name.EndsWith "'" && name.Length >= 2 then name.Substring(1, name.Length - 2) else name).Replace("''", "'")
+                // ("[0]!Name": a name of this workbook.)
+                let name = if name.StartsWith "[" && name.Contains "]" then name.Substring(name.IndexOf ']' + 1) else name
+                match sheetIndexOfName name with
+                | -1 -> None
+                | i -> Some i
+        match index, rangePart.Replace("$", "").Split(':') |> Array.map parseCellRef with
+        | Some i, [| Some (r, c) |] -> Some (i, r, c, r, c)
+        | Some i, [| Some (r0, c0); Some (r1, c1) |] -> Some (i, min r0 r1, min c0 c1, max r0 r1, max c0 c1)
+        | _ -> None
+    /// The value of the cell a reference names (its first cell).
+    let controlValue (reference: string option) : CellValue option =
+        reference
+        |> Option.bind controlRange
+        |> Option.bind (fun (index, row, col, _, _) ->
+            controlSheetModel index |> Option.map (fun sheet -> getCell { Row = row; Col = col } sheet |> Option.map (fun data -> data.Value) |> Option.defaultValue Empty))
+    /// The texts of the cells of a combo or list box's input range, as they show.
+    let controlItems (reference: string option) : string array =
+        match reference |> Option.bind controlRange with
+        | Some (index, r0, c0, r1, c1) ->
+            match controlSheetModel index with
+            | Some sheet ->
+                [| for r in r0 .. min r1 (r0 + 9999) do
+                    for c in c0 .. min c1 (c0 + 255) do
+                        match getCell { Row = r; Col = c } sheet with
+                        | Some data -> yield SpreadsheetCellText.cellDisplayTextIn sheet.Date1904 None 1.0e6 data.Format data.Value
+                        | None -> yield "" |]
+            | None -> [||]
+        | None -> [||]
+    /// A control's rectangle on its sheet (pixels at 100 %): x, y, width, height of its anchor.
+    let controlRect (sheet: SpreadsheetModel) (control: FormControl) =
+        let rect = SpreadsheetLayout.drawingRect sheet { Id = 0; Anchor = control.Anchor; Name = None; Description = None; Content = KeptObject ("control", "") }
+        rect.X, rect.Y, rect.Width, rect.Height
+    let controlGroups (sheet: SpreadsheetModel) = Rbt.Spreadsheet.FormControls.optionGroups sheet.FormControls (controlRect sheet)
+    /// The cell a control writes its value to (an option button: its group's), when it has one.
+    let controlLink (sheet: SpreadsheetModel) (groups: Map<int, int * int>) (control: FormControl) : string option =
+        if control.Kind = "Radio" then Rbt.Spreadsheet.FormControls.groupLink sheet.FormControls groups control
+        else control.LinkedCell |> Option.filter (fun link -> link <> "")
+    /// What a control of the sheet on display shows now.
+    let controlShown (sheet: SpreadsheetModel) (groups: Map<int, int * int>) (control: FormControl) : Rbt.Spreadsheet.FormControls.Shown =
+        let link = controlLink sheet groups control
+        let linked = controlValue link
+        let local (key: string) = match Portable.Dict.tryFind (string activeSheetIndex + ":" + key) controlStates with ValueSome v -> Some v | ValueNone -> None
+        let items = controlItems control.InputRange
+        let checkedNow =
+            match control.Kind with
+            | "Radio" ->
+                let group, place = Map.tryFind control.ShapeId groups |> Option.defaultValue (0, 0)
+                let count = groups |> Map.filter (fun _ (g, _) -> g = group) |> Map.count
+                match link, local ("g" + string group) with
+                | Some _, _ -> if Rbt.Spreadsheet.FormControls.selectedOf control linked count = place then 1 else 0
+                | None, Some chosen -> if chosen = place then 1 else 0
+                | None, None -> control.Checked
+            | _ ->
+                match link, local (string control.ShapeId) with
+                | None, Some state -> state
+                | _ -> Rbt.Spreadsheet.FormControls.checkedOf control linked
+        let selected =
+            match link, local (string control.ShapeId) with
+            | None, Some state -> state
+            | _ -> Rbt.Spreadsheet.FormControls.selectedOf control linked items.Length
+        let value =
+            match link, local (string control.ShapeId) with
+            | None, Some state -> state
+            | _ -> Rbt.Spreadsheet.FormControls.valueOf control linked
+        { Checked = checkedNow; Items = items; Selected = selected; Value = value }
+    /// A control's new state: written to its linked cell as an entry (one undoable step), else kept for it.
+    let setControlState (sheet: SpreadsheetModel) (groups: Map<int, int * int>) (control: FormControl) (key: string) (text: string) (state: int) =
+        match controlLink sheet groups control |> Option.bind controlRange with
+        | Some (index, row, col, _, _) ->
+            if index = activeSheetIndex then commitInput { Row = row; Col = col } text false false |> ignore
+            else
+                session.UpdateView(currentWorkbookSnapshot())
+                let prepareFull () =
+                    installWorkbookSnapshot session.Workbook
+                    convertFormulaSheets ()
+                    currentWorkbookSnapshot()
+                if session.EnterCell(sheetIdForIndex index, { Row = row; Col = col }, text, currentYear(), beforeFull = prepareFull) then
+                    installWorkbookSnapshot session.Workbook
+                    adoptConvertedSheets ()
+        | None -> controlStates.[string activeSheetIndex + ":" + key] <- state
+
     /// Start editing a cell. `seed` replaces the cell's content in the edit
     /// box — the character typed over the cell — instead of loading it.
     let rec startEditingWith (row: int) (col: int) (seed: string option) =
@@ -3743,11 +3857,24 @@ type Spreadsheet(container: Element) as this =
         let look =
             SpreadsheetPaint.cellLookFitted (Some ({ Zoom = zoom; Overhang = 0.0 } : SpreadsheetCellText.NumberFit)) model row col cellData
                 (Some (fun text fontPt fontName bold italic -> excelTextWidth zoom text fontPt fontName bold italic)) screenWidth
-        // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019).
+        // A pivot table's buttons: a +/- before an item's label moves its text 14 px right (Excel 2019). In compact
+        // form a level of items is moved in by the pivot's `indent` (CompactRowIndent) of indent units, at least 13 px
+        // (the +/- and its gap): 13, 18, 27 px for 1, 2, 3 in a Calibri 11 workbook, whatever the cells' font
+        // (synthetic-pivot-indent.xlsx: the cells' own indent is that count of characters a level).
         let pivotButton = if model.Pivots.IsEmpty then None else pivotButtonAt model row col
         let look =
             match pivotButton with
-            | Some (PivotToggle _ | PivotLabel) when look.IndentRight = 0.0 -> { look with IndentLeft = look.IndentLeft + 14.0 }
+            | Some (PivotToggle _ | PivotLabel) when look.IndentRight = 0.0 ->
+                let indent = match cellData with Some data -> data.Format.Indent | None -> 0
+                let characters =
+                    model.Pivots
+                    |> List.tryPick (fun pivot ->
+                        if row >= pivot.Top && row <= pivot.Bottom && col >= pivot.Left && col <= pivot.Right then
+                            pivot.Style |> Option.map (fun style -> max 1 style.CompactIndent)
+                        else None)
+                    |> Option.defaultValue 1
+                let step = max (model.IndentUnit * float characters) 13.0
+                { look with IndentLeft = float indent / float characters * step + 14.0 }
             | _ -> look
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
@@ -4025,13 +4152,14 @@ type Spreadsheet(container: Element) as this =
         let mutable barDraw : DataBarDraw option = None
         match look.DataBar with
         | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
-            // A plain bar, behind the text, two pixels in from the cell's grid lines all round as Excel draws it.
-            let percent = int (System.Math.Round (draw.To * 100.0))
-            add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
+            // A plain bar, behind the text, in the bar's room (`dataBarRoom`), whole pixels long as Excel draws it.
+            let room = dataBarRoom w
+            let length = System.Math.Floor (draw.To * room + 0.5)
+            add "background-image" ("linear-gradient(" + draw.Color + "," + draw.Color + ")")
             add "background-repeat" "no-repeat"
             add "background-position" "2px 2px"
-            add "background-size" "calc(100% - 4px) calc(100% - 4px)"
-            bar <- percent
+            add "background-size" (string length + "px calc(100% - 4px)")
+            bar <- int (System.Math.Round (draw.To * 100.0))
         | Some draw ->
             // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
             bar <- int (System.Math.Round ((draw.To - draw.From) * 100.0))
@@ -4276,29 +4404,51 @@ type Spreadsheet(container: Element) as this =
         match barDraw with
         | Some draw ->
             let percent (fraction: float) = string (System.Math.Round (fraction * 10000.0) / 100.0) + "%"
+            let roomWidth = dataBarRoom w
+            let at (fraction: float) = System.Math.Floor (fraction * roomWidth + 0.5)
+            // (With an axis - a dashed line on its pixel, floor of its place - a negative bar ends at the pixel before
+            // it and a positive one starts at the pixel after it: synthetic-data-bars.xlsx's axis 32 px right of the
+            // grid line, -2 to 31, 2 from 33.)
+            let axisPx = draw.Axis |> Option.map (fun (axis, _) -> axis, System.Math.Floor (axis * roomWidth))
+            // (Without one a bar is its length in whole pixels from where it grows: a bar right to left of 50 % is the
+            // room's last 31 px, as its first 31 left to right.)
+            let left, right =
+                match axisPx with
+                | Some (axis, px) ->
+                    (if abs (draw.From - axis) < 1e-9 then px + 1.0 else at draw.From), (if abs (draw.To - axis) < 1e-9 then px else at draw.To)
+                | None ->
+                    let length = at (draw.To - draw.From)
+                    if draw.FadeRight then at draw.From, at draw.From + length
+                    else at draw.To - length, at draw.To
             let fill = createElement "div"
             setClassName fill "spreadsheet-cf-bar"
+            // (A gradient fades from the bar's colour to 85 % of the way to white at its far end, each channel - not to
+            // white: synthetic-data-bars.xlsx, six colours in Excel 2019 - each pixel the colour at its left edge.)
             let background =
-                if draw.Gradient then "linear-gradient(to " + (if draw.FadeRight then "right" else "left") + ", " + draw.Color + ", #FFFFFF)"
+                if draw.Gradient then
+                    "linear-gradient(to " + (if draw.FadeRight then "right" else "left") + ", " + draw.Color + " 0.5px, "
+                    + Rbt.Spreadsheet.ConditionalFormatting.dataBarFadeColor draw.Color + " calc(100% + 0.5px))"
                 else draw.Color
             setCssText fill
-                ("position:absolute;box-sizing:border-box;top:2px;bottom:2px;left:" + percent draw.From + ";width:" + percent (draw.To - draw.From)
-                 + ";background:" + background + (match draw.Border with Some line -> ";border:1px solid " + line | None -> "")
+                ("position:absolute;box-sizing:border-box;top:2px;bottom:2px;left:" + string left + "px;width:" + string (max 0.0 (right - left))
+                 + "px;background:" + background + (match draw.Border with Some line -> ";border:1px solid " + line | None -> "")
                  + ";z-index:-1;pointer-events:none")
             setAttribute fill "data-cf-bar-from" (percent draw.From)
+            setAttribute fill "data-cf-bar-width" (percent (draw.To - draw.From))
             setAttribute fill "data-cf-bar-color" draw.Color
-            // (The bar's room: from 2 px right of the cell's left grid line to 2 px short of its right one - a full bar
-            // in a 64-px column is pixels 2 .. 61, as Excel 2019 draws it.)
+            // (The bar's room, `dataBarRoom`.)
             let room = createElement "div"
             setClassName room "spreadsheet-cf-bar-room"
-            setCssText room "position:absolute;left:2px;right:2px;top:0;bottom:0;z-index:-1;pointer-events:none"
+            setCssText room ("position:absolute;left:2px;width:" + string roomWidth + "px;top:0;bottom:0;z-index:-1;pointer-events:none")
             appendChild cell room
             if draw.To > draw.From then appendChild room fill
             match draw.Axis with
             | Some (at, color) ->
                 let axis = createElement "div"
                 setClassName axis "spreadsheet-cf-axis"
-                setCssText axis ("position:absolute;top:0;bottom:0;left:" + percent at + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
+                let axisLeft = match axisPx with Some (_, px) -> string px + "px" | None -> percent at
+                setAttribute axis "data-cf-axis" (percent at)
+                setCssText axis ("position:absolute;top:0;bottom:0;left:" + axisLeft + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
                 appendChild room axis
             | None -> ()
         | None -> ()
@@ -4358,7 +4508,7 @@ type Spreadsheet(container: Element) as this =
          | Some (PivotToggle expanded) ->
             let box = createElement "div"
             setCssText box
-                ("position:absolute;left:" + string (4.0 + max 0.0 (look.IndentLeft - 14.0)) + "px;top:calc(50% - 5px);width:9px;height:9px;box-sizing:border-box;border:1px solid;"
+                ("position:absolute;left:" + string (5.0 + max 0.0 (look.IndentLeft - 14.0)) + "px;top:calc(50% - 5px);width:9px;height:9px;box-sizing:border-box;border:1px solid;"
                  + "border-color:#AAB5C9 #8A9EBF #8A9EBF #AAB5C9;border-radius:1px;background:linear-gradient(135deg,#EBEDED 0%,#D8D8D8 100%);pointer-events:none")
             setAttribute box "data-pivot-button" (if expanded then "collapse" else "expand")
             let bar = createElement "div"
@@ -4740,6 +4890,7 @@ type Spreadsheet(container: Element) as this =
                 frozenRows firstRow lastRow rowPrefix
             renderOutline layer metrics frozenRows frozenCols firstRow lastRow firstCol lastCol
             renderDrawings content metrics
+            renderFormControls content metrics
             renderOverlays layer metrics frozenRows frozenCols
             renderPages layer metrics
             notifyChanges ()
@@ -4828,6 +4979,15 @@ type Spreadsheet(container: Element) as this =
     /// stays, the part beside them scrolls (and goes under the frozen cells).
     /// Rebuilt when the drawings, the sizes of rows / columns, their chart
     /// bindings or the panes change (and while a picture is dragged across panes).
+    /// Where a drawing of the sheet on display is drawn: its anchor's rectangle - a slicer's or a timeline's
+    /// a pixel wider and higher, as Excel 2019 draws them (the frame on the pixel left of the anchor and on its
+    /// last pixel at the right: synthetic-slicer-looks.xlsx, a slicer of 192 px framed over 193).
+    and objectRect (drawing: SheetDrawing) : SpreadsheetLayout.Rect =
+        let rect = SpreadsheetLayout.drawingRect model drawing
+        match drawing.Content with
+        | KeptObject (_, xml) when xml.Contains "drawing/2010/slicer" || xml.Contains "drawing/2012/timeslicer" ->
+            { rect with Width = rect.Width + 1.0; Height = rect.Height + 1.0 }
+        | _ -> rect
     and renderDrawings (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
         ensureChartBindings ()
         let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
@@ -4862,7 +5022,7 @@ type Spreadsheet(container: Element) as this =
                 let rect =
                     match dragged with
                     | Some drag when drag.Id = drawing.Id -> drag.Current
-                    | _ -> SpreadsheetLayout.drawingRect model drawing
+                    | _ -> objectRect drawing
                 if rect.Width >= 1.0 && rect.Height >= 1.0 then
                     let label = SpreadsheetLayout.drawingLabel drawing
                     // (A shape with a macro assigned - its OnAction - runs it when clicked, once macros may run.)
@@ -5017,7 +5177,7 @@ type Spreadsheet(container: Element) as this =
                             if pendingObjects.Contains drawing.Id && inView drawing && (laidOut = 0 || nowMs () - started < 12.0) then
                                 match drawing.Content with
                                 | KeptObject (_, xml) ->
-                                    let rect = SpreadsheetLayout.drawingRect model drawing
+                                    let rect = objectRect drawing
                                     drawingSvg drawing xml rect.Width rect.Height |> ignore
                                     laidOut <- laidOut + 1
                                 | Picture _ -> ()
@@ -5043,6 +5203,137 @@ type Spreadsheet(container: Element) as this =
     /// its cells with its number in the middle. The edge of a frame is solid where the print
     /// area begins or ends and at a manual break, dashed at a break the paper makes. The frames
     /// take no click: the grid under them is edited as in the normal view.
+    /// The form controls of the sheet on display, drawn again when what they show may have changed.
+    and renderFormControls (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
+        let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
+        let frozenCols = max 0 (min metrics.ColCount model.FrozenCols)
+        let stamp : obj array =
+            Array.append
+                [| box model.FormControls; box metrics; box (string frozenRows + "|" + string frozenCols + "|" + string rowHeaderWidth + "|" + string headerHeight)
+                   box originX; box originY; box controlStates.Count; box activeSheetIndex |]
+                (if model.FormControls.IsEmpty then [||] else cellsStamp ())
+        let same =
+            stamp.Length = renderedControls.Length
+            && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b) || a = b) stamp renderedControls
+        if not same then
+            renderedControls <- stamp
+            for node in controlNodes do detach node
+            controlNodes.Clear()
+            if not model.FormControls.IsEmpty then
+                let frozenW = metrics.ColPrefix.[frozenCols]
+                let frozenH = metrics.RowPrefix.[frozenRows]
+                let paneElements = match layers with Some layer -> layer.Panes | None -> [| content; content; content; content |]
+                let groups = controlGroups model
+                let measure (face: string) (px: int) (bold: bool) (italic: bool) (text: string) =
+                    Rbt.Spreadsheet.ExcelText.textWidth (fun s -> cellTextWidthPx s (float px) face bold italic) face bold italic px false text
+                for control in model.FormControls do
+                    let x, y, w, h = controlRect model control
+                    if not control.Hidden && w >= 1.0 && h >= 1.0 then
+                        let node = createElement "div"
+                        setClassName node ("spreadsheet-form-control spreadsheet-form-control-" + control.Kind.ToLowerInvariant())
+                        setAttribute node "data-form-control" (string control.ShapeId)
+                        if control.Name <> "" then setAttribute node "title" control.Name
+                        match control.Kind, control.Picture with
+                        | "ActiveX", Some (contentType, data) when contentType.StartsWith "image/" && contentType <> "image/x-emf" && contentType <> "image/x-wmf" ->
+                            let image = createElement "img"
+                            setAttribute image "src" (pictureUrl data contentType)
+                            setAttribute image "draggable" "false"
+                            setCssText image (sprintf "position:absolute;left:0;top:0;width:%.1fpx;height:%.1fpx" w h)
+                            appendChild node image
+                        | "ActiveX", Some (_, data) ->
+                            match Rbt.Spreadsheet.Emf.svg data w h with
+                            | Some svg -> setInnerHtml node svg
+                            | None -> ()
+                        | _ ->
+                            setInnerHtml node (Rbt.Spreadsheet.FormControls.svg control (controlShown model groups control) w h measure)
+                        // (The macro of a button - or of any control - runs on a click, as a shape's.)
+                        control.Macro |> Option.iter (fun macro ->
+                            let name = if macro.StartsWith "[0]!" then macro.Substring 4 else macro
+                            setAttribute node "data-macro" name)
+                        let pane = (if x < frozenW then 2 else 0) + (if y < frozenH then 1 else 0)
+                        setCssText node
+                            (sprintf "position:absolute;left:%.1fpx;top:%.1fpx;width:%.0fpx;height:%.0fpx;z-index:3;pointer-events:%s;cursor:default"
+                                (paneX pane (rowHeaderWidth + x)) (paneY pane (headerHeight + y)) (System.Math.Round w + 1.0) (System.Math.Round h + 1.0)
+                                (if readOnly || control.Kind = "GBox" || control.Kind = "Label" then "none" else "auto"))
+                        setAttribute node "data-pane" (string pane)
+                        appendChild paneElements.[pane] node
+                        controlNodes.Add node
+
+    /// A click on a form control (`node`, at the page's x, y): what the control does (`FormControls.hit`) -
+    /// its linked cell changed as an entry would, or its list opened.
+    and pressFormControl (node: Element) (pageX: float) (pageY: float) =
+        match System.Int32.TryParse (getAttribute node "data-form-control") with
+        | true, id ->
+            match model.FormControls |> List.tryFind (fun c -> c.ShapeId = id) with
+            | Some control ->
+                let groups = controlGroups model
+                let shown = controlShown model groups control
+                let _, _, w, h = controlRect model control
+                let bounds = boundingRect node
+                let x = (pageX - bounds.[0]) / appliedZoom
+                let y = (pageY - bounds.[1]) / appliedZoom
+                let key = string control.ShapeId
+                match Rbt.Spreadsheet.FormControls.hit control shown w h x y with
+                | Rbt.Spreadsheet.FormControls.Toggle ->
+                    let next = if shown.Checked = 1 then 0 else 1
+                    setControlState model groups control key (if next = 1 then "TRUE" else "FALSE") next
+                    render ()
+                | Rbt.Spreadsheet.FormControls.Choose ->
+                    let group, place = Map.tryFind control.ShapeId groups |> Option.defaultValue (0, 1)
+                    setControlState model groups control ("g" + string group) (string place) place
+                    render ()
+                | Rbt.Spreadsheet.FormControls.PickItem index ->
+                    setControlState model groups control key (string index) index
+                    render ()
+                | Rbt.Spreadsheet.FormControls.Step delta ->
+                    let low, high = min control.Min control.Max, max control.Min control.Max
+                    let next = max low (min high (shown.Value + delta))
+                    if next <> shown.Value then
+                        setControlState model groups control key (string next) next
+                        render ()
+                | Rbt.Spreadsheet.FormControls.OpenList -> showControlList node control shown
+                | Rbt.Spreadsheet.FormControls.Press
+                | Rbt.Spreadsheet.FormControls.NoHit -> ()
+            | None -> ()
+        | _ -> ()
+
+    /// A combo box's list, dropped under it: `DropLines` items at a time; a click on one selects it.
+    and showControlList (node: Element) (control: FormControl) (shown: Rbt.Spreadsheet.FormControls.Shown) =
+        let existing = getElementById "form-control-list-dropdown"
+        if not (isNull existing) then closePopup existing
+        if shown.Items.Length > 0 then
+            let dropdown = createElement "div"
+            setAttribute dropdown "id" "form-control-list-dropdown"
+            let bounds = boundingRect node
+            let left = pageRight node - bounds.[2]
+            let lines = max 1 (min shown.Items.Length control.DropLines)
+            setCssText dropdown
+                (sprintf "position:absolute;left:%.0fpx;top:%.0fpx;width:%.0fpx;max-height:%dpx;overflow-y:auto;background:white;border:1px solid #646464;box-sizing:border-box;font:11px Tahoma, 'Segoe UI', sans-serif;z-index:1000"
+                    left (pageBottom node) bounds.[2] (lines * 13 + 2))
+            shown.Items
+            |> Array.iteri (fun i value ->
+                let item = createElement "div"
+                setTextContent item (if value = "" then " " else value)
+                setCssText item ("height:13px;line-height:13px;padding:0 3px;white-space:nowrap;overflow:hidden;cursor:default;"
+                                 + (if i + 1 = shown.Selected then "background:#0078D7;color:white;" else ""))
+                listen item "mousedown" (fun e ->
+                    preventDefault e
+                    closePopup dropdown
+                    let groups = controlGroups model
+                    setControlState model groups control (string control.ShapeId) (string (i + 1)) (i + 1)
+                    render ())
+                appendChild dropdown item)
+            appendChild (getBody()) dropdown
+            let rec closeList = fun (e: obj) ->
+                let target = getEventTarget e
+                if not (contains dropdown target) then
+                    closePopup dropdown
+                    unlisten (getDocument()) "mousedown" closeList
+            JS.setTimeout (fun () -> if not disposed then listen (getDocument()) "mousedown" closeList) 0 |> ignore
+            cleanups.Add(fun () ->
+                unlisten (getDocument()) "mousedown" closeList
+                closePopup dropdown)
+
     and renderPages (layer: GridLayers) (metrics: SpreadsheetLayout.SheetMetrics) =
         for node in pageNodes do detach node
         pageNodes.Clear()
@@ -6497,6 +6788,12 @@ type Spreadsheet(container: Element) as this =
                 preventDefault e
                 stopPropagation e
                 if mouseButton e = 0 then pressFilterButton (closest target ".spreadsheet-filter-button")
+            elif within target "[data-form-control]" && not (within target "[data-macro]") then
+                // (A form control takes the click - the cell under it is not selected.)
+                preventDefault e
+                stopPropagation e
+                if not (holdsFocus content) then focusQuietly content
+                if mouseButton e = 0 then pressFormControl (closest target "[data-form-control]") (getClientX e) (getClientY e)
             elif within target "[data-macro]" then
                 // (A shape's macro runs on a click, as in Excel; it is not selected.)
                 preventDefault e

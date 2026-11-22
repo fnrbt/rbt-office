@@ -138,9 +138,9 @@ checks['x14-rules'] = async () => {
             check('the rule that reads another sheet', [read[2][0], read[2][1].type, read[2][1].formula, read[2][1].format.fill, read[2][1].format.bold], ['E1:E5', 'expression', 'Lists!$B$1>=$E1', '#FFC7CE', true]);
 
             // ---- the DOM grid ----
-            const barOf = (row) => { const bar = node(row, 0).querySelector('.spreadsheet-cf-bar'); return bar && [bar.style.left, bar.style.width, bar.getAttribute('data-cf-bar-color'), bar.style.borderColor !== '']; };
+            const barOf = (row) => { const bar = node(row, 0).querySelector('.spreadsheet-cf-bar'); return bar && [bar.getAttribute('data-cf-bar-from'), bar.getAttribute('data-cf-bar-width'), bar.getAttribute('data-cf-bar-color'), bar.style.borderColor !== '']; };
             check('bars: negative left of the axis in red, positive right of it, none for zero', [0, 2, 4].map(barOf), [['0%', '33.33%', '#FF0000', true], null, ['33.33%', '66.67%', '#638EC6', true]]);
-            check('bars: the axis in every cell of the rule', [0, 1, 2, 3, 4].map((row) => node(row, 0).querySelector('.spreadsheet-cf-axis')?.style.left), ['33.33%', '33.33%', '33.33%', '33.33%', '33.33%']);
+            check('bars: the axis in every cell of the rule', [0, 1, 2, 3, 4].map((row) => node(row, 0).querySelector('.spreadsheet-cf-axis')?.getAttribute('data-cf-axis')), ['33.33%', '33.33%', '33.33%', '33.33%', '33.33%']);
             const box = (element) => { const r = element.getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right)]; };
             const cellBox = box(node(4, 0)), barBox = box(node(4, 0).querySelector('.spreadsheet-cf-bar')), negBox = box(node(0, 0).querySelector('.spreadsheet-cf-bar'));
             check('bars: on screen the positive bar reaches the right edge, the negative bar the left', [Math.abs(barBox[1] - cellBox[1]) <= 2, Math.abs(negBox[0] - box(node(0, 0))[0]) <= 2, Math.abs(negBox[1] - barBox[0]) <= 1], [true, true, true]);
@@ -174,11 +174,11 @@ checks['x14-rules'] = async () => {
             const added = grid.GetConditionalFormats().find((entry) => entry.id === id).rule;
             check('a data bar added with options: the others have their defaults', added, { type: 'dataBar', min: { type: 'min', value: null }, max: { type: 'max', value: null }, color: '#63C384', gradient: true, borderColor: '#2E7D32', negativeColor: null, negativeBorderColor: null,
                 axisPosition: 'middle', axisColor: '#000000', direction: 'context', showValue: false, minLength: 0, maxLength: 100, format: null });
-            check('... drawn from the middle, as a gradient, without the value', [node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.left, /gradient/.test(node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.background ?? ''), /\d/.test(node(4, 1).textContent)], ['50%', true, false]);
+            check('... drawn from the middle, as a gradient, without the value', [node(4, 1).querySelector('.spreadsheet-cf-bar')?.getAttribute('data-cf-bar-from'), /gradient/.test(node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.background ?? ''), /\d/.test(node(4, 1).textContent)], ['50%', true, false]);
             grid.Undo(); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             check('undone', [grid.GetConditionalFormats().length, node(4, 1).querySelector('.spreadsheet-cf-bar'), node(4, 1).textContent], [3, null, '5']);
             grid.Redo(); await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-            check('redone', [grid.GetConditionalFormats().length, node(4, 1).querySelector('.spreadsheet-cf-bar')?.style.left], [4, '50%']);
+            check('redone', [grid.GetConditionalFormats().length, node(4, 1).querySelector('.spreadsheet-cf-bar')?.getAttribute('data-cf-bar-from')], [4, '50%']);
             const stars = grid.AddConditionalFormat('D1:D5', { type: 'iconSet', iconSet: '3Stars' });
             check('an icon set of Excel 2010+', grid.GetConditionalFormats().find((entry) => entry.id === stars).rule, { type: 'iconSet', iconSet: '3Stars', thresholds: [{ type: 'percent', value: 0 }, { type: 'percent', value: 33 }, { type: 'percent', value: 67 }], reverse: false, showValue: true, icons: null, format: null });
             const errors = [];
@@ -510,7 +510,7 @@ checks['cell-look-shared'] = async () => {
         const bar = grid.AddConditionalFormat('D1:D2', { type: 'dataBar', min: { type: 'number', value: 0 }, max: { type: 'number', value: 10 }, color: '#FF0000' });
         await frame();
         const plainBar = node(0, 3).querySelector('.spreadsheet-cf-bar');
-        check('a data bar without the x14 part (Excel 2007\'s) fades to white, two pixels in from the cell\'s top and bottom', [!!plainBar && /linear-gradient\(to right, .*rgb\(255, 255, 255\)\)/.test(getComputedStyle(plainBar).backgroundImage), !!plainBar && getComputedStyle(plainBar).top, !!plainBar && getComputedStyle(plainBar).bottom], [true, '2px', '2px']);
+        check('a data bar without the x14 part (Excel 2007\'s) fades - as Excel 2019 draws one - to 85 % of the way to white (#FFD9D9), two pixels in from the cell\'s top and bottom', [!!plainBar && /linear-gradient\(to right, .*rgb\(255, 217, 217\)/.test(getComputedStyle(plainBar).backgroundImage), !!plainBar && getComputedStyle(plainBar).top, !!plainBar && getComputedStyle(plainBar).bottom], [true, '2px', '2px']);
         grid.RemoveConditionalFormat(bar);
         grid.AddConditionalFormat('D1:D3', ICON_RULE);
         await frame();

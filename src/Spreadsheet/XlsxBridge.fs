@@ -100,7 +100,7 @@ let pivotLayoutStyled (styleElements: string -> TableStyles.TableStyleElement li
             Some { Elements = elements; ShowRowHeaders = rowHeaders; ShowColumnHeaders = columnHeaders
                    ShowRowStripes = rowStripes; ShowColumnStripes = columnStripes; ShowLastColumn = lastColumn
                    PageFields = pivot.PageFieldCount; RowFieldTabular = pivot.RowFieldTabular
-                   Compact = pivot.Compact; ShowHeaders = pivot.ShowHeaders } })
+                   Compact = pivot.Compact; ShowHeaders = pivot.ShowHeaders; CompactIndent = pivot.CompactIndent } })
 
 /// The sparkline groups of a sheet's extensions (`<x14:sparklineGroups>` of its `<extLst>`, kept as text), their
 /// colours resolved against the workbook's theme (12 colours, `<color theme="N">`'s order).
@@ -327,6 +327,23 @@ let private anchorOfReader (anchor: XlsxReader.SheetAnchor) : DrawingAnchor =
       Width = anchor.Width |> Option.map (fun emu -> emu / emuPerPixel)
       Height = anchor.Height |> Option.map (fun emu -> emu / emuPerPixel)
       EditAs = anchor.EditAs }
+
+/// What one level of indent is in a workbook whose Normal font is `face` at `points` (maximum digit width `mdw`):
+/// three of the font's spaces as GDI draws them at its pixel size (Calibri 11: 3 x 3 px; Arial 12: 3 x 4; Verdana
+/// 14: 3 x 7), else 9/7 of the digit width.
+let indentUnitOf (face: string) (points: float) (mdw: float) : float =
+    match ExcelText.advance (face.ToLowerInvariant()) false false (ExcelText.pixelSize points 1.0) false 32 with
+    | ValueSome space when space > 0 -> 3.0 * float space
+    | _ -> System.Math.Round (mdw * 9.0 / 7.0)
+
+/// A form control as the reader has it, in the model (its anchor in pixels).
+let private formControlOfReader (control: XlsxReader.SheetFormControl) : FormControl =
+    { ShapeId = control.ShapeId; Name = control.Name; Kind = control.Kind; Anchor = anchorOfReader control.Anchor
+      Text = control.Text; Font = control.Font; TextHAlign = control.TextHAlign; TextVAlign = control.TextVAlign
+      Checked = control.Checked; LinkedCell = control.LinkedCell; InputRange = control.InputRange; Selected = control.Selected
+      Value = control.Value; Min = control.Min; Max = control.Max; Inc = control.Inc; Page = control.Page
+      Horizontal = control.Horizontal; DropLines = control.DropLines; ThreeD = control.ThreeD; FirstButton = control.FirstButton
+      Hidden = control.Hidden; Picture = control.Picture; Macro = control.Macro }
 
 /// A model anchor as a reader anchor; `order` is its z-order on the sheet.
 let private anchorToReader (order: int) (anchor: DrawingAnchor) : XlsxReader.SheetAnchor =
@@ -1288,6 +1305,7 @@ module Import =
                 // keeps the grid's own.)
                 DefaultRowHeight = (if defaultRowPx > 0.0 then defaultRowPx else 25.0)
                 MaxDigitWidth = mdw
+                IndentUnit = indentUnitOf (defaultFace |> Option.defaultValue "Calibri") defaultPoints mdw
                 PrintDigitWidth = ExcelText.printDigitWidth (defaultArg defaultFace "Calibri") defaultPoints
                 RowPoints = rowPoints
                 DefaultRowPoints =
@@ -1320,6 +1338,7 @@ module Import =
                 ConditionalFormats = conditionalFormats wb sheet
                 PageSetup = pageSetup sheet
                 Drawings = drawingsOfExtras sheet.Extras
+                FormControls = sheet.Extras.FormControls |> List.map formControlOfReader
                 Threads = threads
                 Spill = spill
                 ArrayMarks = arrayMarks

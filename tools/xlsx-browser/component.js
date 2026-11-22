@@ -2260,3 +2260,108 @@ checks['sizing-excel-parity'] = async () => {
     close();
     return lines;
 };
+
+// Form controls as Excel 2019 draws them (tools/excel-parity/build-form-controls.vbs: synthetic-form-controls.xlsx, checked
+// with shoot-sheets.ps1): each control a node over its anchor grown by a pixel at the left and the top, what it shows
+// read from its linked cell, and a click changing that cell as an entry (one undoable step).
+checks['controls-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const nodes = () => [...host.querySelectorAll('[data-form-control]')];
+    const node = (id) => host.querySelector(`[data-form-control="${id}"]`);
+    const click = async (id, x, y) => {
+        const target = node(id), r = target.getBoundingClientRect();
+        (target.firstElementChild || target).dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0, clientX: r.left + x, clientY: r.top + y }));
+        await frame();
+    };
+    const value = (a1) => { const m = /^([A-Z])(\d+)$/.exec(a1); return grid.GetCell(Number(m[2]) - 1, m[1].charCodeAt(0) - 65).value; };
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-form-controls.xlsx')).slice());
+        await frame();
+        check('15 controls on Flat, drawn', nodes().length, 15);
+        const box = node(1025).getBoundingClientRect();
+        check('a check box over its anchor (133 x 23 px) and a pixel more', [Math.round(box.width), Math.round(box.height)], [134, 24]);
+        check('checked by TRUE in J1: the box and its mark', (node(1025).innerHTML.match(/<rect/g) || []).length > 6, true);
+        await click(1025, 10, 12);
+        check('a click on the check box: J1 FALSE', value('J1'), false);
+        grid.Undo(); await frame();
+        check('... undone: TRUE', value('J1'), true);
+        await click(1031, 10, 10);
+        check('an option button: its place in the group to J4', value('J4'), 3);
+        await click(1034, 12, 8);
+        check('the spinner\'s upper button: J7 + 5', value('J7'), 45);
+        await click(1034, 12, 40);
+        await click(1034, 12, 40);
+        check('... its lower one twice: 35', value('J7'), 35);
+        await click(1035, 5, 10);
+        check('the scroll bar\'s left arrow: J8 - 1', value('J8'), 69);
+        await click(1035, 220, 10);
+        check('... the track right of the thumb: + 10 (a page)', value('J8'), 79);
+        await click(1033, 30, 3 + 13 + 5);
+        check('the list box\'s second item: J6 2', value('J6'), 2);
+        await click(1032, 30, 10);
+        const list = document.getElementById('form-control-list-dropdown');
+        check('the combo box opens its 8 items', list ? list.children.length : 0, 8);
+        if (list) { list.children[6].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })); await frame(); }
+        check('... its 7th picked: J5 7', value('J5'), 7);
+        const thumb = () => /fill="#CDCDCD"/.test(node(1036).innerHTML) ? Number(/<rect x="1" y="(\d+)" width="\d+" height="\d+" fill="#CDCDCD"/.exec(node(1036).innerHTML)[1]) : -1;
+        grid.SetCell(8, 9, '-5'); await frame();
+        check('a linked cell below the minimum: the thumb at the track\'s start (23 px down)', thumb(), 23);
+        grid.SetCell(8, 9, '10'); await frame();
+        check('... at the maximum: at its end (161 - 23 - 10)', thumb(), 128);
+        grid.SwitchSheet(2); await frame();
+        check('ActiveX controls drawn from their EMF pictures', nodes().map((n) => n.querySelector('svg image, svg text') !== null), [true, true]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Indents as Excel 2019 draws them (tools/excel-parity/build-pivot-indent.vbs: synthetic-pivot-indent.xlsx, checked with
+// shoot-sheets.ps1): a level of indent is three spaces of the Normal font (9 px in Calibri 11) whatever the cell's font;
+// a compact pivot table moves a level of row items in by its CompactRowIndent of them, at least 13 px.
+checks['indent-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const cell = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+    const toggleLeft = (row, col) => parseFloat(cell(row, col)?.querySelector('[data-pivot-button="collapse"], [data-pivot-button="expand"]')?.style.left);
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-pivot-indent.xlsx')).slice());
+        grid.SwitchSheet(1); await frame();
+        check('compact form, CompactRowIndent 1 / 2 / 3 (indent="0", none, "2"): the second level\'s +/- 13 / 18 / 27 px right of the first\'s',
+            [0, 3, 6].map((col) => toggleLeft(3, col) - toggleLeft(2, col)), [13, 18, 27]);
+        grid.SwitchSheet(2); await frame();
+        check('... the same in cells of Calibri 16 (the Normal font\'s units)', [0, 3, 6].map((col) => toggleLeft(3, col) - toggleLeft(2, col)), [13, 18, 27]);
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-cell-indent.xlsx')).slice());
+        await frame();
+        const pad = (row) => parseFloat(getComputedStyle(cell(row, 0)).paddingLeft);
+        check('a cell indented 1, 2, 4 levels: 9, 18, 36 px more (Calibri 11)', [1, 2, 3].map((row) => pad(row) - pad(0)), [9, 18, 36]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Data bars as Excel 2019 draws them (tools/excel-parity/build-data-bars.vbs: synthetic-data-bars.xlsx, checked with
+// shoot-sheets.ps1): a bar's room 61 px of a 64-px column from 2 px right of the left grid line, a bar a whole number of
+// pixels of it (from where it grows), a gradient fading to 85 % of the way to white, an axis on a pixel of its own.
+checks['databars-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const bar = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-bar`);
+    const room = (row, col) => host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-bar-room`);
+    const extent = (row, col) => { const b = bar(row, col); return b ? [parseFloat(b.style.left), parseFloat(b.style.width)] : null; };
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-data-bars.xlsx')).slice());
+        await frame();
+        check('the room of a 64-px column: 61 px from 2 px in', [room(0, 2)?.style.left, room(0, 2)?.style.width], ['2px', '61px']);
+        check('gradient bars of 1 .. 5: none, 15, 31, 46, 61 px from the left (25 % 15.25, 50 % 30.5, 75 % 45.75)', [1, 2, 3, 4, 5].map((col) => extent(0, col)), [null, [0, 15], [0, 31], [0, 46], [0, 61]]);
+        check('... fading from #638EC6 to #E8EEF6 (85 % to white), #FF0000 to #FFD9D9, #000080 to #D9D9EC',
+            [0, 1, 4].map((row) => (getComputedStyle(bar(row, 5)).backgroundImage.match(/rgb\([^)]*\)/g) || []).join(' ')),
+            ['rgb(99, 142, 198) rgb(232, 238, 246)', 'rgb(255, 0, 0) rgb(255, 217, 217)', 'rgb(0, 0, 128) rgb(217, 217, 236)']);
+        check('right to left: the same lengths from the right end', [2, 3, 4, 5].map((col) => extent(6, col)), [[46, 15], [30, 31], [15, 46], [0, 61]]);
+        const axisAt = (row, col) => parseFloat(host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"] .spreadsheet-cf-axis`)?.style.left);
+        check('-2 .. 2 with an automatic axis: the axis 30 px in (32 right of the grid line), -2 up to it, 2 from the pixel after it',
+            [axisAt(7, 1), extent(7, 1), extent(7, 5)], [30, [0, 30], [31, 30]]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
