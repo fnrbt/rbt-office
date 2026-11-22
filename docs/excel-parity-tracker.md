@@ -512,14 +512,16 @@ pictures of it, and a probe of every shape's text, Adjustments, Line.Weight, Top
 | Arrowheads (`headEnd` / `tailEnd`): `w` and `len` sm / med / lg 2 / 3 / 5 times the line's width, the line taken as at least 2 pt; triangle, stealth (notched), arrow (open), its tip at the line's end; oval and diamond centred on it | "Rounds": a 1-pt line's med / lg triangle 8 x 13 px, lg / lg 13 x 13, sm / sm 5 x 5; a 2.25-pt line's med / med 9 x 9 | none | `arrowhead` |
 | A line of no height (or no width) is drawn; a flow chart connector is an ellipse | "Rounds"; house-flipping's progress line and arrow on three sheets, its step circles | not drawn (an SVG of no height draws nothing; drawings under 1 px skipped); a rectangle | lines kept, their SVG a pixel at least |
 | A shape of no fill, no line (none given and no style) and no text draws nothing | "Rounds" "Empty"; house-flipping's clickable rectangles over cells on four sheets | a placeholder frame with its name ("S..." over each check box, two frames over a table) | an empty scene |
-| An anchor's offset goes no further than its row or column (none in a hidden one); a span the file gives that hidden rows take away is none - the object is not shown | "Hidden": Shape.Top / Height 45 / 0, 18.75 / 26.25, 33.75 / 33.75 pt; house-flipping's picture in hidden rows not shown | offsets inside hidden rows counted (a 12-px bar), the object's own size when nothing was left | `Layout.drawingRect` |
+| An anchor's offset in a hidden row or column is none; a span the file gives that hidden rows take away is none - the object is not shown | "Hidden": Shape.Top / Height 45 / 0, 18.75 / 26.25, 33.75 / 33.75 pt; house-flipping's picture in hidden rows not shown | offsets inside hidden rows counted (a 12-px bar), the object's own size when nothing was left | `Layout.drawingRect` |
 
 Left: the camera's text on the dashboard's cards is narrower than Excel's (the range drawn into the picture's
 rectangle); a slicer button's caption cut ("Centr...") where Excel cuts it; the map chart; text shadows (`a:rPr`
 effects), `rotWithShape`, a group's shadow drawn for the group as a whole (alike where its shapes do not overlap),
 glows / soft edges / reflections; arrowheads' line not shortened under an open arrow; a pane part's margin can show
-a shadow past a frozen line; a camera's own outline. Converting the sheet a one-cell reference reads also converts the
-sheets a chart's one-cell series names read (sooner than before; the chart's values from its cache until then).
+a shadow past a frozen line; a camera's own outline; whether an offset larger than its (shown) cell is cut to it (not
+looked into: kept as the file has it). Converting the sheet a one-cell reference reads also converts the
+sheets a chart's one-cell series names read (sooner than before; the chart's values from its cache until then); an
+export keeps the calculation chain for such a sheet still standing in for the file's.
 
 ## Formula oracle on real-world models, 2026-11-21
 
