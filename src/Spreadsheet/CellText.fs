@@ -1717,6 +1717,79 @@ let cellDisplayTextFitted
 let cellDisplayTextIn (date1904: bool) (measure: (string -> float) option) (cellWidth: float) (format: CellFormat) (value: CellValue): string =
     cellDisplayTextFitted None date1904 measure cellWidth format value
 
+/// The characters of the `_x` widths (Excel leaves the width of x) at the start and at the end of the section of a
+/// cell's number format that its value shows in - `_(` and `_)` of `_("$"* #,##0_)` - for a host that draws them as wide
+/// as Excel 2019 prints them: the shown text has a space for each (`stripExcelWidthPlaceholders`), Excel's PDF leaves
+/// the width of x in the cell's font (make-print-place-fixture.py "Pads": `0_)` 28 dots of Calibri 11 right of the
+/// figure, `0_W` 82, `0_.` 23, `0\ ` 21). A section of a condition ("[>=100]") has none.
+let widthPads (format: CellFormat) (value: CellValue) : string * string =
+    let backslash = char 92
+    let sectionsOf (code: string) =
+        let parts = ResizeArray<string>()
+        let sb = System.Text.StringBuilder()
+        let mutable quoted = false
+        let mutable bracket = false
+        let mutable i = 0
+        while i < code.Length do
+            let c = code.[i]
+            if c = '"' then quoted <- not quoted
+            elif not quoted && c = '[' then bracket <- true
+            elif not quoted && c = ']' then bracket <- false
+            if not quoted && not bracket && c = ';' then
+                parts.Add(sb.ToString())
+                sb.Clear() |> ignore
+                i <- i + 1
+            elif not quoted && (c = backslash || c = '_' || c = '*') && i + 1 < code.Length then
+                sb.Append(c).Append(code.[i + 1]) |> ignore
+                i <- i + 2
+            else
+                sb.Append(c) |> ignore
+                i <- i + 1
+        parts.Add(sb.ToString())
+        List.ofSeq parts
+    let padsOf (section: string) =
+        if section.Contains "[>" || section.Contains "[<" || section.Contains "[=" then "", ""
+        else
+            // (Colours and locales first: `[Red]_(`.)
+            let mutable i = 0
+            while i < section.Length && section.[i] = '[' && section.IndexOf(']', i) > i do i <- section.IndexOf(']', i) + 1
+            let lead = System.Text.StringBuilder()
+            while i + 1 < section.Length && section.[i] = '_' do
+                lead.Append(section.[i + 1]) |> ignore
+                i <- i + 2
+            // The trailing ones: the `_x` run the section's last tokens form.
+            let trail = System.Text.StringBuilder()
+            let mutable j = i
+            let mutable quoted = false
+            while j < section.Length do
+                let c = section.[j]
+                if c = '"' then
+                    quoted <- not quoted
+                    trail.Clear() |> ignore
+                    j <- j + 1
+                elif not quoted && c = '_' && j + 1 < section.Length then
+                    trail.Append(section.[j + 1]) |> ignore
+                    j <- j + 2
+                elif not quoted && (c = backslash || c = '*') && j + 1 < section.Length then
+                    trail.Clear() |> ignore
+                    j <- j + 2
+                else
+                    trail.Clear() |> ignore
+                    j <- j + 1
+            lead.ToString(), trail.ToString()
+    match format.NumberFormat, unwrapFormulaValue value with
+    | Some code, Number n when not (System.String.IsNullOrWhiteSpace code) && not (code.Equals("general", System.StringComparison.OrdinalIgnoreCase)) ->
+        let sections = sectionsOf code
+        let pick k = if sections.Length > k && sections.[k] <> "" then sections.[k] else sections.[0]
+        padsOf (if n > 0.0 then sections.[0] elif n < 0.0 then pick 1 else pick 2)
+    | Some code, String _ ->
+        let sections = sectionsOf code
+        match sections |> List.tryFind (fun section -> section.Contains "@") with
+        | Some section -> padsOf section
+        | None when sections.Length >= 4 -> padsOf sections.[3]
+        | None -> "", ""
+    | _ -> "", ""
+
 /// `cellDisplayTextIn` in the 1900 date system.
 let cellDisplayText
     (measure: (string -> float) option)

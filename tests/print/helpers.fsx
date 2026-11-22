@@ -311,6 +311,16 @@ do
     // A wrapped line fits while no wider than the column less 4.48 px: 15 characters of 6 px (90) in 95 px, not in 94.
     let lines width = textItems width "aaaaaaa bbbbbbb" true |> List.map (fun t -> t.Text)
     ok "print: wrapped at the column less 4.48 px" (lines 95.0 = [ "aaaaaaa bbbbbbb" ] && lines 94.0 = [ "aaaaaaa"; "bbbbbbb" ]) (sprintf "%A / %A" (lines 95.0) (lines 94.0))
+    // The text's inset by the Normal font's widest digit in print: ceil(d / 4) + 4 dots (Excel 2019's PDF of 33
+    // Normal fonts: Calibri 11 16 dots, Calibri 9 14, Calibri 14 19, Cambria 14 21).
+    let inset digit = System.Math.Round (Rbt.Spreadsheet.Paint.printPadXOf { createEmpty 1 1 with PrintDigitWidth = digit } * 6.25, 6)
+    ok "print: the text's inset by the Normal font" ([ 47.0; 38.0; 59.0; 65.0 ] |> List.map inset = [ 16.0; 14.0; 19.0; 21.0 ]) (sprintf "%A" ([ 47.0; 38.0; 59.0; 65.0 ] |> List.map inset))
+    // A format's `_x` at the end / start of the section shown leaves the width of x ("Pads": 0_) 28 dots of Calibri 11).
+    let pads code value = Rbt.Spreadsheet.CellText.widthPads { defaultFormat with NumberFormat = Some code } value
+    ok "print: a format's widths of characters" (pads "0_)" (Number 1.0) = ("", ")") && pads "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\);_(\"$\"* \"-\"??_);_(@_)" (Number -5.0) = ("(", "")
+                                                && pads "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\)" (Number 5.0) = ("(", ")") && pads "0_W_)" (Number 1.0) = ("", "W)")
+                                                && pads "_(@_)" (String "a") = ("(", ")") && pads "[>=100]0_)" (Number 1.0) = ("", "") && pads "0\\)" (Number 1.0) = ("", "")) ""
+    // Rows an AutoFilter hides print nothing (houseflipping's REPAIR ESTIMATOR): synthetic-print-pages-filter, "print pages:" below.
 
 
 // ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break

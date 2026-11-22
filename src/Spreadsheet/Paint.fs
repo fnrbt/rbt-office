@@ -412,11 +412,21 @@ let private borderColor (side: BorderStyle) : string =
 /// ScrollX/Y=0 every zone paints at its absolute position anyway, so the
 /// only visible effect of frozen panes there is the divider lines emitted
 /// below.
-/// How far a line of text stands from its cell's sides in print (the PDF this paints): 16/600 in, 2.56 px - checked
-/// in Excel 2019's PDF of generated cells (make-print-text-fixture.py: left and right aligned text in 26 columns of
-/// Calibri 11 and bold, Arial 10, Times New Roman 12, 1.93 pt either side). On screen it is 2 px left and 3 right.
+/// How far a line of text stands from its cell's sides in print (the PDF this paints) under a Normal font of Calibri
+/// 11: 16/600 in, 2.56 px - checked in Excel 2019's PDF of generated cells (make-print-text-fixture.py: left and right
+/// aligned text in 26 columns of Calibri 11 and bold, Arial 10, Times New Roman 12, 1.93 pt either side). On screen
+/// it is 2 px left and 3 right. Other Normal fonts: `printPadXOf`.
 [<Literal>]
 let printPadX = 2.56
+
+/// How far a line of text stands from its cell's sides in print: ceil(d / 4) + 4 dots of 600 dpi, d the Normal font's
+/// widest digit in print (`SpreadsheetModel.PrintDigitWidth`; whatever the cell's own font) - 16 dots for Calibri 11
+/// (d 47) and Arial 10 (46), 14 for Calibri 9 / Arial 8, 17 for Calibri 12, 18 for Arial 12, 19 for Calibri 14, 21
+/// for Cambria 14 (the rowunit, heights and widths fixtures of make-print-pages-fixture.py: 33 Normal fonts, the
+/// text's origin in Excel 2019's PDF to the dot).
+let printPadXOf (model: SpreadsheetModel) =
+    let digit = if model.PrintDigitWidth > 0.0 then model.PrintDigitWidth else 47.0
+    (System.Math.Ceiling (digit / 4.0) + 4.0) * 96.0 / 600.0
 
 /// What a wrapped line's room is less than its printed column: 28/600 in, 4.48 px (the same fixture's paragraphs,
 /// broken in the font's advances at its size: 102 of 108 columns as Excel's PDF; on screen 5 px, measured in GDI's).
@@ -425,6 +435,7 @@ let printWrapMargin = 4.48
 
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
+    let padX = printPadXOf model
     let cells = visibleCells model viewport
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.
@@ -670,10 +681,21 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                         let r = cellRect model viewport cell.Address.Row look.AcrossTo
                         { cell.Rect with Width = (r.X + r.Width) - cell.Rect.X }
                     else cell.Rect
+                // (A format's `_x` at the text's start / end is drawn as a space and leaves the width of x in Excel's
+                // PDF - `"$"#,##0_)` stands a ")" in from the right: the side the text is aligned to is set in by
+                // the difference, `CellText.widthPads`.)
+                let padLeft, padRight =
+                    match measure with
+                    | Some m when not (displayText |> Seq.forall (fun c -> c = '#')) ->
+                        let lead, trail = widthPads format value
+                        let extra (pads: string) = pads |> Seq.sumBy (fun c -> m (string c) - m " ")
+                        (if look.Align = AlignLeft && lead <> "" then extra lead else 0.0),
+                        (if look.Align = AlignRight && trail <> "" then extra trail else 0.0)
+                    | _ -> 0.0, 0.0
                 let textRect =
                     { baseRect with
-                        X = baseRect.X + printPadX + iconGutter + leftIndent
-                        Width = max 0.0 (baseRect.Width - 2.0 * printPadX - iconGutter - leftIndent - rightIndent) }
+                        X = baseRect.X + padX + iconGutter + leftIndent + padLeft
+                        Width = max 0.0 (baseRect.Width - 2.0 * padX - iconGutter - leftIndent - rightIndent - padLeft - padRight) }
                 // ShrinkToFit (single-line text only — wrap-mode escapes via
                 // line breaks). When the text overflows the cell width and
                 // shrinkToFit is set, scale the font size down until it fits,
@@ -744,8 +766,8 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 // How far the text reaches past the cell's edge (the
                                 // cell's own padding on that side is its to use);
                                 // centred text needs half of the excess on each side.
-                                let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - printPadX else 0.0
-                                let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - printPadX else 0.0
+                                let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - padX else 0.0
+                                let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - padX else 0.0
                                 let first, last = textOverflowSpan model cell.Address.Row cell.Address.Col needLeft needRight
                                 if first = cell.Address.Col && last = cell.Address.Col then Some cell.Rect
                                 else
