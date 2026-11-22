@@ -3000,10 +3000,14 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 List.ofSeq lines
             let planAt (every: int) : LabelPlan option =
                 let room = float every * band
+                // (Turned, a label has the plot's width shared among the labels shown - every s-th of n, ceil (n / s) of them:
+                // Excel 2019 shows every 12th of 60 "Category n" in 60.56 pt, not every 11th, whose 6 labels would have 10.09
+                // pt each, less than a line - synthetic charts of 24 and 60 categories, 90 - 760 pt, at 9 pt.)
+                let shared = band * float texts.Length / Math.Ceiling (float texts.Length / float every)
                 if widestText <= room then Some Flat
                 elif spaced && widestWord <= room then Some (Wrapped (texts |> Array.map (breakAt room)))
-                elif auto && room >= sqrt 2.0 * line then Some (Turned -45.0)
-                elif auto && room >= line then Some (Turned -90.0)
+                elif auto && shared >= sqrt 2.0 * line then Some (Turned -45.0)
+                elif auto && shared >= line then Some (Turned -90.0)
                 else None
             match skip with
             | Some every -> every, (planAt every |> Option.defaultValue Flat)

@@ -542,5 +542,23 @@ ok "Excel 2019: an area on the ticks from 33.7 pt (45 px) to 329 pt (438.6 px) o
      && hasAll (allTexts ticksScene.Items |> List.map (fun (v, _, _, _, _, _, _) -> v)) [ "January 2024"; "February 2024"; "June 2024" ] [ "February" ])
     (sprintf "%A %A" (areaLeft ticksScene) (allTexts ticksScene.Items |> List.map (fun (v, _, _, _, _, _, _) -> v)))
 
+// Turned category labels: the plot's width shared among the labels shown (chart-label-probe.vbs, "Category n" at 9 pt).
+let categoriesChart (n: int) =
+    let cats = String.Join("", [ for i in 0 .. n - 1 -> sprintf "<c:pt idx=\"%d\"><c:v>Category %d</c:v></c:pt>" i (i + 1) ])
+    let vals = String.Join("", [ for i in 0 .. n - 1 -> sprintf "<c:pt idx=\"%d\"><c:v>%d</c:v></c:pt>" i (1 + (i + 1) % 3) ])
+    "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><c:roundedCorners val=\"0\"/><c:chart><c:autoTitleDeleted val=\"1\"/><c:plotArea><c:layout/>"
+    + "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/><c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"
+    + sprintf "<c:cat><c:strRef><c:strCache><c:ptCount val=\"%d\"/>%s</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:ptCount val=\"%d\"/>%s</c:numCache></c:numRef></c:val></c:ser>" n cats n vals
+    + "<c:gapWidth val=\"219\"/><c:axId val=\"1\"/><c:axId val=\"2\"/></c:barChart>"
+    + "<c:catAx><c:axId val=\"1\"/><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:tickLblPos val=\"nextTo\"/><c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz=\"900\"/></a:pPr></a:p></c:txPr><c:crossAx val=\"2\"/></c:catAx>"
+    + "<c:valAx><c:axId val=\"2\"/><c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/><c:crossAx val=\"1\"/></c:valAx></c:plotArea></c:chart>"
+    + "<c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz=\"1000\"/></a:pPr></a:p></c:txPr></c:chartSpace>"
+let turnedLabels (n: int) (widthPt: float) =
+    (Charts.layoutChart Charts.defaultTheme noData (Charts.parseChart Charts.defaultTheme (categoriesChart n) |> Option.get) (widthPt * 4.0 / 3.0) (220.0 * 4.0 / 3.0)).Items
+    |> List.choose (fun item -> match item with Charts.PText (_, _, v, _, _, _, _, _, t) when v.StartsWith "Category" -> Some (v, t) | _ -> None)
+ok "Excel 2019: 60 categories in a chart of 100 pt: every 12th turned -90 (5 labels), not every 11th (6 labels of 10.1 pt each)"
+    (let shown = turnedLabels 60 100.0 in shown.Length = 5 && shown |> List.forall (fun (_, t) -> t = -90.0)) (sprintf "%A" (turnedLabels 60 100.0))
+ok "Excel 2019: ... in 106 pt every 10th (6 labels of 11.1 pt)" ((turnedLabels 60 106.0).Length = 6) (sprintf "%A" (turnedLabels 60 106.0))
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
