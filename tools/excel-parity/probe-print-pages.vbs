@@ -4,9 +4,10 @@
 ' and its page breaks (Page Break Preview: automatic and manual) to OUT.tsv, a line per fact:
 '   sheet <tab> n <tab> key <tab> value
 ' keys: setup.* (PageSetup's properties), hbreak / vbreak (row / column before which a page starts, and its type:
-' manual or auto), pdf (the PDF's name, or "error ..."). Run it in the desktop session (excel-print-pages.sh).
+' manual or auto), pdf (the PDF's name, or "error ..."), col / colafter (each column of the used range and one more:
+' its index, ColumnWidth and Width in points, before and after the export). Run it in the desktop session (excel-print-pages.sh).
 Option Explicit
-Dim fso, x, wb, s, out, base, n, i, b, ps, pdf, t
+Dim fso, x, wb, s, out, base, n, i, b, ps, pdf, t, lastc
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set x = CreateObject("Excel.Application")
 x.Visible = True : x.DisplayAlerts = False : x.AutomationSecurity = 3 : x.ScreenUpdating = True
@@ -64,6 +65,11 @@ For Each s In wb.Worksheets
       W "vbreak", b.Location.Column & " " & t
     Next
     x.ActiveWindow.View = 1
+    lastc = s.UsedRange.Column + s.UsedRange.Columns.Count
+    If lastc > 60 Then lastc = 60
+    For i = 1 To lastc
+      W "col", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
+    Next
     Err.Clear
     pdf = base & "-" & n & ".pdf"
     s.ExportAsFixedFormat 0, pdf, 0, True, False, , , False
@@ -72,6 +78,9 @@ For Each s In wb.Worksheets
     Else
       W "pdf", fso.GetFileName(pdf)
     End If
+    For i = 1 To lastc
+      W "colafter", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
+    Next
     Err.Clear
     On Error GoTo 0
   End If
