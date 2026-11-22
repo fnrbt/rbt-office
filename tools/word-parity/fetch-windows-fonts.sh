@@ -78,7 +78,8 @@ printf 'windows fonts copied to %s\n' "$out_dir"
 extra_dir="${RB_WORD_EXTRA_FONT_DIR:-$(dirname "$out_dir")/windows-extra}"
 extra=(ariblk.ttf consola.ttf consolab.ttf consolai.ttf consolaz.ttf cour.ttf courbd.ttf courbi.ttf couri.ttf
   georgia.ttf georgiab.ttf georgiai.ttf georgiaz.ttf lucon.ttf tahoma.ttf tahomabd.ttf trebuc.ttf trebucbd.ttf
-  trebucbi.ttf trebucit.ttf symbol.ttf wingding.ttf seguisym.ttf)
+  trebucbi.ttf trebucit.ttf symbol.ttf wingding.ttf seguisym.ttf seguibl.ttf seguibli.ttf
+  TCM_____.TTF TCB_____.TTF TCMI____.TTF TCBI____.TTF)
 mkdir -p "$extra_dir"
 for font in "${extra[@]}"; do
   scp -q "${vm}:C:/Windows/Fonts/${font}" "${extra_dir}/${font}" || printf '  warning: failed to copy %s\n' "$font" >&2

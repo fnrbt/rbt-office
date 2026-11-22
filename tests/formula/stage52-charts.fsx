@@ -115,7 +115,7 @@ let pieScene = Charts.layoutChart zooTheme zooData pie 480.0 288.0
 eq "pie: a pie plot" (pie.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.PiePlot ]
 ok "pie: four wedges in four colours, from the centre" (let wedges = paths pieScene in wedges.Length = 4 && (wedges |> List.map snd |> List.distinct).Length = 4 && wedges |> List.forall (fun (d, _) -> d.Contains "A" && d.EndsWith "Z")) (sprintf "%A" (paths pieScene |> List.map snd))
 ok "pie: a legend, when the chart has one, names the categories" (pie.Legend.IsNone || [ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieScene))) (sprintf "%A" (texts pieScene))
-let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None; Face = None }; Layout = None; Overlay = false; Deleted = Set.empty; EntryStyles = Map.empty } } 480.0 288.0
+let pieWithLegend = Charts.layoutChart zooTheme zooData { pie with Legend = Some { Position = "r"; Style = { Size = None; Color = None; Bold = None; Italic = None; Face = None }; Layout = None; Overlay = false; Deleted = Set.empty; EntryStyles = Map.empty; Fill = Charts.FillNone; Border = None } } 480.0 288.0
 ok "pie: with a legend at the right, its entries are the categories" ([ "Q1"; "Q2"; "Q3"; "Q4" ] |> List.forall (fun label -> List.contains label (texts pieWithLegend))) (sprintf "%A" (texts pieWithLegend))
 
 // The area chart and the scatter chart.
@@ -151,7 +151,7 @@ ok "100 % stacked: every column is as high as the plot, in the shares of its val
 ok "100 % stacked: the scale is 0% .. 100%" (List.contains "0%" (texts percentScene) && List.contains "100%" (texts percentScene) && List.contains "50%" (texts percentScene)) (sprintf "%A" (texts percentScene))
 // A combination: columns on the first axis, a line on a second one at the right.
 let comboAxes = axesXml + "<c:catAx><c:axId val=\"3\"/><c:delete val=\"1\"/><c:axPos val=\"b\"/><c:crossAx val=\"4\"/></c:catAx><c:valAx><c:axId val=\"4\"/><c:delete val=\"0\"/><c:axPos val=\"r\"/><c:numFmt formatCode=\"0%\" sourceLinked=\"0\"/><c:crossAx val=\"3\"/></c:valAx>"
-let combo = parsed (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 100.0; 300.0; 200.0 ] "") + "<c:lineChart><c:grouping val=\"standard\"/>" + ser 1 "00AA00" [ 0.1; 0.5; 0.25 ] "<c:marker><c:symbol val=\"circle\"/><c:size val=\"7\"/></c:marker>" + "<c:marker val=\"1\"/><c:axId val=\"3\"/><c:axId val=\"4\"/></c:lineChart>") comboAxes)
+let combo = parsed (chartXml (barPlot "clustered" (ser 0 "FF0000" [ 100.0; 300.0; 200.0 ] "") + "<c:lineChart><c:grouping val=\"standard\"/>" + ser 1 "00AA00" [ 0.1; 0.5; 0.25 ] "<c:marker><c:symbol val=\"circle\"/><c:size val=\"7\"/></c:marker><c:smooth val=\"0\"/>" + "<c:marker val=\"1\"/><c:axId val=\"3\"/><c:axId val=\"4\"/></c:lineChart>") comboAxes)
 let comboScene = Charts.layoutChart Charts.defaultTheme noData combo 400.0 300.0
 eq "combination: a bar plot and a line plot" (combo.Plots |> List.map (fun plot -> plot.Kind)) [ Charts.BarPlot; Charts.LinePlot ]
 ok "combination: the line has its own scale, in per cent, at the right" (List.contains "50%" (texts comboScene) && List.contains "300" (texts comboScene) && (comboScene.Items |> List.exists (fun item -> match item with Charts.PText (x, _, "50%", _, _, "start", _, _, _) -> x > 300.0 | _ -> false))) (sprintf "%A" (texts comboScene))
@@ -381,7 +381,10 @@ ok "Excel 2019: bars to 250,000 in 300 px: 0 .. 300,000 by 100,000" (hasAll barW
 let skip = parityTexts 11 345.0 225.0
 ok "Excel 2019: no values at all: as 0 .. 1 (to 1.2); 59 categories in 345 px: every third label" (hasAll skip [ "1.2"; "1"; "4"; "58" ] [ "2"; "3"; "59" ]) (sprintf "%A" skip)
 // A date axis: a band a month from the first date to the last, a label every two years, turned up.
-let dateScene = Charts.layoutChart parityTheme parityData (parityChart 6) 400.0 300.0
+/// (These fixtures' line series say nothing of smoothing - Excel 2019 then smooths them, synthetic-chart-looks "Markers" -;
+/// their lines are measured as the points joined.)
+let unsmoothed (chart: Charts.Chart) = { chart with Plots = chart.Plots |> List.map (fun plot -> { plot with Series = plot.Series |> List.map (fun series -> { series with Smooth = false }) }) }
+let dateScene = Charts.layoutChart parityTheme parityData (unsmoothed (parityChart 6)) 400.0 300.0
 let dateLabels = allTexts dateScene.Items |> List.filter (fun (_, _, _, _, _, _, turn) -> turn = -90.0) |> List.map (fun (value, _, _, _, _, _, _) -> value)
 eq "Excel 2019: a date axis labelled every two years, turned" dateLabels [ "2024"; "2026"; "2028"; "2030"; "2032" ]
 ok "Excel 2019: ... its line across the whole plot, the 40 rows of \"\" after it no points" (lines dateScene |> List.exists (fun (points, _) -> points.Length = 120 && fst (List.last points) > 360.0)) (sprintf "%A" (lines dateScene |> List.map (fun (points, _) -> points.Length, List.last points)))
@@ -407,7 +410,7 @@ ok "Excel 2019: a point's label of its own colour and weight (c:dLbl)" ((parityP
 let linesWb, linesBook, linesParts, linesTheme = openBook "test-documents-excel/synthetic-chart-lines.xlsx"
 let linesData = dataOf (linesBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
 let linesScene (number: int) (w: float) (h: float) =
-    Charts.layoutChart linesTheme linesData (Charts.parseChart linesTheme (text linesParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get) w h
+    Charts.layoutChart linesTheme linesData (Charts.parseChart linesTheme (text linesParts.[sprintf "xl/charts/chart%d.xml" number]) |> Option.get |> unsmoothed) w h
 let strokeWidths (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PPolyline (_, None, _, Some _, w, _) -> Some w | _ -> None)
 let keyLines (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PLine (x1, y1, x2, y2, color, w, _) when y1 = y2 && abs (x2 - x1 - 26.0) < 0.01 -> Some (color, w) | _ -> None)
 let widthsScene = linesScene 1 480.0 360.0
@@ -460,6 +463,102 @@ ok "Excel 2019: a pivot chart's series named as the file has it (\"Total\")" (Li
 let pieChart = corpusScene "real-world/dashboard-ecommerce-sales.xlsx" 11 544.0 285.0
 let ringRadius = pieChart.Items |> List.tryPick (fun item -> match item with Charts.PPath (d, Some _, _, _, _) -> (let m = Text.RegularExpressions.Regex.Match(d, "A([0-9.]+) ") in if m.Success then Some (float m.Groups.[1].Value) else None) | _ -> None)
 ok "Excel 2019: a doughnut with labels an eighth of the chart's shorter side smaller (165 pt of 186.75: 110 px across)" (match ringRadius with Some r -> abs (r - 110.0) < 3.0 | None -> false) (sprintf "%A" ringRadius)
+
+// ---- Excel 2019: synthetic-chart-looks.xlsx (make-chart-fixtures.py; chart-probe.vbs, chart-marker-style-probe.vbs,
+// chart-axis-face-probe.vbs; docs/excel-parity-tracker.md "Charts: faces, shapes, looks") ----
+ok "Excel 2019: a value axis of Garamond labels cut by Garamond's line (sales-analysis 'Sales By Chain': 0 .. 3000 by 500)"
+    (hasAll (chainTexts |> List.map (fun (v, _, _, _, _, _, _) -> v)) [ "500"; "1500"; "2500"; "3000" ] []) (sprintf "%A" chainTexts)
+let looksWb, looksBook, looksParts, looksTheme = openBook "test-documents-excel/synthetic-chart-looks.xlsx"
+let looksData = dataOf (looksBook.Sheets |> Array.toList |> List.map (fun sheet -> sheet.Name, sheet.Model))
+let looksPath (number: int) = sprintf "xl/charts/chart%d.xml" number
+let looksChart (number: int) =
+    Charts.parseChart looksTheme (text looksParts.[looksPath number]) |> Option.get
+    |> Charts.withUserShapes (fun name -> Map.tryFind name looksParts |> Option.map text) (looksPath number)
+let looksScene (number: int) (w: float) (h: float) = Charts.layoutChart looksTheme looksData (looksChart number) w h
+// Shapes over a chart: the chart's own drawing part, anchored to fractions of the chart.
+do
+    let sheet = looksWb.Sheets.Head
+    let target (id: string) = sheet.Extras.DrawingRelationships |> List.tryPick (fun (known, _, target, ext) -> if known = id && not ext then Some (ZipInterop.normalizePath target) else None)
+    let drawing : Charts.DrawingParts =
+        { Theme = looksTheme
+          Chart = (fun id -> target id |> Option.bind (fun path -> Map.tryFind path looksParts |> Option.bind (fun bytes -> Charts.parseChart looksTheme (text bytes) |> Option.map (Charts.withUserShapes (fun name -> Map.tryFind name looksParts |> Option.map text) path))))
+          Picture = (fun _ -> None); Slicer = (fun _ _ _ _ _ -> None) }
+    let item = sheet.Extras.Objects |> List.find (fun o -> o.Name = Some "UserShapes")
+    let scene = Charts.objectScene drawing looksData item.Xml 480.0 346.67 |> Option.get
+    let rec runs (items: Charts.Primitive list) =
+        items |> List.collect (fun entry ->
+            match entry with
+            | Charts.PTextRuns (x, y, _, spans) -> spans |> List.map (fun (t, _, _, _, _) -> t, x, y)
+            | Charts.PGroup (_, _, _, _, inner) | Charts.PFace (_, inner) | Charts.PTransform (_, _, _, _, _, _, inner) -> runs inner
+            | _ -> [])
+    let shown = runs scene.Items
+    ok "Excel 2019: a chart's shapes (c:userShapes) are drawn over it, the linked one with its cell's text"
+        (hasAll (shown |> List.map (fun (t, _, _) -> t)) [ "Next Look"; "29%"; "Centre"; "Fashions Direct 71%" ] []
+         && shown |> List.exists (fun (t, x, _) -> t = "Fashions Direct 71%" && x > 240.0)) (sprintf "%A" shown)
+    let rec boxes (items: Charts.Primitive list) =
+        items |> List.collect (fun entry ->
+            match entry with
+            | Charts.PRect (x, y, w, h, Some "#FFF2CC", _, Some "#C00000", _, _) -> [ x, y, w, h ]
+            | Charts.PGroup (_, _, _, _, inner) -> boxes inner
+            | _ -> [])
+    ok "Excel 2019: ... one of a size of its own (absSizeAnchor) from its corner: 120 x 40 px at 0.35, 0.42 of the chart"
+        (match boxes scene.Items with [ x, y, w, h ] -> abs (x - 168.0) < 1.0 && abs (y - 145.6) < 1.0 && abs (w - 120.0) < 1.0 && abs (h - 40.0) < 1.0 | _ -> false) (sprintf "%A" (boxes scene.Items))
+// A title of runs of their own looks: each run its size, colour, weight; an axis title likewise, turned.
+let richScene = looksScene 7 480.0 300.0
+let richTexts = allTexts richScene.Items
+let runOf (value: string) = richTexts |> List.tryFind (fun (v, _, _, _, _, _, _) -> v = value)
+ok "Excel 2019: a title of runs: 'Sales ' 18 pt bold red, 'by ' 12 pt, 'Region' 18 pt blue, left to right on one line"
+    (match runOf "Sales ", runOf "by ", runOf "Region" with
+     | Some (_, x1, y1, s1, c1, b1, _), Some (_, x2, _, s2, _, b2, _), Some (_, x3, y3, s3, c3, _, _) ->
+        x1 < x2 && x2 < x3 && abs (y1 - y3) < 0.5 && abs (s1 - 24.0) < 0.1 && abs (s2 - 16.0) < 0.1 && s3 = s1 && c1 = "#C00000" && c3 = "#0070C0" && b1 && not b2
+     | _ -> false) (sprintf "%A" richTexts)
+ok "Excel 2019: ... an axis title of two runs turned up the side" ((match (richTexts |> List.tryFind (fun (v, _, _, _, _, _, t) -> v = "Sales " && t = -90.0)), runOf "(USD)" with Some (_, _, y1, _, _, _, t1), Some (_, _, y2, s2, _, _, t2) -> t1 = -90.0 && t2 = -90.0 && y2 < y1 && abs (s2 - 18.67) < 0.1 | _ -> false)) (sprintf "%A" richTexts)
+// A legend's fill and outline, the plot area's outline, rounded corners (the fill too).
+let legendScene = looksScene 8 480.0 300.0
+let rectsOf (scene: Charts.Scene) = scene.Items |> List.choose (fun item -> match item with Charts.PRect (x, y, w, h, fill, _, stroke, sw, r) -> Some (x, y, w, h, fill, stroke, sw, r) | _ -> None)
+ok "Excel 2019: a legend's own fill and outline (c:spPr) round its entries, at the right"
+    (rectsOf legendScene |> List.exists (fun (x, _, w, h, fill, stroke, sw, _) -> fill = Some "#FFF2CC" && stroke = Some "#C00000" && sw = 2.0 && x > 400.0 && w < 70.0 && h > 50.0 && h < 80.0)) (sprintf "%A" (rectsOf legendScene))
+ok "Excel 2019: the plot area's outline; corners 10 px round, the chart's fill and border"
+    (rectsOf legendScene |> List.exists (fun (_, _, _, _, fill, stroke, _, _) -> fill = Some "#DDEBF7" && stroke = Some "#0070C0")
+     && rectsOf legendScene |> List.exists (fun (_, _, _, _, fill, _, _, r) -> fill = Some "#FFFFFF" && r = 10.0)
+     && rectsOf legendScene |> List.exists (fun (_, _, _, _, _, stroke, _, r) -> stroke = Some "#7030A0" && r = 10.0)) (sprintf "%A" (rectsOf legendScene))
+let legendBottom = looksScene 9 480.0 300.0
+ok "Excel 2019: ... a legend at the bottom boxed round its row of entries (about 137 px wide)"
+    (rectsOf legendBottom |> List.exists (fun (x, y, w, _, fill, _, _, _) -> fill = Some "#FFF2CC" && y > 240.0 && w > 110.0 && w < 170.0 && x > 150.0)) (sprintf "%A" (rectsOf legendBottom))
+// Markers a series does not name: Excel's sequence, the style's size; such a line is smoothed.
+let markScene = looksScene 11 480.0 300.0
+let ellipses = markScene.Items |> List.choose (fun item -> match item with Charts.PEllipse (_, _, rx, _, Some fill, _, _, _) -> Some (fill, rx) | _ -> None)
+ok "Excel 2019: markers in turn - the sixth series' circles (5 points and its key), 6 pt (8 px) under style 2"
+    (ellipses.Length = 6 && ellipses |> List.forall (fun (_, rx) -> abs (rx - 4.0) < 0.01)) (sprintf "%A" ellipses)
+ok "Excel 2019: ... lines that do not say are smoothed (curves)" ((markScene.Items |> List.filter (fun item -> match item with Charts.PPath (d, None, _, Some _, _) -> d.Contains "C" | _ -> false)).Length = 8) "not curves"
+let mark34 = looksScene 12 480.0 300.0
+ok "Excel 2019: ... 8 pt under style 34" (mark34.Items |> List.exists (fun item -> match item with Charts.PEllipse (_, _, rx, _, _, _, _, _) -> abs (rx - 16.0 / 3.0) < 0.01 | _ -> false)) "no 8 pt circle"
+ok "Excel 2019: the seventh and eighth automatic colours are accents 1 and 2 lighter" (let colors = markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None) in colors.Length = 8 && colors.[6] = "#8FAADC") (sprintf "%A" (markScene.Items |> List.choose (fun item -> match item with Charts.PPath (_, None, _, Some c, _) -> Some c | _ -> None)))
+// On the ticks: half the first and the last labels in the plot area's box.
+let ticksScene = looksScene 15 480.0 260.0
+let areaLeft (scene: Charts.Scene) = scene.Items |> List.pick (fun item -> match item with Charts.PPolyline (points, Some "#4472C4", _, _, _, _) -> Some (points |> List.map fst |> List.min, points |> List.map fst |> List.max) | _ -> None)
+ok "Excel 2019: an area on the ticks from 33.7 pt (45 px) to 329 pt (438.6 px) of the chart, the labels in a line"
+    (let l, r = areaLeft ticksScene in abs (l - 45.0) < 5.0 && abs (r - 438.6) < 3.0
+     && hasAll (allTexts ticksScene.Items |> List.map (fun (v, _, _, _, _, _, _) -> v)) [ "January 2024"; "February 2024"; "June 2024" ] [ "February" ])
+    (sprintf "%A %A" (areaLeft ticksScene) (allTexts ticksScene.Items |> List.map (fun (v, _, _, _, _, _, _) -> v)))
+
+// Turned category labels: the plot's width shared among the labels shown (chart-label-probe.vbs, "Category n" at 9 pt).
+let categoriesChart (n: int) =
+    let cats = String.Join("", [ for i in 0 .. n - 1 -> sprintf "<c:pt idx=\"%d\"><c:v>Category %d</c:v></c:pt>" i (i + 1) ])
+    let vals = String.Join("", [ for i in 0 .. n - 1 -> sprintf "<c:pt idx=\"%d\"><c:v>%d</c:v></c:pt>" i (1 + (i + 1) % 3) ])
+    "<c:chartSpace xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><c:roundedCorners val=\"0\"/><c:chart><c:autoTitleDeleted val=\"1\"/><c:plotArea><c:layout/>"
+    + "<c:barChart><c:barDir val=\"col\"/><c:grouping val=\"clustered\"/><c:ser><c:idx val=\"0\"/><c:order val=\"0\"/>"
+    + sprintf "<c:cat><c:strRef><c:strCache><c:ptCount val=\"%d\"/>%s</c:strCache></c:strRef></c:cat><c:val><c:numRef><c:numCache><c:ptCount val=\"%d\"/>%s</c:numCache></c:numRef></c:val></c:ser>" n cats n vals
+    + "<c:gapWidth val=\"219\"/><c:axId val=\"1\"/><c:axId val=\"2\"/></c:barChart>"
+    + "<c:catAx><c:axId val=\"1\"/><c:delete val=\"0\"/><c:axPos val=\"b\"/><c:tickLblPos val=\"nextTo\"/><c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz=\"900\"/></a:pPr></a:p></c:txPr><c:crossAx val=\"2\"/></c:catAx>"
+    + "<c:valAx><c:axId val=\"2\"/><c:delete val=\"0\"/><c:axPos val=\"l\"/><c:majorGridlines/><c:crossAx val=\"1\"/></c:valAx></c:plotArea></c:chart>"
+    + "<c:txPr><a:bodyPr/><a:p><a:pPr><a:defRPr sz=\"1000\"/></a:pPr></a:p></c:txPr></c:chartSpace>"
+let turnedLabels (n: int) (widthPt: float) =
+    (Charts.layoutChart Charts.defaultTheme noData (Charts.parseChart Charts.defaultTheme (categoriesChart n) |> Option.get) (widthPt * 4.0 / 3.0) (220.0 * 4.0 / 3.0)).Items
+    |> List.choose (fun item -> match item with Charts.PText (_, _, v, _, _, _, _, _, t) when v.StartsWith "Category" -> Some (v, t) | _ -> None)
+ok "Excel 2019: 60 categories in a chart of 100 pt: every 12th turned -90 (5 labels), not every 11th (6 labels of 10.1 pt each)"
+    (let shown = turnedLabels 60 100.0 in shown.Length = 5 && shown |> List.forall (fun (_, t) -> t = -90.0)) (sprintf "%A" (turnedLabels 60 100.0))
+ok "Excel 2019: ... in 106 pt every 10th (6 labels of 11.1 pt)" ((turnedLabels 60 106.0).Length = 6) (sprintf "%A" (turnedLabels 60 106.0))
 
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

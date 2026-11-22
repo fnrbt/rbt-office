@@ -88,6 +88,12 @@ let private findFace (family: string) (bold: bool) (italic: bool) : (Face * bool
 /// Whether the tables know a family (its text is measured without the browser).
 let knowsFamily (family: string) = findFace family false false |> Option.isSome
 
+/// The widest of the digits 0 - 9 of a family's regular face as designed, in ems (Calibri 0.5068); None where the
+/// tables do not know the family.
+let digitEm (family: string) : float option =
+    findFace family false false
+    |> Option.map (fun (face, _) -> [ for code in int '0' .. int '9' -> face.Design.[code - 0x20] ] |> List.max |> fun units -> float units / face.UnitsPerEm)
+
 let private rounded (value: float) = int (floor (value + 0.5))
 
 let private hintedDifferences (face: Face) (px: int) : int[] =

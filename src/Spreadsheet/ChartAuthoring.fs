@@ -70,8 +70,9 @@ let standardChartXml (kind: StandardChartKind) (title: string) (sheetName: strin
                     let text = fst (read r0 column)
                     "<c:tx>" + refXml false (rangeRef sheetName r0 column r0 column) [| text, None |] + "</c:tx>"
                 else "<c:tx><c:v>" + escaped (sprintf "Series %d" (index + 1)) + "</c:v></c:tx>"
-            yield sprintf "<c:ser><c:idx val=\"%d\"/><c:order val=\"%d\"/>%s%s<c:val>%s</c:val></c:ser>"
-                index index name category (refXml true (rangeRef sheetName firstRow column r1 column) values) ]
+            // (A line series that does not say is smoothed by Excel: it says it is not, as Excel writes it.)
+            yield sprintf "<c:ser><c:idx val=\"%d\"/><c:order val=\"%d\"/>%s%s<c:val>%s</c:val>%s</c:ser>"
+                index index name category (refXml true (rangeRef sheetName firstRow column r1 column) values) (if kind = Line then "<c:smooth val=\"0\"/>" else "") ]
         |> String.concat ""
     let chartKind, opening =
         match kind with
@@ -172,7 +173,10 @@ let macroChartXml (chart: MacroChart) : string =
                 else
                     (match s.XData with Some d -> "<c:cat>" + data (numbers d) d + "</c:cat>" | None -> ""),
                     "<c:val>" + data true s.YData + "</c:val>"
-            let smooth = if scatter then sprintf "<c:smooth val=\"%d\"/>" (if chart.ChartType = 72 || chart.ChartType = 73 then 1 else 0) else ""
+            let smooth =
+                if scatter then sprintf "<c:smooth val=\"%d\"/>" (if chart.ChartType = 72 || chart.ChartType = 73 then 1 else 0)
+                elif kind = "lineChart" then "<c:smooth val=\"0\"/>"
+                else ""
             sprintf "<c:ser><c:idx val=\"%d\"/><c:order val=\"%d\"/>%s%s%s%s%s</c:ser>" index index name look x y smooth)
         |> String.concat ""
     let pie = kind = "pieChart"

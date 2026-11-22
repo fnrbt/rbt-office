@@ -106,6 +106,39 @@ and draw in a fallback; Excel's own default marker sequence and grey marker outl
 leave no room for the last label's half (chart-zoo "Area" plot 7 px wider than Excel's); chartEx and chart sheets
 were not compared (chart-probe reads ChartObjects only).
 
+## Charts: faces, shapes, looks against Excel 2019, 2026-11-22
+
+What the two rounds above left. Each rule found on Excel's charts of generated workbooks on the VM (`probe-on-vm.sh`
+runs a probe in Excel's desktop session: `chart-axis-face-probe.vbs`, `chart-probe.vbs`, `chart-marker-probe.vbs`,
+`chart-marker-style-probe.vbs`, `chart-label-probe.vbs`), the new fixture synthetic-chart-looks.xlsx
+(`make-chart-fixtures.py`, 18 charts) and the dashboards; checks: tests/formula/stage52-charts.fsx "Excel 2019:",
+xlsx-browser `charts-excel-parity`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A value axis up the side: N = floor(plot area's height / a line of its labels' face) - 2, the line GDI's: tmHeight + tmExternalLeading (OS/2 win ascent + descent, or the hhea line when longer): Calibri 1.2207 em, Garamond 1.125, Arial / Times 1.1499, Segoe UI 1.3301, Georgia 1.1362, Tw Cen MT 1.0889 | 15,700 column charts of 10 faces x 9, 10, 12 pt x heights 90 - 420 pt x tops 60 - 100: 15,697 as Excel (Calibri's line for all: 96 %) | Calibri's line for every face: sales-analysis' Garamond axis 0 .. 3000 by 1000 | `lineIn` (`GdiAdvances.lineExtents`, `make-gdi-advances.py`); 0 .. 3000 by 500 |
+| Along the bottom: one interval per 7.5 widths of the face's widest digit (Calibri 0.5068 em: the old 3.8 x size; Garamond 0.4688, Verdana 0.6357) | 6,651 bar charts of the same faces: 6,649 | 3.8 x size whatever the face (Verdana 88 %) | `axisIntervals`, `ExcelText.digitEm` |
+| Chart text is spaced by its face's line (titles, legend entries, labels) | as above | Calibri's | `lineFor` |
+| A chart's shapes (`c:userShapes`: the drawing part of its `chartUserShapes` relationship) are drawn over it: `cdr:relSizeAnchor` from a corner to a corner in fractions of the chart, `cdr:absSizeAnchor` from a corner by its EMU size; a linked text box shows its cell | picture of "UserShapes" (two text boxes, one linked; a box of its own size, filled and outlined); the sales-analysis and e-commerce doughnuts' labels | not drawn | `withUserShapes`, `elementItems` |
+| A title or an axis title of runs of their own looks: each run in its size, colour, weight, slant, the line as high as its largest | picture of "RichTitle" ("Sales" 18 pt red bold, "by" 12 pt italic, "Region" 18 pt blue; a turned axis title of two runs); phpsp-32 | one run in the first run's look | `TitleRuns`, `drawRuns` |
+| A legend's own fill and outline (`c:legend` `c:spPr`) round its entries; the plot area's outline (`c:plotArea` `c:spPr` `a:ln`) | "LegendRight" (legend 312.8, 96.2, 37.2 x 50.6 pt), "LegendBottom" | neither drawn | `Legend.Fill` / `Border`, `PlotBorder` |
+| Rounded corners (`c:roundedCorners` on, or not written) 10 px round, the chart's fill too | pictures of "RoundedBare" (grey frame, no element) and "LegendRight" | 8 px, the fill square | frame |
+| Markers a series does not name (a line chart with `c:marker val=1`, a scatter of markers; `c:symbol auto`): diamond, square, triangle, x, star, circle, plus, dash in turn; a size the series does not state the style's: 6 pt for styles 1 - 8, 10 pt for 25 - 32, else 8 pt; filled and outlined in the series' colour (25 - 32 with a shadow, 41 - 48 lighter: not drawn) | "Markers" / "Markers34" / "Markers42" / "MarkersXY" pictures; `MarkerSize` under every style 1 - 48 through COM | circles of 5 pt | `markerOf` |
+| A line or scatter series that does not write `c:smooth` is smoothed | the same charts: curves, `Series.Smooth` True | straight | `seriesOf`; charts the editor makes write `smooth val="0"`, as Excel does |
+| The seventh to twelfth automatic colours are the accents lighter (HSL lightness x 0.6 + 0.4: Excel's #8FA2D4 / #F1A78A, ours #8FAADC / #F4B183) | "Markers" series 7, 8 | darker | `autoColor` |
+| On the ticks (`crossBetween midCat`, no bars), the first and the last category labels are centred on the plot's ends with half of each inside the plot area's box; their spacing is the points' (n - 1 gaps) | "AreaTicks" / "LineTicks": inside 31.22 .. 326.46 pt (box 7 .. 345; halves of "January 2024", "June 2024"), labels in a line; chart-zoo "Area" 259.72 pt wide (ours 259.9, was 265) | the plot to the box's ends, labels cut and broken | `tickHalves`, `planFor` |
+| Turned category labels have the plot's width shared among the labels shown - every s-th of n, ceil(n / s) labels -: -90 from a line each, -45 from sqrt 2 lines, decided before the -45 overhang narrows the plot | `chart-label-probe.vbs` (kind 3, 24 and 60 categories, 9 pt, 90 - 760 pt by 2): 665 of 672 as Excel (every 12th of 60 in 60.56 pt, not every 11th: 6 labels of 10.09 pt) | every s-th by s bands: 653 | `categoryPlan` |
+| A shape's text run that names no typeface is in the theme's minor font (lines broken by its widths) | Excel's picture of the e-commerce doughnut: "Most Sold Items" in Tw Cen MT, 2 lines | Calibri, 3 lines | `shapeItems` (ours still 3 lines: "Most Sold" 61 px in a box of 60 - our group's scale) |
+| Tw Cen MT (an Office font: the e-commerce dashboard's theme) is measured with GDI's hinted advances and drawn in its face | picture of "FaceTwCenMT" | a fallback | `GdiAdvances` (`fetch-windows-fonts.sh` fetches TCM*.TTF into artifacts/fonts/windows-extra) |
+
+Left: the remaining 7 turned-label cases are our plot 0.5 pt wider than Excel's (the side margins); the -45 / -90 and
+spacing rules for flat and broken labels still use s bands (not measured at sub-pixel bands); markers' shadows (styles
+25 - 32) and the lighter markers of 41 - 48 are not drawn; series 13+ colours not measured; underline, strike and
+baseline offsets of title runs not drawn; a picture in a chart's shapes (relative to the shapes' own part) is not drawn;
+legend entries sit 1.5 pt further in than Excel's in a boxed legend; chartEx (waterfall, funnel, treemap, histogram) and
+chart sheets were not compared again (the probes read ChartObjects; the VM's Excel is stopped by other runs that kill
+it by name, so long probes are run in short pieces).
+
 ## Cell text at a zoom, 2026-11-21
 
 The browser grid's cell text against Excel 2019 at 50-200 % (`ExcelText`, `GdiAdvances`, `CellText.NumberFit`).
