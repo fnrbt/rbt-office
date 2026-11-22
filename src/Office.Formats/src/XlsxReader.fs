@@ -1687,7 +1687,8 @@ module Xlsx =
                     doneReading <- true
                 | _ -> ()
             let text = sb.ToString()
-            decodeXmlEscapes (if preserve then text else text.Trim())
+            // (XML's white space only: a no-break space ends vertex42's "amortization and\u00A0" run.)
+            decodeXmlEscapes (if preserve then text else text.Trim([| ' '; '\t'; '\r'; '\n' |]))
 
     let private parseSharedStringRunProps (reader: System.Xml.XmlReader) =
         let mutable bold = false

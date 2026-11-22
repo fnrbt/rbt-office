@@ -10,6 +10,8 @@
     <Compile Include="TableStyles.fs" />
     <Compile Include="FontMetricsData.fs" />
     <Compile Include="FontMetrics.fs" />
+    <Compile Include="GdiAdvances.fs" />
+    <Compile Include="ExcelText.fs" />
     <Compile Include="Model.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
@@ -40,8 +42,6 @@
     <Compile Include="MacroHost.fs" />
     <Compile Include="MacroProject.fs" />
     <Compile Include="Layout.fs" />
-    <Compile Include="GdiAdvances.fs" />
-    <Compile Include="ExcelText.fs" />
     <Compile Include="Charts.fs" />
     <Compile Include="Slicers.fs" />
     <Compile Include="Paint.fs" />

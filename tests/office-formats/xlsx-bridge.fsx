@@ -1138,6 +1138,25 @@ do
         (let m = sheetNamed merged "Merged" in [ for row in [ 2; 3; 4; 5; 6; 10 ] -> getRowHeight row m ]) [ 35.0; 20.0; 20.0; 20.0; 20.0; 23.0 ]
     eq "rows: a column of Calibri 20 under wrapped Calibri 11: its descent below the text's (3 lines, plain, 2 lines)"
         (heights (sheetNamed merged "ColStyle") 4 |> List.tail) [ 63.0; 35.0; 43.0 ]
+    // Wrapped rows on opening (make-wrap-fit-fixture.py + wrap-fit-cases.tsv; Excel 2019's Rows(r).Height on opening,
+    // synthetic-wrap-fit.excel.tsv): Calibri 11 / bold at 85 %, Arial 10, Calibri 14 at 85 %, Calibri 20, in columns a
+    // pixel apart about where a line fits (`SheetOps.openWrapLineCount`). Not the first screen of the sheets at 85 %
+    // (S2, S4): the rows Excel shows first it fits at the sheet's zoom, which is not followed.
+    let wrapFit = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-wrap-fit.xlsx")
+    let expected =
+        File.ReadAllLines(Path.Combine(root, "test-documents-excel/synthetic-wrap-fit.excel.tsv")) |> Array.map (fun line -> line.Split '\t')
+        |> Array.filter (fun parts -> not ((parts.[0] = "S2" || parts.[0] = "S4") && int parts.[1] <= 60))
+    let wrong =
+        [ for parts in expected do
+            let got = getRowHeight (int parts.[1] - 1) (sheetNamed wrapFit parts.[0]) * 0.75
+            if abs (got - float parts.[2]) > 0.01 then yield sprintf "%s!%s %g (Excel %s)" parts.[0] parts.[1] got parts.[2] ]
+    eq (sprintf "rows: wrapped text fitted on opening as Excel's (%d rows)" expected.Length) (List.truncate 8 wrong) []
+    // Spaces at a line's end do not count, at its start they do (Excel: "Cost Unit   " one line from a 63-px column as
+    // "Cost Unit", "   Cost Unit" from 72).
+    let calibri (text: string) = fun i -> Rbt.Spreadsheet.ExcelText.textWidth (fun _ -> 0.0) "Calibri" false false 15 false (string text.[i])
+    eq "rows: a line's trailing spaces do not count, leading ones do"
+        [ for text, col in [ "Cost Unit   ", 63.0; "Cost Unit   ", 62.0; "   Cost Unit", 72.0; "   Cost Unit", 71.0 ] -> Ops.openWrapLineCount (calibri text) (col - 7.0) text ]
+        [ 1; 2; 1; 2 ]
     let baseline = Bridge.Import.importWorkbook (load "test-documents-excel/synthetic-row-baseline.xlsx")
     eq "rows: cells at the bottom meet at their baseline (Arial 12 and Arial 11 bold: 21 px), centred or at the top only their height (20)"
         (heights (sheetNamed baseline "Baseline") 11) [ 21.0; 21.0; 20.0; 20.0; 20.0; 20.0; 20.0; 63.0; 60.0; 60.0; 63.0 ]
