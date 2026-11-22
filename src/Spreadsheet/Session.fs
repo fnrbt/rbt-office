@@ -584,16 +584,24 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
                                 | Some code -> { cell with Format = { cell.Format with NumberFormat = Some code } }
                                 | None -> cell
                             | _ -> cell
-                        match cell.Value with
-                        | CellValue.Formula (formula, _) ->
-                            Some { cell with Value = CellValue.Formula(formula, Rbt.Spreadsheet.Formula.evaluateFormula formula model (Some workbook)) }
-                        | _ -> Some cell
+                        Some cell
                 let requested =
                     parsed |> Option.defaultValue
                         { Value = CellValue.Empty
                           Format = previous |> Option.map (fun old -> old.Format) |> Option.defaultValue defaultFormat
                           Comment = None }
-                if accept |> Option.exists (fun check -> not (check requested)) then false
+                // Validation needs the prospective value, but the stored formula
+                // must start cold: recalculation decides whether it can run or
+                // must retain zero when this entry closes a circular reference.
+                let rejected =
+                    accept |> Option.exists (fun check ->
+                        let candidate =
+                            match requested.Value with
+                            | CellValue.Formula (formula, _) ->
+                                { requested with Value = CellValue.Formula(formula, Rbt.Spreadsheet.Formula.evaluateFormula formula model (Some workbook)) }
+                            | _ -> requested
+                        not (check candidate))
+                if rejected then false
                 else
                     let put value m =
                         match value with Some cell -> setCell addr cell m | None -> clearCell addr m

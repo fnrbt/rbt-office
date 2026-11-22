@@ -2635,7 +2635,13 @@ type Spreadsheet(container: Element) as this =
                     match outcome with
                     | EntryInvalid (style, title, message) -> notify style title message
                     | EntryValid -> validationNotice <- None
-                    not (asTableEntry (Some cell))
+                    // Validation used the prospective result; a table entry,
+                    // like a normal entry, starts with an uncalculated formula.
+                    let stored =
+                        match cell.Value with
+                        | CellValue.Formula (formula, _) -> { cell with Value = CellValue.Formula (formula, CellValue.Empty) }
+                        | _ -> cell
+                    not (asTableEntry (Some stored))
         if isClear && not hadCell then true else
         session.UpdateView(currentWorkbookSnapshot())
         let prepareFull () =

@@ -13,6 +13,52 @@ export const reopened = async (grid) => {
     return again;
 };
 const pick = (object, keys) => Object.fromEntries(keys.map((key) => [key, object[key]]));
+// Excel 2019: a newly entered cycle-closing formula starts with no cached
+// result; previously calculated formulas on the cycle keep their values.
+checks['api-circular-entry'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, close } = mountGrid();
+    try {
+        for (const incremental of [true, false]) {
+            grid.SetIncrementalRecalculation(incremental);
+            const row = incremental ? 0 : 2;
+            const r = row + 1;
+            const values = () => [0, 1, 2].map(col => grid.GetCell(row, col).value);
+            grid.SetCell(row, 0, `=B${r}+5`);
+            grid.SetCell(row, 1, `=A${r}+2`);
+            grid.SetCell(row, 2, `=A${r}+B${r}`);
+            check(`new cycle and dependent (${incremental})`, values(), [5, 0, 0]);
+            grid.SetCell(row, 1, '3');
+            check(`breaking cycle recalculates dependents (${incremental})`, values(), [8, 3, 11]);
+            grid.SetCell(row, 1, '=1+2');
+            grid.SetCell(row, 1, `=A${r}+2`);
+            check(`replacing existing formula closes cycle (${incremental})`, values(), [8, 0, 11]);
+            grid.SetCell(row, 1, '4');
+            check(`breaking replacement cycle (${incremental})`, values(), [9, 4, 13]);
+        }
+        grid.SelectCell(4, 0);
+        grid.StartEdit('=A5+10');
+        await frame();
+        await window.realKey('Enter');
+        await frame();
+        check('Enter commits a self reference cold', [grid.GetCell(4, 0).formula, grid.GetCell(4, 0).value], ['=A5+10', 0]);
+        grid.SetCell(5, 0, '=IF(FALSE,A6,7)');
+        check('untaken self-reference branch calculates', grid.GetCell(5, 0).value, 7);
+        grid.SetCell(6, 0, '0');
+        grid.SetCell(6, 1, '=IF(A7,B7,7)');
+        check('untaken branch before changing input', grid.GetCell(6, 1).value, 7);
+        grid.SetCell(6, 0, '1');
+        check('branch made circular keeps previous value', grid.GetCell(6, 1).value, 7);
+        grid.SetCell(6, 0, '0');
+        check('branch made acyclic recalculates', grid.GetCell(6, 1).value, 7);
+        grid.SetIterativeCalculation(true, 100, 0.000001);
+        grid.SetCell(7, 0, '=(A8+2)/2');
+        check('iterative self-reference is calculated', Math.abs(grid.GetCell(7, 0).value - 2) < 0.00001, true);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally { close(); }
+    return lines;
+};
+
 
 // Reading cells: GetCell, GetRange, GetSelectionFormat.
 checks['api-read'] = async () => {

@@ -634,8 +634,12 @@ calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#N
   formulas read instead (from nothing, reading order lets an #N/A go round a cycle for good: saopaulo-condos).
   The real-estate model with iterative calculation: 4196 of 4225 cells exact (was 3972), the 29 others near:
   ours starts from nothing, Excel from its own last values.
-- Not reproduced: the formula that closes a cycle, typed in the editor, has the value it was given as it
-  was entered (the editor calculates a typed formula once before the recalculation); Excel's is 0.
+- When a new formula closes a cycle and iteration is off, Excel starts that formula at zero—even
+  when it replaces a number or a calculated formula. Previously calculated dependents keep their
+  values; breaking the cycle recalculates them. Typing `=B1+5`, then `=A1+2`, then `=A1+B1`
+  into A1:C1 gives 5, 0, 0. Cell entry now leaves the new formula's cache empty for recalculation
+  rather than storing a result computed against the pre-edit sheet. Validation still sees the
+  prospective value. Browser regression: `api-circular-entry` (incremental and full calculation).
 - Not reproduced: a formula with no value in the file (`<f>` without `<v>`) is "" in Excel (so `100+0.1*B1`
   on a cycle is #VALUE!); ours starts it from 0.
 
