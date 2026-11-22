@@ -2898,7 +2898,14 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         // one at the bottom or the top on its width; a box of the file's own size shares its height out evenly.)
         let sizeOf (style: TextStyle) = textSize style 10.0
         let size = sizeOf legend.Style
-        let swatch = size * 0.6
+        // (A square key 0.55 of the text's size - 4.94 pt at 9 pt, Excel 2019's LegendKey through COM -; an entry as
+        // long as its text by the face's design advances, as Excel lays chart text out: synthetic-chart-looks
+        // "LegendBottom", "Sales" 24.7 px of Calibri 9 pt, GDI's 30.)
+        let swatch = size * 0.55
+        let entryTextWidth (style: TextStyle) (textSize: float) (bold: bool) (text: string) =
+            match ExcelText.idealWidth (defaultArg (faceOf style) "Calibri") bold (style.Italic |> Option.defaultValue false) textSize text with
+            | Some ideal -> ideal
+            | None -> widthIn style textSize bold text
         // (The legend's own fill and outline, `c:spPr`, under its entries.)
         let legendAt = items.Count
         let boxed (boxX: float) (boxY: float) (boxW: float) (boxH: float) =
@@ -2914,7 +2921,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
         // whatever the size of the text; else a square swatch.)
         let lineKeys = legendEntries |> List.exists (fun (_, _, key, _) -> key.Line.IsSome || key.Marker.IsSome)
         let keyWidth = if lineKeys then 26.0 else swatch
-        let entryWidth (text: string, _: string, _: KeyLook, style: TextStyle) = keyWidth + px 3.0 + widthIn style (sizeOf style) (style.Bold |> Option.defaultValue false) text
+        let entryWidth (text: string, _: string, _: KeyLook, style: TextStyle) = keyWidth + px 3.0 + entryTextWidth style (sizeOf style) (style.Bold |> Option.defaultValue false) text
         let pitch = lineFor legend.Style size + px 5.85
         let padding = px 3.0
         let drawEntryIn (wrap: bool) (x: float) (y: float) (room: float) (text: string, entryColor: string, key: KeyLook, style: TextStyle) =
@@ -2925,12 +2932,12 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             // the first line, the lines about the entry's middle - dashboard-ecommerce-sales' "KI Adjustable- /
             // Height Table", "GBC Premium / Transparent / Covers"; elsewhere it ends in an ellipsis.)
             let lines =
-                if wrap && textRoom > 12.0 && widthIn style textSize bold text > textRoom + 2.0 && text.Trim().Contains " " then
+                if wrap && textRoom > 12.0 && entryTextWidth style textSize bold text > textRoom + 2.0 && text.Trim().Contains " " then
                     let broken = ResizeArray<string>()
                     let mutable current = ""
                     for word in text.Split(' ') |> Array.filter (fun word -> word <> "") do
                         let joined = if current = "" then word else current + " " + word
-                        if current = "" || widthIn style textSize bold joined <= textRoom then current <- joined
+                        if current = "" || entryTextWidth style textSize bold joined <= textRoom then current <- joined
                         else
                             broken.Add current
                             current <- word
@@ -2948,9 +2955,9 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             lines |> List.iteri (fun index text ->
                 // (A text longer than its place ends in an ellipsis.)
                 let shownText =
-                    if textRoom > 12.0 && widthIn style textSize bold text > textRoom + 2.0 && text.Length > 3 then
+                    if textRoom > 12.0 && entryTextWidth style textSize bold text > textRoom + 2.0 && text.Length > 3 then
                         let mutable keep = text.Length - 1
-                        while keep > 1 && widthIn style textSize bold (text.Substring(0, keep) + "…") > textRoom do keep <- keep - 1
+                        while keep > 1 && entryTextWidth style textSize bold (text.Substring(0, keep) + "…") > textRoom do keep <- keep - 1
                         text.Substring(0, keep) + "…"
                     else text
                 addText style (PText (x + keyWidth + px 3.0, y + float index * lineFor style textSize, shownText, textSize, textColor style, "start", bold, (style.Italic |> Option.defaultValue false), 0.0)))
@@ -2964,8 +2971,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                 Some (boxLeft, boxTop, (w |> Option.map (fun value -> min (width - boxLeft) (value * width))), (h |> Option.map (fun value -> min (height - boxTop) (value * height))))
             | _ -> None
         if horizontal then
-            // Rows of entries, centred.
-            let between = px 8.0
+            // Rows of entries, centred, 5.85 pt apart (Excel 2019's "LegendBottom": keys at 183, 226, 266 px).
+            let between = px 5.85
             let room = match box with Some (_, _, Some boxWidth, _) -> boxWidth - 2.0 * padding | _ -> right - left
             let rows = ResizeArray<ResizeArray<string * string * KeyLook * TextStyle>>()
             let mutable current = ResizeArray<string * string * KeyLook * TextStyle>()
@@ -3019,7 +3026,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
             let shown = legendEntries |> List.truncate (max 1 (int ((boxHeight + 1.0) / max 1.0 (min rowHeight (size * 1.05)))))
             let startY = if spread then boxTop else boxTop + padding - px 5.85 / 2.0
             boxed boxLeft boxTop boxWidth boxHeight
-            shown |> List.iteri (fun index entry -> drawEntryIn spread (boxLeft + padding) (startY + rowHeight * (float index + 0.5)) (boxWidth - 2.0 * padding) entry)
+            // (The entries 1.5 pt further in than the box's padding: Excel 2019's "LegendRight", keys 7 px from its box.)
+            shown |> List.iteri (fun index entry -> drawEntryIn spread (boxLeft + padding + px 1.5) (startY + rowHeight * (float index + 0.5)) (boxWidth - 2.0 * padding - px 1.5) entry)
             if not legend.Overlay then
                 if position = "l" then left <- max left (boxLeft + boxWidth + gap) else right <- min right (boxLeft - gap)
      | _ -> ())
@@ -4447,7 +4455,12 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
             // (A run that names no typeface is in the theme's minor font - the e-commerce dashboard's "Most Sold Items" in
             // Tw Cen MT, two lines in Excel 2019; lines are broken by the width the text has in it.)
             let faceIn (style: TextStyle) = style.Face |> Option.orElse (Map.tryFind "#minorFont" parts.Theme)
-            let measured (style: TextStyle) (text: string) = faceWidth (faceIn style) (sizeOf style) (style.Bold |> Option.defaultValue false) text
+            // (Measured by the face's design advances, as shapes' text is laid out: `ExcelText.idealWidth`.)
+            let measured (style: TextStyle) (text: string) =
+                let bold = style.Bold |> Option.defaultValue false
+                match ExcelText.idealWidth (defaultArg (faceIn style) "Calibri") bold (style.Italic |> Option.defaultValue false) (sizeOf style) text with
+                | Some ideal -> ideal
+                | None -> faceWidth (faceIn style) (sizeOf style) bold text
             let room = max 10.0 (width - padLeft - padRight)
             // Each paragraph in lines that fit the shape: broken between words.
             let wrapped : (string * (string * TextStyle) list * TextStyle) list =

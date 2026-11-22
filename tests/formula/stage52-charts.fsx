@@ -670,5 +670,11 @@ ok "Excel 2019: 12 series: the first six 0.65 shades (#375DA1), the next the acc
      && expectColors 1 [ 0, "#2E4F8B"; 18, "#4472C4"; 20, "#A5A5A5"; 21, "#FFC000" ])
     (sprintf "%A %A" (seriesColors 4) (seriesColors 10))
 
+// Text in a shape is laid out by the face's design advances (the e-commerce dashboard's "Most Sold Items" over its
+// doughnut: "Most Sold" 59.7 px in Tw Cen MT bold 11 pt, a line of its own in Excel 2019's box of 60 px; GDI's 61 px).
+ok "Excel 2019: a shape's text measured by design advances: 'Most Sold' 59.7 px in Tw Cen MT bold 11 pt"
+    (match Rbt.Spreadsheet.ExcelText.idealWidth "Tw Cen MT" true false (11.0 * 4.0 / 3.0) "Most Sold" with Some w -> abs (w - 59.73) < 0.05 | None -> false)
+    (sprintf "%A" (Rbt.Spreadsheet.ExcelText.idealWidth "Tw Cen MT" true false (11.0 * 4.0 / 3.0) "Most Sold"))
+
 printfn "Stage 52 chart tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1
