@@ -227,9 +227,9 @@ do
         let scene = Charts.layoutChart theme data chart 480.0 288.0
         let textAt (value: string) = scene.Items |> List.tryPick (fun item -> match item with Charts.PText (_, y, known, _, _, _, _, _, _) when known = value -> Some y | _ -> None)
         let topGridline = lines scene |> List.filter (fun (x1, y1, x2, y2, _) -> y1 = y2 && x2 - x1 > 300.0) |> List.map (fun (_, y, _, _, _) -> y) |> List.fold min 1000.0
-        // (Excel: the legend's middle 50 px down, the axis' top - 180 - 78 px down.)
-        ok "Excel's waterfall: its legend under the title where Excel puts it (50 px down), the plot's top 78 px down"
-            (match textAt "Increase" with Some y -> abs (y - 50.0) <= 2.0 && abs (topGridline - 78.0) <= 2.0 | None -> false)
+        // (Excel: the legend's middle 51.5 px down, the axis' top - 180 - 80 px down: synthetic-chartex-zoo's waterfalls too.)
+        ok "Excel's waterfall: its legend under the title where Excel puts it (51.5 px down), the plot's top 80 px down"
+            (match textAt "Increase" with Some y -> abs (y - 51.5) <= 1.5 && abs (topGridline - 80.0) <= 1.0 | None -> false)
             (sprintf "legend %A, top gridline %g" (textAt "Increase") topGridline)
     | None -> ok "synthetic-chartex's waterfall is read" false "not read"
 

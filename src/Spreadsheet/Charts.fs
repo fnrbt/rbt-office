@@ -2141,10 +2141,12 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 let color = textColor legend.Style
                 let entries = [ "Increase", 0; "Decrease", 1; "Total", 2 ]
                 let swatch (kind: int) = match series.Fill with FillColor (fill, _) -> fill | _ -> automatic kind
-                let entryWidth (text: string) = size * 0.8 + 4.0 + textWidth size text + 12.0
+                // (A square 5.25 pt across, the text 5.25 pt after it, 6.5 pt to the next: Excel 2019's legends of
+                // synthetic-chartex-zoo's waterfalls and treemaps.)
+                let entryWidth (text: string) = px 5.25 + px 5.25 + textWidth size text + px 6.5
                 let draw (x: float) (y: float) (text: string) (kind: int) =
-                    add (PRect (x, y - size * 0.4, size * 0.8, size * 0.8, Some (swatch kind), 1.0, None, 0.0, 0.0))
-                    add (PText (x + size * 0.8 + 4.0, y, text, size, color, "start", false, false, 0.0))
+                    add (PRect (x, y - px 5.25 / 2.0, px 5.25, px 5.25, Some (swatch kind), 1.0, None, 0.0, 0.0))
+                    add (PText (x + px 5.25 + px 5.25, y, text, size, color, "start", false, false, 0.0))
                 match legend.Position with
                 | "l" | "r" ->
                     let column = entries |> List.map (fst >> entryWidth) |> List.max
@@ -2153,15 +2155,15 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                     entries |> List.iteri (fun index (text, kind) -> draw x (start + float index * size * 1.4 + size * 0.7) text kind)
                     if not legend.Overlay then (if legend.Position = "l" then left <- left + column + 6.0 else right <- right - column - 6.0)
                 | position ->
-                    // (Excel 2019 puts a legend at the top 8 px lower than below the title and the plot 24 px
-                    // further down: measured on synthetic-chartex.xlsx and the e-commerce dashboard.)
-                    let total = entries |> List.sumBy (fst >> entryWidth)
-                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6 + 8.0
+                    // (Excel 2019 puts a legend at the top 10.5 px lower than below the title and the plot 26.5 px
+                    // further down: measured on synthetic-chartex.xlsx, synthetic-chartex-zoo and the e-commerce dashboard.)
+                    let total = (entries |> List.sumBy (fst >> entryWidth)) - px 6.5
+                    let y = if position = "b" then bottom - size * 0.6 else top + size * 0.6 + 10.5
                     let mutable x = (width - total) / 2.0
                     for text, kind in entries do
                         draw x y text kind
                         x <- x + entryWidth text
-                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6 + 24.0)
+                    if not legend.Overlay then (if position = "b" then bottom <- bottom - size * 1.6 else top <- top + size * 1.6 + 26.5)
              | None -> ())
             // Where each bar starts and ends: a total from zero, every other point on from the last.
             let starts = Array.zeroCreate<float> count
@@ -2188,7 +2190,7 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
                 | _ -> match sourceFormat with Some code -> data.Format code tick | None -> generalNumber tick
             let valSize, catSize = axisSize valAxis, axisSize catAxis
             if shows valAxis then left <- left + (ticks |> List.map (tickText >> textWidth valSize) |> List.fold max 0.0) + 6.0
-            if shows catAxis then bottom <- bottom - catSize * 1.6
+            if shows catAxis then bottom <- bottom - catSize * 1.6 - 3.5
             // (Labels above the bars have the room the axis leaves over the highest; with no legend
             // above, as much room as a label.)
             if labelSpec.IsSome && not (match chart.Legend with Some legend -> legend.Position = "t" && not legend.Overlay | None -> false) then top <- top + labelSize * 1.2
@@ -2228,7 +2230,7 @@ let private layoutPlottedChartEx (theme: ThemeColors) (data: ChartData) (chart: 
             if minimum < 0.0 && maximum > 0.0 then add (PLine (left, yOf 0.0, right, yOf 0.0, "#D9D9D9", 0.75, None))
             if shows catAxis then
                 for index in 0 .. count - 1 do
-                    add (PText (left + band * (float index + 0.5), plotBottom + catSize * 0.9, fitted catSize (band - 2.0) (category index), catSize, axisColor catAxis, "middle", false, false, 0.0))
+                    add (PText (left + band * (float index + 0.5), plotBottom + catSize * 0.9 + 6.0, fitted catSize (band - 2.0) (category index), catSize, axisColor catAxis, "middle", false, false, 0.0))
         | _ ->
             // A funnel: one bar a category, top to bottom, centred, as long as its value is of the largest.
             let catSize = axisSize catAxis
@@ -2432,8 +2434,25 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
             let number = match spec.FormatCode |> Option.orElse (series |> Option.bind (fun series -> formatCodeOf data series.Values)) with Some code -> data.Format code node.Value | None -> generalNumber node.Value
             [ if spec.ShowCategory then yield node.Name
               if spec.ShowValue then yield number ]
-            |> function [] -> None | parts -> Some (String.concat (defaultArg spec.Separator "\n") parts)
+            |> function [] -> None | parts -> Some (String.concat (defaultArg spec.Separator ", ") parts)
         | None -> None
+    let labelLine = lineIn (face labelStyle) labelSize
+    let labelColor = colorOf labelStyle "#FFFFFF"
+    /// A label's lines no wider than `room`: broken at its spaces, a word too long for a line at its letters.
+    let brokenTo (room: float) (label: string) : string list =
+        let fits (value: string) = widthOf labelStyle labelSize false value <= room
+        let rec letters (word: string) =
+            if word = "" then []
+            else
+                let mutable cut = word.Length
+                while cut > 1 && not (fits (word.Substring(0, cut))) do cut <- cut - 1
+                word.Substring(0, cut) :: letters (word.Substring cut)
+        label.Split(' ')
+        |> Array.fold (fun (lines: string list) word ->
+            match lines with
+            | last :: rest when fits (last + " " + word) -> (last + " " + word) :: rest
+            | _ -> (List.rev (letters word)) @ lines) []
+        |> List.rev
     match plot.Kind with
     | SunburstPlot ->
         // Rings: the hole and each level as wide as the outer radius over the levels and one (synthetic-chartex-zoo: 121 px
@@ -2467,21 +2486,37 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
                         sprintf "M %s %s A %s %s 0 %s 1 %s %s L %s %s A %s %s 0 %s 0 %s %s Z" (n x0) (n y0) (n outer) (n outer) large (n x1) (n y1) (n x2) (n y2) (n inner) (n inner) large (n x3) (n y3)
                 let fill = (match color with Some given -> given | None -> colorAt node)
                 add (PPath (d, Some fill, 1.0, Some lineColor, lineWidth))
+                // (A label along its part's middle radius, reading outwards - turned over on the left half -, broken to
+                // the ring's width, its lines side by side across the part: Excel 2019's "Tokyo", "Franc / e".)
                 (match labelText node with
                  | Some label when sweep > 0.0 ->
-                    let lx, ly = point ((inner + outer) / 2.0) (at + sweep / 2.0)
-                    let lines = label.Split('\n')
-                    let line = lineIn (face labelStyle) labelSize
+                    let middle = at + sweep / 2.0
+                    let lx, ly = point ((inner + outer) / 2.0) middle
+                    let lines = brokenTo (ring + 2.0) label
                     let arc = sweep * (inner + outer) / 2.0
-                    if float lines.Length * line <= ring && (lines |> Array.forall (fun part -> widthOf labelStyle labelSize false part <= max arc ring)) then
-                        lines |> Array.iteri (fun index part ->
-                            text labelStyle (PText (lx, ly + (float index - float (lines.Length - 1) / 2.0) * line, part, labelSize, colorOf labelStyle "#FFFFFF", "middle", false, false, 0.0)))
+                    if not lines.IsEmpty && float lines.Length * labelLine <= arc then
+                        let degrees = middle * 180.0 / Math.PI
+                        let turn = if degrees > 180.0 then degrees - 270.0 else degrees - 90.0
+                        let across = turn * Math.PI / 180.0
+                        lines |> List.iteri (fun index part ->
+                            let shift = (float index - float (lines.Length - 1) / 2.0) * labelLine
+                            text labelStyle (PText (lx - shift * Math.Sin across, ly + shift * Math.Cos across, part, labelSize, labelColor, "middle", false, false, turn)))
                  | _ -> ())
                 draw node.Children (level + 1) at sweep (Some fill)
                 at <- at + sweep
         if total > 0.0 then draw nodes 0 0.0 (2.0 * Math.PI) None
-    | _ ->
+    | TreemapPlot parentLabels ->
         // Rectangles: the outer level's in the plot, each node's children in its rectangle, largest first (`squarify`).
+        // Labels (Excel 2019's pictures of synthetic-chartex-looks): a tile's at its bottom left, a parent's name at its
+        // top left over its children ("overlapping"), or in a grey banner (#A6A6A6) a line high above them ("banner"),
+        // 4.5 pt in from the sides, 5.25 pt from the top, 3.75 pt from the bottom.
+        let padX, padY = px 4.5, px 3.75
+        let labelAt (x: float) (y: float) (w: float) (h: float) (top: bool) (label: string) =
+            if labelLine <= h - padY && widthOf labelStyle labelSize false label <= w - 2.0 * padX then
+                let middle = if top then y + px 5.25 + labelLine / 2.0 else y + h - padY - labelLine / 2.0
+                text labelStyle (PText (x + padX, middle, label, labelSize, labelColor, "start", false, false, 0.0))
+        // (Only the outer level's names stand as a parent's: Excel 2019's "Treemap3" - Asia over Tokyo, Osaka, Delhi; no
+        // Japan, no India.)
         let rec place (siblings: HierarchyNode list) (x: float) (y: float) (w: float) (h: float) (color: string option) =
             let sorted = siblings |> List.sortBy (fun node -> -node.Value)
             let rects = squarify (sorted |> List.map (fun node -> node.Value)) x y w h
@@ -2489,18 +2524,20 @@ let private layoutHierarchyChartEx (theme: ThemeColors) (data: ChartData) (chart
                 let fill = (match color with Some given -> given | None -> colorAt node)
                 if node.Children.IsEmpty then
                     add (PRect (rx, ry, rw, rh, Some fill, 1.0, Some lineColor, lineWidth, 0.0))
-                    match labelText node with
-                    | Some label ->
-                        let line = lineIn (face labelStyle) labelSize
-                        let parts = label.Split('\n')
-                        let pad = px 3.0
-                        parts |> Array.iteri (fun index part ->
-                            let y = ry + pad + line * (float index + 0.5)
-                            if y + line / 2.0 <= ry + rh && widthOf labelStyle labelSize false part <= rw - 2.0 * pad then
-                                text labelStyle (PText (rx + pad, y, part, labelSize, colorOf labelStyle "#FFFFFF", "start", false, false, 0.0)))
-                    | None -> ()
-                else place node.Children rx ry rw rh (Some fill)
+                    labelText node |> Option.iter (labelAt rx ry rw rh false)
+                else
+                    match (if color.IsNone then labels else None), parentLabels with
+                    | Some _, "banner" ->
+                        let banner = min rh (labelLine + 2.0 * padY)
+                        add (PRect (rx, ry, rw, banner, Some "#A6A6A6", 1.0, Some lineColor, lineWidth, 0.0))
+                        labelAt rx ry rw banner true node.Name
+                        place node.Children rx (ry + banner) rw (rh - banner) (Some fill)
+                    | Some _, "none" | None, _ -> place node.Children rx ry rw rh (Some fill)
+                    | Some _, _ ->
+                        place node.Children rx ry rw rh (Some fill)
+                        labelAt rx ry rw rh true node.Name
         place nodes left top (right - left) (bottom - top) None
+    | _ -> ()
     { Width = width; Height = height; Items = List.ofSeq items }
 
 /// The scene of a chartEx chart: a waterfall, a funnel, a treemap, a sunburst, or a placeholder that says what a
@@ -3943,7 +3980,8 @@ let histogramBins (binning: Binning) (values: float list) (categories: string li
             match binning.Count with
             | Some count when binning.Size.IsNone -> count
             | _ -> max 1 (int (Math.Ceiling ((stop - start) / width - 1e-9)))
-        let edge (index: int) = roundSignificant 12 (start + width * float index)
+        // (The last bin ends at the overflow: Excel 2019's "(700, 800]" of 150 wide from 100.)
+        let edge (index: int) = roundSignificant 12 (if binning.Overflow.IsSome then min stop (start + width * float index) else start + width * float index)
         let counts = Array.zeroCreate<float> count
         let mutable under, over = 0.0, 0.0
         for value in values do
@@ -3959,9 +3997,9 @@ let histogramBins (binning: Binning) (values: float list) (categories: string li
             let a, b = tidy (edge index), tidy (edge (index + 1))
             if binning.ClosedLeft then (if index = count - 1 && binning.Overflow.IsNone then sprintf "[%s, %s]" a b else sprintf "[%s, %s)" a b)
             else (if index = 0 && binning.Underflow.IsNone then sprintf "[%s, %s]" a b else sprintf "(%s, %s]" a b)
-        [ if binning.Underflow.IsSome then yield ((if binning.ClosedLeft then "<" else "≤") + tidy start), under
+        [ if binning.Underflow.IsSome then yield ((if binning.ClosedLeft then "< " else "≤ ") + tidy start), under
           for index in 0 .. count - 1 do yield label index, counts.[index]
-          if binning.Overflow.IsSome then yield ((if binning.ClosedLeft then "≥" else ">") + tidy stop), over ]
+          if binning.Overflow.IsSome then yield ((if binning.ClosedLeft then "≥ " else "> ") + tidy stop), over ]
 
 /// A quartile of sorted values: QUARTILE.INC's (inclusive) or QUARTILE.EXC's place among them, between two
 /// values in proportion - as Excel 2019's boxes (1 .. 9, 30: 2.75 .. 8.25 exclusive, 3.25 .. 7.75 inclusive).
