@@ -836,8 +836,10 @@ checks['lazy-sheets'] = async () => {
             probe.grid.EnterText(60, 30, 'x');
             const loaded = names.map((_, i) => probe.grid.IsSheetLoaded(i));
             note('sheets: ' + names.map((name, i) => `${i} ${name}${formulas[i] ? ' (' + formulas[i] + ' formulas)' : ''}${loaded[i] ? ' [loaded]' : ''}`).join(', '));
+            // (The Dashboard's filled map reads its data, 'Map Pivot', once it is drawn - as the sparklines read theirs.)
+            const mapSource = names.indexOf('Map Pivot');
             check('a text typed where nothing reads it converts no sheet (the dependency graph reads the formulas of unconverted sheets off the file)',
-                names.filter((_, i) => loaded[i] && i !== shownIndex && i !== sparkSource), []);
+                names.filter((_, i) => loaded[i] && i !== shownIndex && i !== sparkSource && i !== mapSource), []);
             check('and it was recalculated incrementally, with the formulas of every sheet in the graph',
                 [probe.grid.GetRecalcStats().Kind, probe.grid.GetRecalcStats().Formulas], ['incremental', formulas.reduce((a, b) => a + b, 0)]);
             probe.close();

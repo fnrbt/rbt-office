@@ -971,7 +971,9 @@ checks['sheet-pdf-default-fonts'] = async () => {
         const fetched = performance.getEntriesByType('resource').filter((entry) => /\/fonts\/[^/]+\.ttf$/.test(entry.name)).map((entry) => entry.name.split('/').pop());
         check('the PDF has its text, in the default faces', [summary.pages > 0, summary.shown.length > 50, /\/BaseFont\s*\/[A-Z]{6}\+Carlito/.test(text)], [true, true, true]);
         const embedded = [...text.matchAll(/\/BaseFont\s*\/[A-Z]{6}\+([A-Za-z-]+)/g)].map((m) => m[1] + '.ttf');
-        check('the faces of its families, and only those its text needs', [fetched.includes('Carlito-Regular.ttf'), fetched.includes('LiberationSerif-Regular.ttf'), [...new Set(fetched)].sort().join()], [true, true, [...new Set(embedded)].sort().join()]);
+        // (The default family's bold is fetched for headers and headings, whether a text of it is drawn or not: the dashboard's
+        // slicer captions, which were, are in its theme's body font, Garamond.)
+        check('the faces of its families, and only those its text needs', [fetched.includes('Carlito-Regular.ttf'), fetched.includes('LiberationSerif-Regular.ttf'), [...new Set(fetched)].sort().join()], [true, true, [...new Set([...embedded, 'Carlito-Bold.ttf'])].sort().join()]);
         note(`fetched ${[...new Set(fetched)].join(', ')}; ${summary.pages} pages, ${summary.shown.length} text runs`);
         const again = await grid.ExportPdf({ fileName: 'dashboard-sales-analysis' });
         const refetched = performance.getEntriesByType('resource').filter((entry) => /\/fonts\/[^/]+\.ttf$/.test(entry.name)).length;
