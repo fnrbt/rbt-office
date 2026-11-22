@@ -1,14 +1,15 @@
-// A row or a column inserted into a table of a file is saved like the one it
-// was inserted next to: the new cells have the neighbour's w:tcPr (width,
-// borders, shading, vertical alignment, margins), the new row its w:trPr, each
-// new cell a paragraph with the neighbour's paragraph properties - they used
-// to be bare <w:tc><w:p/></w:tc> - and w:tblGrid has the columns the table
-// has (a column more after an insert, one less after a delete). The rows and
-// cells that were there are the XML that was read.
+// A row or column inserted into a table of a file takes its properties from
+// the cell at its insertion position: after the first takes the following
+// cell, while appending takes the last. New cells copy that cell's w:tcPr
+// (width, borders, shading, alignment and margins) and paragraph properties;
+// new rows copy their neighbour's w:trPr. Original cells keep their XML.
+// The grid and a fixed table's absolute preferred width gain or lose the
+// inserted/deleted column's width.
 import { check, note, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const OF = await loadFormats();
     const Word = await loadWord();
+    const { getTableGeometry } = await import('/word/Word.js');
     const zip = await window.JSZip.loadAsync(await bytesOf('/fixture?name=' + encodeURIComponent('synthetic/three-sections.docx')));
     const original = await zip.file('word/document.xml').async('string');
     const head = original.slice(0, original.indexOf('<w:body>') + '<w:body>'.length);
@@ -23,8 +24,13 @@ try {
     zip.file('word/document.xml', head + p('before') + table + p('after') + sect + '</w:body></w:document>');
     const bytes = await zip.generateAsync({ type: 'uint8array' });
     const canvas = document.getElementById('c');
-    const open = async () => { const editor = Word.initializeCanvas(canvas); Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(bytes)); return editor; };
+    const open = async (data = bytes) => { const editor = Word.initializeCanvas(canvas); Word.importFromDocxPackage(editor, await OF.processors.forEditorPackage(data)); return editor; };
     const caretIn = (editor, text) => { const line = Word.getLayoutLines(editor).find((item) => item.Text === text); Word.setSelection(editor, line.BlockId, 0, line.BlockId, 0); };
+    const tableCellIds = (editor) => {
+        const order = Word.getParagraphOrder(editor), lines = Word.getLayoutLines(editor);
+        const row = (first, last) => order.slice(order.indexOf(lines.find((item) => item.Text === first).BlockId), order.indexOf(lines.find((item) => item.Text === last).BlockId) + 1);
+        return [row('a1', 'b1'), row('a2', 'b2')];
+    };
     const saved = async (editor) => {
         const out = new Uint8Array(await (await OF.word.writeFromEditorPackage(Word.exportDocumentPackage(editor))).arrayBuffer());
         const xml = await (await window.JSZip.loadAsync(out)).file('word/document.xml').async('string');
@@ -71,17 +77,39 @@ try {
         caretIn(editor, 'a1');
         Word.insertTableColumnAfter(editor);
         const out = await saved(editor);
-        check('a column right of the first: the grid has a column more, as wide as it', out.grid, [1500, 1500, 3000]);
-        check('every row has three cells: the cell that was, one like it, the other that was', out.rows.map((row) => row.cells.map(cellLook)), [[like(1500, 'FFEEDD', 'a1'), like(1500, 'FFEEDD', ''), like(3000, 'DDEEFF', 'b1')], [like(1500, 'EEFFDD', 'a2'), like(1500, 'EEFFDD', ''), like(3000, 'DDFFEE', 'b2')]]);
+        check('a column right of the first: the grid has the following column twice', out.grid, [1500, 3000, 3000]);
+        check('every row has three cells: original first, one like the following cell, original second', out.rows.map((row) => row.cells.map(cellLook)), [[like(1500, 'FFEEDD', 'a1'), like(3000, 'DDEEFF', ''), like(3000, 'DDEEFF', 'b1')], [like(1500, 'EEFFDD', 'a2'), like(3000, 'DDFFEE', ''), like(3000, 'DDFFEE', 'b2')]]);
         check('the rows keep their properties', [/<w:trHeight w:val="600"/.test(out.rows[0].xml), /<w:cantSplit\/>/.test(out.rows[1].xml)], [true, true]);
-        // And taken out again: the grid that was.
-        // (The new cell: 1500 twips = 100 px right of the first, as wide as it. A point in its middle is in its paragraph.)
-        const first = Word.getLayoutLines(editor).find((item) => item.Text === 'a1'), frame = Word.getPageFrames(editor)[0];
-        const inNew = Word.hitTestPosition(editor, frame.MarginLeft + 150, first.Y + first.Height / 2);
-        check('a point in the new cell is in a paragraph of its own', [inNew !== null, inNew.BlockId !== first.BlockId, Word.setSelection(editor, inNew.BlockId, 0, inNew.BlockId, 0)], [true, true, true]);
+        check('insertion widens the fixed table by the inserted column', /<w:tblW w:w="7500" w:type="dxa"\/>/.test(out.tableXml), true);
+        // The fixed table grows with the inserted column. Its rendered
+        // positions need not follow the original grid or page margin; choose
+        // interior points from the actual layout.
+        const ids = tableCellIds(editor);
+        const lines = Word.getLayoutLines(editor);
+        const firstLine = lines.find((item) => item.BlockId === ids[0][0]);
+        const cells = getTableGeometry(editor).filter((item) => item.Kind === 'table-cell' && item.Table === 1 && item.Row === 1)
+            .sort((a, b) => a.Cell - b.Cell);
+        check('three first-row cells have positive rendered widths', [cells.length, cells.every((cell) => cell.Width > 0)], [3, true]);
+        const hits = cells.map((cell) => {
+            return Word.hitTestPosition(editor, cell.X + cell.Width / 2, firstLine.BlockY + firstLine.BlockHeight / 2)?.BlockId ?? null;
+        });
+        check('interior points of all three rendered cells hit their own paragraphs', hits, ids[0]);
+        check('the inserted cell has a paragraph distinct from both neighbours', [ids[0][1] !== ids[0][0], ids[0][1] !== ids[0][2]], [true, true]);
+        Word.setSelection(editor, hits[1], 0, hits[1], 0);
         Word.deleteTableColumn(editor);
         const back = await saved(editor);
-        check('the column deleted again: two columns, the grid that was', [back.grid, back.rows.map((row) => row.cells.map((item) => cellLook(item).text))], [[1500, 3000], [['a1', 'b1'], ['a2', 'b2']]]);
+        check('delete by hit test removes only the inserted column', [back.grid, back.rows.map((row) => row.cells.map((item) => cellLook(item).text))], [[1500, 3000], [['a1', 'b1'], ['a2', 'b2']]]);
+        check('deletion restores the original fixed table width', /<w:tblW w:w="4500" w:type="dxa"\/>/.test(back.tableXml), true);
+        // Independently select the inserted paragraph by identity. This
+        // separates a column mutation error from a coordinate/hit-test error.
+        const direct = await open();
+        caretIn(direct, 'a1');
+        Word.insertTableColumnAfter(direct);
+        const insertedId = tableCellIds(direct)[0][1];
+        Word.setSelection(direct, insertedId, 0, insertedId, 0);
+        Word.deleteTableColumn(direct);
+        const directBack = await saved(direct);
+        check('delete by inserted paragraph identity removes only the inserted column', [directBack.grid, directBack.rows.map((row) => row.cells.map((item) => cellLook(item).text))], [[1500, 3000], [['a1', 'b1'], ['a2', 'b2']]]);
     }
     // ---- a column left of the second; a column deleted ----
     {
@@ -90,11 +118,40 @@ try {
         Word.insertTableColumnBefore(editor);
         const out = await saved(editor);
         check('a column left of the second: as wide as the second, its cells like the second\'s', [out.grid, out.rows.map((row) => cellLook(row.cells[1]))], [[1500, 3000, 3000], [like(3000, 'DDEEFF', ''), like(3000, 'DDFFEE', '')]]);
+        check('insertion before the second widens the fixed table', /<w:tblW w:w="7500" w:type="dxa"\/>/.test(out.tableXml), true);
         const other = await open();
         caretIn(other, 'a1');
         Word.deleteTableColumn(other);
         const less = await saved(other);
         check('the first column deleted: the grid has the second', [less.grid, less.rows.map((row) => row.cells.map((item) => cellLook(item).text))], [[3000], [['b1'], ['b2']]]);
+        check('deleting the first shrinks the fixed table by its width', /<w:tblW w:w="3000" w:type="dxa"\/>/.test(less.tableXml), true);
+    }
+    // ---- a fixed width different from the input grid's sum ----
+    {
+        const otherZip = await window.JSZip.loadAsync(bytes);
+        otherZip.file('word/document.xml', head + p('before') + table.replaceAll('3000', '1500') + p('after') + sect + '</w:body></w:document>');
+        const mismatch = await otherZip.generateAsync({ type: 'uint8array' });
+        const editor = await open(mismatch);
+        caretIn(editor, 'a1');
+        Word.insertTableColumnAfter(editor);
+        const out = await saved(editor);
+        // Word normalizes 1500/1500 to the 4500-twip fixed table's
+        // rendered 2250/2250, then adds a 2250-twip following column.
+        check('fixed width differing from grid: insertion uses resolved widths', [out.grid, out.rows.map((row) => row.cells.map((item) => cellLook(item).width)), /<w:tblW w:w="6750" w:type="dxa"\/>/.test(out.tableXml)], [[2250, 2250, 2250], [['2250', '2250', '2250'], ['2250', '2250', '2250']], true]);
+        const again = await open(out.bytes);
+        const againIds = tableCellIds(again)[0];
+        const againLines = Word.getLayoutLines(again);
+        const againLine = againLines.find((item) => item.BlockId === againIds[0]);
+        const againCells = getTableGeometry(again).filter((item) => item.Kind === 'table-cell' && item.Table === 1 && item.Row === 1)
+            .sort((a, b) => a.Cell - b.Cell);
+        check('read again: normalized fixed widths are the rendered cell widths', againCells.map((cell) => Math.abs(cell.Width - 150) < 1), [true, true, true]);
+        check('read again: all three cells hit their own paragraphs', againCells.map((cell) => {
+            return Word.hitTestPosition(again, cell.X + cell.Width / 2, againLine.BlockY + againLine.BlockHeight / 2)?.BlockId ?? null;
+        }), againIds);
+        Word.setSelection(again, againIds[1], 0, againIds[1], 0);
+        Word.deleteTableColumn(again);
+        const back = await saved(again);
+        check('deleting the added column preserves normalized widths and restores fixed table width', [back.grid, back.rows.map((row) => row.cells.map((item) => cellLook(item).width)), /<w:tblW w:w="4500" w:type="dxa"\/>/.test(back.tableXml)], [[2250, 2250], [['2250', '2250'], ['2250', '2250']], true]);
     }
 } catch (e) { fail(e); }
 finish();

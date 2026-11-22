@@ -1,0 +1,93 @@
+case	phase	row	column	text	x_pt	width_pt	fill_color
+right-of-1	before	xml	tblW	8500:dxa		
+right-of-1	before	xml	gridCol	4000:,4500:		
+right-of-1	before	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+right-of-1	before	1	1	r1c1	72	200	255
+right-of-1	before	1	2	r1c2	272.25	225	65280
+right-of-1	before	2	1	r2c1	72	200	16711680
+right-of-1	before	2	2	r2c2	272.25	225	65535
+right-of-1	inserted	xml	tblW	13000:dxa		
+right-of-1	inserted	xml	gridCol	4000:,4500:,4500:		
+right-of-1	inserted	xml	tcW	4000:dxa,4500:dxa,4500:dxa,4000:dxa,4500:dxa,4500:dxa		
+right-of-1	inserted	1	1	r1c1	72	200	255
+right-of-1	inserted	1	2		272.25	225	65280
+right-of-1	inserted	1	3	r1c2	497.25	225	65280
+right-of-1	inserted	2	1	r2c1	72	200	16711680
+right-of-1	inserted	2	2		272.25	225	65535
+right-of-1	inserted	2	3	r2c2	497.25	225	65535
+right-of-1	deleted	xml	tblW	8500:dxa		
+right-of-1	deleted	xml	gridCol	4000:,4500:		
+right-of-1	deleted	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+right-of-1	deleted	1	1	r1c1	72	200	255
+right-of-1	deleted	1	2	r1c2	272.25	225	65280
+right-of-1	deleted	2	1	r2c1	72	200	16711680
+right-of-1	deleted	2	2	r2c2	272.25	225	65535
+left-of-1	before	xml	tblW	8500:dxa		
+left-of-1	before	xml	gridCol	4000:,4500:		
+left-of-1	before	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+left-of-1	before	1	1	r1c1	72	200	255
+left-of-1	before	1	2	r1c2	272.25	225	65280
+left-of-1	before	2	1	r2c1	72	200	16711680
+left-of-1	before	2	2	r2c2	272.25	225	65535
+left-of-1	inserted	xml	tblW	12500:dxa		
+left-of-1	inserted	xml	gridCol	4000:,4000:,4500:		
+left-of-1	inserted	xml	tcW	4000:dxa,4000:dxa,4500:dxa,4000:dxa,4000:dxa,4500:dxa		
+left-of-1	inserted	1	1		72	200	255
+left-of-1	inserted	1	2	r1c1	272.25	200	255
+left-of-1	inserted	1	3	r1c2	471.75	225	65280
+left-of-1	inserted	2	1		72	200	16711680
+left-of-1	inserted	2	2	r2c1	272.25	200	16711680
+left-of-1	inserted	2	3	r2c2	471.75	225	65535
+left-of-1	deleted	xml	tblW	8500:dxa		
+left-of-1	deleted	xml	gridCol	4000:,4500:		
+left-of-1	deleted	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+left-of-1	deleted	1	1	r1c1	72	200	255
+left-of-1	deleted	1	2	r1c2	272.25	225	65280
+left-of-1	deleted	2	1	r2c1	72	200	16711680
+left-of-1	deleted	2	2	r2c2	272.25	225	65535
+right-of-2	before	xml	tblW	8500:dxa		
+right-of-2	before	xml	gridCol	4000:,4500:		
+right-of-2	before	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+right-of-2	before	1	1	r1c1	72	200	255
+right-of-2	before	1	2	r1c2	272.25	225	65280
+right-of-2	before	2	1	r2c1	72	200	16711680
+right-of-2	before	2	2	r2c2	272.25	225	65535
+right-of-2	inserted	xml	tblW	13000:dxa		
+right-of-2	inserted	xml	gridCol	4000:,4500:,4500:		
+right-of-2	inserted	xml	tcW	4000:dxa,4500:dxa,4500:dxa,4000:dxa,4500:dxa,4500:dxa		
+right-of-2	inserted	1	1	r1c1	72	200	255
+right-of-2	inserted	1	2	r1c2	272.25	225	65280
+right-of-2	inserted	1	3		497.25	225	65280
+right-of-2	inserted	2	1	r2c1	72	200	16711680
+right-of-2	inserted	2	2	r2c2	272.25	225	65535
+right-of-2	inserted	2	3		497.25	225	65535
+right-of-2	deleted	xml	tblW	8500:dxa		
+right-of-2	deleted	xml	gridCol	4000:,4500:		
+right-of-2	deleted	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+right-of-2	deleted	1	1	r1c1	72	200	255
+right-of-2	deleted	1	2	r1c2	272.25	225	65280
+right-of-2	deleted	2	1	r2c1	72	200	16711680
+right-of-2	deleted	2	2	r2c2	272.25	225	65535
+left-of-2	before	xml	tblW	8500:dxa		
+left-of-2	before	xml	gridCol	4000:,4500:		
+left-of-2	before	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+left-of-2	before	1	1	r1c1	72	200	255
+left-of-2	before	1	2	r1c2	272.25	225	65280
+left-of-2	before	2	1	r2c1	72	200	16711680
+left-of-2	before	2	2	r2c2	272.25	225	65535
+left-of-2	inserted	xml	tblW	13000:dxa		
+left-of-2	inserted	xml	gridCol	4000:,4500:,4500:		
+left-of-2	inserted	xml	tcW	4000:dxa,4500:dxa,4500:dxa,4000:dxa,4500:dxa,4500:dxa		
+left-of-2	inserted	1	1	r1c1	72	200	255
+left-of-2	inserted	1	2		272.25	225	65280
+left-of-2	inserted	1	3	r1c2	497.25	225	65280
+left-of-2	inserted	2	1	r2c1	72	200	16711680
+left-of-2	inserted	2	2		272.25	225	65535
+left-of-2	inserted	2	3	r2c2	497.25	225	65535
+left-of-2	deleted	xml	tblW	8500:dxa		
+left-of-2	deleted	xml	gridCol	4000:,4500:		
+left-of-2	deleted	xml	tcW	4000:dxa,4500:dxa,4000:dxa,4500:dxa		
+left-of-2	deleted	1	1	r1c1	72	200	255
+left-of-2	deleted	1	2	r1c2	272.25	225	65280
+left-of-2	deleted	2	1	r2c1	72	200	16711680
+left-of-2	deleted	2	2	r2c2	272.25	225	65535

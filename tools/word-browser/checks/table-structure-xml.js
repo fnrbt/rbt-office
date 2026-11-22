@@ -3,10 +3,11 @@
 // made like the row it was put in next to - that row's start tag without its w14 ids, its w:trPr, its cells'
 // w:tcPr, and in each cell an empty paragraph made like the cell's first (its start tag without its w14 ids, its
 // w:pPr: the paragraph's and its mark's properties); a new cell likewise (one column wide where its neighbour
-// spans two: w:gridSpan taken out); w:tblGrid has a w:gridCol put in like its neighbour's or taken out. A row or a
-// cell taken out leaves the marks of the ranges in it (bookmarks, permission ranges) where it stood, and takes a
-// content control around it that holds nothing else with it. The table stands after a bookmark's end between
-// blocks, which used to make the whole table be written from the model.
+// spans two: w:gridSpan taken out). A column inserted after a cell copies the following cell's properties and
+// grid width (or the last cell's when appended); a fixed table's absolute width grows/shrinks with the column.
+// A removed row or cell leaves its range marks (bookmarks, permissions) in place and takes an otherwise-empty
+// content control with it. The table stands after a bookmark's end between blocks, which used to make the whole
+// table be written from the model.
 import { check, finish, fail, loadWord, loadFormats, bytesOf } from './common.js';
 try {
     const OF = await loadFormats();
@@ -107,12 +108,13 @@ try {
         Word.insertTableColumnAfter(editor);
         const out = await save(editor);
         const want = documentXml
-            .replace(grid, '<w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="1500"/><w:gridCol w:w="3000"/></w:tblGrid>')
-            .replace(a1, a1 + cellLike(a1)).replace(a2, a2 + cellLike(a2)).replace(a3, a3 + cellLike(a3))
+            .replace('<w:tblW w:w="4500" w:type="dxa"/>', '<w:tblW w:w="7500" w:type="dxa"/>')
+            .replace(grid, '<w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>')
+            .replace(a1, a1 + cellLike(b1)).replace(a2, a2 + cellLike(b2)).replace(a3, a3 + cellLike(b3))
             // (Next to the cell that spans both columns: one column wide.)
             .replace(c4, c4 + cellLike(c4, tcPr(4500, 'EEEEEE')))
-            .replace(e5, e5 + cellLike(e5));
-        check('a column right of the first: every row has a cell like its first after it, the grid a column like the first', firstDifference(out.xml, want), 'the same');
+            .replace(e5, e5 + cellLike(f5));
+        check('a column right of the first: each row has a cell like its following cell, the grid and fixed width grow', firstDifference(out.xml, want), 'the same');
         check('a column right of the first: no paragraph written from the model', out.report.GeneratedParagraphs, 0);
         check('read again: the new column is empty', await textOfTable(out.bytes), [['a1', '', 'b1'], ['a2', '', 'b2'], ['a3', '', 'b3'], ['c4', ''], ['e5', '', 'f5']]);
     }
@@ -124,6 +126,7 @@ try {
         const out = await save(editor);
         // (The row of the cell that spans both columns has no second cell: nothing is put into it.)
         const want = documentXml
+            .replace('<w:tblW w:w="4500" w:type="dxa"/>', '<w:tblW w:w="7500" w:type="dxa"/>')
             .replace(grid, '<w:tblGrid><w:gridCol w:w="1500"/><w:gridCol w:w="3000"/><w:gridCol w:w="3000"/></w:tblGrid>')
             .replace(b1, cellLike(b1) + b1).replace(b2, cellLike(b2) + b2).replace(b3, cellLike(b3) + b3).replace(f5, cellLike(f5) + f5);
         check('a column left of the second: every row has a cell like its second before it, the grid a column as wide', firstDifference(out.xml, want), 'the same');
@@ -136,6 +139,7 @@ try {
         Word.deleteTableColumn(editor);
         const out = await save(editor);
         const want = documentXml
+            .replace('<w:tblW w:w="4500" w:type="dxa"/>', '<w:tblW w:w="1500" w:type="dxa"/>')
             .replace(grid, '<w:tblGrid><w:gridCol w:w="1500"/></w:tblGrid>')
             .replace(b1, '').replace(b2, '<w:permStart w:id="13" w:edGrp="everyone"/><w:permEnd w:id="13"/>').replace(b3, '').replace(f5, '');
         check('the second column deleted: its cells taken out (the marks of one stay where it stood), the grid without its column', firstDifference(out.xml, want), 'the same');

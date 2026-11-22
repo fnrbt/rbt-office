@@ -3177,6 +3177,67 @@ let private gridWithoutColumn (at: int) (grid: TableWidth list) : TableWidth lis
     if at < 0 || at >= grid.Length then grid
     else List.truncate at grid @ List.skip (at + 1) grid
 
+/// A fixed table with an absolute preferred width grows or shrinks along with
+/// an inserted/deleted absolute-width column. Other width kinds keep their
+/// original meaning (especially percentages of the available text width).
+let private adjustFixedTableWidth (delta: float) (columnWidth: TableWidth option) (table: TableBlock) =
+    match table.LayoutMode, table.PreferredWidth, columnWidth with
+    | Some FixedTableLayout, Some ({ Kind = DxaWidth; Value = Some width } as preferred),
+      Some { Kind = DxaWidth; Value = Some column } ->
+        Some { preferred with Value = Some (max 0.0 (width + delta * column)) }
+    | _ -> table.PreferredWidth
+
+/// Reconcile a fixed table's absolute grid/cell widths with the widths its
+/// layout actually uses before editing it. The shared layout resolver supplies
+/// those column widths in twips; this edit does not reimplement that layout.
+let private withResolvedColumnWidths (resolved: float list option) (table: TableBlock) =
+    match table.LayoutMode, table.PreferredWidth, resolved with
+    | Some FixedTableLayout, Some { Kind = DxaWidth }, Some widths
+        when not widths.IsEmpty && widths.Length = table.GridColumns.Length ->
+        let columns = widths |> List.toArray
+        let spanWidth first span =
+            let mutable total = 0.0
+            for i in first .. first + span - 1 do total <- total + columns.[i]
+            total
+        let mutable changed = false
+        let mutable index = 0
+        for width in table.GridColumns do
+            if width.Kind = DxaWidth && width.Value <> Some columns.[index] then changed <- true
+            index <- index + 1
+        for row in table.Rows do
+            let mutable column = max 0 row.GridBefore
+            for cell in row.Cells do
+                let span = max 1 cell.ColSpan
+                match cell.PreferredWidth with
+                | Some { Kind = DxaWidth; Value = value } when column + span <= columns.Length ->
+                    if value <> Some (spanWidth column span) then changed <- true
+                | _ -> ()
+                column <- column + span
+        if not changed then table
+        else
+            let grid = table.GridColumns |> List.mapi (fun i width ->
+                if width.Kind <> DxaWidth || width.Value = Some columns.[i] then width
+                else { width with Value = Some columns.[i] })
+            let rows =
+                table.Rows |> List.map (fun row ->
+                    let mutable rowChanged = false
+                    let mutable column = max 0 row.GridBefore
+                    let cells = row.Cells |> List.map (fun cell ->
+                        let span = max 1 cell.ColSpan
+                        let first = column
+                        column <- column + span
+                        match cell.PreferredWidth with
+                        | Some ({ Kind = DxaWidth } as preferred) when first + span <= columns.Length ->
+                            let width = spanWidth first span
+                            if preferred.Value = Some width then cell
+                            else
+                                rowChanged <- true
+                                { cell with PreferredWidth = Some { preferred with Value = Some width } }
+                        | _ -> cell)
+                    if rowChanged then { row with Cells = cells } else row)
+            { table with GridColumns = grid; Rows = rows }
+    | _ -> table
+
 /// A row like `row`, empty: the same properties (height, whether it may
 /// break, spacing, what stands before and after it in the grid), cell by
 /// cell the same cells. It is not a header row.
@@ -3199,22 +3260,41 @@ let insertTableRowAfterSelection doc =
                         |> List.mapi (fun i existing -> if i = rowIndex then [ existing; newRow ] else [ existing ])
                         |> List.concat })
 
-/// A column put into a table next to the cell at `colIndex` of each row
-/// (after it, or before it): each row gets a cell like its neighbour, and
-/// the table's grid a column as wide as the neighbour's.
-let private insertTableColumn (after: bool) doc =
+/// The selected table whose rendered widths the editor can supply for edits.
+let selectedTableForColumnEdit doc =
+    currentTableCell doc |> Option.bind (fun (tableId, _, _) -> tryFindTable doc tableId)
+
+/// A column put into a table at the insertion position next to the selected
+/// cell: before uses that cell, after uses the following cell (or the last
+/// cell when appended). Its width, properties and paragraph come from that
+/// cell in each row; the grid and fixed absolute table width follow suit.
+let private insertTableColumn (after: bool) (resolved: float list option) doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, rowIndex, colIndex) ->
-        updateTable doc tableId (fun table ->
-            let grid =
-                match List.tryItem rowIndex table.Rows with
-                | Some row when colIndex < row.Cells.Length ->
+        updateTable doc tableId (fun source ->
+            let table = withResolvedColumnWidths resolved source
+            let selectedRow = List.tryItem rowIndex table.Rows
+            let insertionGridColumn =
+                selectedRow
+                |> Option.map (fun row ->
                     let first = gridColumnOfCell row colIndex
-                    let last = first + max 1 row.Cells.[colIndex].ColSpan - 1
-                    if after then gridWithColumn (last + 1) last table.GridColumns else gridWithColumn first first table.GridColumns
+                    if after && colIndex < row.Cells.Length then first + max 1 row.Cells.[colIndex].ColSpan else first)
+            let donorGridColumn =
+                insertionGridColumn |> Option.map (fun column ->
+                    if after then min column (table.GridColumns.Length - 1) else column)
+            let donorWidth =
+                donorGridColumn |> Option.bind (fun index -> List.tryItem index table.GridColumns)
+                |> Option.orElseWith (fun () ->
+                    selectedRow |> Option.bind (fun row ->
+                        let donorIndex = if after then min (row.Cells.Length - 1) (colIndex + 1) else colIndex
+                        List.tryItem donorIndex row.Cells |> Option.bind _.PreferredWidth))
+            let grid =
+                match insertionGridColumn, donorGridColumn with
+                | Some at, Some like -> gridWithColumn at like table.GridColumns
                 | _ -> table.GridColumns
             { table with
+                PreferredWidth = adjustFixedTableWidth 1.0 donorWidth table
                 GridColumns = grid
                 Rows =
                     table.Rows
@@ -3224,11 +3304,14 @@ let private insertTableColumn (after: bool) doc =
                                 row.Cells
                                 |> List.mapi (fun i cell ->
                                     if i <> colIndex then [ cell ]
-                                    elif after then [ cell; cellLike (Some 1) cell ]
+                                    elif after then
+                                        let donor = List.tryItem (i + 1) row.Cells |> Option.defaultValue cell
+                                        [ cell; cellLike (Some 1) donor ]
                                     else [ cellLike (Some 1) cell; cell ])
                                 |> List.concat }) })
 
-let insertTableColumnAfterSelection doc = insertTableColumn true doc
+let insertTableColumnAfterSelectionWithWidths widths doc = insertTableColumn true (Some widths) doc
+let insertTableColumnAfterSelection doc = insertTableColumn true None doc
 
 /// Insert a table row above the row containing the selection.
 let insertTableRowBeforeSelection doc =
@@ -3248,7 +3331,8 @@ let insertTableRowBeforeSelection doc =
                         |> List.concat })
 
 /// Insert a table column to the left of the column containing the selection.
-let insertTableColumnBeforeSelection doc = insertTableColumn false doc
+let insertTableColumnBeforeSelectionWithWidths widths doc = insertTableColumn false (Some widths) doc
+let insertTableColumnBeforeSelection doc = insertTableColumn false None doc
 
 /// The table cells the selection spans: (table, first row, first cell, last
 /// row, last cell) when both ends of the selection are in cells of one table.
@@ -3408,21 +3492,29 @@ let deleteSelectedTableRow doc =
             | None -> updatedDoc
         | _ -> updatedDoc
 
-let deleteSelectedTableColumn doc =
+let private deleteSelectedTableColumnWithResolved (resolved: float list option) doc =
     match currentTableCell doc with
     | None -> doc
     | Some (tableId, _, colIndex) ->
-        let updatedDoc = updateTable doc tableId (fun table ->
+        let updatedDoc = updateTable doc tableId (fun source ->
+            let table = withResolvedColumnWidths resolved source
             let maxColumns = table.Rows |> List.map (fun row -> row.Cells.Length) |> List.fold max 0
             if maxColumns <= 1 then table
             else
-                // (The grid loses the column the cell of the selection's row is in, when that cell is one column wide.)
-                let grid =
+                // The grid loses the column selected in this row. An
+                // absolute-width fixed table also loses that column's width.
+                let removedWidth, grid =
                     match currentTableCell doc |> Option.bind (fun (_, rowIndex, _) -> List.tryItem rowIndex table.Rows) with
-                    | Some row when colIndex < row.Cells.Length && row.Cells.[colIndex].ColSpan <= 1 && table.GridColumns.Length > 1 ->
-                        gridWithoutColumn (gridColumnOfCell row colIndex) table.GridColumns
-                    | _ -> table.GridColumns
+                    | Some row when colIndex < row.Cells.Length && row.Cells.[colIndex].ColSpan <= 1 ->
+                        let column = gridColumnOfCell row colIndex
+                        let width =
+                            List.tryItem column table.GridColumns
+                            |> Option.orElse row.Cells.[colIndex].PreferredWidth
+                        let grid = if table.GridColumns.Length > 1 then gridWithoutColumn column table.GridColumns else table.GridColumns
+                        width, grid
+                    | _ -> None, table.GridColumns
                 { table with
+                    PreferredWidth = adjustFixedTableWidth -1.0 removedWidth table
                     GridColumns = grid
                     Rows =
                         table.Rows
@@ -3443,6 +3535,9 @@ let deleteSelectedTableColumn doc =
                 | Some para -> setCursor para.Id 0 updatedDoc
                 | None -> updatedDoc
             | None -> updatedDoc
+
+let deleteSelectedTableColumnWithWidths widths doc = deleteSelectedTableColumnWithResolved (Some widths) doc
+let deleteSelectedTableColumn doc = deleteSelectedTableColumnWithResolved None doc
 
 /// A new table of empty cells as insertTable makes one (thin borders, the
 /// document's table style for new tables), with ids of its own.
