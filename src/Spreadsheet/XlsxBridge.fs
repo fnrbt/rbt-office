@@ -3479,6 +3479,15 @@ module Export =
                                 { written with Extras = { written.Extras with Verbatim = true; Patch = Some patch; Moves = moves } }
                             | Some patch -> withSource outSheet before model { written with Extras = { written.Extras with Patch = Some patch } }
                             | None -> withSource outSheet before model written
+                        // (Controls moved or sized with their cells: the file's anchors of them where they are now.)
+                        let written =
+                            let moved =
+                                model.FormControls
+                                |> List.choose (fun control ->
+                                    match before.FormControls |> List.tryFind (fun was -> was.ShapeId = control.ShapeId) with
+                                    | Some was when was.Anchor <> control.Anchor -> Some (control.ShapeId, anchorToReader 0 control.Anchor)
+                                    | _ -> None)
+                            if moved.IsEmpty then written else { written with Extras = { written.Extras with ControlAnchors = moved } }
                         // A pivot whose entire location was deleted has no table
                         // left to attach; retaining its relationship resurrects it
                         // on the next import.

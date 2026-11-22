@@ -2891,7 +2891,9 @@ type Spreadsheet(container: Element) as this =
             true
     let changeAxes (description: string) (change: SpreadsheetModel -> SpreadsheetModel) : bool =
         let before = axesState model
-        model <- change model
+        // (Objects that move but are not sized with their cells keep their size; those that neither move nor size their place.)
+        let prior = model
+        model <- keepAnchoredSizes prior (change model)
         commitAxes description before
     // --- AutoFilter ----------------------------------------------------------------
     // The filter of a sheet is its range, the column filters and the rows
@@ -7118,7 +7120,7 @@ type Spreadsheet(container: Element) as this =
                     let currentX = getProp e "clientX" |> unbox<float>
                     let delta = (currentX - resizeStartPos) / appliedZoom
                     let newWidth = max 30.0 (resizeStartSize + delta)
-                    model <- setColumnWidth col newWidth model
+                    model <- keepAnchoredSizes model (setColumnWidth col newWidth model)
 
                     // Throttle render with requestAnimationFrame
                     if not resizeRenderScheduled then
@@ -7134,7 +7136,7 @@ type Spreadsheet(container: Element) as this =
                     let currentY = getProp e "clientY" |> unbox<float>
                     let delta = (currentY - resizeStartPos) / appliedZoom
                     let newHeight = max 20.0 (resizeStartSize + delta)
-                    model <- setRowHeight row newHeight model
+                    model <- keepAnchoredSizes model (setRowHeight row newHeight model)
 
                     // Throttle render with requestAnimationFrame
                     if not resizeRenderScheduled then

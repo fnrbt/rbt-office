@@ -4233,29 +4233,33 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 if ranges = entry.Ranges && rule = validation.Rule && anchor = validation.Anchor then Some entry
                 else Some { entry with Ranges = ranges; Validation = { validation with Rule = rule; Anchor = anchor } })
 
-    // Drawing markers must also be remapped for "absolute" two-cell
-    // anchors: their physical position stays fixed while the grid changes.
-    let drawings =
-        // Build sparse cumulative size corrections only when an absolute
-        // two-cell anchor actually needs reprojection.
-        let fixedMarker =
+    // Drawing markers and form controls follow their cells by how they are anchored (Excel 2019's Placement,
+    // probe-control-moves.vbs): "move and size" (a two-cell anchor) - both corners with their cells, a corner
+    // whose cell is deleted to where the deletion was; "move" (editAs "oneCell") - the near corner with its cell,
+    // the object as large as it was; "don't move or size" (editAs "absolute") - where it was on the sheet, its
+    // markers worked out again over the new rows / columns.
+    let drawings, formControls =
+        // (The rows' / columns' positions before and after, built only when an anchor needs them.)
+        let prefixes =
             lazy (
                 let defaultSize = if onRows then model.DefaultRowHeight else model.DefaultColumnWidth
                 let sizes = if onRows then model.RowHeights else model.ColumnWidths
                 let hidden = if onRows && not (Map.isEmpty model.Filters) then model.FilterHiddenRows else [||]
-                let oldPrefix = AxisGeometry.prefix defaultSize sizes hidden
-                let newPrefix = AxisGeometry.prefix defaultSize (inserted sizes) (hidden |> Array.choose moveIndex)
-                fun index offset -> AxisGeometry.locate newPrefix (if onRows then 1048576 else 16384) (oldPrefix index + offset))
-        let moveDrawing (drawing: SheetDrawing) =
-            let anchor = drawing.Anchor
-            if anchor.Kind = "absolute" then drawing
+                AxisGeometry.prefix defaultSize sizes hidden,
+                AxisGeometry.prefix defaultSize (inserted sizes) (hidden |> Array.choose moveIndex))
+        let limit = if onRows then 1048576 else 16384
+        let fixedMarker index offset =
+            let oldPrefix, newPrefix = prefixes.Value
+            AxisGeometry.locate newPrefix limit (oldPrefix index + offset)
+        let moveAnchor (anchor: DrawingAnchor) : DrawingAnchor =
+            if anchor.Kind = "absolute" then anchor
             elif anchor.EditAs = Some "absolute" then
                 let fromIndex = if onRows then anchor.FromRow else anchor.FromCol
                 let fromOffset = if onRows then anchor.FromOffsetY else anchor.FromOffsetX
-                let newFrom, newFromOffset = fixedMarker.Value fromIndex fromOffset
+                let newFrom, newFromOffset = fixedMarker fromIndex fromOffset
                 let toIndex = if onRows then anchor.ToRow else anchor.ToCol
                 let toOffset = if onRows then anchor.ToOffsetY else anchor.ToOffsetX
-                let newTo = toIndex |> Option.map (fun index -> fixedMarker.Value index toOffset)
+                let newTo = toIndex |> Option.map (fun index -> fixedMarker index toOffset)
                 let moved =
                     if onRows then
                         { anchor with FromRow = newFrom; FromOffsetY = newFromOffset
@@ -4263,7 +4267,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                     else
                         { anchor with FromCol = newFrom; FromOffsetX = newFromOffset
                                       ToCol = newTo |> Option.map fst; ToOffsetX = newTo |> Option.map snd |> Option.defaultValue toOffset }
-                if moved = anchor then drawing else { drawing with Anchor = moved }
+                if moved = anchor then anchor else moved
             else
                 let fromIndex = if onRows then anchor.FromRow else anchor.FromCol
                 let fromOffset = if onRows then anchor.FromOffsetY else anchor.FromOffsetX
@@ -4276,7 +4280,13 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 let newTo, newToOffset =
                     match toIndex with
                     | None -> None, toOffset
-                    | Some index when anchor.EditAs = Some "oneCell" -> Some (max newFrom (index + (newFrom - fromIndex))), toOffset
+                    | Some index when anchor.EditAs = Some "oneCell" ->
+                        // (As far from the near corner as it was: rows / columns inserted or deleted inside it, or
+                        // the near corner's cell deleted, do not size it.)
+                        let oldPrefix, newPrefix = prefixes.Value
+                        let size = oldPrefix index + toOffset - (oldPrefix fromIndex + fromOffset)
+                        let farIndex, farOffset = AxisGeometry.locate newPrefix limit (newPrefix newFrom + newFromOffset + max 0.0 size)
+                        Some (max newFrom farIndex), farOffset
                     | Some index ->
                         match moveIndex index with
                         | Some moved -> Some (max newFrom moved), toOffset
@@ -4284,8 +4294,11 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 let moved =
                     if onRows then { anchor with FromRow = newFrom; FromOffsetY = newFromOffset; ToRow = newTo; ToOffsetY = newToOffset }
                     else { anchor with FromCol = newFrom; FromOffsetX = newFromOffset; ToCol = newTo; ToOffsetX = newToOffset }
-                if moved = anchor then drawing else { drawing with Anchor = moved }
-        if model.Drawings.IsEmpty then model.Drawings else model.Drawings |> List.map moveDrawing
+                if moved = anchor then anchor else moved
+        (if model.Drawings.IsEmpty then model.Drawings
+         else model.Drawings |> List.map (fun drawing -> let moved = moveAnchor drawing.Anchor in if obj.ReferenceEquals(moved, drawing.Anchor) then drawing else { drawing with Anchor = moved })),
+        (if model.FormControls.IsEmpty then model.FormControls
+         else model.FormControls |> List.map (fun control -> let moved = moveAnchor control.Anchor in if obj.ReferenceEquals(moved, control.Anchor) then control else { control with Anchor = moved }))
 
     // A range that is not a rule: it follows its cells, and is gone when
     // every row / column of it was deleted.
@@ -4417,6 +4430,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
         ColumnStyles = columnStyles
         RowStyles = (if onRows && not model.RowStyles.IsEmpty then moveIndexMap model.RowStyles else model.RowStyles)
         Drawings = drawings
+        FormControls = formControls
         Threads = (if Map.isEmpty model.Threads then model.Threads else moveAddressMap model.Threads)
         Cells = cells
         PageSetup = pageSetup
@@ -4556,6 +4570,47 @@ let setColumnWidth (col: int) (width: float) (model: SpreadsheetModel): Spreadsh
         match Map.tryFind col model.ColumnWidths with
         | Some existing when existing = width -> model
         | _ -> { model with ColumnWidths = Map.add col width model.ColumnWidths }
+
+/// The drawings and form controls of `after` - the sheet `before` with rows / columns of other sizes (a column
+/// widened, a row hidden, rows fitted) - anchored as Excel 2019 keeps them (probe-control-moves.vbs): one that moves
+/// but is not sized with its cells (editAs "oneCell") as large as it was, its far corner worked out again from its
+/// near one; one that neither moves nor is sized (editAs "absolute") where it was, both corners worked out again.
+/// One that moves and sizes with its cells follows them as it is (its corners are cells).
+let keepAnchoredSizes (before: SpreadsheetModel) (after: SpreadsheetModel) : SpreadsheetModel =
+    let fixedKind (anchor: DrawingAnchor) =
+        anchor.Kind = "twoCell" && anchor.ToRow.IsSome && anchor.ToCol.IsSome && (anchor.EditAs = Some "oneCell" || anchor.EditAs = Some "absolute")
+    let sameAxes =
+        obj.ReferenceEquals(before.RowHeights, after.RowHeights) && obj.ReferenceEquals(before.ColumnWidths, after.ColumnWidths)
+        && obj.ReferenceEquals(before.FilterHiddenRows, after.FilterHiddenRows)
+        && before.DefaultRowHeight = after.DefaultRowHeight && before.DefaultColumnWidth = after.DefaultColumnWidth
+    if sameAxes || (not (after.Drawings |> List.exists (fun d -> fixedKind d.Anchor)) && not (after.FormControls |> List.exists (fun c -> fixedKind c.Anchor))) then after
+    else
+        let prefixOf (model: SpreadsheetModel) (rows: bool) =
+            if rows then AxisGeometry.prefix model.DefaultRowHeight model.RowHeights (if Map.isEmpty model.Filters then [||] else model.FilterHiddenRows)
+            else AxisGeometry.prefix model.DefaultColumnWidth model.ColumnWidths [||]
+        let rowsBefore, colsBefore = prefixOf before true, prefixOf before false
+        let rowsAfter, colsAfter = prefixOf after true, prefixOf after false
+        let fix (anchor: DrawingAnchor) : DrawingAnchor =
+            if not (fixedKind anchor) then anchor
+            else
+                let toCol, toRow = anchor.ToCol.Value, anchor.ToRow.Value
+                let left, top = colsBefore anchor.FromCol + anchor.FromOffsetX, rowsBefore anchor.FromRow + anchor.FromOffsetY
+                let right, bottom = colsBefore toCol + anchor.ToOffsetX, rowsBefore toRow + anchor.ToOffsetY
+                let fromCol, fromColOffset, fromRow, fromRowOffset, left, top =
+                    if anchor.EditAs = Some "absolute" then
+                        let c, co = AxisGeometry.locate colsAfter 16384 left
+                        let r, ro = AxisGeometry.locate rowsAfter 1048576 top
+                        c, co, r, ro, left, top
+                    else anchor.FromCol, anchor.FromOffsetX, anchor.FromRow, anchor.FromOffsetY, colsAfter anchor.FromCol + anchor.FromOffsetX, rowsAfter anchor.FromRow + anchor.FromOffsetY
+                let c, co = AxisGeometry.locate colsAfter 16384 (left + max 0.0 (right - (colsBefore anchor.FromCol + anchor.FromOffsetX)))
+                let r, ro = AxisGeometry.locate rowsAfter 1048576 (top + max 0.0 (bottom - (rowsBefore anchor.FromRow + anchor.FromOffsetY)))
+                let moved =
+                    { anchor with FromCol = fromCol; FromOffsetX = fromColOffset; FromRow = fromRow; FromOffsetY = fromRowOffset
+                                  ToCol = Some (max fromCol c); ToOffsetX = co; ToRow = Some (max fromRow r); ToOffsetY = ro }
+                if moved = anchor then anchor else moved
+        { after with
+            Drawings = after.Drawings |> List.map (fun d -> let a = fix d.Anchor in if obj.ReferenceEquals(a, d.Anchor) then d else { d with Anchor = a })
+            FormControls = after.FormControls |> List.map (fun c -> let a = fix c.Anchor in if obj.ReferenceEquals(a, c.Anchor) then c else { c with Anchor = a }) }
 
 #if FABLE_COMPILER
 /// What `cellBounds` found of a cell map (held weakly, as the formula index).

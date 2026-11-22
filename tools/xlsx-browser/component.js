@@ -2329,6 +2329,68 @@ checks['sizing-excel-parity'] = async () => {
 // Form controls as Excel 2019 draws them (tools/excel-parity/build-form-controls.vbs: synthetic-form-controls.xlsx, checked
 // with shoot-sheets.ps1): each control a node over its anchor grown by a pixel at the left and the top, what it shows
 // read from its linked cell, and a click changing that cell as an entry (one undoable step).
+// Form controls moved and sized with their cells as Excel 2019 does it (probe-control-moves.vbs: the controls of
+// synthetic-control-moves.xlsx at each Placement, Excel's positions after each of six edits in
+// synthetic-control-moves.excel.tsv): "move and size" - both corners with their cells; "move" - as large as it was;
+// "don't move or size" - where it was. And the file written after the edits has the controls' anchors where Excel's
+// has them (`<controls>`, the VML's x:Anchor: synthetic-control-moves.after.json, from Excel's file).
+checks['controls-move-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-control-moves.xlsx')).slice());
+        await frame(); await frame();
+        const excel = new TextDecoder().decode(await bytesOf('tests/test-documents-excel/synthetic-control-moves.excel.tsv')).trim().split('\n').map((l) => l.split('\t'));
+        const pt = (v) => Number(v) * 4 / 3;
+        const rects = () => {
+            const out = {};
+            for (const node of host.querySelectorAll('.spreadsheet-form-control')) out[node.title] = [parseFloat(node.style.left), parseFloat(node.style.top), parseFloat(node.style.width) - 1, parseFloat(node.style.height) - 1];
+            return out;
+        };
+        const steps = [['0-built', () => {}], ['1-insert-rows-1-2', () => grid.InsertRows(0, 2)], ['2-insert-col-A', () => grid.InsertColumns(0, 1)],
+            ['3-row-6-40pt', () => grid.SetRowHeight(5, 160 / 3)], ['4-col-D-25', () => grid.SetColumnWidth(3, 180)],
+            ['5-delete-rows-7-8', () => grid.DeleteRows(6, 2)], ['6-delete-col-C', () => grid.DeleteColumns(2, 1)]];
+        let zero = null;
+        for (const [step, act] of steps) {
+            act(); await frame(); await frame();
+            const ours = rects();
+            // (The grid's own place of the sheet's top left, from the control that never moves.)
+            const free = excel.find((r) => r[0] === step && r[1] === 'cbFree');
+            if (!zero) zero = [ours.cbFree[0] - pt(free[4]), ours.cbFree[1] - pt(free[5])];
+            const got = [], want = [];
+            for (const r of excel.filter((r) => r[0] === step && r[2] !== '-1')) {
+                const o = ours[r[1]];
+                const e = [pt(r[4]), pt(r[5]), pt(r[6]), pt(r[7])].map(Math.round);
+                const g = o ? [o[0] - zero[0], o[1] - zero[1], o[2], o[3]].map((v, i) => Math.abs(v - e[i]) <= 1 ? e[i] : Math.round(v * 10) / 10) : 'none';
+                got.push(r[1] + ' ' + JSON.stringify(g)); want.push(r[1] + ' ' + JSON.stringify(e));
+            }
+            check(`${step}: every control where Excel has it (left, top, width, height in px)`, got, want);
+        }
+        // The file written: the anchors where the controls are now - read again, from its `<controls>` and (without
+        // them, as a file of Excel 2007 is read) from its VML, each control where Excel has it after the edits.
+        const last = excel.filter((r) => r[0] === '6-delete-col-C' && r[2] !== '-1');
+        const again = async (bytes, what) => {
+            await grid.ImportXlsx(bytes.slice()); await frame(); await frame();
+            const ours = rects(), z = [ours.cbFree[0] - pt(last.find((r) => r[1] === 'cbFree')[4]), ours.cbFree[1] - pt(last.find((r) => r[1] === 'cbFree')[5])];
+            const got = [], want = [];
+            for (const r of last) {
+                const o = ours[r[1]], e = [pt(r[4]), pt(r[5]), pt(r[6]), pt(r[7])].map(Math.round);
+                const g = o ? [o[0] - z[0], o[1] - z[1], o[2], o[3]].map((v, i) => Math.abs(v - e[i]) <= 1 ? e[i] : Math.round(v * 10) / 10) : 'none';
+                got.push(r[1] + ' ' + JSON.stringify(g)); want.push(r[1] + ' ' + JSON.stringify(e));
+            }
+            check(`written and read again (${what}): every control where Excel has it`, got, want);
+        };
+        const written = await grid.ExportXlsx();
+        await again(written, '<controls>');
+        const zip = await window.JSZip.loadAsync(written);
+        const sheetXml = await zip.file('xl/worksheets/sheet1.xml').async('string');
+        zip.file('xl/worksheets/sheet1.xml', sheetXml.replace(/<mc:AlternateContent[^>]*>\s*<mc:Choice Requires="x14">\s*<controls>[\s\S]*?<\/controls>\s*<\/mc:Choice>\s*<\/mc:AlternateContent>/, '').replace(/<controls>[\s\S]*?<\/controls>/, ''));
+        await again(await zip.generateAsync({ type: 'uint8array' }), 'the VML');
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 checks['controls-excel-parity'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();

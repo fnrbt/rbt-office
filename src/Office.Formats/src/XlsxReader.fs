@@ -1263,13 +1263,16 @@ type SheetExtras = {
     NoteAxes: NoteGeometry option
     /// The sheet's form controls and ActiveX controls, for drawing (their parts are kept as they are).
     FormControls: SheetFormControl list
+    /// Where controls are now that the file has elsewhere (rows / columns inserted, deleted, sized), by shape id:
+    /// the writer puts these anchors in the kept `<controls>` and the VML drawing.
+    ControlAnchors: (int * SheetAnchor) list
 }
 
 let emptySheetExtras =
     { Images = []; Objects = []; ThreadedComments = []; DrawingRelationships = []; Format = None; Columns = []; ColumnStyles = []
       SheetId = None; KeptRelationships = []; KeptExtensions = []; KeptElements = []; DrawingPart = None; DrawingAnchors = None; TableParts = []; PivotLocations = []; DataTables = []; IgnoredErrors = []; Protected = false
       KeptCellExtensions = []; PrinterSettingsRelId = None; RowAxis = []; ColumnAxis = []; AutoFilter = None; ArrayFormulas = []
-      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None; FormControls = [] }
+      SourcePart = None; CommentsPart = None; CommentsChanged = false; CommentRuns = []; UncachedFormulas = None; Verbatim = false; Patch = None; SourceXml = None; Moves = None; NoteAxes = None; FormControls = []; ControlAnchors = [] }
 
 /// A named cell style (cellStyles / cellStyleXfs of styles.xml), with the
 /// font, fill, border and number format its xf refers to given as their XML so
@@ -6120,9 +6123,17 @@ let private readFormControls (source: PartSource) (sheetPath: string) (sheetRels
                 (tryParseInt (field "row") |> Option.defaultValue 0), (tryParseFloat (field "rowOff") |> Option.defaultValue 0.0))
         match marker "from", marker "to" with
         | Some (fc, fco, fr, fro), Some (tc, tco, tr, tro) ->
+            // How it follows its cells (Excel 2019's Placement): moveWithCells and sizeWithCells both for "move and
+            // size" (a button's, a spinner's, a label's), moveWithCells alone for "move" (a check box's, an option
+            // button's, a combo box's ...), neither for "don't move or size" (probe-control-moves.vbs).
+            let flag name = Xml.attr name anchor |> Option.exists isTrueText
+            let editAs =
+                if flag "moveWithCells" && flag "sizeWithCells" then None
+                elif flag "moveWithCells" then Some "oneCell"
+                else Some "absolute"
             Some { Kind = "twoCell"; FromCol = fc; FromColOffset = fco; FromRow = fr; FromRowOffset = fro
                    ToCol = Some tc; ToColOffset = tco; ToRow = Some tr; ToRowOffset = tro
-                   X = 0.0; Y = 0.0; Width = None; Height = None; EditAs = None; Order = 0 }
+                   X = 0.0; Y = 0.0; Width = None; Height = None; EditAs = editAs; Order = 0 }
         | _ -> None
     let plain (number: int) (name: string) (kind: string) (anchor: SheetAnchor) : SheetFormControl =
         let shape = Map.tryFind number vmlByNumber
@@ -6203,7 +6214,15 @@ let private readFormControls (source: PartSource) (sheetPath: string) (sheetRels
             else
                 Map.tryFind "Anchor" shape.Data
                 |> Option.bind pixelsAnchor
-                |> Option.map (fun anchor -> plain shape.Number "" kind anchor))
+                // (The VML says it the other way round: `x:MoveWithCells` for an object that does not move with its
+                // cells, `x:SizeWithCells` for one not sized with them - Excel 2019 writes both for "don't move or
+                // size", `x:SizeWithCells` for "move", neither for "move and size".)
+                |> Option.map (fun anchor ->
+                    let editAs =
+                        if shape.Data.ContainsKey "MoveWithCells" then Some "absolute"
+                        elif shape.Data.ContainsKey "SizeWithCells" then Some "oneCell"
+                        else None
+                    plain shape.Number "" kind { anchor with EditAs = editAs }))
 
 // ---- threaded comments ---------------------------------------------------------
 

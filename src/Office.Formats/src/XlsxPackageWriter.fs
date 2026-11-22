@@ -1670,6 +1670,46 @@ let private keptLegacyDrawing (sheet: XlsxSheetOut) : string =
     |> List.tryPick (fun (name, xml) -> if name = "legacyDrawing" || name = "legacyDrawingNotes" then Some xml else None)
     |> Option.defaultValue ""
 
+/// A sheet part with its form controls' anchors (`<controls>`: each `<control shapeId>`'s `<anchor>`) where the
+/// controls are now (`SheetExtras.ControlAnchors`, EMU), the rest of the text as it was.
+let private withControlAnchors (anchors: (int * XlsxReader.SheetAnchor) list) (xml: string) : string =
+    if anchors.IsEmpty || xml.IndexOf "<controls" < 0 then xml
+    else
+        let byId = Map.ofList anchors
+        let pattern = System.Text.RegularExpressions.Regex("(<control\\b[^>]*\\bshapeId=\"(\\d+)\"[^>]*>[\\s\\S]*?<anchor\\b[^>]*>\\s*)<from>([\\s\\S]*?)</from>(\\s*)<to>([\\s\\S]*?)</to>")
+        pattern.Replace(xml, System.Text.RegularExpressions.MatchEvaluator(fun m ->
+            match System.Int32.TryParse m.Groups.[2].Value with
+            | true, id when byId.ContainsKey id ->
+                let a = byId.[id]
+                let prefix = let p = System.Text.RegularExpressions.Regex.Match(m.Groups.[3].Value, "<(\\w+:)?col>") in if p.Success then p.Groups.[1].Value else "xdr:"
+                let marker col colOff row rowOff =
+                    sprintf "<%scol>%d</%scol><%scolOff>%d</%scolOff><%srow>%d</%srow><%srowOff>%d</%srowOff>"
+                        prefix col prefix prefix (int64 (System.Math.Round (colOff: float))) prefix prefix row prefix prefix (int64 (System.Math.Round (rowOff: float))) prefix
+                m.Groups.[1].Value + "<from>" + marker a.FromCol a.FromColOffset a.FromRow a.FromRowOffset + "</from>" + m.Groups.[4].Value
+                + "<to>" + marker (defaultArg a.ToCol a.FromCol) a.ToColOffset (defaultArg a.ToRow a.FromRow) a.ToRowOffset + "</to>"
+            | _ -> m.Value))
+
+/// A VML drawing with its form controls' `x:Anchor`s (columns, rows and offsets in pixels) where the controls are now.
+let private withVmlControlAnchors (anchors: (int * XlsxReader.SheetAnchor) list) (vml: string) : string =
+    if anchors.IsEmpty then vml
+    else
+        let byId = Map.ofList anchors
+        let shape = System.Text.RegularExpressions.Regex("<v:shape\\b[^>]*>[\\s\\S]*?</v:shape>")
+        let number = System.Text.RegularExpressions.Regex("_x0000_s(\\d+)")
+        let anchorText = System.Text.RegularExpressions.Regex("(<x:Anchor>)[^<]*(</x:Anchor>)")
+        shape.Replace(vml, System.Text.RegularExpressions.MatchEvaluator(fun m ->
+            let tag = m.Value.Substring(0, m.Value.IndexOf '>')
+            let id = number.Match tag
+            match (if id.Success then System.Int32.TryParse id.Groups.[1].Value else (false, 0)) with
+            | true, n when byId.ContainsKey n ->
+                let a = byId.[n]
+                let px (emu: float) = int (System.Math.Round (emu / 9525.0))
+                let text =
+                    sprintf "\n    %d, %d, %d, %d, %d, %d, %d, %d" a.FromCol (px a.FromColOffset) a.FromRow (px a.FromRowOffset)
+                        (defaultArg a.ToCol a.FromCol) (px a.ToColOffset) (defaultArg a.ToRow a.FromRow) (px a.ToRowOffset)
+                anchorText.Replace(m.Value, System.Text.RegularExpressions.MatchEvaluator(fun found -> found.Groups.[1].Value + text + found.Groups.[2].Value))
+            | _ -> m.Value))
+
 /// `<tabColor>` of a sheet ("" for none).
 let private tabColorXml (sheet: XlsxSheetOut) : string =
     match sheet.View.TabColor with
@@ -4540,6 +4580,24 @@ let private workbookFiles (workbook: XlsxWorkbookOut) =
             | _ -> xml
         | _ -> xml
     textFiles.Add { Path = "xl/sharedStrings.xml"; Content = sharedXml }
+    // Form controls moved with their cells (`SheetExtras.ControlAnchors`): their anchors in the sheet's part and in
+    // its VML drawing where they are now, whichever way the parts were written.
+    List.zip workbook.Sheets placements
+    |> List.iter (fun (sheet, placed) ->
+        if not sheet.Extras.ControlAnchors.IsEmpty then
+            let edit (path: string) (change: string -> string) =
+                match Seq.tryFindIndex (fun (file: PackageFile) -> file.Path = path) textFiles with
+                | Some i -> textFiles.[i] <- { textFiles.[i] with Content = change textFiles.[i].Content }
+                | None ->
+                    match partText path with
+                    | Some text ->
+                        let changed = change text
+                        if changed <> text then textFiles.Add { Path = path; Content = changed }
+                    | None -> ()
+            edit placed.SheetPath (withControlAnchors sheet.Extras.ControlAnchors)
+            let ids = OpcXml.relationshipIdsIn (keptLegacyDrawing sheet)
+            for id, _, target, isExternal in sheet.Extras.KeptRelationships do
+                if not isExternal && List.contains id ids then edit (ZipInterop.normalizePath target) (withVmlControlAnchors sheet.Extras.ControlAnchors))
     let written = textFiles |> Seq.map (fun file -> file.Path) |> Set.ofSeq
     let binaryFiles =
         (match workbook.VbaProjectBytes, workbook.VbaProjectSource with
