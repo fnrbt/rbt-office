@@ -558,9 +558,31 @@ the map tests use the dashboards (no synthetic map: Excel makes one only with Bi
 Eleven real-world financial models (local only, private-use licences: not in the repo) against Excel
 2019's full recalculation (`dump-values.vbs`, `compare-values.fsx`), and - for the two that need Excel
 365 (`@`, SEQUENCE, XMATCH, dynamic arrays) - against the values the file keeps (`--cached-new`).
-Before: 86,045 of 97,011 cells agreed. After: every cell agrees (99,977 of 100,235 at 1e-9, the 258
-others within 1e-6: XIRR within Excel's own accuracy, and a model with iterative calculation, which
-stops within its 0.001). The corpus oracle is unchanged: 50,480 of 50,496 (the same 16 XIRR).
+The original run agreed on 86,045 of 97,011 compared cells. Replaying the current engine against the
+same references gives 100,201 of 100,235 within `1e-9 * max(1, abs(reference))`. The 34 outside
+that band are five waterfall results (Excel 2019 recalculation) and 29 iterative leasing-model
+results (saved values). All 34 pass the comparator's looser band; 586 cells were skipped. Neither
+band tests displayed rounding or investment thresholds. The separate public corpus had 16 XIRR
+differences out of 50,496 compared cells.
+
+**Impact, not just tolerance.** In the waterfall, two unrounded XIRRs differ by
+3.55e-9 and 5.71e-9 in rate units. On the same dated flows, the discounted balance at the
+Excel rate misses zero by about 19 and 28 cents; at the engine root the residual on its inputs
+is below a cent. Using the other engine's cash flows at the Excel rate changes that balance by
+less than a millionth of a dollar. This isolates the solver discrepancy from input drift; it
+does not identify Excel's iteration algorithm. Both reported percentages display identically,
+and all 58 checked rolling six-decimal returns agree. No payout or hurdle was found to depend
+on the differing unrounded results. Separately, all 4,209 numeric formula results in the
+iterative model round to the same hundredth as its **saved** values (not a fresh Excel run).
+
+The [synthetic XIRR workbook generator](../tools/excel-parity/make-xirr-impact-fixture.py)
+and [Excel/engine observations](../tools/excel-parity/xirr-impact-results.tsv) show where this
+distinction matters: at a deliberately chosen rounding boundary, Excel gives `0.100000` and the
+engine `0.100001` after `ROUND(rate,6)`. Both display `10.00%`, but a comparison can flip.
+For a positive one-year return with a negative starting guess, Excel returned `#NUM!` where the
+engine found a root. Neither case was the traced workbook's decision. Retain the solver; a
+constant bias, rounding all XIRRs, or a blanket guess-sign restriction is not supported.
+
 Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-vm.sh`):
 
 - A formula whose value is an empty cell (`=B9`, `=IF(c,"",B9)`) is 0: `=A1=""` reads FALSE,
