@@ -202,7 +202,7 @@ let private emptyLook : CellLook =
 /// (`fit`: the text measured as Excel draws it, in screen pixels at a zoom, `width` too: a number
 /// fitted to its cell as Excel fits it, `CellText.NumberFit`.)
 let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) (col: int) (data: CellData option) (measure: TextMeasurer option) (width: float) : CellLook =
-    if data.IsNone && model.Tables.IsEmpty && model.ConditionalFormats.IsEmpty then emptyLook
+    if data.IsNone && model.Tables.IsEmpty && model.Pivots.IsEmpty && model.ConditionalFormats.IsEmpty then emptyLook
     else
         let addr = { Row = row; Col = col }
         let own, stored =
@@ -211,7 +211,7 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
             | None -> defaultFormat, CellValue.Empty
         let value = viewedValue model stored
         // Under it the look of its table's style; a header cell of the table's filter has its button.
-        let table = if model.Tables.IsEmpty then None else tableEntryAt model.Tables row col
+        let table = if model.Tables.IsEmpty && model.Pivots.IsEmpty then None else styleEntryAt model row col
         let withTable =
             match table with
             | None -> own

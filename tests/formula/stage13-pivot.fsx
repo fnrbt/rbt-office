@@ -189,12 +189,12 @@ let pivotSheet =
         { Top = 2; Left = 0; Bottom = 5; Right = 1; FirstHeaderRow = 1; FirstDataRow = 1; FirstDataCol = 1
           RowFields = [ "Region" ]; ColumnFields = []; DataFields = [ "Sum of Sales" ]
           RowLines = [ { Kind = "data"; Repeat = 0; Items = [ 0 ] }; { Kind = "data"; Repeat = 0; Items = [ 1 ] }; { Kind = "grand"; Repeat = 0; Items = [] } ]
-          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ] }
+          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ]; Style = None }
     let tabular : PivotLayout =
         { Top = 2; Left = 3; Bottom = 5; Right = 5; FirstHeaderRow = 1; FirstDataRow = 1; FirstDataCol = 2
           RowFields = [ "Country"; "State" ]; ColumnFields = []; DataFields = [ "Sum of Sales" ]
           RowLines = [ { Kind = "data"; Repeat = 0; Items = [ 0; 0 ] }; { Kind = "data"; Repeat = 1; Items = [ 1 ] }; { Kind = "data"; Repeat = 0; Items = [ 1; 2 ] } ]
-          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ] }
+          ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [] } ]; Style = None }
     { createEmpty 50 10 with Cells = cells |> List.map (fun (a, v) -> a, cell v) |> Map.ofList; Pivots = [ compact; tabular ] }
 let gp f = evaluateFormula f pivotSheet None
 check "GETPIVOTDATA: an item" (gp "=GETPIVOTDATA(\"Sales\",A3,\"Region\",\"West\")") (N 400.0)

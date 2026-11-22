@@ -1410,6 +1410,23 @@ type RowsSorted(left: int, right: int, rows: int[], sources: int[], before: Map<
 /// "grand" ...), how many leading fields it repeats from the one before, and its items after those.
 type PivotLine = { Kind: string; Repeat: int; Items: int list }
 
+/// How a pivot table is drawn: its style (`<pivotTableStyleInfo>`: Excel's built-in style of that name or the
+/// workbook's own; no elements without one), the options the table turns on, and what of its layout the style and
+/// its buttons follow - its page fields above it, which row fields are in tabular form, compact form, captions shown.
+type PivotStyleInfo = {
+    Elements: TableStyles.TableStyleElement list
+    ShowRowHeaders: bool
+    ShowColumnHeaders: bool
+    ShowRowStripes: bool
+    ShowColumnStripes: bool
+    ShowLastColumn: bool
+    PageFields: int
+    RowFieldTabular: bool list
+    /// The row fields' items in one column (compact form), and the captions of the fields shown.
+    Compact: bool
+    ShowHeaders: bool
+}
+
 /// A pivot table as it stands on its sheet, as much of it as GETPIVOTDATA reads: where it is
 /// (rows and columns, 0-based), where its header and its data begin in it, the names of the
 /// fields of its rows and columns ("" for the data fields), the names of its data fields, and
@@ -1427,6 +1444,40 @@ type PivotLayout = {
     DataFields: string list
     RowLines: PivotLine list
     ColumnLines: PivotLine list
+    /// How it is drawn: its style (no elements without one) and its form; None for a pivot table made here.
+    Style: PivotStyleInfo option
+}
+
+/// A group of sparklines (`<x14:sparklineGroup>`): its kind ("line", "column", "stacked" - win / loss), its
+/// colours (`#RRGGBB`: series, negative points, axis, markers, first, last, high, low points), which points it
+/// marks, its axis, what an empty cell is ("gap", "zero", "span"), the line's weight in points, how its vertical
+/// scale is found ("individual", "group", "custom" with `ManualMin` / `ManualMax`), and its sparklines: the cell
+/// each stands in and the cells it shows (`Sheet!B2:H2`).
+type SparklineGroup = {
+    Kind: string
+    SeriesColor: string
+    NegativeColor: string
+    AxisColor: string
+    MarkersColor: string
+    FirstColor: string
+    LastColor: string
+    HighColor: string
+    LowColor: string
+    Markers: bool
+    High: bool
+    Low: bool
+    First: bool
+    Last: bool
+    Negative: bool
+    DisplayXAxis: bool
+    EmptyAs: string
+    LineWeight: float
+    MinAxis: string
+    MaxAxis: string
+    ManualMin: float option
+    ManualMax: float option
+    RightToLeft: bool
+    Items: (CellAddress * string) list
 }
 
 type SpreadsheetModel = {
@@ -1618,6 +1669,8 @@ type SpreadsheetModel = {
 
     /// The pivot tables on the sheet, as laid out (what GETPIVOTDATA reads).
     Pivots: PivotLayout list
+    /// The sheet's sparklines, by group (drawn, not edited).
+    Sparklines: SparklineGroup list
 
     /// Pictures and other drawing objects, back to front. They move with
     /// their anchor cells when rows or columns are inserted or deleted.
@@ -1774,6 +1827,7 @@ let createEmpty rowCount colCount = {
     Validations = []
     Macros = ""
     Pivots = []
+    Sparklines = []
     Drawings = []
     AuthoredCharts = Map.empty
     Threads = Map.empty
@@ -3449,6 +3503,122 @@ let formatWithTableEntry (entry: TableLookEntry) (format: CellFormat) : CellForm
         entry.LastFormat <- format
         entry.LastMerged <- merged
         merged
+
+/// The looks of the pivot tables last asked for (by reference, as tables'), each a function of a cell.
+let private pivotLookIndexes = ResizeArray<PivotLayout * (int -> int -> TableLookEntry option)>()
+
+/// The look the style of a pivot table gives a cell (`TableStyles.pivotLooks`: its page fields' rows and the
+/// table), worked out once a pivot table; None outside it and for a pivot table without a style.
+let pivotCellEntry (pivot: PivotLayout) (row: int) (col: int) : TableLookEntry option =
+    match pivot.Style with
+    | Some style when not style.Elements.IsEmpty ->
+        let firstRow = pivot.Top - (if style.PageFields > 0 then style.PageFields + 1 else 0)
+        if row < firstRow || row > pivot.Bottom || col < pivot.Left || col > max pivot.Right (pivot.Left + 1) then None
+        else
+            let found = pivotLookIndexes |> Seq.tryFind (fun (known, _) -> obj.ReferenceEquals(known, pivot))
+            let lookOf =
+                match found with
+                | Some (_, lookOf) -> lookOf
+                | None ->
+                    let line (l: PivotLine) = l.Kind, l.Repeat, l.Items.Length
+                    let shape : TableStyles.PivotShape =
+                        { Top = pivot.Top; Left = pivot.Left; Bottom = pivot.Bottom; Right = pivot.Right
+                          FirstHeaderRow = pivot.FirstHeaderRow; FirstDataRow = pivot.FirstDataRow; FirstDataCol = pivot.FirstDataCol
+                          RowLines = pivot.RowLines |> List.map line |> List.toArray
+                          ColumnLines = pivot.ColumnLines |> List.map line |> List.toArray
+                          RowFields = pivot.RowFields.Length; ColumnFields = pivot.ColumnFields.Length
+                          PageFields = style.PageFields; RowFieldTabular = List.toArray style.RowFieldTabular
+                          ShowRowHeaders = style.ShowRowHeaders; ShowColumnHeaders = style.ShowColumnHeaders
+                          ShowRowStripes = style.ShowRowStripes; ShowColumnStripes = style.ShowColumnStripes
+                          ShowLastColumn = style.ShowLastColumn }
+                    let looks = TableStyles.pivotLooks style.Elements shape
+                    let entries = Collections.Generic.Dictionary<int64, TableLookEntry option>()
+                    let lookOf (r: int) (c: int) =
+                        let key = int64 r * 65536L + int64 c
+                        match entries.TryGetValue key with
+                        | true, entry -> entry
+                        | _ ->
+                            let entry =
+                                looks r c
+                                |> Option.map (fun look ->
+                                    let line (edge: TableStyles.TableLine option) : BorderStyle option =
+                                        edge |> Option.map (fun line -> { Style = line.Style; Color = Some line.Color })
+                                    { Look = look; AsOption = Some look; Top = line look.Top; Bottom = line look.Bottom; Left = line look.Left; Right = line look.Right
+                                      LastFormat = Unchecked.defaultof<CellFormat>; LastMerged = Unchecked.defaultof<CellFormat> })
+                            entries.[key] <- entry
+                            entry
+                    pivotLookIndexes.Insert(0, (pivot, lookOf))
+                    if pivotLookIndexes.Count > 64 then pivotLookIndexes.RemoveAt(pivotLookIndexes.Count - 1)
+                    lookOf
+            lookOf row col
+    | _ -> None
+
+/// A button Excel draws in a pivot table's cell: the drop-down of a field's caption (a page field's value, "Row
+/// Labels" / "Column Labels" in compact form, each field's caption otherwise), or the +/- that collapses / expands
+/// an item with items under it (`expanded`: its items follow).
+type PivotButton =
+    | PivotDropdown
+    | PivotToggle of expanded: bool
+    /// No button, but a label in compact form under items that have one: its text moves as theirs.
+    | PivotLabel
+
+/// The buttons of a pivot table: cell (row, col) to button.
+let pivotButtons (pivot: PivotLayout) : Map<int * int, PivotButton> =
+    match pivot.Style with
+    | None -> Map.empty
+    | Some style ->
+        let r0, c0 = pivot.Top, pivot.Left
+        let top = r0 + pivot.FirstDataRow
+        let mutable buttons = Map.empty
+        let put at button = buttons <- Map.add at button buttons
+        for p in 0 .. style.PageFields - 1 do
+            put (r0 - 1 - style.PageFields + p, c0 + 1) PivotDropdown
+        let columnFields = pivot.ColumnFields |> List.filter (fun name -> name <> "")
+        let rowFields = pivot.RowFields |> List.filter (fun name -> name <> "")
+        if style.ShowHeaders then
+            if style.Compact then
+                if not columnFields.IsEmpty then put (r0, c0 + pivot.FirstDataCol) PivotDropdown
+                if not rowFields.IsEmpty && top > r0 then put (top - 1, c0) PivotDropdown
+            else
+                pivot.ColumnFields |> List.iteri (fun i name -> if name <> "" then put (r0, c0 + pivot.FirstDataCol + i) PivotDropdown)
+                if top > r0 then pivot.RowFields |> List.iteri (fun i name -> if name <> "" && i < pivot.FirstDataCol then put (top - 1, c0 + i) PivotDropdown)
+        // (+/-: an item of a field with fields under it, in its label's cell; expanded when the next line goes deeper.)
+        let toggles (lines: PivotLine list) (fields: int) (cellOf: int -> int -> int * int) =
+            let lines = List.toArray lines
+            for k in 0 .. lines.Length - 1 do
+                let line = lines.[k]
+                if line.Kind = "data" then
+                    for lv in line.Repeat .. line.Repeat + line.Items.Length - 1 do
+                        if lv < fields - 1 then
+                            let expanded =
+                                (lv < line.Repeat + line.Items.Length - 1)
+                                || (k + 1 < lines.Length && lines.[k + 1].Kind = "data" && lines.[k + 1].Repeat > lv)
+                            put (cellOf k lv) (PivotToggle expanded)
+        let rowLevels = pivot.RowFields |> List.takeWhile (fun name -> name <> "") |> List.length
+        if style.Compact && rowLevels > 1 then
+            pivot.RowLines |> List.iteri (fun k line -> if line.Kind = "data" then put (top + k, c0) PivotLabel)
+        toggles pivot.RowLines rowLevels (fun k lv -> top + k, (if style.Compact then c0 else c0 + lv))
+        let columnLevels = pivot.ColumnFields |> List.takeWhile (fun name -> name <> "") |> List.length
+        toggles pivot.ColumnLines columnLevels (fun j lv -> r0 + pivot.FirstHeaderRow + lv, c0 + pivot.FirstDataCol + j)
+        buttons
+
+let private pivotButtonIndexes = ResizeArray<PivotLayout * Map<int * int, PivotButton>>()
+
+/// The button Excel draws in a cell of a pivot table (`pivotButtons`), if any.
+let pivotButtonAt (model: SpreadsheetModel) (row: int) (col: int) : PivotButton option =
+    model.Pivots
+    |> List.tryPick (fun pivot ->
+        if row < pivot.Top - 8 || row > pivot.Bottom || col < pivot.Left || col > pivot.Right then None
+        else
+            let buttons =
+                match pivotButtonIndexes |> Seq.tryFind (fun (known, _) -> obj.ReferenceEquals(known, pivot)) with
+                | Some (_, buttons) -> buttons
+                | None ->
+                    let buttons = pivotButtons pivot
+                    pivotButtonIndexes.Insert(0, (pivot, buttons))
+                    if pivotButtonIndexes.Count > 64 then pivotButtonIndexes.RemoveAt(pivotButtonIndexes.Count - 1)
+                    buttons
+            Map.tryFind (row, col) buttons)
 
 /// Bake table styling (the look of each cell, `tableCellLook`, and the filter
 /// buttons of the header) into cell formats from `model.Tables`. Acts only on

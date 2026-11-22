@@ -13,6 +13,7 @@
     <Compile Include="GdiAdvances.fs" />
     <Compile Include="ExcelText.fs" />
     <Compile Include="Model.fs" />
+    <Compile Include="Sparklines.fs" />
     <Compile Include="CellText.fs" />
     <Compile Include="Input.fs" />
     <Compile Include="ErrorChecks.fs" />

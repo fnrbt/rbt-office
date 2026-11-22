@@ -546,6 +546,19 @@ type PivotTable = {
     RowLines: PivotLine list
     ColumnLines: PivotLine list
     CacheFieldNames: string list
+    /// Its style (`<pivotTableStyleInfo name>`; None without one: no style) and the style's options as the
+    /// table turns them on: row headers, column headers, banded rows, banded columns, the last column.
+    StyleName: string option
+    StyleOptions: bool * bool * bool * bool * bool
+    /// Its page (filter) fields, above it.
+    PageFieldCount: int
+    /// Per row field: laid out in a column of its own with its items beside the next field's (tabular form:
+    /// `<pivotField outline="0">`), not each item on a line of its own (outline / compact form).
+    RowFieldTabular: bool list
+    /// In compact form (`compact`, by default): the row fields' items in one column, under one "Row Labels"
+    /// caption. `ShowHeaders`: the captions of its fields shown, with their buttons (`showHeaders`).
+    Compact: bool
+    ShowHeaders: bool
 }
 
 /// sheetFormatPr defaults captured at parse time so renderers can fall back
@@ -5308,6 +5321,8 @@ module PivotTables =
 
             let locationNode = Ns.childNs "location" ptNode
             let locationInt attr = locationNode |> Option.bind (Xml.attr attr) |> Option.bind tryParseInt |> Option.defaultValue 0
+            let styleInfo = Ns.childNs "pivotTableStyleInfo" ptNode
+            let styleFlag attr = styleInfo |> Option.bind (Xml.attr attr) |> Option.map (fun v -> v = "1" || v = "true") |> Option.defaultValue false
             let fieldIndexes listName =
                 Ns.childNs listName ptNode
                 |> Option.map (fun fields -> Xml.children fields |> List.choose (fun field -> Xml.attr "x" field |> Option.bind tryParseInt))
@@ -5329,6 +5344,19 @@ module PivotTables =
                 RowLines = lines (Ns.childNs "rowItems" ptNode)
                 ColumnLines = lines (Ns.childNs "colItems" ptNode)
                 CacheFieldNames = []
+                StyleName = styleInfo |> Option.bind (Xml.attr "name") |> Option.filter (fun name -> name <> "")
+                StyleOptions = (styleFlag "showRowHeaders", styleFlag "showColHeaders", styleFlag "showRowStripes", styleFlag "showColStripes", styleFlag "showLastColumn")
+                PageFieldCount = Ns.childNs "pageFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pageField") |> List.length) |> Option.defaultValue 0
+                Compact = Xml.attr "compact" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
+                ShowHeaders = Xml.attr "showHeaders" ptNode |> Option.map (fun v -> not (v = "0" || v = "false")) |> Option.defaultValue true
+                RowFieldTabular =
+                    let fields = Ns.childNs "pivotFields" ptNode |> Option.map (fun fields -> Xml.children fields |> List.filter (fun f -> Xml.name f |> Option.map Ns.stripNs = Some "pivotField") |> List.toArray) |> Option.defaultValue [||]
+                    fieldIndexes "rowFields" |> List.map (fun index ->
+                        if index < 0 || index >= fields.Length then false
+                        else
+                            match Xml.attr "outline" fields.[index] with
+                            | Some v -> v = "0" || v = "false"
+                            | None -> false)
             })
 
     let parsePivotTables (xml: string) : PivotTable list =

@@ -411,7 +411,8 @@ let pivotLayout : PivotLayout =
                    { Kind = "data"; Repeat = 0; Items = [ 1 ] }
                    { Kind = "grand"; Repeat = 0; Items = [] } ]
       ColumnLines = [ { Kind = "data"; Repeat = 0; Items = [ 0 ] }
-                      { Kind = "grand"; Repeat = 0; Items = [] } ] }
+                      { Kind = "grand"; Repeat = 0; Items = [] } ]
+      Style = None }
 let pivotData =
     { modelOf
         [ at 11 3, str "Q1"; at 11 4, str "Grand Total"
