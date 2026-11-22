@@ -170,6 +170,15 @@ let private resolveStyledSection (ctx: PageContext) (raw: string) : StyledSectio
         text.Append s |> ignore
         runText.Append s |> ignore
     let parseHexColor startIndex =
+        // (`&Ktt+nnn` / `&Ktt-nnn` is a theme colour - theme index tt, tint nnn %: vertex42's footer
+        // `&K01+034https://...` prints the address alone in Excel 2019. Its six characters are the code's; the colour
+        // stays as it was, the theme not being known here.)
+        let isDigit (c: char) = c >= '0' && c <= '9'
+        if startIndex + 6 <= raw.Length && isDigit raw.[startIndex] && isDigit raw.[startIndex + 1]
+           && (raw.[startIndex + 2] = '+' || raw.[startIndex + 2] = '-')
+           && isDigit raw.[startIndex + 3] && isDigit raw.[startIndex + 4] && isDigit raw.[startIndex + 5] then
+            None, startIndex + 6
+        else
         let stop = min raw.Length (startIndex + 6)
         let mutable j = startIndex
         while j < stop && (let c = raw.[j] in (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) do j <- j + 1

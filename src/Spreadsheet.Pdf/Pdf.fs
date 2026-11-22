@@ -213,6 +213,12 @@ let private tryGetMappedFace (faceByName: Map<string, PdfFont.TrueTypeFont>) (fa
 /// Page placement: where this page's content sits on the paper, what the
 /// page is sized at, and how content is scaled. translateItem bakes all
 /// three into every coordinate it emits.
+/// Excel 2019's PDF draws a sheet's grid 4 dots of 600 dpi (0.48 pt) right of the left margin and below the top one,
+/// whatever the scale (make-print-pages-fixture.py: the first grid lines at 18.48 pt for a margin of 18, 54.48 for 54,
+/// 50.88 for 50.4 at 98 %). The text of the cells keeps where it was (its place in a cell is not Excel's yet: a line
+/// at the bottom of a cell of Calibri 11 stands 3.58 pt above the cell's bottom in Excel's, 2.96 in ours).
+let private gridInsetPt = 0.48
+
 type private Placement = {
     /// PDF points from the paper's left edge to where page-local X=0 lands.
     LeftPtOffset: float
@@ -223,6 +229,8 @@ type private Placement = {
     PageHeightPt: float
     /// Multiplier applied to every size + offset (fit-to-page / manual scale).
     Scale: float
+    /// PDF points text is set higher than the cells it is in say (`gridInsetPt`).
+    TextRaisePt: float
     /// When true, every fill becomes white and every stroke / text becomes
     /// black. Matches Excel's `<pageSetup blackAndWhite="1"/>` print mode.
     BlackAndWhite: bool
@@ -278,7 +286,7 @@ let private appendDrawTextOps
         | Some primaryTtf ->
             let sz v = v * pxToPt * placement.Scale
             let xPt x = placement.LeftPtOffset + sz x
-            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y
+            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y + placement.TextRaisePt
             // PaintText.FontSize is stored in points. Draw in PDF points,
             // but use CSS-pixel metrics for layout because cell geometry is
             // still page-local CSS px before translateItem applies pxToPt.
@@ -692,8 +700,13 @@ let private remapPrintDimensionDirect maxIndex remap (values: Map<int, float>) =
 let private remapPrintColumnWidthsDirect mdw digit maxCol values =
     remapPrintDimensionDirect maxCol (printColumnWidthPx mdw digit) values
 
-let private remapPrintRowHeightsDirect scale maxRow values =
-    remapPrintDimensionDirect maxRow (printRowHeightPx scale) values
+let private remapPrintRowHeightsDirect (model: SpreadsheetModel) maxRow values =
+    let mutable mapped = Map.empty
+    for index in 0 .. max 0 maxRow do
+        match Map.tryFind index values with
+        | Some px -> mapped <- Map.add index (printRowHeightPx model.PrintRowScale (Pagination.exactRowPx (defaultArg (Map.tryFind index model.RowPoints) 0.0) px)) mapped
+        | None -> ()
+    mapped
 
 let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
     // (Every column, the default width too: `Pagination.printColumnWidthPx`.)
@@ -710,10 +723,10 @@ let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : Spreadsh
     let heights =
         match maxPrintRow with
         | Some maxRow when maxRow >= 0 && maxRow <= directPrintDimensionRemapLimit ->
-            remapPrintRowHeightsDirect model.PrintRowScale maxRow model.RowHeights
+            remapPrintRowHeightsDirect model maxRow model.RowHeights
         | _ ->
-            model.RowHeights |> Map.map (fun _ px -> printRowHeightPx model.PrintRowScale px)
-    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.PrintRowScale model.DefaultRowHeight }
+            model.RowHeights |> Map.map (fun row px -> printRowHeightPx model.PrintRowScale (Pagination.exactRowPx (defaultArg (Map.tryFind row model.RowPoints) 0.0) px))
+    { model with RowHeights = heights; DefaultRowHeight = printRowHeightPx model.PrintRowScale (Pagination.exactRowPx model.DefaultRowPoints model.DefaultRowHeight) }
 
 /// True when a paint item has degenerate (zero-size) geometry. With the
 /// print viewport's HeaderHeight / RowHeaderWidth both set to 0, the
@@ -1111,11 +1124,18 @@ let private appendSectionOps
         ops.Add(PdfDraw.TextMatrix (1.0, 0.0, 0.0, 1.0, xPt, baselineYPt + baselineDeltaPt))
         ops.Add(PdfDraw.ShowTextHex hex)
         ops.Add PdfDraw.EndText
+    // (Excel 2019 sets a left section 8 dots of 600 dpi (0.96 pt) in from the left margin and a right one as far in
+    // from the right margin: synthetic-print's "&BReport" at 51.36 pt for a margin of 50.4, "&D" ending at 740.6 for
+    // 741.6 - but not a section with underlined, struck, raised or lowered runs: synthetic-hf-style-codes' "Plain ..."
+    // at 50.4.)
+    let insetPt =
+        if section.Runs |> List.exists (fun run -> run.Underline || run.DoubleUnderline || run.Strikethrough || run.Superscript || run.Subscript)
+        then 0.0 else 0.96
     let startX totalWidthPt =
         match xAlign with
-        | AlignLeft -> leftPt
+        | AlignLeft -> leftPt + insetPt
         | AlignCenter -> leftPt + ((rightPt - leftPt) - totalWidthPt) / 2.0
-        | AlignRight -> rightPt - totalWidthPt
+        | AlignRight -> rightPt - totalWidthPt - insetPt
     let tryAppendSingleRun () =
         match section.Runs with
         | [ run ] when
@@ -1672,7 +1692,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 // own filled area, so a partly-filled last page still centers on
                 // what's actually drawn rather than the full printable rectangle.
                 let leftPtOffset, topPtOffset =
-                    if pages.Length = 0 then leftMarginPt, topMarginPt
+                    if pages.Length = 0 then leftMarginPt + gridInsetPt, topMarginPt + gridInsetPt
                     else
                         let slice = pages.[pageIdx]
                         let repeatRowsHeightPx = if slice.TitleRows then repeatRowsHeightPx else 0.0
@@ -1685,20 +1705,23 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                             + geometry.Row.Sum slice.RowStart slice.RowEnd
                         let bodyWidthPt = bodyWidthPx * pxToPt * pagination.Scale
                         let bodyHeightPt = bodyHeightPx * pxToPt * pagination.Scale
+                        // (Centred, the grid starts 4 dots short of the middle: synthetic-print-centered's A1 at
+                        // 96.98 pt past the margin where (691.2 - 496.32) / 2 is 97.44, row 1 at 157.11 for 157.62.)
                         let extraLeft =
                             if ps.Options.HorizontalCentered && bodyWidthPt < printableWidthPt
-                            then (printableWidthPt - bodyWidthPt) / 2.0
-                            else 0.0
+                            then (printableWidthPt - bodyWidthPt) / 2.0 - gridInsetPt
+                            else gridInsetPt
                         let extraTop =
                             if ps.Options.VerticalCentered && bodyHeightPt < printableHeightPt
-                            then (printableHeightPt - bodyHeightPt) / 2.0
-                            else 0.0
+                            then (printableHeightPt - bodyHeightPt) / 2.0 - gridInsetPt
+                            else gridInsetPt
                         leftMarginPt + extraLeft, topMarginPt + extraTop
                 let placement =
                     { LeftPtOffset = leftPtOffset
                       TopPtOffset = topPtOffset
                       PageHeightPt = pageHeightPt
                       Scale = pagination.Scale
+                      TextRaisePt = gridInsetPt
                       BlackAndWhite = ps.BlackAndWhite
                       ImageName = imageNames.NameOf }
                 let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
@@ -1834,7 +1857,7 @@ let sceneToBytes (widthPx: float) (heightPx: float) (items: PaintItem list) : by
     let pageHeightPt = heightPx * pxToPt
     let placement =
         { LeftPtOffset = 0.0; TopPtOffset = 0.0; PageHeightPt = pageHeightPt
-          Scale = 1.0; BlackAndWhite = false; ImageName = imageNames.NameOf }
+          Scale = 1.0; TextRaisePt = 0.0; BlackAndWhite = false; ImageName = imageNames.NameOf }
     let opts = { DefaultFontFamily = "Calibri"; Fonts = []; CjkFallback = []; SheetName = ""; FileName = "" }
     let ops = System.Collections.Generic.List<PdfDraw.DrawOp>()
     for item in items do

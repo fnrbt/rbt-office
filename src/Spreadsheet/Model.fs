@@ -1496,6 +1496,11 @@ type SpreadsheetModel = {
     /// Dots of 600 dpi a pixel of a row's height prints at (`ExcelText.printRowScale`: 6.05 for Calibri 11, 121 dots
     /// for its 20-px row).
     PrintRowScale: float
+    /// The heights of rows in points as the file gives them (`ht`), and the sheet's own default height (0: none):
+    /// the screen shows them in whole pixels (`RowHeights`, `DefaultRowHeight`), print sets them as they are
+    /// (`Pagination.withPrintSizes`, while they are still those pixels).
+    RowPoints: Map<int, float>
+    DefaultRowPoints: float
 
     /// The sizes hidden rows / columns go back to, and the outline (groups).
     Axes: SheetAxes
@@ -1741,6 +1746,8 @@ let createEmpty rowCount colCount = {
     MaxDigitWidth = 7.0
     PrintDigitWidth = 47.0
     PrintRowScale = 6.05
+    RowPoints = Map.empty
+    DefaultRowPoints = 0.0
     Axes = emptySheetAxes
     SearchQuery = None
     SearchCaseSensitive = None

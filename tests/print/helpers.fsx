@@ -34,6 +34,9 @@ ok "hf-sheet-file" (sec3.Center.Text = "Sheet One — report.xlsx") sec3.Center.
 let sec4 = HeaderFooter.resolve ctx "&D at &T"
 ok "hf-date-time" (sec4.Center.Text = "3/15/2026 at 2:30 PM") sec4.Center.Text
 
+let secTheme = HeaderFooter.resolve ctx "&L&\"Arial,Regular\"&8&K01+034https://example.com/x.html"
+ok "hf-theme-colour-code" (secTheme.Left.Text = "https://example.com/x.html") secTheme.Left.Text
+
 let sec5 = HeaderFooter.resolve ctx "AT&&T"
 ok "hf-ampersand-escape" (sec5.Center.Text = "AT&T") sec5.Center.Text
 
@@ -333,6 +336,13 @@ do
     let dots (px: float) = System.Math.Round (px * 6.25, 6)
     ok "print sizes: columns" (dots (Pagination.printColumnWidthPx 7.0 47.0 64.0) = 430.0 && dots (Pagination.printColumnWidthPx 7.0 46.0 12.0) = 79.0 && dots (Pagination.printColumnWidthPx 8.0 51.0 12.0) = 77.0) ""
     ok "print sizes: the widest digit in print" ([ "Calibri", 11.0; "Arial", 10.0; "Calibri", 12.0; "Arial", 12.0; "Arial MT", 12.0 ] |> List.map (fun (f, p) -> Rbt.Spreadsheet.ExcelText.printDigitWidth f p) = [ 47.0; 46.0; 51.0; 56.0; 56.0 ]) ""
+    // A row of 20 pt shows at 26 px and prints as 26.67 px would: 161 dots of Calibri 11.
+    ok "print sizes: a row's points" (dots (Pagination.printRowHeightPx 6.05 (Pagination.exactRowPx 20.0 26.0)) = 161.0 && Pagination.exactRowPx 20.0 27.0 = 27.0) ""
+    // The grid 0.48 pt in from the margins: the heights fixture's first lines (margins 0.7 / 0.75 in) at x 50.88, y 54.48 from the top.
+    let heights = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes (System.IO.Path.Combine(dir, "synthetic-print-pages-heights.xlsx"))) |> Option.get)
+    let options : Render.RenderOptions = { DefaultFontFamily = "Helvetica"; Fonts = []; CjkFallback = []; SheetName = "Heights"; FileName = "f" }
+    let text = System.Text.Encoding.Latin1.GetString (Render.toBytes options heights.Sheets.[0].Model)
+    ok "print: the grid 0.48 pt inside the margins" (text.Contains "50.88 " && text.Contains (sprintf "%g " (792.0 - 54.48))) ""
     ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
 
 

@@ -343,13 +343,18 @@ let printRowHeightPx (scale: float) (px: float) : float =
     if px <= 0.0 then px
     else System.Math.Floor (px * (if scale > 0.0 then scale else 6.05) + 0.14) / 6.25
 
+/// A row's height in pixels unrounded: its points x 4/3 while they are the `px` it shows at (`FontMetrics.pointsToRowPx`),
+/// else `px` (heights 7.5 to 409.5 pt in Excel 2019's PDF: 20 pt prints as 26.67 px would, not as the 26 shown).
+let exactRowPx (points: float) (px: float) : float =
+    if points > 0.0 && px > 0.0 && Rbt.Spreadsheet.FontMetrics.pointsToRowPx points = px then points * 4.0 / 3.0 else px
+
 /// The sheet with its rows and columns at the sizes they print at.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
     { model with
-        DefaultRowHeight = printRowHeightPx model.PrintRowScale model.DefaultRowHeight
+        DefaultRowHeight = printRowHeightPx model.PrintRowScale (exactRowPx model.DefaultRowPoints model.DefaultRowHeight)
         DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth
         ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width))
-        RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun _ px -> printRowHeightPx model.PrintRowScale px)) }
+        RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun row px -> printRowHeightPx model.PrintRowScale (exactRowPx (defaultArg (Map.tryFind row model.RowPoints) 0.0) px))) }
 
 /// The pages the sheet prints on: `paginate` of the sheet at its print
 /// sizes - what the PDF export lays out, and what a host's print preview is told.
