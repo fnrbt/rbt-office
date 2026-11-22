@@ -333,6 +333,26 @@ ok "a shape linked to a cell shows the cell" (let svg = shapeSvg linkData linked
 ok "... and the text of the file when the cell cannot be read" (has (shapeSvg noData linked) "stale") (shapeSvg noData linked)
 ok "... which a plain field of no link keeps" (has (shapeSvg linkData (shapeOf "" "" (prst "rect") (boxed "<a:fld id=\"{1}\" type=\"TxLink\"><a:t>stale</a:t></a:fld>"))) "stale") ""
 
+// Excel 2019 (synthetic-shape-looks.xlsx "Rounds", make-shape-looks-fixture.py): a shape of nothing draws nothing; an
+// outline on whole pixels, an odd one half a pixel over (on the pixel of the edge); shadows; arrowheads.
+let bareShape (props: string) (extra: string) =
+    sprintf "<xdr:twoCellAnchor xmlns:xdr=\"x\" xmlns:a=\"a\"><xdr:sp><xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"952500\" cy=\"476250\"/></a:xfrm>%s</xdr:spPr>%s</xdr:sp></xdr:twoCellAnchor>" props extra
+let nothing = Charts.objectScene shapeParts noData (bareShape (prst "rect" + "<a:noFill/>") "<xdr:txBody><a:bodyPr/><a:p><a:endParaRPr/></a:p></xdr:txBody>") 100.0 50.0
+ok "a shape of no fill, no line (none given, no style) and no text: an empty scene, not a placeholder" (match nothing with Some scene -> scene.Items.IsEmpty | None -> false) (sprintf "%A" nothing)
+let lined (emu: int) = shapeSvg noData (bareShape (prst "rect" + sprintf "<a:ln w=\"%d\"><a:solidFill><a:srgbClr val=\"000000\"/></a:solidFill></a:ln>" emu) "")
+ok "a 1-pt line: 1 px, half a pixel over; 1.5 pt: 2 px where it is" (has (lined 12700) "matrix(1 0 0 1 0.5 0.5)" && has (lined 12700) "stroke-width=\"1\"" && not (has (lined 19050) "matrix(") && has (lined 19050) "stroke-width=\"2\"") (lined 12700 + lined 19050)
+let shadowed = shapeSvg noData (bareShape (prst "roundRect" + "<a:solidFill><a:srgbClr val=\"FFFFFF\"/></a:solidFill><a:effectLst><a:outerShdw blurRad=\"50800\" dist=\"38100\" dir=\"2700000\" algn=\"tl\"><a:prstClr val=\"black\"><a:alpha val=\"40000\"/></a:prstClr></a:outerShdw></a:effectLst>") "")
+ok "an outer shadow: 3 pt at 45 degrees, a 4-pt blur (deviation 2.67 px), black 40 %" (has shadowed "<feDropShadow dx=\"2.83\" dy=\"2.83\" stdDeviation=\"2.67\" flood-color=\"#000000\" flood-opacity=\"0.4\"/>") shadowed
+let themed (effects: string) = shapeSvg noData (bareShape (prst "rect" + "<a:solidFill><a:srgbClr val=\"398CCC\"/></a:solidFill>" + effects) "<xdr:style><a:lnRef idx=\"0\"><a:schemeClr val=\"dk1\"/></a:lnRef><a:fillRef idx=\"1\"><a:schemeClr val=\"dk1\"/></a:fillRef><a:effectRef idx=\"3\"><a:schemeClr val=\"dk1\"/></a:effectRef><a:fontRef idx=\"minor\"><a:schemeClr val=\"dk1\"/></a:fontRef></xdr:style>")
+ok "the theme's third effect style (Office's: 1.5 pt down, 4.5-pt blur, 63 %); an empty effect list of its own: none" (has (themed "") "dy=\"2\" stdDeviation=\"3\"" && has (themed "") "flood-opacity=\"0.63\"" && not (has (themed "<a:effectLst/>") "feDropShadow")) (themed "")
+let arrowed = Charts.objectScene shapeParts noData ("<xdr:twoCellAnchor xmlns:xdr=\"x\" xmlns:a=\"a\"><xdr:cxnSp><xdr:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"2286000\" cy=\"0\"/></a:xfrm>" + prst "line" + "<a:ln w=\"12700\"><a:solidFill><a:srgbClr val=\"7F7F7F\"/></a:solidFill><a:tailEnd type=\"triangle\" w=\"med\" len=\"lg\"/></a:ln></xdr:spPr></xdr:cxnSp></xdr:twoCellAnchor>") 240.0 0.0
+let rec polygons (items: Charts.Primitive list) = items |> List.collect (fun item -> match item with Charts.PPolyline (points, Some _, _, _, _, _) -> [ points ] | Charts.PTransform (_, _, _, _, _, _, inner) -> polygons inner | _ -> [])
+ok "a line of no height with a triangle at its end: 8 px wide, 13.3 long (a 1-pt line taken as 2 pt), its tip at the end"
+    (match arrowed |> Option.map (fun scene -> polygons scene.Items) with
+     | Some [ [ (tx, ty); (_, y1); (bx, y2); _ ] ] -> tx = 240.0 && ty = 0.0 && abs (abs (y1 - y2) - 8.0) < 0.01 && abs (tx - bx - 13.33) < 0.01
+     | _ -> false) (sprintf "%A" arrowed)
+ok "a shape or a group draws past its rectangle, a chart or a picture not" (Charts.objectSpills (bareShape "" "") && not (Charts.objectSpills "<xdr:twoCellAnchor><xdr:graphicFrame macro=\"\"></xdr:graphicFrame></xdr:twoCellAnchor>")) ""
+
 // ---- a chart part that says little (as openpyxl writes them): Excel 2019's defaults ----------
 let bareChart =
     "<chartSpace xmlns=\"http://schemas.openxmlformats.org/drawingml/2006/chart\" xmlns:a=\"http://schemas.openxmlformats.org/drawingml/2006/main\"><chart>"
@@ -499,7 +519,7 @@ do
         items |> List.collect (fun entry ->
             match entry with
             | Charts.PRect (x, y, w, h, Some "#FFF2CC", _, Some "#C00000", _, _) -> [ x, y, w, h ]
-            | Charts.PGroup (_, _, _, _, inner) -> boxes inner
+            | Charts.PGroup (_, _, _, _, inner) | Charts.PTransform (_, _, _, _, _, _, inner) -> boxes inner
             | _ -> [])
     ok "Excel 2019: ... one of a size of its own (absSizeAnchor) from its corner: 120 x 40 px at 0.35, 0.42 of the chart"
         (match boxes scene.Items with [ x, y, w, h ] -> abs (x - 168.0) < 1.0 && abs (y - 145.6) < 1.0 && abs (w - 120.0) < 1.0 && abs (h - 40.0) < 1.0 | _ -> false) (sprintf "%A" (boxes scene.Items))

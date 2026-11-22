@@ -175,7 +175,9 @@ let private defaultFormatScheme =
             + "<a:ln w=\"6350\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
             + "<a:ln w=\"12700\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
             + "<a:ln w=\"19050\" cap=\"flat\" cmpd=\"sng\" algn=\"ctr\"><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill><a:prstDash val=\"solid\"/></a:ln>"
-            + "</a:lnStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill>"
+            + "</a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle>"
+            + "<a:effectStyle><a:effectLst><a:outerShdw blurRad=\"57150\" dist=\"19050\" dir=\"5400000\" algn=\"ctr\" rotWithShape=\"0\"><a:srgbClr val=\"000000\"><a:alpha val=\"63000\"/></a:srgbClr></a:outerShdw></a:effectLst></a:effectStyle>"
+            + "</a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val=\"phClr\"/></a:solidFill>"
             + "<a:solidFill><a:schemeClr val=\"phClr\"><a:tint val=\"95000\"/><a:satMod val=\"170000\"/></a:schemeClr></a:solidFill>"
             + "<a:gradFill rotWithShape=\"1\"><a:gsLst><a:gs pos=\"0\"><a:schemeClr val=\"phClr\"><a:tint val=\"93000\"/><a:satMod val=\"150000\"/><a:shade val=\"98000\"/><a:lumMod val=\"102000\"/></a:schemeClr></a:gs>"
             + "<a:gs pos=\"50000\"><a:schemeClr val=\"phClr\"><a:tint val=\"98000\"/><a:satMod val=\"130000\"/><a:shade val=\"90000\"/><a:lumMod val=\"103000\"/></a:schemeClr></a:gs>"
@@ -1458,6 +1460,9 @@ type Primitive =
     | PTransform of a: float * b: float * c: float * d: float * e: float * f: float * items: Primitive list
     /// Primitives whose text is in a typeface of its own (a chart's `a:latin`), not Calibri.
     | PFace of face: string * items: Primitive list
+    /// Primitives that cast a shadow (`a:outerShdw`): moved by (dx, dy), blurred by a Gaussian of `blur` pixels, in a
+    /// colour and opacity; drawn in the rectangle (x, y, width, height) of the scene.
+    | PShadow of x: float * y: float * width: float * height: float * dx: float * dy: float * blur: float * color: string * opacity: float * items: Primitive list
 
 type Scene = {
     Width: float
@@ -1543,15 +1548,35 @@ let rec private primitiveSvg (defs: ResizeArray<string>) (item: Primitive) : str
         // (Four decimals for the matrix: two would turn a shape by a visibly different angle.)
         let precise (value: float) = (Math.Round (value * 10000.0) / 10000.0).ToString(Globalization.CultureInfo.InvariantCulture)
         sprintf "<g transform=\"matrix(%s %s %s %s %s %s)\">%s</g>" (precise a) (precise b) (precise c) (precise d) (fmt e) (fmt f) (items |> List.map (primitiveSvg defs) |> String.concat "")
+    | PShadow (x, y, width, height, dx, dy, blur, color, opacity, items) ->
+        clipSerial <- clipSerial + 1
+        let id = sprintf "rbt-shadow-%d" clipSerial
+        defs.Add (sprintf "<filter id=\"%s\" filterUnits=\"userSpaceOnUse\" x=\"%s\" y=\"%s\" width=\"%s\" height=\"%s\" color-interpolation-filters=\"sRGB\"><feDropShadow dx=\"%s\" dy=\"%s\" stdDeviation=\"%s\" flood-color=\"%s\" flood-opacity=\"%s\"/></filter>"
+                      id (fmt x) (fmt y) (fmt width) (fmt height) (fmt dx) (fmt dy) (fmt blur) (solidOf color) (fmt opacity))
+        sprintf "<g filter=\"url(#%s)\">%s</g>" id (items |> List.map (primitiveSvg defs) |> String.concat "")
     | PFace (face, items) ->
         sprintf "<g font-family=\"%s, Calibri, Carlito, Arial, sans-serif\">%s</g>" (xmlText ("'" + face.Replace("'", "") + "'")) (items |> List.map (primitiveSvg defs) |> String.concat "")
 
 /// A scene as an `<svg>` element of its size (the font is Calibri, as Excel's charts).
-let sceneSvg (scene: Scene) : string =
+let private sceneSvgWith (overflow: string) (scene: Scene) : string =
     let defs = ResizeArray<string>()
     let body = scene.Items |> List.map (primitiveSvg defs) |> String.concat ""
-    sprintf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" font-family=\"Calibri, Carlito, Arial, sans-serif\" style=\"display:block;overflow:hidden\">%s%s</svg>"
-        (fmt scene.Width) (fmt scene.Height) (fmt scene.Width) (fmt scene.Height) (if defs.Count = 0 then "" else "<defs>" + String.concat "" defs + "</defs>") body
+    // (An SVG of no width or no height draws nothing: a line of none is drawn in one of a pixel.)
+    let width, height = (if overflow = "visible" then max 1.0 scene.Width, max 1.0 scene.Height else scene.Width, scene.Height)
+    sprintf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" font-family=\"Calibri, Carlito, Arial, sans-serif\" style=\"display:block;overflow:%s\">%s%s</svg>"
+        (fmt width) (fmt height) (fmt width) (fmt height) overflow (if defs.Count = 0 then "" else "<defs>" + String.concat "" defs + "</defs>") body
+
+let sceneSvg (scene: Scene) : string = sceneSvgWith "hidden" scene
+
+/// `sceneSvg` of a scene that draws past its rectangle: a shape's outline (half of it outside the shape, as Excel
+/// draws it), its shadow, a line of no height.
+let sceneSvgSpilling (scene: Scene) : string = sceneSvgWith "visible" scene
+
+/// Whether an anchor's XML holds a shape, a connector or a group (which draw past their rectangle: `sceneSvgSpilling`),
+/// not a chart or a picture.
+let objectSpills (anchorXml: string) : bool =
+    let found = Text.RegularExpressions.Regex.Match(anchorXml, "<(?:\\w+:)?(sp|cxnSp|grpSp|graphicFrame|pic)[\\s>]")
+    found.Success && (match found.Groups.[1].Value with "sp" | "cxnSp" | "grpSp" -> true | _ -> false)
 
 // ---------------------------------------------------------------------------
 // Paths: what the `d` of a `PPath` is for a renderer without SVG
@@ -4326,6 +4351,48 @@ let private presetPolygon (geometry: string) (adjust: float option) (width: floa
     | "flowChartExtract" -> Some [ 0.5, 0.0; 1.0, 1.0; 0.0, 1.0 ]
     | _ -> None
 
+/// The outer shadow of an effect list (`a:effectLst` of a shape, a group, a theme's effect style): its offset (`dist` in
+/// the direction `dir`), its blur as a Gaussian's deviation (half `blurRad`: Excel 2019's shadow of a 4-pt blur fades
+/// over 2.4 px a step of its deviation, synthetic-shape-looks "Rounds"), its colour and opacity. `placeholder`: the
+/// colour of the style reference a theme's `phClr` stands for.
+let private outerShadowOf (theme: ThemeColors) (placeholder: XmlDsl.XmlNode option) (effects: XmlDsl.XmlNode) : (float * float * float * string * float) option =
+    child "outerShdw" effects
+    |> Option.bind (fun shadow ->
+        let length (name: string) = attr name shadow |> Option.bind number |> Option.map (fun emu -> emu / 9525.0) |> Option.defaultValue 0.0
+        let angle = (attr "dir" shadow |> Option.bind number |> Option.defaultValue 0.0) / 60000.0 * Math.PI / 180.0
+        kids shadow
+        |> List.tryPick (colorOfNodeWith theme placeholder)
+        |> Option.map (fun (color, alpha) -> length "dist" * Math.Cos angle, length "dist" * Math.Sin angle, length "blurRad" / 2.0, color, alpha))
+
+/// `items` casting a shadow, in the rectangle (x, y, width, height) grown by as far as the shadow reaches.
+let private withShadow (shadow: (float * float * float * string * float) option) (x: float) (y: float) (width: float) (height: float) (items: Primitive list) : Primitive list =
+    match shadow with
+    | Some (dx, dy, blur, color, opacity) when not items.IsEmpty && opacity > 0.0 ->
+        let margin = abs dx + abs dy + 3.0 * blur + 8.0
+        [ PShadow (x - margin, y - margin, width + 2.0 * margin, height + 2.0 * margin, dx, dy, blur, color, opacity, items) ]
+    | _ -> items
+
+/// An arrowhead (`a:headEnd` / `a:tailEnd`) at (tipX, tipY) of a line coming from (fromX, fromY): Excel 2019 draws it
+/// `w` (sm 2, med 3, lg 5) times as wide and `len` times as long as the line, the line taken as at least 2 pt
+/// (synthetic-shape-looks "Rounds": a 1-pt line's med / lg triangle 8 px wide, 13 long; a 2.25-pt line's med 9 x 9).
+let private arrowhead (lineEnd: XmlDsl.XmlNode) (fromX: float) (fromY: float) (tipX: float) (tipY: float) (lineWidth: float) (color: string) (strokeWidth: float) : Primitive list =
+    let factor (name: string) = match attr name lineEnd with Some "sm" -> 2.0 | Some "lg" -> 5.0 | _ -> 3.0
+    let unit = max lineWidth (2.0 * 96.0 / 72.0)
+    let wide, long = factor "w" * unit, factor "len" * unit
+    let length = Math.Sqrt ((tipX - fromX) * (tipX - fromX) + (tipY - fromY) * (tipY - fromY))
+    if length <= 0.0 then []
+    else
+        let ux, uy = (tipX - fromX) / length, (tipY - fromY) / length
+        let at (along: float) (across: float) = tipX - ux * along - uy * across, tipY - uy * along + ux * across
+        match attr "type" lineEnd with
+        | Some "triangle" -> [ PPolyline ([ at 0.0 0.0; at long (wide / 2.0); at long (-wide / 2.0); at 0.0 0.0 ], Some color, 1.0, None, 0.0, None) ]
+        | Some "stealth" -> [ PPolyline ([ at 0.0 0.0; at long (wide / 2.0); at (long * 0.6) 0.0; at long (-wide / 2.0); at 0.0 0.0 ], Some color, 1.0, None, 0.0, None) ]
+        | Some "arrow" -> [ PPolyline ([ at long (wide / 2.0); at 0.0 0.0; at long (-wide / 2.0) ], None, 1.0, Some color, strokeWidth, None) ]
+        // (A diamond and an oval are centred on the line's end.)
+        | Some "diamond" -> [ PPolyline ([ at (-long / 2.0) 0.0; at 0.0 (wide / 2.0); at (long / 2.0) 0.0; at 0.0 (-wide / 2.0); at (-long / 2.0) 0.0 ], Some color, 1.0, None, 0.0, None) ]
+        | Some "oval" -> [ PEllipse (tipX, tipY, long / 2.0, wide / 2.0, Some color, 1.0, None, 0.0) ]
+        | _ -> []
+
 let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.XmlNode) (x: float) (y: float) (width: float) (height: float) : Primitive list =
     let props = child "spPr" shape
     let style = child "style" shape
@@ -4359,8 +4426,13 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
         | "line" | "straightConnector1" | "bentConnector2" | "bentConnector3" | "curvedConnector3" ->
             let x1, x2 = (if flipH then x + width, x else x, x + width)
             let y1, y2 = (if flipV then y + height, y else y, y + height)
-            [ PLine (x1, y1, x2, y2, (strokeColor |> Option.defaultValue "#000000"), max 1.0 strokeWidth, None) ]
-        | "ellipse" -> [ PEllipse (x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, fillColor, opacity, strokeColor, strokeWidth) ]
+            let color = strokeColor |> Option.defaultValue "#000000"
+            let line = props |> Option.bind (child "ln")
+            let exact = line |> Option.bind (attr "w") |> Option.bind number |> Option.map (fun emu -> emu / 9525.0) |> Option.defaultValue (max 1.0 strokeWidth)
+            let ends (name: string) (fromX, fromY) (tipX, tipY) =
+                line |> Option.bind (child name) |> Option.map (fun lineEnd -> arrowhead lineEnd fromX fromY tipX tipY exact color (max 1.0 strokeWidth)) |> Option.defaultValue []
+            [ PLine (x1, y1, x2, y2, color, max 1.0 strokeWidth, None) ] @ ends "headEnd" (x2, y2) (x1, y1) @ ends "tailEnd" (x1, y1) (x2, y2)
+        | "ellipse" | "flowChartConnector" -> [ PEllipse (x + width / 2.0, y + height / 2.0, width / 2.0, height / 2.0, fillColor, opacity, strokeColor, strokeWidth) ]
         | "roundRect" | "round1Rect" | "round2SameRect" | "round2DiagRect" | "flowChartAlternateProcess" | "flowChartTerminator" ->
             // (The corner: a sixth of the shorter side unless the shape's adjustment says otherwise.)
             let adjust =
@@ -4409,6 +4481,27 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
         else
             let outline = if flipH then [ PTransform (-1.0, 0.0, 0.0, 1.0, 2.0 * centreX, 0.0, outline) ] else outline
             if flipV then [ PTransform (1.0, 0.0, 0.0, -1.0, 0.0, 2.0 * centreY, outline) ] else outline
+    // An outline is drawn on whole pixels, centred on the shape's edge: a line of an odd number of pixels on the
+    // pixel of its edge, as Excel 2019 draws it (synthetic-shape-looks "Rounds": a 1-px line on the pixels of the
+    // shape's left and right edges, 2 px on the pixel before too, 3 px one each side).
+    let outline =
+        if strokeColor.IsSome && int (Math.Round strokeWidth) % 2 = 1 then [ PTransform (1.0, 0.0, 0.0, 1.0, 0.5, 0.5, outline) ]
+        else outline
+    // Its shadow: the shape's own effects (`a:effectLst`, an empty one none), else its style's (`a:effectRef`: the
+    // theme's effect style of that index; 0 none) - house-flipping's buttons, Office's default theme's third style.
+    let shadow =
+        match props |> Option.bind (child "effectLst") with
+        | Some effects -> outerShadowOf parts.Theme None effects
+        | None ->
+            style |> Option.bind (child "effectRef")
+            |> Option.bind (fun reference ->
+                match attr "idx" reference |> Option.bind number |> Option.map int with
+                | Some idx when idx > 0 ->
+                    schemeEntry parts.Theme [ "effectStyleLst" ] idx
+                    |> Option.bind (child "effectLst")
+                    |> Option.bind (outerShadowOf parts.Theme (kids reference |> List.tryFind (fun node -> nameOf node <> "")))
+                | _ -> None)
+    let outline = if width >= 1.0 && height >= 1.0 then withShadow shadow x y width height outline else outline
     // A linked shape (`textlink`) shows its cell as the sheet has it now; its field holds the text of the last save.
     let linkedText =
         attr "textlink" shape
@@ -4608,6 +4701,8 @@ let rec private elementItems (parts: DrawingParts) (data: ChartData) (charts: in
         let childExt = numbers "chExt" "cx" "cy" |> Option.orElse (numbers "ext" "cx" "cy") |> Option.defaultValue (width * 9525.0, height * 9525.0)
         let scaleX = if fst childExt > 0.0 then width / fst childExt else 1.0
         let scaleY = if snd childExt > 0.0 then height / snd childExt else 1.0
+        // (A group's effects - dashboard-ecommerce-sales' KPI cards' shadow - are its shapes'.)
+        let shadow = child "grpSpPr" element |> Option.bind (child "effectLst") |> Option.bind (outerShadowOf parts.Theme None)
         kids element
         |> List.collect flattened
         |> List.collect (fun item ->
@@ -4618,6 +4713,7 @@ let rec private elementItems (parts: DrawingParts) (data: ChartData) (charts: in
                     elementItems parts data charts unknown item (x + (itemX - fst childOff) * scaleX) (y + (itemY - snd childOff) * scaleY) (itemW * scaleX) (itemH * scaleY)
                  | None -> unknown.Value <- unknown.Value + 1; [])
             | _ -> [])
+        |> withShadow shadow x y width height
     | _ -> []
 
 /// The scene of an anchor of a drawing (its XML as the file has it:
@@ -4652,8 +4748,11 @@ let objectScene (parts: DrawingParts) (data: ChartData) (anchorXml: string) (wid
         | Some element when hidden element || blankShape element -> Some { Width = width; Height = height; Items = [] }
         | Some element ->
             let items = elementItems parts data charts unknown element 0.0 0.0 width height
+            // (A shape that draws nothing - no fill, no line and no text, none given and no style to give one: the
+            // house-flipping sheets' clickable rectangles over cells - is nothing in Excel, not a placeholder.)
+            if items.IsEmpty && (match nameOf element with "sp" | "cxnSp" -> true | _ -> false) then Some { Width = width; Height = height; Items = [] }
             // (A frame whose chart is not drawn, a group of nothing known: a placeholder says what it is.)
-            if items.IsEmpty || (nameOf element = "graphicFrame" && charts.Value = 0) || (nameOf element = "grpSp" && charts.Value = 0 && unknown.Value > 0 && items.Length <= unknown.Value * 2) then None
+            elif items.IsEmpty || (nameOf element = "graphicFrame" && charts.Value = 0) || (nameOf element = "grpSp" && charts.Value = 0 && unknown.Value > 0 && items.Length <= unknown.Value * 2) then None
             else Some { Width = width; Height = height; Items = items }
     with _ -> None
 

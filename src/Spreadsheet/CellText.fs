@@ -261,10 +261,30 @@ let private trimmedStartsWithIgnoreCase (text: string) (prefix: string) =
     let trimmedLength = endIndex - startIndex + 1
     trimmedLength >= prefix.Length && sliceEqualsIgnoreCase text startIndex prefix.Length prefix
 
+/// Excel's 56 colours (`[Color1]` .. `[Color56]` of a number format, the default palette; checked in Excel 2019 with
+/// DisplayFormat.Font.Color - synthetic-shape-looks.xlsx "Colors").
+let private formatPalette =
+    [| "#000000"; "#FFFFFF"; "#FF0000"; "#00FF00"; "#0000FF"; "#FFFF00"; "#FF00FF"; "#00FFFF"
+       "#800000"; "#008000"; "#000080"; "#808000"; "#800080"; "#008080"; "#C0C0C0"; "#808080"
+       "#9999FF"; "#993366"; "#FFFFCC"; "#CCFFFF"; "#660066"; "#FF8080"; "#0066CC"; "#CCCCFF"
+       "#000080"; "#FF00FF"; "#FFFF00"; "#00FFFF"; "#800080"; "#800000"; "#008080"; "#0000FF"
+       "#00CCFF"; "#CCFFFF"; "#CCFFCC"; "#FFFF99"; "#99CCFF"; "#FF99CC"; "#CC99FF"; "#FFCC99"
+       "#3366FF"; "#33CCCC"; "#99CC00"; "#FFCC00"; "#FF9900"; "#FF6600"; "#666699"; "#969696"
+       "#003366"; "#339966"; "#003300"; "#333300"; "#993300"; "#993366"; "#333399"; "#333333" |]
+
+/// The colour of a number format's colour tag: the eight names are the palette's first eight colours - [Green] is
+/// #00FF00, not the CSS green (Excel 2019: dashboard-ecommerce-sales' "▲20.62%" in a bright green) -, `[ColorN]` the
+/// palette's Nth.
 let private colorTagValueAt (text: string) start length =
-    if sliceEqualsIgnoreCase text start length "red" then Some "#FF0000"
+    if length >= 6 && length <= 7 && sliceEqualsIgnoreCase text start 5 "color" then
+        let mutable n = 0
+        let mutable digits = true
+        for i in start + 5 .. start + length - 1 do
+            if System.Char.IsDigit text.[i] then n <- n * 10 + int text.[i] - int '0' else digits <- false
+        if digits && n >= 1 && n <= 56 then Some formatPalette.[n - 1] else None
+    elif sliceEqualsIgnoreCase text start length "red" then Some "#FF0000"
     elif sliceEqualsIgnoreCase text start length "black" then Some "#000000"
-    elif sliceEqualsIgnoreCase text start length "green" then Some "#008000"
+    elif sliceEqualsIgnoreCase text start length "green" then Some "#00FF00"
     elif sliceEqualsIgnoreCase text start length "white" then Some "#FFFFFF"
     elif sliceEqualsIgnoreCase text start length "blue" then Some "#0000FF"
     elif sliceEqualsIgnoreCase text start length "magenta" then Some "#FF00FF"

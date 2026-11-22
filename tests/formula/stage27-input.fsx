@@ -67,6 +67,15 @@ eq "currency-alone"   (parse "$")             (S "$", None)
 eq "currency-text"    (parse "$abc")          (S "$abc", None)
 eq "currency-shown"   (Rbt.Spreadsheet.CellText.formatNumberWithCode "$#,##0.00" 1234.5) "$1,234.50"
 eq "percent-shown"    (Rbt.Spreadsheet.CellText.formatNumberWithCode "0%" 0.12) "12%"
+// A locale tag does not group by lakhs, whatever its locale (Excel 2019, Range.Text and TEXT(): 1009, 409, 4009 en-IN,
+// 809, 439 hi-IN, 44D ... all $2,297,200.86); the colours of a format are Excel's palette ([Green] #00FF00).
+for code, value, shown in [ "[$$-1009]#,##0.00", 2297200.8603000008, "$2,297,200.86"; "[$$-1009]#,##0.00;\\-[$$-1009]#,##0.00", -98765.4, "-$98,765.40"
+                            "[$-4009]#,##0.00", 1234567890.5, "1,234,567,890.50"; "[$-439]#,##0", 2297200.86, "2,297,201"; "[$\u20B9-4009] #,##0.00", 2297200.86, "\u20B9 2,297,200.86"
+                            "[Color10]0.00", 1.5, "1.50"; "[Green]\\\u25B20.00%;[Red]\\\u25BC0.00%;", -0.0515, "\u25BC5.15%" ] do
+    eq ("locale-tag " + code) (Rbt.Spreadsheet.CellText.formatNumberWithCode code value) shown
+for code, value, color in [ "[Green]0", 1.0, Some "#00FF00"; "[Color10]0", 1.0, Some "#008000"; "[Color4]0", 1.0, Some "#00FF00"; "[Color56]0", 1.0, Some "#333333"
+                            "[Color57]0", 1.0, None; "[Green]\\\u25B20.00%;[Red]\\\u25BC0.00%;", -0.0515, Some "#FF0000" ] do
+    eq ("format-colour " + code) (Rbt.Spreadsheet.CellText.numberFormatColorForValue code value) color
 // --- fractions -------------------------------------------------------------
 eq "fraction"         (parse "1 1/2")         (N 1.5, Some "# ?/?")
 eq "fraction-zero"    (parse "0 3/4")         (N 0.75, Some "# ?/?")

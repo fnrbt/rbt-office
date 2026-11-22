@@ -2500,6 +2500,53 @@ checks['indent-excel-parity'] = async () => {
     return lines;
 };
 
+// A dashboard's cards as Excel 2019 draws them (tools/excel-parity/make-shape-looks-fixture.py: synthetic-shape-looks.xlsx,
+// checked with shoot-sheets.ps1 and a probe of each shape's text and each cell's DisplayFormat.Font.Color): a linked
+// shape shows its cell's text now (not the text saved with it, grouped by lakhs); a number format's [Green] is #00FF00
+// and [ColorN] the palette's Nth; an outline drawn on whole pixels centred on the shape's edge, past its rectangle;
+// shadows (a shape's, a group's, the theme's effect style); arrowheads; a shape of nothing draws nothing.
+checks['shape-looks-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const frames = () => [...host.querySelectorAll('.spreadsheet-object-drawn')];
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-shape-looks.xlsx')).slice());
+        grid.SwitchSheet(0); await frame(); await everyObjectSeen(host);
+        check('linked shapes show their cells as they are now, grouped by thousands whatever the locale tag (Excel: TextFrame2.TextRange.Text)',
+            frames().map((item) => [...item.querySelectorAll('svg text')].map((text) => text.textContent).join('')),
+            ['$2,297,200.86', '-$98,765.40', '$2,297,200.86', '2,297,200.86', '2,297,200.86', '2,297,200.86', '1,234,567.89', '$286,397.02']);
+        grid.SwitchSheet(1); await frame();
+        const colorOf = (row, col) => {
+            const node = host.querySelector(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`);
+            const text = node && ([...node.querySelectorAll('*')].find((item) => item.textContent && item.children.length === 0) || node);
+            const m = text && /rgb\((\d+), (\d+), (\d+)\)/.exec(getComputedStyle(text).color);
+            return m ? '#' + m.slice(1).map((v) => Number(v).toString(16).padStart(2, '0').toUpperCase()).join('') : null;
+        };
+        const want = ['#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF',
+            '#000000', '#FFFFFF', '#FF0000', '#00FF00', '#0000FF', '#FFFF00', '#FF00FF', '#00FFFF', '#800000', '#008000', '#000080', '#808000'];
+        check('[Black] .. [Cyan], [Color1] .. [Color12] (the rows in view): the palette\'s colours ([Green] #00FF00, [Color10] #008000)', want.map((_, row) => colorOf(row, 1)), want);
+        check('"[Green]\\▲0.00%;[Red]\\▼0.00%;": 20.62 % bright green, -5.15 % red', [colorOf(0, 3), colorOf(1, 3)], ['#00FF00', '#FF0000']);
+        grid.SwitchSheet(2); await frame(); await everyObjectSeen(host);
+        check('a shape of no fill, no line and no text: no placeholder', host.querySelectorAll('.spreadsheet-object-label').length, 0);
+        check('shapes draw past their rectangles', frames().every((item) => item.style.overflow === 'visible' && item.querySelector('svg').style.overflow === 'visible'), true);
+        const lineFrames = frames().filter((item) => item.querySelector('rect[stroke="#000000"]'));
+        check('lines of 0.75 .. 3 pt: 1, 1, 2, 2, 3, 4 px, an odd one half a pixel down-right (on the pixel of the edge)',
+            lineFrames.map((item) => { const r = item.querySelector('rect'); return [r.getAttribute('stroke-width'), r.closest('g[transform]')?.getAttribute('transform') ?? '']; }),
+            [['1', 'matrix(1 0 0 1 0.5 0.5)'], ['1', 'matrix(1 0 0 1 0.5 0.5)'], ['2', ''], ['2', ''], ['3', 'matrix(1 0 0 1 0.5 0.5)'], ['4', '']]);
+        const shadows = [...host.querySelectorAll('feDropShadow')].map((item) => ['dx', 'dy', 'stdDeviation', 'flood-color', 'flood-opacity'].map((name) => item.getAttribute(name)).join(' '));
+        check('shadows: the group\'s and a shape\'s (4-pt blur, 3 pt at 45 degrees, black 40 %), the theme\'s third effect style (Office: 4.5-pt blur, 1.5 pt down, 63 %); none for an empty effect list',
+            shadows, ['2.83 2.83 2.67 #000000 0.4', '2.83 2.83 2.67 #000000 0.4', '0 2 3 #000000 0.63']);
+        const arrows = frames().filter((item) => item.querySelector('line')).map((item) => [item.querySelectorAll('polygon').length, item.querySelectorAll('polyline').length, item.querySelectorAll('ellipse').length]);
+        check('lines of no height drawn, with their arrowheads: triangle; triangle both ends; triangle; arrow and stealth; oval and diamond; a slanting triangle',
+            arrows, [[1, 0, 0], [2, 0, 0], [1, 0, 0], [1, 1, 0], [1, 0, 1], [1, 0, 0]]);
+        const tip = frames().filter((item) => item.querySelector('line'))[0].querySelector('polygon').getAttribute('points').split(' ').map((p) => p.split(',').map(Number));
+        check('... a 1-pt line\'s med / lg triangle: 8 px wide, 13.3 long (5 x 2 pt), its tip at the line\'s end',
+            [Math.round(Math.abs(tip[1][1] - tip[2][1]) * 10) / 10, Math.round((tip[0][0] - tip[1][0]) * 10) / 10, tip[0][0]], [8, 13.3, 240]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 // Data bars as Excel 2019 draws them (tools/excel-parity/build-data-bars.vbs: synthetic-data-bars.xlsx, checked with
 // shoot-sheets.ps1): a bar's room 61 px of a 64-px column from 2 px right of the left grid line, a bar a whole number of
 // pixels of it (from where it grows), a gradient fading to 85 % of the way to white, an axis on a pixel of its own.

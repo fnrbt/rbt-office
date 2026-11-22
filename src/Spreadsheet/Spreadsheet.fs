@@ -1484,7 +1484,10 @@ type Spreadsheet(container: Element) as this =
                 else
                     // A changed binding may point into a different block of a deferred
                     // sheet: its imported chart cache describes the *old* reference.
-                    if chartBindingsDifferFromSource then convertInPlace index
+                    // (One cell - a shape's `textlink`, a title's - has no cache to draw meanwhile: the sheet is
+                    // converted for it, as for a linked picture. dashboard-ecommerce-sales' KPI cards show
+                    // KPI!B17 as it is, not the text saved with them.)
+                    if chartBindingsDifferFromSource || (r0 = r1 && c0 = c1 && isDeferredSheet sheets.[index]) then convertInPlace index
                     sheets.[index]
             if isDeferredSheet sheet || float (r1 - r0 + 1) * float (c1 - c0 + 1) > 200000.0 then None
             else Some (Array.init (r1 - r0 + 1) (fun r -> Array.init (c1 - c0 + 1) (fun c -> getCell { Row = r0 + r; Col = c0 + c } sheet)))
@@ -1688,12 +1691,14 @@ type Spreadsheet(container: Element) as this =
                         |> Array.distinct
                         |> Array.choose (fun name -> sheetNames |> Array.tryFindIndex (fun known -> known.ToUpperInvariant() = name))
                         |> Array.filter (fun index -> index <> activeSheetIndex && isDeferredSheet sheets.[index])
-                if pending.Length = 0 then first |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray())
+                // (A shape draws past its rectangle - half its outline, its shadow -, a chart does not.)
+                let svgOf = if SpreadsheetCharts.objectSpills xml then SpreadsheetCharts.sceneSvgSpilling else SpreadsheetCharts.sceneSvg
+                if pending.Length = 0 then first |> Option.map (fun scene -> svgOf scene, seen.ToArray())
                 else
                     for index in pending do convertInPlace index
                     seen.Clear()
                     SpreadsheetCharts.objectScene parts (chartDataReading seen) xml width height
-                    |> Option.map (fun scene -> SpreadsheetCharts.sceneSvg scene, seen.ToArray()))
+                    |> Option.map (fun scene -> svgOf scene, seen.ToArray()))
         with error ->
             // (A part that cannot be drawn is a frame that says what it is; the error is the host's to see.)
             reportError "drawing" (box error)
@@ -5153,7 +5158,9 @@ type Spreadsheet(container: Element) as this =
                     match dragged with
                     | Some drag when drag.Id = drawing.Id -> drag.Current
                     | _ -> objectRect drawing
-                if rect.Width >= 1.0 && rect.Height >= 1.0 then
+                // (A line has no height or no width: drawn all the same, past its rectangle.)
+                let isLine = match drawing.Content with KeptObject (_, xml) -> (rect.Width < 1.0 || rect.Height < 1.0) && xml.Contains "cxnSp" | _ -> false
+                if (rect.Width >= 1.0 && rect.Height >= 1.0) || (isLine && rect.Width + rect.Height >= 1.0) then
                     let label = SpreadsheetLayout.drawingLabel drawing
                     // (A shape with a macro assigned - its OnAction - runs it when clicked, once macros may run.)
                     let assigned = assignedMacro drawing
@@ -5175,7 +5182,7 @@ type Spreadsheet(container: Element) as this =
                                 let svg, reads = drawn.Value
                                 let frame = createElement "div"
                                 setClassName frame ("spreadsheet-drawing spreadsheet-object spreadsheet-object-" + kind + " spreadsheet-object-drawn")
-                                setStyles frame [ "overflow", "hidden"; "box-sizing", "border-box" ]
+                                setStyles frame [ "overflow", (match drawing.Content with KeptObject (_, xml) when SpreadsheetCharts.objectSpills xml -> "visible" | _ -> "hidden"); "box-sizing", "border-box" ]
                                 setInnerHtml frame svg
                                 chartFrames.Add ((frame, drawing, rect.Width, rect.Height, reads))
                                 frame

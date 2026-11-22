@@ -1285,6 +1285,8 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
         | Rbt.Spreadsheet.Charts.PTransform (a2, b2, c2, d2, e2, f2, children) ->
             let composed = (a * a2 + c * b2, b * a2 + d * b2, a * c2 + c * d2, b * c2 + d * d2, a * e2 + c * f2 + e, b * e2 + d * f2 + f)
             children |> List.iter (walk composed)
+        // (A shadow is not printed: what casts it is.)
+        | Rbt.Spreadsheet.Charts.PShadow (_, _, _, _, _, _, _, _, _, children) -> children |> List.iter (walk (a, b, c, d, e, f))
         | Rbt.Spreadsheet.Charts.PFace (inner, children) ->
             let outer = face.Value
             face.Value <- inner
