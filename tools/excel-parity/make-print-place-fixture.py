@@ -4,7 +4,7 @@ pages it prints (docs/excel-parity-tracker.md, "Print pages"): text of several f
 bottom, the middle and the top of their cells, left and right aligned, under several Normal fonts; and sheets whose
 pages in the middle have nothing on them. Checked with `excel-print-pages.sh` on the VM.
 
-    python3 tools/excel-parity/make-print-place-fixture.py OUT.xlsx [normal]
+    python3 tools/excel-parity/make-print-place-fixture.py OUT.xlsx [normal [blank2]]
 
 Sheets: "Place" - columns B..I in the fonts CELL_FONTS (B in the Normal font), "xH" in each; rows 2-10 of the heights
 and vertical alignments ROWS (left aligned), row 11 right aligned; gridlines printed. "Blank" - "x" in A1 and K60
@@ -42,7 +42,7 @@ def col_letter(c):
     return s
 
 
-def build(out, normal):
+def build(out, normal, blank2=False):
     face, size = NORMALS[normal]
     fonts = [f'<sz val="{size}"/><name val="{face}"/><family val="2"/>'] + [
         f'<sz val="{s}"/><name val="{f}"/><family val="2"/>' for f, s in [x for x in CELL_FONTS if x]]
@@ -124,14 +124,35 @@ def build(out, normal):
     long = ' '.join(['The quick brown fox jumps over the lazy dog'] * 3)
     data = data.replace('<sheetData>', f'<sheetData><row r="1">{cell(1, 1, long, 0)}</row>')
     sheets.append(('BlankOverflow', data, options, hf))
+    if blank2:
+        # BlankLast with column K's own fill, its own font alone, row 60's own fill (`... blank2`).
+        font_xf = style[(CELL_FONTS.index(('Calibri', 20)), 'bottom')]
+        for name, colxml, rowfill in [('BlankLastColFill', f'<col min="11" max="12" width="9.140625" style="{fill_xf}"/>', False),
+                                      ('BlankLastColFont', f'<col min="11" max="12" width="9.140625" style="{font_xf}"/>', False),
+                                      ('BlankLastRowFill', '', True)]:
+            data, options, hf = blank([(1, 1), (1, 11), (60, 1)], [], False)
+            if rowfill:
+                data = data.replace('<row r="60">', f'<row r="60" s="{fill_xf}" customFormat="1">')
+            if colxml:
+                data = f'<cols>{colxml}</cols>' + data
+            sheets.append((name, data, options, hf))
+        # A1 and K1, and a rectangle over A52:C58 - a last row of pages made by a drawing (oyabayo's charts).
+        data, options, hf = blank([(1, 1), (1, 11)], [], False)
+        sheets.append(('BlankLastShape', data, options, hf))
+    shapes = {'BlankLastShape': (0, 51, 3, 58)} if blank2 else {}
 
     parts = []
+    drawings = []
     for i, (name, data, options, hf) in enumerate(sheets):
+        drawing = ''
+        if name in shapes:
+            drawings.append((i, shapes[name]))
+            drawing = '<drawing r:id="rId1"/>'
         parts.append(DECL + (
             f'<worksheet xmlns="{MAIN}" xmlns:r="{REL}"><sheetViews><sheetView{" tabSelected=\"1\"" if i == 0 else ""} workbookViewId="0"/></sheetViews>'
             f'<sheetFormatPr defaultRowHeight="15"/>{data}{options}'
             '<pageMargins left="0.7" right="0.7" top="0.75" bottom="0.75" header="0.3" footer="0.3"/>'
-            f'<pageSetup paperSize="1" orientation="portrait"/>{hf}</worksheet>'))
+            f'<pageSetup paperSize="1" orientation="portrait"/>{hf}{drawing}</worksheet>'))
     over = ''.join(f'<Override PartName="/xl/worksheets/sheet{i + 1}.xml" ContentType="{CT}.worksheet+xml"/>' for i in range(len(sheets)))
     files = {
         '[Content_Types].xml': DECL + (
@@ -152,6 +173,20 @@ def build(out, normal):
     }
     for i, xml in enumerate(parts):
         files[f'xl/worksheets/sheet{i + 1}.xml'] = xml
+    xdr = 'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'
+    a = 'http://schemas.openxmlformats.org/drawingml/2006/main'
+    for n, (i, (c0, r0, c1, r1)) in enumerate(drawings):
+        files[f'xl/worksheets/_rels/sheet{i + 1}.xml.rels'] = DECL + (
+            f'<Relationships xmlns="{PKG}"><Relationship Id="rId1" Type="{REL}/drawing" Target="../drawings/drawing{n + 1}.xml"/></Relationships>')
+        files[f'xl/drawings/drawing{n + 1}.xml'] = DECL + (
+            f'<xdr:wsDr xmlns:xdr="{xdr}" xmlns:a="{a}"><xdr:twoCellAnchor>'
+            f'<xdr:from><xdr:col>{c0}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r0}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
+            f'<xdr:to><xdr:col>{c1}</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{r1}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>'
+            '<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="2" name="Rectangle 1"/><xdr:cNvSpPr/></xdr:nvSpPr>'
+            '<xdr:spPr><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></xdr:spPr></xdr:sp>'
+            '<xdr:clientData/></xdr:twoCellAnchor></xdr:wsDr>')
+        files['[Content_Types].xml'] = files['[Content_Types].xml'].replace(
+            '</Types>', f'<Override PartName="/xl/drawings/drawing{n + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/></Types>')
     with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
         for name, text in files.items():
             info = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
@@ -162,7 +197,7 @@ def build(out, normal):
 
 if __name__ == '__main__':
     if len(sys.argv) > 2:
-        build(sys.argv[1], sys.argv[2])
+        build(sys.argv[1], sys.argv[2], len(sys.argv) > 3 and sys.argv[3] == 'blank2')
     else:
         for k in NORMALS:
             build(sys.argv[1].replace('.xlsx', f'-{k}.xlsx'), k)
