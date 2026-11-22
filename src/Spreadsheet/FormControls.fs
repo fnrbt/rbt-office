@@ -214,13 +214,15 @@ let private fontPx (points: float) = int (Math.Round(points * 4.0 / 3.0, Midpoin
 let private familyOf (face: string) =
     "'" + face.Replace("'", "") + "', 'Segoe UI', Tahoma, sans-serif"
 
-/// A line of text with its baseline at (x, y).
-let private text (sb: Text.StringBuilder) (x: float) (y: float) (face: string) (px: int) (bold: bool) (italic: bool) (color: string) (anchor: string) (line: string) =
+/// A line of text with its baseline at (x, y), as wide as GDI draws it (`width`: Excel's advances at the pixel size,
+/// `ExcelText` - Tahoma 8 "North" 27 px where the browser's Tahoma is 25.6; 0: the browser's own).
+let private text (sb: Text.StringBuilder) (x: float) (y: float) (face: string) (px: int) (bold: bool) (italic: bool) (color: string) (anchor: string) (width: float) (line: string) =
     if line <> "" then
-        sb.AppendFormat("<text x=\"{0}\" y=\"{1}\" font-family=\"{2}\" font-size=\"{3}px\" fill=\"{4}\"{5}{6}{7} xml:space=\"preserve\">{8}</text>",
+        sb.AppendFormat("<text x=\"{0}\" y=\"{1}\" font-family=\"{2}\" font-size=\"{3}px\" fill=\"{4}\"{5}{6}{7}{9} xml:space=\"preserve\">{8}</text>",
                         num x, num y, esc (familyOf face), px, color,
                         (if bold then " font-weight=\"bold\"" else ""), (if italic then " font-style=\"italic\"" else ""),
-                        (if anchor = "start" then "" else " text-anchor=\"" + anchor + "\""), esc line) |> ignore
+                        (if anchor = "start" then "" else " text-anchor=\"" + anchor + "\""), esc line,
+                        (if width > 0.0 && line.Length > 1 then " textLength=\"" + num width + "\" lengthAdjust=\"spacing\"" else "")) |> ignore
 
 /// The thumb of a scroll bar `thickness` across: thickness - 13 px long (9 at 22 px, 10 at 23).
 let private thumbLength (thickness: int) = max 6 (thickness - 13)
@@ -276,7 +278,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
                 if shown.Checked = 1 then mask sb (x0 + 3) (y0 + 3) flatDot black
         let lineHeight = captionPx + 4
         let top = 1 + int (Math.Ceiling (float (h - lineHeight * lines.Length) / 2.0))
-        lines |> Array.iteri (fun i line -> text sb 22.0 (float (top + lineHeight * i + captionPx)) face captionPx bold italic ink "start" line)
+        lines |> Array.iteri (fun i line -> text sb 22.0 (float (top + lineHeight * i + captionPx)) face captionPx bold italic ink "start" (measure face captionPx bold italic line) line)
     | "GBox" ->
         let caption = lines |> Array.tryHead |> Option.defaultValue ""
         let gapEnd = if caption = "" then 8 else 12 + int (Math.Round (measure face captionPx bold italic caption)) + 7
@@ -290,7 +292,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
             line "#A0A0A0" 0
             line "#FFFFFF" 1
         else line "#000000" 0
-        text sb 13.0 7.0 face captionPx bold italic ink "start" caption
+        text sb 13.0 7.0 face captionPx bold italic ink "start" (measure face captionPx bold italic caption) caption
     | "Drop" ->
         let threeD = control.ThreeD
         box sb 0 0 (w + 1) (h + 1) "#FFFFFF"
@@ -302,7 +304,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
         let cy = (border + (h - border)) / 2
         arrow sb (bx + buttonW / 2) (cy - 2) 11 false
         if shown.Selected >= 1 && shown.Selected <= shown.Items.Length then
-            text sb 5.0 (float ((h + 1) / 2 + 5)) "Tahoma" 11 false false "#000000" "start" shown.Items.[shown.Selected - 1]
+            text sb 5.0 (float ((h + 1) / 2 + 5)) "Tahoma" 11 false false "#000000" "start" (measure "Tahoma" 11 false false shown.Items.[shown.Selected - 1]) shown.Items.[shown.Selected - 1]
     | "List" ->
         let threeD = control.ThreeD
         box sb 0 0 (w + 1) (h + 1) "#FFFFFF"
@@ -319,7 +321,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
             if top < h then
                 let selected = i + 1 = shown.Selected
                 if selected then box sb border top (right - border) 13 "#0078D7"
-                text sb 4.0 (float (top + 10)) "Tahoma" 11 false false (if selected then "#FFFFFF" else "#000000") "start" item)
+                text sb 5.0 (float (top + 10)) "Tahoma" 11 false false (if selected then "#FFFFFF" else "#000000") "start" (measure "Tahoma" 11 false false item) item)
         sb.Append("</g></svg>") |> ignore
         if scrolled then
             let bx = right
@@ -360,7 +362,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
             box sb 1 thumbAt (thickness - 1) thumb "#CDCDCD"
     | "Label" ->
         let lineHeight = captionPx + 4
-        lines |> Array.iteri (fun i line -> text sb 3.0 (float (1 + 2 + lineHeight * i + captionPx)) face captionPx bold italic ink "start" line)
+        lines |> Array.iteri (fun i line -> text sb 3.0 (float (1 + 2 + lineHeight * i + captionPx)) face captionPx bold italic ink "start" (measure face captionPx bold italic line) line)
     | "Button" ->
         box sb 0 0 (w + 1) (h + 1) "#F0F0F0"
         box sb 0 0 (w + 1) 1 "#FFFFFF"
@@ -376,7 +378,7 @@ let svg (control: FormControl) (shown: Shown) (w: float) (h: float) (measure: st
             | "Left" -> "start", 4.0
             | "Right" -> "end", float (w - 4)
             | _ -> "middle", float (w + 1) / 2.0
-        lines |> Array.iteri (fun i line -> text sb x (float (top + lineHeight * i) + float captionPx * 0.95) face captionPx bold italic ink anchor line)
+        lines |> Array.iteri (fun i line -> text sb x (float (top + lineHeight * i) + float captionPx * 0.95) face captionPx bold italic ink anchor (measure face captionPx bold italic line) line)
     | "EditBox" ->
         box sb 0 0 (w + 1) (h + 1) "#FFFFFF"
         frame sb 0 0 (w + 1) (h + 1) control.ThreeD "#000000"
