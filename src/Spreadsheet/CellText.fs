@@ -908,7 +908,7 @@ let private generalNumberFormats =
 type NumberFit =
     { /// The zoom (1.0 at 100 %).
       Zoom: float
-      /// What GDI's made-up bold adds to a line (1 px for bold text in Small Fonts, `fittedRoom`), else 0.
+      /// What GDI adds to a line of a slanted or made-up bold font (`ExcelText.overhang`: italic, bold in Small Fonts), else 0.
       Overhang: float }
 
 /// The room a number's text has in a cell `cellWidthPx` wide (screen pixels), as Excel 2019 fits it: the
@@ -924,10 +924,11 @@ let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx:
     for d in "0123456789" do widest <- max widest (measure (string d))
     max 0.0 (System.Math.Round cellWidthPx - (2.0 * System.Math.Ceiling (widest / 4.0) + 1.0) - fit.Overhang)
 
-/// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`).
+/// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`) - none where not one fits (Excel shows nothing: a 20-px
+/// column of italic Calibri 11 at 57 %, make-number-room-fixture.py).
 let private fittedHashes (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
     let room = fittedRoom fit measure cellWidthPx
-    System.String('#', max 1 (int (room / max 1.0 (measure "#"))))
+    System.String('#', max 0 (int (room / max 1.0 (measure "#"))))
 
 let private generalNumberDisplay (cellWidthPx: float) (fontPt: float) (n: float): string =
     // Excel's General-format digit budget = floor((cellWidthPx - 5) / MDW).
