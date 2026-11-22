@@ -4160,6 +4160,9 @@ type DrawingParts = {
     /// `<tsle:timeslicer name>`: "timeslicer") drawn in a rectangle of that width and height, reading
     /// the cells it needs through the data (`Slicers.drawer`); None when the workbook has none of that name.
     Slicer: string -> string -> ChartData -> float -> float -> Primitive list option
+    /// A linked picture of a range (Excel's camera, `<a14:cameraTool cellRange>`) inside a group: the range's cells as
+    /// they are now, drawn in a rectangle of that width and height, as a data URL; None when it cannot be read.
+    Camera: string -> float -> float -> string option
 }
 
 let private emuPx (emu: float) = emu / 9525.0
@@ -4533,6 +4536,10 @@ let private shapeItems (parts: DrawingParts) (data: ChartData) (shape: XmlDsl.Xm
 let rec private elementItems (parts: DrawingParts) (data: ChartData) (charts: int ref) (unknown: int ref) (element: XmlDsl.XmlNode) (x: float) (y: float) (width: float) (height: float) : Primitive list =
     match nameOf element with
     | "sp" | "cxnSp" -> shapeItems parts data element x y width height
+    | "pic" when not (descendants "cameraTool" element).IsEmpty ->
+        (match descendants "cameraTool" element |> List.tryHead |> Option.bind (attr "cellRange") |> Option.bind (fun reference -> parts.Camera reference width height) with
+         | Some href -> [ PImage (x, y, width, height, href) ]
+         | None -> unknown.Value <- unknown.Value + 1; [])
     | "pic" ->
         (match descendants "blip" element |> List.tryHead |> Option.bind (attr "r:embed") |> Option.bind parts.Picture with
          | Some href -> [ PImage (x, y, width, height, href) ]

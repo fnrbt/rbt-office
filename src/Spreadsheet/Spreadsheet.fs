@@ -1376,6 +1376,8 @@ type Spreadsheet(container: Element) as this =
                     if Host.jsTypeOf named = "string" && unbox<string> named <> "" then unbox<string> named
                     else family + (match bold, italic with | true, true -> "-BoldItalic" | true, false -> "-Bold" | false, true -> "-Italic" | _ -> "")
                 faceName.Replace(" ", ""), family, bold, italic, data)
+    /// How a linked picture inside a group is drawn (`cameraSvg`, set below), for the drawing parts.
+    let cameraDrawer : (string -> float -> float -> string option) ref = ref (fun _ _ _ -> None)
     let drawingPartsOf (sheet: SpreadsheetModel) : SpreadsheetCharts.DrawingParts option =
         ensureChartBindings ()
         let authored theme id =
@@ -1464,13 +1466,15 @@ type Spreadsheet(container: Element) as this =
                                     | _ -> ""
                                 if contentType = "" then None else Some (pictureUrl data contentType)
                             | ValueNone -> None))
-                   Slicer = slicers }
+                   Slicer = slicers
+                   Camera = (fun reference width height -> cameraDrawer.Value reference width height) }
         | _ ->
             // (A sheet of no file: the charts and shapes a macro or the user made, in the default theme.)
             Some { Theme = SpreadsheetCharts.defaultTheme
                    Chart = authored SpreadsheetCharts.defaultTheme
                    Picture = (fun _ -> None)
-                   Slicer = (fun _ _ _ _ _ -> None) }
+                   Slicer = (fun _ _ _ _ _ -> None)
+                   Camera = (fun reference width height -> cameraDrawer.Value reference width height) }
     /// A block of cells of a sheet (by name) as a chart reads it; None when the sheet is not there.
     let chartBlock (name: string) (r0: int) (c0: int) (r1: int) (c1: int) : CellData option [] [] option =
         match sheetNames |> Array.tryFindIndex (fun known -> known.Equals(name, System.StringComparison.OrdinalIgnoreCase)) with
@@ -1555,7 +1559,9 @@ type Spreadsheet(container: Element) as this =
     /// shows: its sheet's index and the range.
     let cameraRange (xml: string) : (int * CellRange) option =
         let at = xml.IndexOf "cameraTool"
-        if at < 0 then None
+        // (A linked picture inside a group - dashboard-ecommerce-sales' KPI cards - is a part of the group, drawn with
+        // it: not the whole group's rectangle.)
+        if at < 0 || xml.IndexOf "grpSp" >= 0 then None
         else
             let key = "cellRange=\""
             let start = xml.IndexOf(key, at)
@@ -1641,6 +1647,12 @@ type Spreadsheet(container: Element) as this =
                         if r = r1 then line x (y + h) (x + w) (y + h) (SpreadsheetLayout.edgeBelow source r c)
             Some (sprintf "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"%s\" height=\"%s\" viewBox=\"0 0 %s %s\" preserveAspectRatio=\"none\" style=\"display:block\">%s%s%s</svg>"
                     (number width) (number height) (number totalWidth) (number totalHeight) (fills.ToString()) (lines.ToString()) (texts.ToString()))
+    do cameraDrawer.Value <- fun reference width height ->
+        match cameraRange ("cameraTool cellRange=\"" + reference.Replace("&", "&amp;").Replace("\"", "&quot;") + "\"") with
+        | Some (index, range) ->
+            (try cameraSvg index range width height (ResizeArray()) with _ -> None)
+            |> Option.map (fun svg -> "data:image/svg+xml;base64," + System.Convert.ToBase64String (System.Text.Encoding.UTF8.GetBytes svg))
+        | None -> None
     /// A kept object of the sheet on display as SVG for its rectangle, with the blocks of cells its
     /// charts read; None for what is not drawn (the frame then says what the object is).
     let objectSvg (xml: string) (width: float) (height: float) : (string * (string * int * int * int * int * CellData option [] []) array) option =
