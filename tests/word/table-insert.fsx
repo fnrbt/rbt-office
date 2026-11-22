@@ -1,11 +1,8 @@
-// A row or a column inserted into a table is like the one it is inserted
-// next to: its cells have the neighbour's properties (width, span, borders,
-// shading, vertical alignment, margins), the row the neighbour's (height,
-// whether it may break), each cell one empty paragraph with the properties of
-// the neighbour cell's first paragraph - and the table's grid (w:tblGrid) has
-// a column more, as wide as its neighbour, or one less when a column is
-// deleted. (They used to be bare cells with a default paragraph, and the grid
-// kept the columns it had.)
+// A row or column inserted into a table takes the properties of the cell at
+// the insertion position (after a cell: the following cell, or the last when
+// appending). A new row copies its neighbouring row's properties, and a new
+// cell gets one empty paragraph with the donor's properties. The grid and
+// an absolute-width fixed table gain or lose the inserted/deleted width.
 #r "../../src/Word/bin/Debug/netstandard2.0/Rbt.Word.dll"
 
 open Rbt.Word.Document
@@ -47,7 +44,7 @@ let dressed =
                             PaddingTop = Some 3.0; PaddingLeft = Some (5.0 + float c)
                             Width = Some (100.0 + 100.0 * float c); PreferredWidth = Some (width (1500.0 + 1500.0 * float c))
                             VerticalMerge = (if c = 1 then Some (if r = 0 then RestartMerge else ContinueMerge) else None) }) })
-    { made with Blocks = made.Blocks |> List.map (function Table t -> Table { t with Rows = rows; GridColumns = [ width 1500.0; width 3000.0 ] } | block -> block) }
+    { made with Blocks = made.Blocks |> List.map (function Table t -> Table { t with LayoutMode = Some FixedTableLayout; PreferredWidth = Some (width 4500.0); Rows = rows; GridColumns = [ width 1500.0; width 3000.0 ] } | block -> block) }
 let at id (doc: Document) = { doc with Selection = Some { Anchor = position id; Focus = position id } }
 /// What of a cell a new cell next to it is to have, and what of its paragraph.
 let look (cell: TableCell) =
@@ -76,15 +73,27 @@ check "the first row of before is still the header row" (rowLook above.Rows.[1])
 // ---- a column to the right ----
 let right = tableOf (insertTableColumnAfterSelection (dressed |> at "r0c0"))
 check "a column to the right of the first: three cells in every row" (right.Rows |> List.map (fun row -> row.Cells.Length)) [ 3; 3 ]
-check "the new cells are like the cells left of them" (right.Rows |> List.map (fun row -> look row.Cells.[1])) (right.Rows |> List.map (fun row -> look row.Cells.[0]))
-check "with an empty paragraph like theirs" (right.Rows |> List.map (fun row -> paragraphLook row.Cells.[1])) [ emptyLook; emptyLook ]
+check "the new cells take the properties of the cell at the insertion position" (right.Rows |> List.map (fun row -> look row.Cells.[1])) (right.Rows |> List.map (fun row -> look row.Cells.[2]))
+check "with an empty paragraph like that cell's" (right.Rows |> List.map (fun row -> paragraphLook row.Cells.[1])) [ emptyLook; emptyLook ]
 check "the cells that were there are where they were" (right.Rows |> List.map (fun row -> row.Cells.[0].Content.Head.Id, row.Cells.[2].Content.Head.Id)) [ "r0c0", "r0c1"; "r1c0", "r1c1" ]
-check "the grid has a column more, as wide as its neighbour" (right.GridColumns |> List.map (fun w -> w.Value)) [ Some 1500.0; Some 1500.0; Some 3000.0 ]
+check "the grid copies the following column and the fixed table grows by its width" (right.GridColumns |> List.map (fun w -> w.Value), right.PreferredWidth.Value.Value) ([ Some 1500.0; Some 3000.0; Some 3000.0 ], Some 7500.0)
 
 // ---- a column to the left ----
 let left = tableOf (insertTableColumnBeforeSelection (dressed |> at "r1c1"))
 check "a column to the left of the second: like the second" (left.Rows |> List.map (fun row -> row.Cells.Length, look row.Cells.[1] = look row.Cells.[2], row.Cells.[1].VerticalMerge, row.Cells.[2].Content.Head.Id)) [ (3, true, None, "r0c1"); (3, true, None, "r1c1") ]
-check "the grid: the new column is as wide as the second" (left.GridColumns |> List.map (fun w -> w.Value)) [ Some 1500.0; Some 3000.0; Some 3000.0 ]
+check "the grid copies the second column and the fixed table grows by its width" (left.GridColumns |> List.map (fun w -> w.Value), left.PreferredWidth.Value.Value) ([ Some 1500.0; Some 3000.0; Some 3000.0 ], Some 7500.0)
+let appended = tableOf (insertTableColumnAfterSelection (dressed |> at "r0c1"))
+check "appending copies the last cell's formatting and width" (appended.Rows |> List.map (fun row -> look row.Cells.[2] = look row.Cells.[1]), appended.GridColumns |> List.map (fun w -> w.Value), appended.PreferredWidth.Value.Value) ([ true; true ], [ Some 1500.0; Some 3000.0; Some 3000.0 ], Some 7500.0)
+let prepended = tableOf (insertTableColumnBeforeSelection (dressed |> at "r0c0"))
+check "prepending copies the first cell's formatting and width" (prepended.Rows |> List.map (fun row -> look row.Cells.[0] = look row.Cells.[1]), prepended.GridColumns |> List.map (fun w -> w.Value), prepended.PreferredWidth.Value.Value) ([ true; true ], [ Some 1500.0; Some 1500.0; Some 3000.0 ], Some 6000.0)
+let percent =
+    let withPercent block =
+        match block with
+        | Table table -> Table { table with PreferredWidth = Some { Kind = PercentWidth; Value = Some 50.0 } }
+        | other -> other
+    { dressed with Blocks = dressed.Blocks |> List.map withPercent }
+let percentAfter = tableOf (insertTableColumnAfterSelection (percent |> at "r0c0"))
+check "a percentage table keeps its preferred-width unit and value" percentAfter.PreferredWidth (Some { Kind = PercentWidth; Value = Some 50.0 })
 
 // ---- a cell that spans: the new cell of a column is one column wide, that of a row spans as its neighbour ----
 let spanning =
@@ -96,9 +105,9 @@ check "a column: its cells are one column wide" (spanColumn.Rows |> List.map (fu
 
 // ---- a column deleted ----
 let deleted = tableOf (deleteSelectedTableColumn (dressed |> at "r0c0"))
-check "a column deleted: the grid has the other one" (deleted.Rows |> List.map (fun row -> row.Cells |> List.map (fun cell -> cell.Content.Head.Id)), deleted.GridColumns |> List.map (fun w -> w.Value)) ([ [ "r0c1" ]; [ "r1c1" ] ], [ Some 3000.0 ])
+check "a column deleted: the grid and fixed width lose its column" (deleted.Rows |> List.map (fun row -> row.Cells |> List.map (fun cell -> cell.Content.Head.Id)), deleted.GridColumns |> List.map (fun w -> w.Value), deleted.PreferredWidth.Value.Value) ([ [ "r0c1" ]; [ "r1c1" ] ], [ Some 3000.0 ], Some 3000.0)
 let roundTrip = tableOf (deleteSelectedTableColumn (insertTableColumnAfterSelection (dressed |> at "r0c0") |> fun doc -> at (tableOf doc).Rows.[0].Cells.[1].Content.Head.Id doc))
-check "a column put in and taken out again: the grid that was" (roundTrip.GridColumns |> List.map (fun w -> w.Value), roundTrip.Rows |> List.map (fun row -> row.Cells.Length)) ([ Some 1500.0; Some 3000.0 ], [ 2; 2 ])
+check "a column put in and taken out again: the grid and fixed width that were" (roundTrip.GridColumns |> List.map (fun w -> w.Value), roundTrip.PreferredWidth.Value.Value, roundTrip.Rows |> List.map (fun row -> row.Cells.Length)) ([ Some 1500.0; Some 3000.0 ], Some 4500.0, [ 2; 2 ])
 
 printfn "word table-insert: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -1056,6 +1056,13 @@ The browser shell's **File > Page setup** instead edits only the section contain
 | `setCurrentTableCellMargins(editor, paddingTop: number, paddingRight: number, paddingBottom: number, paddingLeft: number)` | The padding (px: top, right, bottom, left) of the cells of the caret's table. |
 | `setCurrentTableCellMarginsAndSpacing(editor, paddingTop: number, paddingRight: number, paddingBottom: number, paddingLeft: number, cellSpacing: number)` | As setCurrentTableCellMargins, with the spacing between the cells. |
 
+Inserting a column copies the cell at its insertion position in each row:
+before a cell, that cell; after a cell, the following cell, or the last cell
+when appending. For a fixed table with an absolute `w:tblW`, column edits
+resolve the displayed column widths, then update `w:tblGrid`, cell `w:tcW`,
+and `w:tblW` together. The table can therefore grow beyond the page's text
+area. Percentage and auto table widths retain their original units.
+
 ### Pictures, text boxes, links, notes, fields and other inserts
 
 | Function | What it does |

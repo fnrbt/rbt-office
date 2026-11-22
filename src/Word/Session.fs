@@ -653,6 +653,26 @@ type WordCommand =
 
 type CommandOutcome = NoChange | SelectionChanged | ContentChanged
 
+/// For an absolute-width fixed table, the shared layout resolver determines
+/// the grid actually displayed before a column edit. Its dxa widths depend on
+/// tblW, tcW and cell margins, not on the viewport's available room. Nested
+/// tables and percentage/auto widths retain their existing model edit path.
+let private resolvedColumnWidthsForEdit (doc: Doc.Document) =
+    match Doc.selectedTableForColumnEdit doc with
+    | Some table when table.LayoutMode = Some Doc.FixedTableLayout
+                      && (match table.PreferredWidth with Some { Kind = Doc.DxaWidth; Value = Some _ } -> true | _ -> false)
+                      && (table.GridColumns |> List.forall (fun width -> width.Kind = Doc.DxaWidth))
+                      && (table.Rows |> List.forall (fun row -> row.Cells |> List.forall (fun cell ->
+                          match cell.PreferredWidth with
+                          | Some { Kind = Doc.DxaWidth } -> true
+                          | None -> cell.Width.IsNone
+                          | _ -> false)))
+                      && (doc.Blocks |> List.exists (function Doc.Table block -> block.Id = table.Id | _ -> false)) ->
+        WordLayout.Table.tableColumnWidths WordLayout.canvasScale None table
+        |> List.map (fun pixels -> System.Math.Floor (pixels * WordLayout.canvasScale.DxaPerUnit + 0.5))
+        |> Some
+    | _ -> None
+
 let private pageBreakAllowed (story: StorySession option) (doc: Document) =
     story.IsNone
     && (match doc.Selection with
@@ -944,10 +964,19 @@ type EditingSession(initialDocument: Document, ?maxHistory: int) =
             | InsertTable (rows, columns) -> Ok (Doc.insertTable rows columns before)
             | InsertRowBefore -> Ok (Doc.insertTableRowBeforeSelection before)
             | InsertRowAfter -> Ok (Doc.insertTableRowAfterSelection before)
-            | InsertColumnBefore -> Ok (Doc.insertTableColumnBeforeSelection before)
-            | InsertColumnAfter -> Ok (Doc.insertTableColumnAfterSelection before)
+            | InsertColumnBefore ->
+                Ok (match resolvedColumnWidthsForEdit before with
+                    | Some widths -> Doc.insertTableColumnBeforeSelectionWithWidths widths before
+                    | None -> Doc.insertTableColumnBeforeSelection before)
+            | InsertColumnAfter ->
+                Ok (match resolvedColumnWidthsForEdit before with
+                    | Some widths -> Doc.insertTableColumnAfterSelectionWithWidths widths before
+                    | None -> Doc.insertTableColumnAfterSelection before)
             | DeleteRow -> Ok (Doc.deleteSelectedTableRow before)
-            | DeleteColumn -> Ok (Doc.deleteSelectedTableColumn before)
+            | DeleteColumn ->
+                Ok (match resolvedColumnWidthsForEdit before with
+                    | Some widths -> Doc.deleteSelectedTableColumnWithWidths widths before
+                    | None -> Doc.deleteSelectedTableColumn before)
             | MergeCells -> Ok (Doc.mergeSelectedTableCells before)
             | SplitCell -> Ok (Doc.splitSelectedTableCell before)
             | MoveCell forward -> Ok (Doc.moveToAdjacentTableCell forward before |> Option.defaultValue before)
