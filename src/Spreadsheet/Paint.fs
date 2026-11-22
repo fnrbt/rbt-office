@@ -539,15 +539,15 @@ let sparklineCellItems (source: Rbt.Spreadsheet.Sparklines.Source) (model: Sprea
                             yield zoneForCell model addr.Row addr.Col,item
                     | None -> ()]
 
-let private buildCellPaintItems (printOffset: (float * float * float) option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
-    let visible = visibleRange model viewport
+let private buildCellPaintItems (printOffset: (float * float * float) option) (range: VisibleRange option) (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
+    let visible = range |> Option.defaultWith (fun () -> visibleRange model viewport)
     let padX = printPadXOf model
     let printing = printOffset.IsSome
     let normalPrintLevels =
         if printing then FontMetrics.printNormalLevelsOf model.NormalFontName model.NormalFontSize
         else None
     let rowDescent = rowDescentsOf normalPrintLevels.IsSome model
-    let cells = visibleCells model viewport
+    let cells = visibleCellsInRange model viewport visible
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.
     let cellState (cell: CellGeometry) =
@@ -1395,17 +1395,23 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
     scene.Items |> List.iter (walk (1.0, 0.0, 0.0, 1.0, 0.0, 0.0))
     List.ofSeq items
 
-/// The charts and shapes of a sheet as the overlays of a PDF: anchored to their first cell, each drawn
-/// by `sceneOf` (its anchor's XML, its width and height) in the size it has on the sheet.
-let drawingOverlays (sceneOf: string -> float -> float -> Rbt.Spreadsheet.Charts.Scene option) (model: SpreadsheetModel) : (int * int * float * float * float * float * PaintItem list) list =
+/// The charts and shapes of a sheet as its PDF overlays, in the drawing's
+/// saved z-order. A linked picture is painted from its live source range when
+/// `cameraItems` resolves it; other objects use the drawing scene or frame.
+let drawingOverlays (sceneOf: string -> float -> float -> Rbt.Spreadsheet.Charts.Scene option)
+                    (cameraItems: SheetDrawing -> Rect -> PaintItem list option)
+                    (model: SpreadsheetModel) : (int * int * float * float * float * float * PaintItem list) list =
     [ for drawing in model.Drawings do
         match drawing.Content with
         | KeptObject (_, xml) ->
             let rect = drawingRect model drawing
             let items =
-                match sceneOf xml rect.Width rect.Height with
-                | Some scene -> scenePaintItems scene
-                | None -> drawingFrameItems { X = 0.0; Y = 0.0; Width = rect.Width; Height = rect.Height } (drawingLabel drawing)
+                match cameraItems drawing rect with
+                | Some items -> items
+                | None ->
+                    match sceneOf xml rect.Width rect.Height with
+                    | Some scene -> scenePaintItems scene
+                    | None -> drawingFrameItems { X = 0.0; Y = 0.0; Width = rect.Width; Height = rect.Height } (drawingLabel drawing)
             yield (drawing.Anchor.FromRow, drawing.Anchor.FromCol, drawing.Anchor.FromOffsetX, drawing.Anchor.FromOffsetY, rect.Width, rect.Height, items)
         | _ -> () ]
 
@@ -1446,7 +1452,7 @@ let private buildStaticPaintItems printing (source: Rbt.Spreadsheet.Sparklines.S
         yield! buildHeaderPaintItems model viewport
         // Static (PNG/PDF) path: drop the zone tag; everything paints at
         // absolute cell coordinates because ScrollX/Y are zero.
-        for (_zone, item) in buildCellPaintItems printing model viewport do
+        for (_zone, item) in buildCellPaintItems printing None model viewport do
             yield item
         match source with
         | Some source ->
@@ -1470,6 +1476,50 @@ let buildPrintPaintItems offset model viewport = buildStaticPaintItems (Some off
 
 let buildPaintItems (model: SpreadsheetModel) (viewport: Viewport) =
     buildPaintItemsWithSource (Rbt.Spreadsheet.Sparklines.modelSource model) model viewport
+
+/// The cells shown by a linked picture (Excel's camera), in the picture's
+/// local coordinates. Use the live source range rather than its saved EMF
+/// preview. The caller clips and paginates this as an ordinary drawing.
+let cameraRangePaintItems (source: SpreadsheetModel) (range: CellRange) (pictureWidth: float) (pictureHeight: float) : PaintItem list option =
+    let left = columnLeft source range.From.Col
+    let top = rowTop source range.From.Row
+    let width = columnLeft source (range.To.Col + 1) - left
+    let height = rowTop source (range.To.Row + 1) - top
+    if width <= 0.0 || height <= 0.0 || pictureWidth <= 0.0 || pictureHeight <= 0.0 then None
+    else
+        let sx, sy = pictureWidth / width, pictureHeight / height
+        let mapRect (r: Rect) =
+            { r with X = (r.X - left) * sx; Y = (r.Y - top) * sy; Width = r.Width * sx; Height = r.Height * sy }
+        let rec mapItem item =
+            match item with
+            | FillRect (r, color) -> FillRect (mapRect r, color)
+            | StrokeRect (r, color, w) -> StrokeRect (mapRect r, color, w * min sx sy)
+            | GridLine (x1, y1, x2, y2, color, w) ->
+                GridLine ((x1 - left) * sx, (y1 - top) * sy, (x2 - left) * sx, (y2 - top) * sy, color, w * min sx sy)
+            | DrawText text ->
+                DrawText { text with Rect = mapRect text.Rect
+                                     Clip = text.Clip |> Option.map mapRect
+                                     FontSize = text.FontSize * sy
+                                     Baseline = text.Baseline * sy
+                                     BaselineShift = text.BaselineShift * sy }
+            | DrawImage (r, image) -> DrawImage (mapRect r, image)
+            | Clipped (r, children) -> Clipped (mapRect r, List.map mapItem children)
+            | VecPath _ | VecGroup _ ->
+                VecGroup ((sx, 0.0, 0.0, sy, -left * sx, -top * sy), [item])
+        let viewport =
+            { defaultViewport width height with
+                ScrollX = left
+                ScrollY = top
+                HeaderHeight = 0.0
+                RowHeaderWidth = 0.0 }
+        let exact =
+            { StartRow = range.From.Row; EndRowExclusive = range.To.Row + 1
+              StartCol = range.From.Col; EndColExclusive = range.To.Col + 1 }
+        let cells =
+            buildCellPaintItems None (Some exact) source viewport
+            |> List.map (snd >> mapItem)
+        let frame = { X = 0.0; Y = 0.0; Width = pictureWidth; Height = pictureHeight }
+        Some [ Clipped (frame, cells) ]
 
 
 let private translatePaintItem viewport zone item =
@@ -1573,7 +1623,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                         })
                 }
 
-        for (zone, item) in buildCellPaintItems None model viewport do
+        for (zone, item) in buildCellPaintItems None None model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }
         for (zone, item) in sparklineCellItems source model viewport do
             yield { Zone = zone; Item = translatePaintItem viewport zone item }

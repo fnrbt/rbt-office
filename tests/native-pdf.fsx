@@ -39,6 +39,23 @@ try
     check "Spreadsheet PDF must paint the imported 24x16 RGB picture"
         (Regex.IsMatch(images, @"(?m)^\s*1\s+\d+\s+image\s+24\s+16\s+rgb\s+3\s+8\s"))
 
+    // Excel's linked picture is a live camera of Source!A1:B2, not the
+    // drawing's saved EMF preview. Its anchor straddles a manual page break.
+    let cameraWorkbook = Path.Combine(root, "tests/test-documents-excel/synthetic-print-linked-picture.xlsx")
+    let cameraPdf = Path.Combine(scratch, "camera.pdf")
+    run "dotnet" [ Path.Combine(root, "tools/spreadsheet-pdf-runner/bin/Debug/net10.0/SpreadsheetPdfRunner.dll"); cameraWorkbook; cameraPdf; "1" ] |> ignore
+    let firstCameraPage = run "pdftotext" [ "-f"; "1"; "-l"; "1"; cameraPdf; "-" ]
+    let secondCameraPage = run "pdftotext" [ "-f"; "2"; "-l"; "2"; cameraPdf; "-" ]
+    check "Camera must print both source columns on its first page"
+        (firstCameraPage.Contains "LEFTTOP" && firstCameraPage.Contains "RIGHTTOP")
+    check "Camera must print the source cells it reaches on the next page"
+        (secondCameraPage.Contains "RIGHTTOP" && secondCameraPage.Contains "RIGHTBOTTOM")
+    check "Camera must not fall back to a labelled drawing frame"
+        (not ((firstCameraPage + secondCameraPage).Contains "Object: Picture"))
+    let cameraWords = Regex.Split(firstCameraPage + secondCameraPage, @"\s+") |> Set.ofArray
+    check "Camera must paint cells without sheet row/column headers"
+        (Set.intersect cameraWords (set [ "A"; "B"; "1"; "2" ]) |> Set.isEmpty)
+
     let document = Path.Combine(scratch, "word.docx")
     do
         use package = ZipFile.Open(document, ZipArchiveMode.Create)

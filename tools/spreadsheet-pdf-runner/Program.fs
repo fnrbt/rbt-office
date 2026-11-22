@@ -56,6 +56,42 @@ let private pdfOptions (sheetName: string) (fileName: string) (required: (string
         FileName = fileName
     } : Rbt.Spreadsheet.Pdf.Render.RenderOptions)
 
+/// Excel's camera is a live picture of a cell range. Its EMF relationship is only
+/// the last saved preview; print the cells instead, including their current values.
+let private cameraOverlay (models: (string * Lazy<Rbt.Spreadsheet.Model.SpreadsheetModel>) list) (drawing: Rbt.Spreadsheet.Model.SheetDrawing) (rect: Rbt.Spreadsheet.Layout.Rect) =
+    let xml =
+        match drawing.Content with
+        | Rbt.Spreadsheet.Model.KeptObject (_, xml) -> xml
+        | _ -> ""
+    let reference =
+        if not (xml.Contains "cameraTool") || xml.Contains "grpSp" then None
+        else
+            try
+                let root = System.Xml.Linq.XElement.Parse xml
+                root.Descendants()
+                |> Seq.tryFind (fun element -> element.Name.LocalName = "cameraTool")
+                |> Option.bind (fun element ->
+                    element.Attributes()
+                    |> Seq.tryFind (fun attr -> attr.Name.LocalName = "cellRange")
+                    |> Option.map (fun attr -> attr.Value))
+            with :? System.Xml.XmlException -> None
+    reference
+    |> Option.bind (fun reference ->
+        let bang = reference.LastIndexOf '!'
+        if bang < 0 then None
+        else
+            let sheet = reference.Substring(0, bang).Trim()
+            let sheet =
+                if sheet.StartsWith "'" && sheet.EndsWith "'" then sheet.Substring(1, sheet.Length - 2).Replace("''", "'")
+                else sheet
+            match models |> List.tryFind (fun (name, _) -> name.Equals(sheet, StringComparison.OrdinalIgnoreCase)),
+                  Rbt.Spreadsheet.SheetOps.tryParseRange (reference.Substring(bang + 1)) with
+            | Some (_, source), Some range when
+                range.From.Row <= range.To.Row && range.From.Col <= range.To.Col
+                && (int64 (range.To.Row - range.From.Row + 1) * int64 (range.To.Col - range.From.Col + 1)) <= 10000L ->
+                Rbt.Spreadsheet.Paint.cameraRangePaintItems source.Value range rect.Width rect.Height
+            | _ -> None)
+
 /// The charts and shapes of a sheet of a workbook as overlays of its PDF, by the layout of the grid.
 let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.Workbook.Workbook) (sheetIndex: int) =
     let text (data: byte[]) = System.Text.Encoding.UTF8.GetString data
@@ -92,8 +128,10 @@ let private drawingOverlays (workbook: Xlsx.Workbook) (context: Rbt.Spreadsheet.
           Slicer = Rbt.Spreadsheet.Slicers.drawer workbook
           Camera = (fun _ _ _ -> None) }
     let drawn = (snd models.[sheetIndex]).Value
-    // (Anchored to cells: as wide as those cells print.)
-    drawn.Drawings, Rbt.Spreadsheet.Paint.drawingOverlays (Charts.objectScene drawing data) (Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes drawn)
+    let printed = Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes drawn
+    drawn.Drawings,
+        Rbt.Spreadsheet.Paint.drawingOverlays (Charts.objectScene drawing data)
+            (cameraOverlay models) printed
 
 let private renderPdf (inputPath: string) (outputPath: string) (sheetIndex: int) =
     let bytes = File.ReadAllBytes inputPath

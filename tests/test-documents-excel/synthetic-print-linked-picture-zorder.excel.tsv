@@ -1,0 +1,5 @@
+variant	page	x_pt	y_pt	red	green	blue
+over	2	90	85	255	0	0
+under	2	90	85	255	0	0
+over	2	110	110	255	0	0
+under	2	110	110	27	0	0

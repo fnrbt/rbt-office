@@ -521,8 +521,9 @@ let mergedRect (model: SpreadsheetModel) (viewport: Viewport) (merge: MergedCell
         Height = rowTop model (merge.EndRow + 1) - rowTop model merge.StartRow
     }
 
-let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry list =
-    let range = visibleRange model viewport
+/// Cell geometries for exact row/column bounds, without converting through
+/// floating-point viewport offsets (important for hidden and fractional axes).
+let visibleCellsInRange (model: SpreadsheetModel) (viewport: Viewport) (range: VisibleRange): CellGeometry list =
     let merges =
         mergedCellsIntersectingRange range.StartRow range.EndRowExclusive range.StartCol range.EndColExclusive model
     let covered = HashSet<CellAddress>()
@@ -551,6 +552,9 @@ let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry li
                         Merge = None
                     }
     ]
+
+let visibleCells (model: SpreadsheetModel) (viewport: Viewport): CellGeometry list =
+    visibleCellsInRange model viewport (visibleRange model viewport)
 
 let headers (model: SpreadsheetModel) (viewport: Viewport): HeaderGeometry list =
     let range = visibleRange model viewport

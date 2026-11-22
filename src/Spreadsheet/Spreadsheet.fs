@@ -8761,8 +8761,16 @@ type Spreadsheet(container: Element) as this =
                     reportError "drawing" (box error)
                     None
             let printed = Rbt.Spreadsheet.Pdf.Pagination.withPrintSizes sheet
+            let cameraItems (drawing: SheetDrawing) (rect: SpreadsheetLayout.Rect) =
+                match drawing.Content with
+                | KeptObject (_, xml) ->
+                    match cameraRange xml with
+                    | Some (sourceIndex, range) ->
+                        SpreadsheetPaint.cameraRangePaintItems (sheetModelAt sourceIndex) range rect.Width rect.Height
+                    | None -> None
+                | _ -> None
             let overlays =
-                SpreadsheetPaint.drawingOverlays sceneOf printed
+                SpreadsheetPaint.drawingOverlays sceneOf cameraItems printed
                 @ SpreadsheetPaint.sparklineOverlays (sparklineSourceFor index) sheet printed
             // The shared cell painter also draws same-sheet marks. PDF uses
             // overlays so nonactive and cross-sheet sources remain available.
