@@ -2348,7 +2348,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                                 else
                                     let fill = (match item.Source.MarkerFill with FillColor (color, _) -> Some color | FillNone -> None | FillAuto -> Some item.Look.Color)
                                     let stroke = (match strokeColor item.Source.MarkerLine with Some (color, _, _) -> Some color | None -> Some item.Look.Color)
-                                    Some ((if symbol = "auto" then "circle" else symbol), max 3.0 (item.Source.MarkerSize * 1.1), fill, stroke)
+                                    Some ((if symbol = "auto" then "circle" else symbol), max 3.0 (item.Source.MarkerSize * 4.0 / 3.0), fill, stroke)
                             { Line = (if item.Look.LineColor.IsSome && item.Look.LineWidth > 0.0 then Some item.Look.LineWidth else None); Marker = marker; Outline = None }
                         else
                             { Line = None; Marker = None
@@ -3153,7 +3153,8 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                         // Markers: the chart's switch, unless the series says none.
                         let symbol = item.Source.MarkerSymbol |> Option.defaultValue (if plot.Kind = LinePlot && plot.Markers then "circle" else "none")
                         if symbol <> "none" then
-                            let size = max 3.0 (item.Source.MarkerSize * 1.1)
+                            // (A marker of c:size n is n pt across: 7 px for 5, chart-zoo's scatter in Excel 2019.)
+                            let size = max 3.0 (item.Source.MarkerSize * 4.0 / 3.0)
                             let fill = (match item.Source.MarkerFill with FillColor (color, _) -> Some color | FillNone -> None | FillAuto -> Some item.Look.Color)
                             let stroke = (match strokeColor item.Source.MarkerLine with Some (color, _, _) -> Some color | None -> Some item.Look.Color)
                             for (x, y, _, _) in points do drawMarker (if symbol = "auto" then "circle" else symbol) x y size fill stroke
@@ -3222,7 +3223,7 @@ let private layoutClassicChart (theme: ThemeColors) (data: ChartData) (chart: Ch
                          | _ -> ())
                         let symbol = item.Source.MarkerSymbol |> Option.defaultValue (if plot.ScatterStyle.EndsWith "Marker" || plot.ScatterStyle = "marker" then "circle" else "none")
                         if symbol <> "none" then
-                            let size = max 4.0 (item.Source.MarkerSize * 1.1)
+                            let size = max 4.0 (item.Source.MarkerSize * 4.0 / 3.0)
                             let fill = (match item.Source.MarkerFill with FillColor (color, _) -> Some color | FillNone -> None | FillAuto -> Some item.Look.Color)
                             for (x, y, _, _) in points do drawMarker (if symbol = "auto" then "circle" else symbol) x y size fill (Some item.Look.Color)
                     for (x, y, index, raw) in points do labelAt item index raw (x + 6.0) y "start" false
