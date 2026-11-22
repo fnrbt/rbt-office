@@ -366,8 +366,8 @@ checks['print-pages'] = async () => {
     const { lines, check } = makeLog();
     const expected = [
         ['tests/real-world/milk-street-office.xlsx', 'Annual', 6, 38, 'A1:L63'],
-        // (The first pages as Excel 2019's PDF breaks them: Page Break Preview of each - docs/excel-parity-tracker.md,
-        // "Print pages against Excel 2019's PDF".)
+        // Excel 2019 PDF page boundaries (see docs/excel-parity-tracker.md).
+        // The best-fit control below distinguishes direct export from Page Break Preview.
         ['tests/real-world/milk-street-office.xlsx', 'Monthly', 40, 33, 'A1:Q58'],
         ['tests/real-world/lyric-multifamily.xlsx', 'Lyric-PF-DCF', 7, 32, 'A1:R57'],
         ['tests/real-world/lyric-multifamily.xlsx', 'Comp-Sales', 1, 40, 'A1:O24'],
@@ -375,7 +375,7 @@ checks['print-pages'] = async () => {
         ['tests/real-world/lyric-multifamily.xlsx', 'Replacement-Cost', 1, 54, 'A1:I39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Main', 2, 100, 'A1:I39'],
         ['tests/real-world/dcf-stock-analysis.xlsx', 'Financial Model', 9, 100, 'A1:I55'], // (Excel 2019's PDF: 9 - its last page has nothing on it.)
-        ['tests/test-documents-excel/synthetic-print-pages-bestfit-refit.xlsx', 'NarrowTrigger', 2, 100, 'B1:C2'],
+        ['tests/test-documents-excel/synthetic-print-pages-bestfit-refit.xlsx', 'NarrowTrigger', 2, 100, 'B1:D2'], // Direct PDF keeps B:D at stored widths; preview refits them and ends page one at C.
     ];
     for (const file of [...new Set(expected.map((e) => e[0]))]) {
         const { grid, close } = mountGrid();
