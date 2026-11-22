@@ -93,6 +93,50 @@ checks['dynamic-arrays'] = async () => {
     return lines;
 };
 
+// Excel 2019 keeps an opened, uncached circular formula as empty text; a
+// newly entered circular formula still starts at numeric zero. An explicit
+// empty string cache must not turn into an uncalculated numeric formula.
+checks['xlsx-open-empty-formula-caches'] = async () => {
+    const { lines, check } = makeLog();
+    const file = mountGrid();
+    try {
+        const rows = '<sheetData><row r="1">'
+            + '<c r="A1"><f>B1+1</f></c>'
+            + '<c r="B1"><f>A1/2</f><v>2</v></c>'
+            + '<c r="C1"><f>A1+10</f><v>99</v></c>'
+            + '<c r="D1"><f>D1+1</f><v/></c>'
+            + '<c r="E1" t="str"><f>E1+1</f><v/></c>'
+            + '<c r="F1"><f>1+2</f><v/></c>'
+            + '<c r="G1" t="str"><f>IF(FALSE,1, "")</f><v></v></c>'
+            + '<c r="H1" t="str"><f>1+2</f></c>'
+            + '<c r="I1"><f>4+5</f></c>'
+            + '<c r="J1"><f>A1+10</f><v/></c>'
+            + '</row></sheetData>';
+        await file.grid.ImportXlsx(await excelPackage(rows));
+        const values = (grid) => Array.from({ length: 10 }, (_, col) => grid.GetCell(0, col).value);
+        const opened = ['', 2, 99, '', '', 3, '', 3, 9, ''];
+        check('opened caches: circular empty text, saved values, calculated acyclic cells', values(file.grid), opened);
+        const saved = await file.grid.ExportXlsx();
+        const xml = await text(saved, 'xl/worksheets/sheet1.xml');
+        const cellXml = (name) => (new RegExp(`<c\\b[^>]*\\br="${name}"[^>]*>[\\s\\S]*?<\\/c>`).exec(xml) ?? [''])[0];
+        check('save writes loaded empty-string and computed numeric caches',
+            ['A1', 'D1', 'E1', 'J1'].map((name) => /t="str"/.test(cellXml(name)) && /<v(?:\s[^>]*)?><\/v>|<v\s*\/>/.test(cellXml(name)))
+                .concat(['F1', 'H1', 'I1'].map((name) => /<v(?:\s[^>]*)?>[39]<\/v>/.test(cellXml(name)))),
+            [true, true, true, true, true, true, true]);
+        const again = mountGrid();
+        try {
+            await again.grid.ImportXlsx(saved);
+            check('save/reopen retains each result', values(again.grid), opened);
+            again.grid.SetCell(0, 1, '4');
+            check('breaking a loaded cycle recalculates its readers', [values(again.grid).slice(0, 3), again.grid.GetCell(0, 9).value], [[5, 4, 15], 15]);
+            again.grid.SetCell(2, 0, '=A3+1');
+            check('newly typed cycle still starts from numeric zero', again.grid.GetCell(2, 0).value, 0);
+        } finally { again.close(); }
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    finally { file.close(); }
+    return lines;
+};
+
 // ---- x14 conditional formats and validations (Excel 2010+) ----
 const X14 = 'http://schemas.microsoft.com/office/spreadsheetml/2009/9/main', XM = 'http://schemas.microsoft.com/office/excel/2006/main';
 const REL_NS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';

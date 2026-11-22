@@ -1231,6 +1231,69 @@ for label, bytes in [ "unedited", controlsUnedited; "linked cells edited", contr
     let again = XlsxReader.loadBytesNative bytes |> Option.get
     eq ("controls: read back alike, " + label) (again.Sheets |> List.map (fun s -> s.Extras.FormControls.Length)) [ 15; 15; 2 ]
 
+// Opening an XLSX is not the same as entering its formulas: an uninitialized
+// non-iterative cycle is empty text in Excel 2019, not numeric zero. An empty
+// t="str" <v> is already a cached empty string; acyclic formulas without
+// caches are calculated. These values must survive a save and another import.
+let cachePackage () =
+    let ns = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    let sheet =
+        "<worksheet xmlns=\"" + ns + "\"><sheetData><row r=\"1\">"
+        + "<c r=\"A1\"><f>B1+1</f></c>"
+        + "<c r=\"B1\"><f>A1/2</f><v>2</v></c>"
+        + "<c r=\"C1\"><f>A1+10</f><v>99</v></c>"
+        + "<c r=\"D1\"><f>D1+1</f><v/></c>"
+        + "<c r=\"E1\" t=\"str\"><f>E1+1</f><v/></c>"
+        + "<c r=\"F1\"><f>1+2</f><v/></c>"
+        + "<c r=\"G1\" t=\"str\"><f>IF(FALSE,1, \"\")</f><v></v></c>"
+        + "<c r=\"H1\" t=\"str\"><f>1+2</f></c>"
+        + "<c r=\"I1\"><f>A1+10</f><v/></c>"
+        + "</row></sheetData></worksheet>"
+    let parts =
+        [ "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>"
+          "_rels/.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"" + rel + "/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>"
+          "xl/workbook.xml", "<workbook xmlns=\"" + ns + "\" xmlns:r=\"" + rel + "\"><sheets><sheet name=\"Sheet1\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>"
+          "xl/_rels/workbook.xml.rels", "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"" + rel + "/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>"
+          "xl/worksheets/sheet1.xml", sheet ]
+    use buffer = new MemoryStream()
+    do
+        use zip = new System.IO.Compression.ZipArchive(buffer, System.IO.Compression.ZipArchiveMode.Create, true)
+        for path, xml in parts do
+            use writer = new StreamWriter(zip.CreateEntry(path).Open())
+            writer.Write xml
+    buffer.ToArray()
+let cacheImported = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (cachePackage ()) |> Option.get)
+let cacheValues (imported: Bridge.ImportedWorkbook) =
+    [ for col in 0 .. 8 ->
+        imported.Sheets.[0].Model |> getCell (addr 0 col) |> Option.map (fun c -> unwrapFormulaValue c.Value) |> Option.defaultValue CellValue.Empty ]
+let expectedCacheValues =
+    [ CellValue.String ""; CellValue.Number 2.0; CellValue.Number 99.0; CellValue.String ""
+      CellValue.String ""; CellValue.Number 3.0; CellValue.String ""; CellValue.Number 3.0; CellValue.String "" ]
+eq "opened empty versus missing formula caches" (cacheValues cacheImported) expectedCacheValues
+let cacheSaved =
+    XlsxPackageWriter.writeWorkbookPackageBytes
+        (Bridge.Export.toWorkbookOut (inputOf cacheImported (modelsOf cacheImported) cacheImported.Context.Names))
+let cacheSheetXml =
+    use zip = new System.IO.Compression.ZipArchive(new MemoryStream(cacheSaved))
+    use reader = new StreamReader(zip.GetEntry("xl/worksheets/sheet1.xml").Open())
+    reader.ReadToEnd()
+let cacheCellXml ref =
+    let found = Text.RegularExpressions.Regex.Match(cacheSheetXml, "<c\\b[^>]*\\br=\"" + ref + "\"[^>]*>[\\s\\S]*?</c>")
+    if found.Success then found.Value else ""
+ok "saved uninitialized cycles carry empty string results"
+   ([ "A1"; "D1"; "E1"; "I1" ]
+    |> List.forall (fun ref ->
+        let xml = cacheCellXml ref
+        xml.Contains("t=\"str\"") && Text.RegularExpressions.Regex.IsMatch(xml, "<v(?:\\s[^>]*)?></v>|<v\\s*/>")))
+   (sprintf "%s / %s" (cacheCellXml "A1") (cacheCellXml "I1"))
+ok "saved acyclic missing caches carry calculated numbers"
+   ([ "F1", "3"; "H1", "3" ]
+    |> List.forall (fun (ref, value) -> (cacheCellXml ref).Contains("<v>" + value + "</v>")))
+   (sprintf "%s / %s" (cacheCellXml "F1") (cacheCellXml "H1"))
+let cacheReopened = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative cacheSaved |> Option.get)
+eq "empty and computed formula caches after save/reopen" (cacheValues cacheReopened) expectedCacheValues
+
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -640,8 +640,16 @@ calc / full), and cells typed one by one (`eval-cells-on-vm.sh`, `#ITERATE`, `#N
   into A1:C1 gives 5, 0, 0. Cell entry now leaves the new formula's cache empty for recalculation
   rather than storing a result computed against the pre-edit sheet. Validation still sees the
   prospective value. Browser regression: `api-circular-entry` (incremental and full calculation).
-- Not reproduced: a formula with no value in the file (`<f>` without `<v>`) is "" in Excel (so `100+0.1*B1`
-  on a cycle is #VALUE!); ours starts it from 0.
+- On opening an XLSX, a formula on a non-iterative cycle (or reading it) with no cached
+  value is empty text in Excel 2019, whether `<v>` is absent, `<v/>` is empty, or `t="str"` has
+  an empty `<v>`; numeric caches remain numeric. Previously ours started these formulas
+  from 0. The reader now distinguishes an empty string cache from an absent result, and
+  the import calculation keeps only uncached formulas held by a cycle as empty text;
+  formulas newly typed into a cycle still start at 0. Acyclic uncached formulas still
+  recalculate on import (Excel opens `=1+2` as 3); saving writes the calculated
+  caches, including empty-text cycle results, rather than reusing empty file caches
+  or bypassing the write as an unchanged package. Native import/roundtrip and
+  browser `xlsx-open-empty-formula-caches` cover open, save/reopen and breaking a cycle.
 
 ### Comparisons at 15 significant digits, 2026-11-21
 

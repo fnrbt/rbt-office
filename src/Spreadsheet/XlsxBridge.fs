@@ -228,8 +228,9 @@ type ImportedSheet = {
 }
 
 /// What an export needs of the workbook the sheets were imported from: the
-/// reader's workbook, and each sheet's model exactly as it was installed (so
-/// that "the user did not touch this" can be told from "this changed").
+/// reader's workbook, and each sheet's model as the file provided it, before
+/// any missing formula caches were calculated on open. Saves compare with
+/// that baseline so both user edits and calculated caches are written back.
 type XlsxSource = {
     /// Identifies this import: the models of its sheets carry it in
     /// `SourceSheet.Book`, so a model is only matched with the file it came from.
@@ -1419,7 +1420,9 @@ module Import =
     /// workbook - a sheet recalculated on its own turns every cross-sheet
     /// reference into #REF! and every defined name into #NAME? - and afterwards
     /// every formula that did have a cached result gets it back, so values Excel
-    /// computed are never replaced by ours.
+    /// computed are never replaced by ours. Excel opens an uninitialized formula
+    /// on a non-iterative circular reference (or one reading it) as empty text,
+    /// unlike a newly typed circular formula, which starts at numeric zero.
     let private computeUncachedFormulas (context: Wb.Workbook) : Wb.Workbook =
         // (Only a formula can lack its result: the sheets' formula indexes say where to look.)
         let needsWork =
@@ -1429,7 +1432,7 @@ module Import =
                 formulaIndexOf cells |> Set.exists (fun addr -> match Map.tryFind addr cells with Some cell -> isUncached cell | None -> false))
         if not needsWork then context
         else
-            let recalculated = Rbt.Spreadsheet.Formula.recalculateWorkbook context
+            let recalculated, engine = Rbt.Spreadsheet.Recalc.recalculateAll context
             let sheets =
                 recalculated.Sheets
                 |> Map.map (fun id sheet ->
@@ -1441,6 +1444,9 @@ module Import =
                             match cell.Value with
                             | CellValue.Formula (_, cached) when cached <> CellValue.Empty ->
                                 cells <- Map.add addr cell cells
+                            | CellValue.Formula (formula, CellValue.Empty) when context.Iteration.IsNone ->
+                                if Rbt.Spreadsheet.Recalc.heldAt engine id addr then
+                                    cells <- Map.add addr { cell with Value = CellValue.Formula (formula, CellValue.String "") } cells
                             | _ -> ()
                         { sheet with Model = { sheet.Model with Cells = cells } })
             { recalculated with Sheets = sheets }
@@ -1576,7 +1582,9 @@ module Import =
                    Visible = visible.[index] } : ImportedSheet))
           Context = context
           Date1904 = wb.Date1904
-          Source = { Id = sourceId; Workbook = wb; Baseline = finalModels; BaselineNames = context.Names; BaselineNameInfo = context.NameInfo } }
+          // Compare saves with the file's caches, not the values calculated on open:
+          // an uncached formula's newly calculated value must be written back.
+          Source = { Id = sourceId; Workbook = wb; Baseline = models; BaselineNames = context.Names; BaselineNameInfo = context.NameInfo } }
 
     let importWorkbook (wb: XlsxReader.Workbook) : ImportedWorkbook =
         importWorkbookWith defaultImportOptions wb

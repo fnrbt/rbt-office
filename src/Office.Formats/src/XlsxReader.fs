@@ -2221,7 +2221,7 @@ module Xlsx =
     // workbooks); the `Cell` record carries both.
     let cellValue (cNode: XmlNode) : CellValue =
         let cellType = Xml.attr "t" cNode
-        let value = sElem "v" cNode |> Option.bind Xml.text
+        let value = sElem "v" cNode |> Option.map (fun v -> Xml.text v |> Option.defaultValue "")
         let inlineText =
             sElem "is" cNode
             |> Option.map (descendantTextConcat "t")
@@ -2245,7 +2245,7 @@ module Xlsx =
         let styleIdx = Xml.attr "s" cNode |> Option.bind tryParseInt
         let fNode = sElem "f" cNode
         let fText = fNode |> Option.map (fun f -> Xml.text f |> Option.defaultValue "")
-        let value = sElem "v" cNode |> Option.bind Xml.text
+        let value = sElem "v" cNode |> Option.map (fun v -> Xml.text v |> Option.defaultValue "")
         // `t="inlineStr"` cells carry their text directly inside <is><t>...</t></is>
         // instead of pointing at a sharedStrings index. Rare in normal
         // Excel exports but emitted by various code generators (POI, the

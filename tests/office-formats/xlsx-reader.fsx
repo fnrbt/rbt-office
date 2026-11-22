@@ -677,6 +677,25 @@ for label, pad in bothPaths do
         && value "G1" = Some (XlsxReader.Error "DIV/0!") && formula "G1" = Some "1/0")
        (sprintf "%A / %A" (cellOf wb "F1") (cellOf wb "G1"))
 
+// A present, empty string result is a cache, not an uncalculated formula.
+// In contrast a missing <v>, or a numeric <v/> with no result, still needs calculation.
+let emptyCacheBody =
+    "<sheetData><row r=\"1\">"
+    + "<c r=\"A1\" t=\"str\"><f>A1</f><v></v></c>"
+    + "<c r=\"B1\" t=\"str\"><f>B1</f><v/></c>"
+    + "<c r=\"C1\" t=\"str\"><f>1+1</f></c>"
+    + "<c r=\"D1\"><f>1+1</f><v/></c>"
+    + "</row></sheetData>"
+for label, pad in bothPaths do
+    let wb = loadOne pad "" emptyCacheBody []
+    let value ref = cellOf wb ref |> Option.map (fun c -> c.Value)
+    ok (sprintf "formula-empty-string-cache-%s" label)
+       (value "A1" = Some (XlsxReader.String "") && value "B1" = Some (XlsxReader.String ""))
+       (sprintf "%A / %A" (value "A1") (value "B1"))
+    ok (sprintf "formula-missing-or-numeric-empty-cache-%s" label)
+       (value "C1" = Some (XlsxReader.Formula "1+1") && value "D1" = Some (XlsxReader.Formula "1+1"))
+       (sprintf "%A / %A" (value "C1") (value "D1"))
+
 // ----- rows and cells without `r` --------------------------------------------
 
 let noRefBody =

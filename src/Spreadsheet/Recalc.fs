@@ -558,6 +558,16 @@ let isUnsupported (engine: Engine) = ignore engine; false
 /// calculation - were calculated until they settled.
 let cyclicCount (engine: Engine) = engine.LastCyclic
 
+/// Whether the last full pass kept this formula's value because it is on, or
+/// reads, a non-iterative circular reference.
+let heldAt (engine: Engine) (sheetId: SheetId) (addr: CellAddress) : bool =
+    match engine.Sheets.TryGetValue sheetId with
+    | true, sheet ->
+        match sheet.Nodes.TryGetValue (keyOf addr.Row addr.Col) with
+        | true, node -> node.IsFormula && node.Held
+        | _ -> false
+    | _ -> false
+
 /// Number of formulas that read a 3-D reference (`Jan:Mar!B1`): what they read
 /// changes with the order of the sheets, without any cell or formula changing.
 let threeDCount (engine: Engine) = engine.ThreeD
