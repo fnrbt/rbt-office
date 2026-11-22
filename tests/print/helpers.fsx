@@ -209,7 +209,8 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
             pagesCounted <- pagesCounted + pagination.Pages.Length
             ok (sprintf "pages: %s / %s" (System.IO.Path.GetFileName file) sheet.Name) (pdfPageCount pdf = max 1 pagination.Pages.Length)
                 (sprintf "the PDF has %d pages, the pagination %d" (pdfPageCount pdf) pagination.Pages.Length)
-            // Every cell of every print area is on exactly one page of its area.
+            // Every cell of every print area is on one page of its area at most, and a cell on none holds nothing (the
+            // pages at the end with nothing on them are left out, as Excel 2019 leaves them).
             let covered =
                 pagination.PrintAreas |> List.mapi (fun index area ->
                     let pages = pagination.Pages |> List.filter (fun page -> page.Area = index)
@@ -217,7 +218,12 @@ for file in [ "real-world/milk-street-office.xlsx"; "real-world/lyric-multifamil
                     // (The repeat rows / columns print where they are on the pages that begin at or before them.)
                     let rows = area.To.Row - area.From.Row + 1
                     let cols = area.To.Col - area.From.Col + 1
-                    cells = max 0 rows * max 0 cols)
+                    let onPage (addr: CellAddress) = pages |> List.exists (fun page -> addr.Row >= page.RowStart && addr.Row <= page.RowEnd && addr.Col >= page.ColStart && addr.Col <= page.ColEnd)
+                    let leftOut =
+                        sheet.Model.Cells |> Map.exists (fun addr data ->
+                            addr.Row >= area.From.Row && addr.Row <= area.To.Row && addr.Col >= area.From.Col && addr.Col <= area.To.Col
+                            && (match data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true) && not (onPage addr))
+                    cells <= max 0 rows * max 0 cols && (cells = max 0 rows * max 0 cols || not leftOut))
             ok (sprintf "pages: %s / %s cover their areas" (System.IO.Path.GetFileName file) sheet.Name) (List.forall id covered) (sprintf "%A" covered)
 // A landscape sheet is paginated the wider way round, whether its setup holds the paper's size
 // in portrait (a file read by the editor) or already turned (the native runner).

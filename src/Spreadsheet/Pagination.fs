@@ -313,6 +313,31 @@ let paginate (model: SpreadsheetModel) : Pagination =
                     result.Add (slice rs re cs ce)
         resizeArrayToList result
     let pages = printRanges |> List.mapi pagesOf |> List.concat
+    // The pages at the end with nothing on them are left out: no cell that prints (`printsCell`) in a row and column
+    // shown, no text running into them, no merged cell that prints, no drawing - the grid's lines do not count, nor
+    // do a page's repeat rows / columns. A page with nothing on it before one with something prints, and "&N" counts
+    // the pages printed (make-print-place-fixture.py: BlankLast's last page and BlankLastTwo's two, BlankLastGrid's
+    // with its gridlines, are not in Excel 2019's PDF; Blank's two in the middle are; acre-property's Summary, its last
+    // page past the text running over from rows above, and dcf-stock-analysis's Financial Model print 7 and 9 pages).
+    let pages =
+        let spans = ResizeArray<int * int * int * int>()
+        let shown (row: int) (col: int) = rowHeightPx model row > 0.0 && colWidthPx model col > 0.0
+        for KeyValue(addr, data) in model.Cells do
+            if printsCell data && shown addr.Row addr.Col then spans.Add((addr.Row, addr.Row, addr.Col, overflowEnd model addr data))
+        for merge in model.MergedCells do
+            match Map.tryFind { Row = merge.StartRow; Col = merge.StartCol } model.Cells with
+            | Some data when printsCell data -> spans.Add((merge.StartRow, merge.EndRow, merge.StartCol, merge.EndCol))
+            | _ -> ()
+        for drawing in model.Drawings do
+            let anchor = drawing.Anchor
+            spans.Add((anchor.FromRow, defaultArg anchor.ToRow anchor.FromRow, anchor.FromCol, defaultArg anchor.ToCol anchor.FromCol))
+        let hasSomething (page: PageSlice) =
+            spans |> Seq.exists (fun (r0, r1, c0, c1) -> r0 <= page.RowEnd && r1 >= page.RowStart && c0 <= page.ColEnd && c1 >= page.ColStart)
+        let rec trim (reversed: PageSlice list) =
+            match reversed with
+            | last :: earlier when not earlier.IsEmpty && not (hasSomething last) -> trim earlier
+            | _ -> reversed
+        if pages.Length <= 1 then pages else pages |> List.rev |> trim |> List.rev
 
     let result =
         { Pages = pages

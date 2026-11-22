@@ -1,0 +1,219 @@
+Place	1	setup.orientation	1
+Place	1	setup.paper	1
+Place	1	setup.zoom	100
+Place	1	setup.fitwide	1
+Place	1	setup.fittall	1
+Place	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+Place	1	setup.center	False False
+Place	1	setup.printarea	
+Place	1	setup.titlerows	
+Place	1	setup.titlecols	
+Place	1	setup.order	1
+Place	1	setup.firstpage	-4105
+Place	1	setup.gridlines	True
+Place	1	setup.headings	False
+Place	1	setup.bw	False
+Place	1	setup.draft	False
+Place	1	setup.errors	0
+Place	1	used	$A$1:$I$11
+Place	1	vbreak	8 auto
+Place	1	pdf	synthetic-print-pages-place-1.pdf
+Blank	2	setup.orientation	1
+Blank	2	setup.paper	1
+Blank	2	setup.zoom	100
+Blank	2	setup.fitwide	1
+Blank	2	setup.fittall	1
+Blank	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+Blank	2	setup.center	False False
+Blank	2	setup.printarea	
+Blank	2	setup.titlerows	
+Blank	2	setup.titlecols	
+Blank	2	setup.order	1
+Blank	2	setup.firstpage	-4105
+Blank	2	setup.gridlines	False
+Blank	2	setup.headings	False
+Blank	2	setup.bw	False
+Blank	2	setup.draft	False
+Blank	2	setup.errors	0
+Blank	2	used	$A$1:$K$60
+Blank	2	hbreak	48 auto
+Blank	2	vbreak	10 auto
+Blank	2	pdf	synthetic-print-pages-place-2.pdf
+BlankGrid	3	setup.orientation	1
+BlankGrid	3	setup.paper	1
+BlankGrid	3	setup.zoom	100
+BlankGrid	3	setup.fitwide	1
+BlankGrid	3	setup.fittall	1
+BlankGrid	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankGrid	3	setup.center	False False
+BlankGrid	3	setup.printarea	
+BlankGrid	3	setup.titlerows	
+BlankGrid	3	setup.titlecols	
+BlankGrid	3	setup.order	1
+BlankGrid	3	setup.firstpage	-4105
+BlankGrid	3	setup.gridlines	True
+BlankGrid	3	setup.headings	False
+BlankGrid	3	setup.bw	False
+BlankGrid	3	setup.draft	False
+BlankGrid	3	setup.errors	0
+BlankGrid	3	used	$A$1:$K$60
+BlankGrid	3	hbreak	48 auto
+BlankGrid	3	vbreak	10 auto
+BlankGrid	3	pdf	synthetic-print-pages-place-3.pdf
+BlankFill	4	setup.orientation	1
+BlankFill	4	setup.paper	1
+BlankFill	4	setup.zoom	100
+BlankFill	4	setup.fitwide	1
+BlankFill	4	setup.fittall	1
+BlankFill	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankFill	4	setup.center	False False
+BlankFill	4	setup.printarea	
+BlankFill	4	setup.titlerows	
+BlankFill	4	setup.titlecols	
+BlankFill	4	setup.order	1
+BlankFill	4	setup.firstpage	-4105
+BlankFill	4	setup.gridlines	False
+BlankFill	4	setup.headings	False
+BlankFill	4	setup.bw	False
+BlankFill	4	setup.draft	False
+BlankFill	4	setup.errors	0
+BlankFill	4	used	$A$1:$K$60
+BlankFill	4	hbreak	48 auto
+BlankFill	4	vbreak	10 auto
+BlankFill	4	pdf	synthetic-print-pages-place-4.pdf
+BlankBorder	5	setup.orientation	1
+BlankBorder	5	setup.paper	1
+BlankBorder	5	setup.zoom	100
+BlankBorder	5	setup.fitwide	1
+BlankBorder	5	setup.fittall	1
+BlankBorder	5	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankBorder	5	setup.center	False False
+BlankBorder	5	setup.printarea	
+BlankBorder	5	setup.titlerows	
+BlankBorder	5	setup.titlecols	
+BlankBorder	5	setup.order	1
+BlankBorder	5	setup.firstpage	-4105
+BlankBorder	5	setup.gridlines	False
+BlankBorder	5	setup.headings	False
+BlankBorder	5	setup.bw	False
+BlankBorder	5	setup.draft	False
+BlankBorder	5	setup.errors	0
+BlankBorder	5	used	$A$1:$M$60
+BlankBorder	5	hbreak	48 auto
+BlankBorder	5	vbreak	10 auto
+BlankBorder	5	pdf	synthetic-print-pages-place-5.pdf
+BlankLast	6	setup.orientation	1
+BlankLast	6	setup.paper	1
+BlankLast	6	setup.zoom	100
+BlankLast	6	setup.fitwide	1
+BlankLast	6	setup.fittall	1
+BlankLast	6	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankLast	6	setup.center	False False
+BlankLast	6	setup.printarea	
+BlankLast	6	setup.titlerows	
+BlankLast	6	setup.titlecols	
+BlankLast	6	setup.order	1
+BlankLast	6	setup.firstpage	-4105
+BlankLast	6	setup.gridlines	False
+BlankLast	6	setup.headings	False
+BlankLast	6	setup.bw	False
+BlankLast	6	setup.draft	False
+BlankLast	6	setup.errors	0
+BlankLast	6	used	$A$1:$K$60
+BlankLast	6	hbreak	48 auto
+BlankLast	6	vbreak	10 auto
+BlankLast	6	pdf	synthetic-print-pages-place-6.pdf
+BlankLastTwo	7	setup.orientation	1
+BlankLastTwo	7	setup.paper	1
+BlankLastTwo	7	setup.zoom	100
+BlankLastTwo	7	setup.fitwide	1
+BlankLastTwo	7	setup.fittall	1
+BlankLastTwo	7	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankLastTwo	7	setup.center	False False
+BlankLastTwo	7	setup.printarea	
+BlankLastTwo	7	setup.titlerows	
+BlankLastTwo	7	setup.titlecols	
+BlankLastTwo	7	setup.order	1
+BlankLastTwo	7	setup.firstpage	-4105
+BlankLastTwo	7	setup.gridlines	False
+BlankLastTwo	7	setup.headings	False
+BlankLastTwo	7	setup.bw	False
+BlankLastTwo	7	setup.draft	False
+BlankLastTwo	7	setup.errors	0
+BlankLastTwo	7	used	$A$1:$K$110
+BlankLastTwo	7	hbreak	48 auto
+BlankLastTwo	7	hbreak	95 auto
+BlankLastTwo	7	vbreak	10 auto
+BlankLastTwo	7	pdf	synthetic-print-pages-place-7.pdf
+BlankLastGrid	8	setup.orientation	1
+BlankLastGrid	8	setup.paper	1
+BlankLastGrid	8	setup.zoom	100
+BlankLastGrid	8	setup.fitwide	1
+BlankLastGrid	8	setup.fittall	1
+BlankLastGrid	8	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankLastGrid	8	setup.center	False False
+BlankLastGrid	8	setup.printarea	
+BlankLastGrid	8	setup.titlerows	
+BlankLastGrid	8	setup.titlecols	
+BlankLastGrid	8	setup.order	1
+BlankLastGrid	8	setup.firstpage	-4105
+BlankLastGrid	8	setup.gridlines	True
+BlankLastGrid	8	setup.headings	False
+BlankLastGrid	8	setup.bw	False
+BlankLastGrid	8	setup.draft	False
+BlankLastGrid	8	setup.errors	0
+BlankLastGrid	8	used	$A$1:$K$60
+BlankLastGrid	8	hbreak	48 auto
+BlankLastGrid	8	vbreak	10 auto
+BlankLastGrid	8	pdf	synthetic-print-pages-place-8.pdf
+Pads	9	setup.orientation	1
+Pads	9	setup.paper	1
+Pads	9	setup.zoom	100
+Pads	9	setup.fitwide	1
+Pads	9	setup.fittall	1
+Pads	9	setup.margins	50.4 50.4 54 54 21.6 21.6
+Pads	9	setup.center	False False
+Pads	9	setup.printarea	
+Pads	9	setup.titlerows	
+Pads	9	setup.titlecols	
+Pads	9	setup.order	1
+Pads	9	setup.firstpage	-4105
+Pads	9	setup.gridlines	True
+Pads	9	setup.headings	False
+Pads	9	setup.bw	False
+Pads	9	setup.draft	False
+Pads	9	setup.errors	0
+Pads	9	used	$B$1:$J$3
+Pads	9	vbreak	8 auto
+Pads	9	pdf	synthetic-print-pages-place-9.pdf
+BlankOverflow	10	setup.orientation	1
+BlankOverflow	10	setup.paper	1
+BlankOverflow	10	setup.zoom	100
+BlankOverflow	10	setup.fitwide	1
+BlankOverflow	10	setup.fittall	1
+BlankOverflow	10	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlankOverflow	10	setup.center	False False
+BlankOverflow	10	setup.printarea	
+BlankOverflow	10	setup.titlerows	
+BlankOverflow	10	setup.titlecols	
+BlankOverflow	10	setup.order	1
+BlankOverflow	10	setup.firstpage	-4105
+BlankOverflow	10	setup.gridlines	False
+BlankOverflow	10	setup.headings	False
+BlankOverflow	10	setup.bw	False
+BlankOverflow	10	setup.draft	False
+BlankOverflow	10	setup.errors	0
+BlankOverflow	10	used	$A$1:$A$60
+BlankOverflow	10	hbreak	48 auto
+BlankOverflow	10	vbreak	10 auto
+BlankOverflow	10	pdf	synthetic-print-pages-place-10.pdf
+Place	1	pages	2
+Blank	2	pages	4
+BlankGrid	3	pages	4
+BlankFill	4	pages	4
+BlankBorder	5	pages	4
+BlankLast	6	pages	3
+BlankLastTwo	7	pages	4
+BlankLastGrid	8	pages	3
+Pads	9	pages	2
+BlankOverflow	10	pages	3
