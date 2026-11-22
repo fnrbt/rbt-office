@@ -43,6 +43,7 @@
     <Compile Include="MacroHost.fs" />
     <Compile Include="MacroProject.fs" />
     <Compile Include="Layout.fs" />
+    <Compile Include="Inflate.fs" />
     <Compile Include="Charts.fs" />
     <Compile Include="Slicers.fs" />
     <Compile Include="Emf.fs" />

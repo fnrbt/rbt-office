@@ -2426,6 +2426,27 @@ checks['camera-excel-parity'] = async () => {
     return lines;
 };
 
+// Filled maps (chartEx regionMap) drawn from their geography cache as Excel 2019 draws them (dashboard-ecommerce-sales'
+// "Map Chart": 51 regions, California #1482AC, Alaska #E0E0E0, the scale and the provider's credits).
+checks['map-charts-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    const errors = [];
+    grid.OnError((error) => errors.push(error.source + ': ' + error.message));
+    try {
+        await grid.ImportXlsx((await bytesOf('tests/real-world/dashboard-ecommerce-sales.xlsx')).slice());
+        grid.SwitchSheet(grid.GetSheetNames().indexOf('Map Chart')); await frame(); await everyObjectSeen(host);
+        const map = [...host.querySelectorAll('.spreadsheet-drawing')].find((item) => item.querySelector('svg path'));
+        const fills = map ? [...map.querySelectorAll('svg path')].map((p) => p.getAttribute('fill')) : [];
+        check('the Map Chart sheet\'s map: 51 regions drawn, no placeholder', [fills.length, host.querySelectorAll('.spreadsheet-object-label').length], [51, 0]);
+        check('... California #1482AC, Alaska #E0E0E0 (Excel\'s colours)', ['#1482AC', '#E0E0E0'].map((c) => fills.includes(c)), [true, true]);
+        check('... its scale and credits', map ? ['Sales', '$ 457.69K', '$ 0.92K', 'Powered by Bing'].map((t) => [...map.querySelectorAll('svg text')].some((n) => n.textContent === t)) : null, [true, true, true, true]);
+        check('no error reported', errors, []);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
 checks['activex-emf-excel-parity'] = async () => {
     const { lines, check } = makeLog();
     const { grid, host, close } = mountGrid();
