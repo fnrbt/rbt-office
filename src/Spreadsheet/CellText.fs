@@ -919,10 +919,20 @@ type NumberFit =
 /// of a number too wide and where numbers start to fit).
 /// Bold text in Small Fonts (GDI's made-up bold) has a pixel less (`NumberFit.Overhang`: Calibri 11 bold at
 /// 50 %, its digit 5 px, 6 px less; at 60 % and 67 %, its digit 6 px, 6 less).
-let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
+/// How far in from its cell's sides Excel 2019 sets a line of text on screen, in screen pixels: ceil(d / 4) from
+/// the cell's left and one more from its right (the grid line at the right is the cell's), d the widest digit of
+/// the text's own font as drawn there (`measure`: Excel's widths at the zoom) - not the Normal font's. 2 / 3 px for
+/// Calibri 11 at 100 % (d 7), 3 / 4 for Calibri 14-18 (d 10-12), 4 / 5 for Calibri 20 or Arial 20 (d 14-15), 6 / 7
+/// for Calibri 36 (d 24); at 150 % Calibri 11 3 / 4 (d 11), at 200 % 4 / 5 (d 15). The same for left, right,
+/// general, indented (the indent is added), wrapped and distributed text and for numbers; a number's room between
+/// the two (`fittedRoom`). Checked in Excel (make-text-inset-fixture.py: 7 Normal fonts, 30 cell fonts, 50-200 %).
+let textInset (measure: string -> float) : int =
     let mutable widest = 0.0
     for d in "0123456789" do widest <- max widest (measure (string d))
-    max 0.0 (System.Math.Round cellWidthPx - (2.0 * System.Math.Ceiling (widest / 4.0) + 1.0) - fit.Overhang)
+    int (System.Math.Ceiling (widest / 4.0))
+
+let private fittedRoom (fit: NumberFit) (measure: string -> float) (cellWidthPx: float) =
+    max 0.0 (System.Math.Round cellWidthPx - float (2 * textInset measure + 1) - fit.Overhang)
 
 /// `#` as many as fit in a cell's room (`fittedRoom`, `NumberFit`) - none where not one fits (Excel shows nothing: a 20-px
 /// column of italic Calibri 11 at 57 %, make-number-room-fixture.py).

@@ -3876,6 +3876,10 @@ type Spreadsheet(container: Element) as this =
                 let step = max (model.IndentUnit * float characters) 13.0
                 { look with IndentLeft = float indent / float characters * step + 14.0 }
             | _ -> look
+        // (A distributed text's indent is on both sides: Excel 2019, make-text-inset-fixture.py "dist-i1".)
+        let look =
+            if look.Horizontal = "distributed" && look.IndentLeft > 0.0 && look.IndentRight = 0.0 then { look with IndentRight = look.IndentLeft }
+            else look
         if node.Pane <> pane || not (isChildOf cell layer.Panes.[pane]) then appendChild layer.Panes.[pane] cell
         let addr = { Row = row; Col = col }
         // What every cell has in common is in the grid's style sheet (see
@@ -3930,9 +3934,22 @@ type Spreadsheet(container: Element) as this =
         // rather than `font-size-adjust`, so that the text is measured as it is drawn.)
         let fontPx = float (ExcelText.pixelSize look.FontSize zoom) / zoom * drawnScale
         if look.Text <> "" then add "font-size" (cssPxFine fontPx)
+        // How far in from the cell's sides the text is set (`CellText.textInset`): ceil(d / 4) screen pixels from
+        // the left, one more from the right, d the widest digit of the cell's font as Excel draws it at the zoom
+        // (2 / 3 px for Calibri 11 at 100 %: the grid's style sheet). In sheet pixels (the content's zoom scales them).
+        let inset =
+            if look.Text = "" then 2
+            else CellText.textInset (fun digit -> excelTextWidth zoom digit look.FontSize look.FontName look.Bold look.Italic)
+        let padLeft = float inset / zoom
+        let padRight = float (inset + 1) / zoom
+        let ownPads = inset <> 2 || zoom <> 1.0
         // Across the cell (the style sheet's default is the left).
         match look.Horizontal with
-        | "distributed" | "justify" -> add "text-align" "justify"
+        | "justify" -> add "text-align" "justify"
+        // (Distributed: every line spread from side to side, the last and only one too.)
+        | "distributed" ->
+            add "text-align" "justify"
+            add "text-align-last" "justify"
         | _ ->
             match look.Align with
             | SpreadsheetLayout.AlignRight -> add "text-align" "right"
@@ -3953,8 +3970,8 @@ type Spreadsheet(container: Element) as this =
             add "word-wrap" "break-word"
             // (The lines are broken where Excel breaks them, `CellText.excelWrapLines` below - a line no wider
             // than the cell less 5 px; text the browser wraps itself - justified, rich - within 3 px a side.)
-            if look.IndentLeft = 0.0 then add "padding-left" "3px"
-            if look.IndentRight = 0.0 then add "padding-right" "3px"
+            if look.IndentLeft = 0.0 then add "padding-left" (cssPxFine padLeft)
+            if look.IndentRight = 0.0 then add "padding-right" (cssPxFine padRight)
             add "line-height" (px lineHeight)
             add "display" "flex"
             add "flex-direction" "column"
@@ -3976,10 +3993,12 @@ type Spreadsheet(container: Element) as this =
                 add "padding-bottom" "0px"
             | _ -> add "line-height" (px (h - 4.0))
         // An indent pads the edge the text is aligned to.
-        // (Excel sets a line of text in 2 px from the cell's left side and 3 px from its right - the
-        // grid line at its right is the cell's -, in sheet pixels at any zoom: the grid's style sheet.)
-        if look.IndentRight > 0.0 then add "padding-right" (px (3.0 + look.IndentRight))
-        elif look.IndentLeft > 0.0 then add "padding-left" (px (2.0 + look.IndentLeft))
+        // (Excel sets a line of text in `inset` px from the cell's left side and one more from its right - the
+        // grid line at its right is the cell's -: the paddings above.)
+        // (Distributed text is indented from both sides.)
+        if look.IndentRight > 0.0 || look.IndentLeft > 0.0 || ownPads then
+            add "padding-left" (cssPxFine (padLeft + look.IndentLeft))
+            add "padding-right" (cssPxFine (padRight + look.IndentRight))
         // The table's look of the cell, for its edges and theirs.
         let tableLook = look.Table
         // Borders and grid lines: one line per edge. A cell draws the edge
@@ -4167,7 +4186,14 @@ type Spreadsheet(container: Element) as this =
         | None -> ()
         // The text: number-formatted (#### for a number that does not fit), none where a data bar
         // or an icon set hides the value.
-        let displayText = look.Text
+        // Fill: the text over and over, as many whole times as fit in the cell less its left inset and a pixel
+        // (`inset`; Excel 2019: 18 `H`s of Calibri 11, 9 px each, in a 173-px cell; 20 of Calibri 20, 17 px, in 346).
+        let displayText =
+            if look.Horizontal = "fill" && look.Text <> "" && not look.Wrap && look.Rotation = 0 then
+                let one = excelTextWidth zoom look.Text look.FontSize look.FontName look.Bold look.Italic
+                if one <= 0.0 then look.Text
+                else String.replicate (max 1 (int (System.Math.Floor ((screenWidth - float inset - 1.0) / one + 1e-9)))) look.Text
+            else look.Text
         // (In sheet pixels: what Excel draws on screen at the zoom, unscaled.)
         let measureText (text: string) = excelTextWidth zoom text look.FontSize look.FontName look.Bold look.Italic / zoom
         // Drawn as wide as Excel draws it: the browser's own advances evened out to Excel's over the
@@ -4181,7 +4207,7 @@ type Spreadsheet(container: Element) as this =
                && look.Horizontal <> "justify" && look.Horizontal <> "distributed"
                && (model.RichRuns.IsEmpty || not (Map.containsKey addr model.RichRuns)) then
                 let screen = System.Math.Floor (w * zoom + 0.5)
-                let room = screen - 5.0 - (look.IndentLeft + look.IndentRight) * zoom
+                let room = screen - float (2 * inset + 1) - (look.IndentLeft + look.IndentRight) * zoom
                 let lines = CellText.excelWrapLines (fun text -> excelTextWidth zoom text look.FontSize look.FontName look.Bold look.Italic) room displayText
                 spacing <- 0.0
                 Some lines
@@ -4189,7 +4215,7 @@ type Spreadsheet(container: Element) as this =
         // Shrink to fit: one line of text wider than its cell is drawn smaller
         // (never larger), down to what fits between the cell's paddings.
         if look.Shrink && displayText <> "" then
-            let room = w - 5.0 - look.IndentLeft - look.IndentRight
+            let room = w - padLeft - padRight - look.IndentLeft - look.IndentRight
             let width = measureText displayText
             if room > 0.0 && width > room then
                 spacing <- 0.0
@@ -4216,7 +4242,7 @@ type Spreadsheet(container: Element) as this =
         if isNumber && displayText <> "" && rotation = 0 && not look.Wrap && not look.Shrink && icon.IsNone && look.AcrossTo <= col then
             let indent = look.IndentLeft + look.IndentRight
             let width = measureText (match accounting with Some (sign, number) -> sign + " " + number | None -> displayText)
-            if width > w - 5.0 - indent then
+            if width > w - padLeft - padRight - indent then
                 squeezed <- true
                 if look.IndentRight = 0.0 then add "padding-right" "1px"
                 if look.IndentLeft = 0.0 then add "padding-left" "1px"
@@ -4248,13 +4274,13 @@ type Spreadsheet(container: Element) as this =
             match SpreadsheetLayout.textOverflowSides look.Format look.Value with
             // (Not measured when even the widest glyphs would fit the cell. An indent is room the text
             // does not have in its cell: vertex42-home-mortgage's indented "Mortgage Information" was cut short.)
-            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - 5.0 - look.IndentLeft - look.IndentRight ->
-                let excess = measureText displayText - (w - 5.0 - look.IndentLeft - look.IndentRight)
+            | Some (toLeft, toRight) when float displayText.Length * fontPx * 1.05 > w - padLeft - padRight - look.IndentLeft - look.IndentRight ->
+                let excess = measureText displayText - (w - padLeft - padRight - look.IndentLeft - look.IndentRight)
                 if excess > 0.0 then
                     wide <- true
                     // (Past the cell's edge: its own padding on that side is its to use.)
-                    let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - 2.0 else 0.0
-                    let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - 3.0 else 0.0
+                    let needLeft = if toLeft then (if toRight then excess / 2.0 else excess) - padLeft else 0.0
+                    let needRight = if toRight then (if toLeft then excess / 2.0 else excess) - padRight else 0.0
                     let first, last = SpreadsheetLayout.textOverflowSpan model row col needLeft needRight
                     // Text of a frozen column runs on into the columns beside the frozen
                     // ones only while they are there: scrolled away, it is cut at the frozen edge.
@@ -4308,7 +4334,7 @@ type Spreadsheet(container: Element) as this =
             add "letter-spacing" (cssPxFine spacing)
             if not look.Wrap && not squeezed && rotation = 0 && across = 0.0
                && (look.Align = SpreadsheetLayout.AlignRight || look.Align = SpreadsheetLayout.AlignCenter) then
-                add "padding-right" (cssPxFine (3.0 + look.IndentRight - spacing))
+                add "padding-right" (cssPxFine (padRight + look.IndentRight - spacing))
         setCssText cell (css.ToString())
         setAttribute cell "data-row" (string row)
         setAttribute cell "data-col" (string col)

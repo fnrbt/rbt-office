@@ -72,7 +72,7 @@ try {
         // (Selecting a cell out of sight would scroll the grid away - and, far down, not back to the same rows:
         // the selection is hidden instead.)
         const hide = document.createElement('style');
-        hide.textContent = '.spreadsheet-selection,.spreadsheet-active-cell{display:none !important}';
+        hide.textContent = '.spreadsheet-selection,.spreadsheet-active-cell,.spreadsheet-fill-handle{display:none !important}';
         host.appendChild(hide);
         // (Objects in view are laid out as they come into it; everyObjectSeen would scroll the grid back to its top.)
         const view = scroller.getBoundingClientRect();

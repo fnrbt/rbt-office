@@ -1884,8 +1884,10 @@ checks['grid-text-excel-parity'] = async () => {
             check(`${name}: the text is drawn at ${px} px on screen`, near(size * zoom / (name === 'Z67' ? 1 : calibriScale), px, 0.05), px);
             check(`${name}: twenty zeros are ${zeros} px wide, as Excel draws them`, near(textBox(node(2, 1)).width, zeros), zeros);
             const cell = node(0, 1).getBoundingClientRect(), right = node(1, 1).getBoundingClientRect();
-            check(`${name}: a left-aligned line starts 2 px x the zoom into the cell`, near(textBox(node(0, 1)).left - cell.left, 2 * zoom), 2 * zoom);
-            check(`${name}: a right-aligned line ends 3 px x the zoom before the cell's end`, near(right.right - textBox(node(1, 1)).right, 3 * zoom), 3 * zoom);
+            // (ceil(d / 4) screen px in, one more from the right, d Calibri 11's widest digit there - 7, 6, 6, Small Fonts' 5:
+            // `CellText.textInset`, text-inset-excel-parity.)
+            check(`${name}: a left-aligned line starts 2 px into the cell`, near(textBox(node(0, 1)).left - cell.left, 2), 2);
+            check(`${name}: a right-aligned line ends 3 px before the cell's end`, near(right.right - textBox(node(1, 1)).right, 3), 3);
         }
         await show('Z80');
         const pangram80 = textBox(node(0, 1)).width;
@@ -1897,6 +1899,69 @@ checks['grid-text-excel-parity'] = async () => {
         await show('Numbers');
         check('numbers at 75 % as Excel shows them there', [0, 1].map((row) => [1, 2, 3].map((col) => node(row, col)?.textContent ?? '')),
             [['#####', '1E+06', '1234567'], ['#####', '#######', '#########']]);
+    } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
+    close();
+    return lines;
+};
+
+// Where Excel 2019 sets a line of text in its cell on screen (make-text-inset-fixture.py, Excel's pictures against
+// ours, measure-text-inset.mjs): ceil(d / 4) px from the left side and one more from the right, d the widest digit
+// of the cell's own font as drawn at the zoom (`CellText.textInset`); fill repeats the text as many whole times as
+// fit in the cell less that inset and a pixel; distributed text spreads from inset to inset, indented on both sides.
+checks['text-inset-excel-parity'] = async () => {
+    const { lines, check } = makeLog();
+    const { grid, host, close } = mountGrid();
+    try {
+        const node = (row, col) => [...host.querySelectorAll(`.spreadsheet-cell[data-row="${row}"][data-col="${col}"]`)].find((n) => n.style.display !== 'none');
+        const textBox = (element) => {
+            const range = document.createRange(), walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+            let left = Infinity, right = -Infinity;
+            for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+                range.selectNodeContents(n);
+                const r = range.getBoundingClientRect();
+                if (r.width > 0) { left = Math.min(left, r.left); right = Math.max(right, r.right); }
+            }
+            return { left, right, width: right - left };
+        };
+        const near = (value, expected, slack = 0.6) => Math.abs(value - expected) <= slack ? expected : Math.round(value * 100) / 100;
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-text-inset.xlsx')).slice());
+        const names = grid.GetSheetNames();
+        // Each sheet: a font at sizes, a general text, a right-aligned text and a General number each (Excel's insets).
+        const sweeps = {
+            Calibri: [[8, 9, 10, 12, 14, 16, 18, 20, 24, 28], [2, 2, 2, 2, 3, 3, 3, 4, 4, 5]],
+            CalibriB: [[9, 12, 14, 16, 18, 24], [2, 2, 3, 3, 3, 4]],
+            Arial: [[8, 9, 12, 14, 16, 18, 24], [2, 2, 3, 3, 3, 4, 5]],
+            Times: [[10, 12, 14, 16, 20, 24], [2, 2, 3, 3, 4, 4]],
+            Black: [[9, 11, 14], [2, 3, 3]],
+            Calibri75: [[11, 12, 14, 16, 18, 20, 24, 28], [2, 2, 2, 2, 3, 3, 3, 4]],
+            Calibri125: [[11, 12, 14, 16, 18, 20], [3, 3, 3, 4, 4, 5]],
+            Calibri85: [[11, 12, 14, 16, 18, 20, 24], [2, 2, 2, 3, 3, 3, 4]],
+        };
+        for (const [sheet, [sizes, insets]] of Object.entries(sweeps)) {
+            grid.SwitchSheet(names.indexOf(sheet)); await frame(); await frame();
+            const got = [], want = [];
+            for (let i = 0; i < sizes.length * 3; i++) {
+                const k = i % sizes.length, j = Math.floor(i / sizes.length), q = insets[Math.floor(i / 3)];
+                const cell = node(2 * k + 1, 4 * j + 1);
+                if (!cell) { got.push('none'); want.push(q); continue; }
+                const box = cell.getBoundingClientRect(), text = textBox(cell);
+                if (i % 3 === 0) { got.push(near(text.left - box.left, q)); want.push(q); }
+                // (The line's last character ends where its letter spacing starts: the spacing follows it.)
+                else { const spacing = parseFloat(getComputedStyle(cell).letterSpacing) || 0; got.push(near(box.right - (text.right - spacing), q + 1)); want.push(q + 1); }
+            }
+            check(`${sheet}: every line ceil(d / 4) px from the left, one more from the right (${sizes.join(', ')} pt)`, got, want);
+        }
+        await grid.ImportXlsx((await bytesOf('tests/test-documents-excel/synthetic-text-inset-align.xlsx')).slice());
+        const sheets = grid.GetSheetNames();
+        // (Calibri 11 workbook, two columns of 12 cases: fill is case 7, distributed 8, indented 9, fill of "Hx" 15.)
+        const at = (i) => node(2 * (i % 12) + 1, 4 * Math.floor(i / 12) + 1);
+        for (const [sheet, hs, hxs] of [['Z100', 18, 10], ['Z75', 18, 11], ['Z90', 19, 10], ['Z150', 18, 10]]) {
+            grid.SwitchSheet(sheets.indexOf(sheet)); await frame(); await frame();
+            check(`${sheet}: fill repeats H ${hs} times, Hx ${hxs} times, as Excel`, [at(7)?.textContent, at(15)?.textContent], ['H'.repeat(hs), 'Hx'.repeat(hxs)]);
+        }
+        grid.SwitchSheet(sheets.indexOf('Z100')); await frame(); await frame();
+        const spread = (i) => { const c = at(i), b = c.getBoundingClientRect(), t = textBox(c); return [near(t.left - b.left, Math.round(t.left - b.left)), near(b.right - t.right, Math.round(b.right - t.right))]; };
+        check('distributed "H H H" from 2 px to 3 px short of the cell\'s end; indented 1: 11 and 12 (9 px a level, both sides)', [spread(8), spread(9)], [[2, 3], [11, 12]]);
     } catch (e) { lines.push('FAIL threw ' + String(e && e.stack || e).split('\n').slice(0, 3).join(' | ')); }
     close();
     return lines;
