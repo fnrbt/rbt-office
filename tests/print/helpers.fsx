@@ -414,8 +414,8 @@ do
         (sprintf "%A" metricText)
 
 
-// ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break
-// Preview's breaks and each sheet's pages in its PDF, probe-print-pages.vbs) -----
+// ----- Excel 2019 Page Break Preview's breaks (legacy *.excel.tsv fields;
+// fresh probes namespace them preview.*) and direct PDF page counts (direct.pages). -----
 do
     let dir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel")
     let mutable sheets = 0
@@ -426,17 +426,24 @@ do
         imported.Sheets |> Array.iteri (fun index sheet ->
             let mine = facts |> Array.filter (fun parts -> parts.[1] = string (index + 1))
             let get key = mine |> Array.tryPick (fun parts -> if parts.[2] = key then Some parts.[3] else None)
-            let pagination = Pagination.paginatePrinted sheet.Model
-            let area = pagination.PrintBounds
-            let starts (pick: Pagination.PageSlice -> int) = pagination.Pages |> List.map (fun page -> pick page + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
-            let breaks key last = mine |> Array.choose (fun parts -> if parts.[2] = key then Some (int (parts.[3].Split(' ').[0])) else None) |> Array.distinct |> Array.sort |> Array.filter (fun b -> b <= last) |> List.ofArray
-            let excelPages = match get "pages" with Some n -> int n | None -> 0
+            let preview = Pagination.paginatePreview sheet.Model
+            let area = preview.PrintBounds
+            let starts (pick: Pagination.PageSlice -> int) = preview.Pages |> List.map (fun page -> pick page + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
+            let breaks key last =
+                let key = if Option.isSome (get ("preview." + key)) then "preview." + key else key
+                mine |> Array.choose (fun parts -> if parts.[2] = key then Some (int (parts.[3].Split(' ').[0])) else None)
+                |> Array.distinct |> Array.sort |> Array.filter (fun b -> b <= last) |> List.ofArray
+            let previewPages = get "pages" |> Option.map int
+            let directPages = get "direct.pages" |> Option.map int
             let excelRows, excelCols = breaks "hbreak" (area.To.Row + 1), breaks "vbreak" (area.To.Col + 1)
             sheets <- sheets + 1
             ok (sprintf "print pages: %s / %s" (System.IO.Path.GetFileNameWithoutExtension book) sheet.Name)
-                (pagination.Pages.Length = excelPages && starts (fun page -> page.RowStart) = excelRows && starts (fun page -> page.ColStart) = excelCols)
-                (sprintf "pages %d (Excel %d), rows %A (%A), columns %A (%A), scale %g" pagination.Pages.Length excelPages
-                    (starts (fun page -> page.RowStart)) excelRows (starts (fun page -> page.ColStart)) excelCols pagination.Scale))
+                ((previewPages |> Option.forall ((=) preview.Pages.Length))
+                 && (directPages |> Option.forall ((=) (Pagination.paginatePrinted sheet.Model).Pages.Length))
+                 && starts (fun page -> page.RowStart) = excelRows && starts (fun page -> page.ColStart) = excelCols)
+                (sprintf "preview pages %d (%A), direct pages %A, rows %A (%A), columns %A (%A), scale %g"
+                    preview.Pages.Length previewPages directPages
+                    (starts (fun page -> page.RowStart)) excelRows (starts (fun page -> page.ColStart)) excelCols preview.Scale))
     let refitBook = System.IO.Path.Combine(dir, "synthetic-print-pages-bestfit-refit.xlsx")
     let refit = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes refitBook) |> Option.get)
     let wide, narrow, textOnly = refit.Sheets.[0].Model, refit.Sheets.[1].Model, refit.Sheets.[2].Model
@@ -477,10 +484,46 @@ do
          && getColumnWidth 0 at58 = 58.0 && getColumnWidth 1 at58 = 96.0)
         (sprintf "at57 %A at58 %A" at57.ColumnWidths at58.ColumnWidths)
     ok "print bestFit: refit changes the break"
-        ((Pagination.paginatePrinted wide).Pages.Length = 1
-         && (Pagination.paginatePrinted narrow).Pages.Length = 2
-         && (Pagination.paginatePrinted narrow).Pages.[1].ColStart = 3)
-        (sprintf "wide %A narrow %A" (Pagination.paginatePrinted wide).Pages (Pagination.paginatePrinted narrow).Pages)
+        ((Pagination.paginatePreview wide).Pages.Length = 1
+         && (Pagination.paginatePreview narrow).Pages.Length = 2
+         && (Pagination.paginatePreview narrow).Pages.[1].ColStart = 3)
+        (sprintf "wide %A narrow %A" (Pagination.paginatePreview wide).Pages (Pagination.paginatePreview narrow).Pages)
+    // Direct Worksheet.ExportAsFixedFormat of the same public fixture leaves every
+    // stored width unchanged. The three wide numeric columns fit page one; only
+    // the narrow trigger moves to page two. Page Break Preview, by contrast,
+    // re-fits them and moves the third wide column to page two.
+    let directWidths = Pagination.withPrintSizes narrow
+    let directPages = Pagination.paginatePrinted narrow
+    let directPitchPt = getColumnWidth 1 directWidths * 0.75
+    ok "print bestFit: direct PDF retains stored widths"
+        (getColumnWidth 1 narrow = 84.0
+         && abs (directPitchPt - 67.70) < 0.05
+         && getColumnWidth 1 directWidths < getColumnWidth 1 (Pagination.withPrintSizes (screen narrow)))
+        (sprintf "stored %g pt, refitted %g pt" directPitchPt (getColumnWidth 1 (Pagination.withPrintSizes (screen narrow)) * 0.75))
+    ok "print bestFit: direct PDF and preview break at different columns"
+        (directPages.Pages.Length = 2
+         && directPages.Pages.[0].ColEnd = 3 && directPages.Pages.[1].ColStart = 4
+         && (Pagination.paginatePreview narrow).Pages.[0].ColEnd = 2)
+        (sprintf "direct %A preview %A" directPages.Pages (Pagination.paginatePreview narrow).Pages)
+    // A direct export does not widen a best-fit number merely to avoid overflow.
+    // In the public BestFit fixture, B2 and D2 both contain 123456789 in
+    // 5-character-wide columns: Excel's direct PDF shows #### in both.
+    let narrowNumber =
+        { createEmpty 3 3 with
+            ColumnWidths = Map.ofList [ 1, 35.0 ]
+            BestFitColumns = Set.singleton 1
+            Cells = Map.ofList [ { Row = 0; Col = 1 }, number defaultFormat 123456789.0 ] }
+    let numberViewport : Rbt.Spreadsheet.Layout.Viewport =
+        { ScrollX = 0.0; ScrollY = 0.0; Width = 600.0; Height = 120.0
+          HeaderHeight = 0.0; RowHeaderWidth = 0.0
+          Measurer = Some (fun text _ _ _ _ -> 7.0 * float text.Length) }
+    let directText =
+        Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0)
+            (Pagination.withPrintSizes narrowNumber) numberViewport
+        |> List.choose (function Rbt.Spreadsheet.Paint.DrawText text -> Some text.Text | _ -> None)
+    ok "print bestFit: direct numeric overflow stays as hashes"
+        (List.contains "####" directText)
+        (sprintf "%A" directText)
     let resized = Rbt.Spreadsheet.SheetOps.setAxisSize false 1 1 40.0 narrow
     let moved = insertColumn 1 narrow
     ok "print bestFit: resize clears flag, insert moves it"

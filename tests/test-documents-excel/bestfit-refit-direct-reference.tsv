@@ -1,0 +1,11 @@
+# Excel 2019, synthetic-print-pages-bestfit-refit.xlsx; x positions in PDF points, page-local.
+# Direct = fresh Worksheet.ExportAsFixedFormat; preview = fresh workbook after Page Break Preview.
+mode	sheet	page	words@xMin
+Direct	WideOnly	1	1@354.41 1@422.11 1@489.79
+Direct	NarrowTrigger	1	1@354.41 1@422.11 1@489.79
+Direct	NarrowTrigger	2	1@294.77
+Direct	TextOnly	1	a@296.21 long@303.99 text@325.81 1@360.05 11@427.75
+Preview	WideOnly	1	1@354.41 1@422.11 1@489.79
+Preview	NarrowTrigger	1	1@355.25 1@423.79
+Preview	NarrowTrigger	2	1@355.25 1@370.61
+Preview	TextOnly	1	a@296.21 long@303.99 text@325.81 1@360.89 1@429.43 1@444.79

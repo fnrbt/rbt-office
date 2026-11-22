@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # usage: excel-print-pages.sh BOOK.xlsx OUTDIR
-# Runs probe-print-pages.vbs on the Windows VM (as run-excel-vbs-on-vm.sh does) and copies back OUTDIR/<book>.tsv
-# (every visible sheet's page setup and page breaks as Excel 2019 has them) and OUTDIR/<book>-<n>.pdf (the sheet's
-# own PDF export). The probe quits its own Excel; no other Excel on the VM is touched (-KeepExcel). WORD_VM / WORD_VM_DIR as for run-excel-vbs-on-vm.sh; TIMEOUT (seconds, default 600).
+# Exports each visible sheet directly to PDF before any preview or sheet activation. A reopened workbook supplies
+# setup and preview-only page breaks; Page Break Preview can refit bestFit columns, so those breaks need not describe
+# the PDFs. The probe quits its own Excel; no other Excel on the VM is touched (-KeepExcel).
+# WORD_VM / WORD_VM_DIR as for run-excel-vbs-on-vm.sh; TIMEOUT (seconds, default 600).
 set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 book=$1
@@ -20,4 +21,16 @@ scp -q "${vm}:${remote}/${stem}.tsv" "${vm}:${remote}/${stem}-*.pdf" "$outdir/" 
 if [[ -f "$outdir/$stem.tsv" ]] && file -b --mime-encoding "$outdir/$stem.tsv" | grep -q utf-16; then
   iconv -f UTF-16 -t UTF-8 "$outdir/$stem.tsv" | tr -d '\r' > "$outdir/$stem.tsv.tmp" && mv "$outdir/$stem.tsv.tmp" "$outdir/$stem.tsv"
 fi
+# The PDF belongs to the fresh direct-export pass, never to the preview break pass.
+command -v pdfinfo >/dev/null || { echo "pdfinfo is required to record direct page counts" >&2; exit 1; }
+counts=$(mktemp)
+trap 'rm -f "$counts"' EXIT
+while IFS=$'\t' read -r sheet index key value; do
+  if [[ "$key" == pdf && "$value" == *.pdf ]]; then
+    pages=$(pdfinfo "$outdir/$value" | awk '/^Pages:/ {print $2}')
+    [[ -n "$pages" ]] || { echo "Cannot read page count: $value" >&2; exit 1; }
+    printf '%s\t%s\tdirect.pages\t%s\n' "$sheet" "$index" "$pages"
+  fi
+done < "$outdir/$stem.tsv" > "$counts"
+cat "$counts" >> "$outdir/$stem.tsv"
 ls "$outdir/$stem".tsv

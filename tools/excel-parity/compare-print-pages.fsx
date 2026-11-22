@@ -1,7 +1,7 @@
 // dotnet fsi tools/excel-parity/compare-print-pages.fsx BOOK.xlsx EXCEL_DIR
-// Our pages of every visible sheet of BOOK.xlsx (Pagination.paginatePrinted: what our PDF prints) against Excel 2019's
-// (excel-print-pages.sh: EXCEL_DIR/<book>.tsv, the page breaks of Page Break Preview, and EXCEL_DIR/<book>-<n>.pdf,
-// counted with pdfinfo). A line per sheet: pages, the rows and columns pages start at, and the scale.
+// Compare direct PDF page counts with paginatePrinted and, separately, Page Break Preview breaks with
+// paginatePreview. New oracle PDFs are direct exports; their preview breaks do not describe those PDFs.
+// Older oracle PDFs were exported after preview and are compared only against preview pagination.
 // Build first: dotnet build tools/spreadsheet-pdf-runner/SpreadsheetPdfRunner.fsproj
 #r "nuget: Fable.Core, 4.3.0"
 #r "../../src/Spreadsheet/bin/Debug/netstandard2.0/Rbt.OfficeFormat.dll"
@@ -41,28 +41,34 @@ let colName (c: int) =
     s
 
 let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes book) |> Option.get)
-let mutable sheets, same = 0, 0
+let mutable sheets, previewSame, directSheets, directSame = 0, 0, 0, 0
 imported.Sheets |> Array.iteri (fun index sheet ->
     if sheet.Visible then
         let n = index + 1
         let mine = facts |> Array.filter (fun (_, k, _, _) -> k = n)
         let get key = mine |> Array.tryPick (fun (_, _, k, v) -> if k = key then Some v else None)
         let breaks key = mine |> Array.choose (fun (_, _, k, v) -> if k = key then Some (int (v.Split(' ').[0])) else None) |> Array.distinct |> Array.sort |> List.ofArray
-        let ourP = Pagination.paginatePrinted sheet.Model
-        let ourRows = ourP.Pages |> List.map (fun p -> p.RowStart + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
-        let ourCols = ourP.Pages |> List.map (fun p -> p.ColStart + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
-        let area = ourP.PrintBounds
-        let excelPages = match get "pdf" with Some name when name.EndsWith ".pdf" -> pdfPages (Path.Combine(excelDir, name)) | other -> -1
-        let xr, xc = breaks "hbreak" |> List.filter (fun r -> r <= area.To.Row + 1), breaks "vbreak" |> List.filter (fun c -> c <= area.To.Col + 1)
-        // (Excel's breaks of Page Break Preview are the sheet's; ours are the print area's.)
-        let ok = (excelPages = ourP.Pages.Length || (excelPages = -1 && ourP.Pages.IsEmpty)) && xr = ourRows && xc = ourCols
+        let direct = Pagination.paginatePrinted sheet.Model
+        let preview = Pagination.paginatePreview sheet.Model
+        let rows = preview.Pages |> List.map (fun p -> p.RowStart + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
+        let cols = preview.Pages |> List.map (fun p -> p.ColStart + 1) |> List.distinct |> List.sort |> (fun xs -> if xs.IsEmpty then xs else xs.Tail)
+        let area = preview.PrintBounds
+        let excelPages = match get "pdf" with Some name when name.EndsWith ".pdf" -> pdfPages (Path.Combine(excelDir, name)) | _ -> -1
+        let fresh = (get "breaks.provenance").IsSome
+        let rowKey, colKey = if fresh then "preview.hbreak", "preview.vbreak" else "hbreak", "vbreak"
+        let xr, xc = breaks rowKey |> List.filter (fun r -> r <= area.To.Row + 1), breaks colKey |> List.filter (fun c -> c <= area.To.Col + 1)
+        let previewOk = xr = rows && xc = cols && (fresh || excelPages < 0 || excelPages = preview.Pages.Length)
         sheets <- sheets + 1
-        if ok then same <- same + 1
+        if previewOk then previewSame <- previewSame + 1
+        if fresh && excelPages >= 0 then
+            directSheets <- directSheets + 1
+            if excelPages = direct.Pages.Length then directSame <- directSame + 1
         let show xs = xs |> List.map string |> String.concat ","
-        printfn "%s\t%s\tpages %d/%d\trows %s | %s\tcols %s | %s\tscale %.3f zoom %s fit %s x %s\tarea %s%d:%s%d (excel %s used %s)"
-            (if ok then "same" else "DIFF") sheet.Name ourP.Pages.Length excelPages
-            (show ourRows) (show xr) (show ourCols) (show xc)
-            ourP.Scale (defaultArg (get "setup.zoom") "-") (defaultArg (get "setup.fitwide") "-") (defaultArg (get "setup.fittall") "-")
+        let directPages = if fresh && excelPages >= 0 then sprintf "%d/%d" direct.Pages.Length excelPages else "unavailable"
+        printfn "%s\t%s\tdirect pages %s\tpreview rows %s | %s\tpreview cols %s | %s\tpreview scale %.3f zoom %s fit %s x %s\tarea %s%d:%s%d (excel %s used %s)"
+            (if previewOk then "preview-same" else "preview-DIFF") sheet.Name directPages
+            (show rows) (show xr) (show cols) (show xc)
+            preview.Scale (defaultArg (get "setup.zoom") "-") (defaultArg (get "setup.fitwide") "-") (defaultArg (get "setup.fittall") "-")
             (colName (area.From.Col + 1)) (area.From.Row + 1) (colName (area.To.Col + 1)) (area.To.Row + 1)
             (defaultArg (get "setup.printarea") "-") (defaultArg (get "used") "-"))
-printfn "%s: %d of %d sheets paged as Excel" stem same sheets
+printfn "%s: preview breaks %d/%d; direct PDF page counts %d/%d" stem previewSame sheets directSame directSheets

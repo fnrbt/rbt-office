@@ -1,11 +1,11 @@
-' cscript probe-print-pages.vbs BOOK.xlsx OUT.tsv: opens BOOK.xlsx in Excel 2019 and, for every visible worksheet,
-' exports it on its own to PDF (Worksheet.ExportAsFixedFormat, as print-excel-pdf.vbs does the workbook) as
-' OUT-<n>.pdf next to OUT.tsv (n the sheet's 1-based index among the workbook's worksheets) and writes its page setup
-' and its page breaks (Page Break Preview: automatic and manual) to OUT.tsv, a line per fact:
+' cscript probe-print-pages.vbs BOOK.xlsx OUT.tsv: exports every visible worksheet directly to OUT-<n>.pdf
+' before activating a sheet, entering Page Break Preview, or inspecting page setup and widths. This is important:
+' preview can refit bestFit columns, so a PDF exported after preview is not a direct-export oracle.
+' It then reopens the workbook and records setup, column widths and Page Break Preview's breaks to OUT.tsv:
 '   sheet <tab> n <tab> key <tab> value
-' keys: setup.* (PageSetup's properties), hbreak / vbreak (row / column before which a page starts, and its type:
-' manual or auto), pdf (the PDF's name, or "error ..."), col / colafter (each column of the used range and one more:
-' its index, ColumnWidth and Width in points, before and after the export). Run it in the desktop session (excel-print-pages.sh).
+' pdf is the direct-export PDF name (or error). preview.hbreak/vbreak are preview-only: location and type.
+' preview.col / preview.colafter are widths before and after preview, not the direct PDF's measured widths.
+' The preview instance is isolated from the direct exports; its breaks may not match the direct PDFs.
 Option Explicit
 Dim fso, x, wb, s, out, base, n, i, b, ps, pdf, t, lastc, openErrNumber, openErrDescription
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -40,6 +40,25 @@ n = 0
 For Each s In wb.Worksheets
   n = n + 1
   If s.Visible = -1 Then
+    On Error Resume Next
+    Err.Clear
+    pdf = base & "-" & n & ".pdf"
+    s.ExportAsFixedFormat 0, pdf, 0, True, False, , , False
+    If Err.Number <> 0 Then
+      W "pdf", "error " & Err.Description
+    Else
+      W "pdf", fso.GetFileName(pdf)
+    End If
+    On Error GoTo 0
+  End If
+Next
+wb.Close False
+Set wb = x.Workbooks.Open(WScript.Arguments(0), 0, True)
+
+n = 0
+For Each s In wb.Worksheets
+  n = n + 1
+  If s.Visible = -1 Then
     s.Activate
     Set ps = s.PageSetup
     On Error Resume Next
@@ -63,33 +82,27 @@ For Each s In wb.Worksheets
     W "setup.header", ps.LeftHeader & "|" & ps.CenterHeader & "|" & ps.RightHeader
     W "setup.footer", ps.LeftFooter & "|" & ps.CenterFooter & "|" & ps.RightFooter
     W "used", s.UsedRange.Address
+    lastc = s.UsedRange.Column + s.UsedRange.Columns.Count
+    If lastc > 60 Then lastc = 60
+    For i = 1 To lastc
+      W "preview.col", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
+    Next
+    W "breaks.provenance", "page-break-preview; may refit columns; not direct PDF pagination"
     x.ActiveWindow.View = 2
     For i = 1 To s.HPageBreaks.Count
       Set b = s.HPageBreaks(i)
       t = "auto" : If b.Type = -4135 Then t = "manual"
-      W "hbreak", b.Location.Row & " " & t
+      W "preview.hbreak", b.Location.Row & " " & t
     Next
     For i = 1 To s.VPageBreaks.Count
       Set b = s.VPageBreaks(i)
       t = "auto" : If b.Type = -4135 Then t = "manual"
-      W "vbreak", b.Location.Column & " " & t
+      W "preview.vbreak", b.Location.Column & " " & t
     Next
     x.ActiveWindow.View = 1
-    lastc = s.UsedRange.Column + s.UsedRange.Columns.Count
-    If lastc > 60 Then lastc = 60
+    W "widths.provenance", "preview.col before preview; preview.colafter after preview"
     For i = 1 To lastc
-      W "col", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
-    Next
-    Err.Clear
-    pdf = base & "-" & n & ".pdf"
-    s.ExportAsFixedFormat 0, pdf, 0, True, False, , , False
-    If Err.Number <> 0 Then
-      W "pdf", "error " & Err.Description
-    Else
-      W "pdf", fso.GetFileName(pdf)
-    End If
-    For i = 1 To lastc
-      W "colafter", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
+      W "preview.colafter", i & " " & s.Columns(i).ColumnWidth & " " & s.Columns(i).Width
     Next
     Err.Clear
     On Error GoTo 0

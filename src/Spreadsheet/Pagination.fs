@@ -553,16 +553,19 @@ let printRowHeightPx (scale: float) (px: float) : float =
 let exactRowPx (points: float) (px: float) : float =
     if points > 0.0 && px > 0.0 && Rbt.Spreadsheet.FontMetrics.pointsToRowPx points = px then points * 4.0 / 3.0 else px
 
-/// The sheet with its rows and columns at the sizes they print at.
+/// The sheet at its printed row/column sizes. Direct PDF export keeps stored
+/// best-fit widths; interactive views can refit them before printing.
 let withPrintSizes (model: SpreadsheetModel) : SpreadsheetModel =
-    let model = withBestFitWidths model
     { model with
         DefaultRowHeight = printRowHeightPx model.PrintRowScale (exactRowPx model.DefaultRowPoints model.DefaultRowHeight)
         DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth
         ColumnWidths = (if Map.isEmpty model.ColumnWidths then model.ColumnWidths else model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width))
         RowHeights = (if Map.isEmpty model.RowHeights then model.RowHeights else model.RowHeights |> Map.map (fun row px -> printRowHeightPx model.PrintRowScale (exactRowPx (defaultArg (Map.tryFind row model.RowPoints) 0.0) px))) }
 
-/// The pages the sheet prints on: `paginate` of the sheet at its print
-/// sizes - what the PDF export lays out, and what a host's print preview is told.
+/// Pages of a direct PDF export, with the widths stored in the sheet.
 let paginatePrinted (model: SpreadsheetModel) : Pagination =
     paginate (withPrintSizes model)
+
+/// Page Break Preview re-fits numeric best-fit columns before laying out pages.
+let paginatePreview (model: SpreadsheetModel) : Pagination =
+    paginatePrinted (withBestFitWidths model)

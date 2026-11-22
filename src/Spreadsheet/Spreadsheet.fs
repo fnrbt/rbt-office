@@ -5347,11 +5347,11 @@ type Spreadsheet(container: Element) as this =
         renderPictureFrame content
         renderChartSheet ()
 
-    /// The page break preview (`viewMode`): every page the sheet prints on (`paginatePrinted`,
-    /// what the PDF export lays out and `GetPrintPages` reports) that is in view is a frame over
-    /// its cells with its number in the middle. The edge of a frame is solid where the print
-    /// area begins or ends and at a manual break, dashed at a break the paper makes. The frames
-    /// take no click: the grid under them is edited as in the normal view.
+    /// The page break preview (`viewMode`): interactively laid-out pages
+    /// (`paginatePreview`) in view are frames over the sheet's cells, numbered
+    /// in the middle. The edge of a frame is solid where the print area begins
+    /// or ends and at a manual break, dashed at a paper break. The frames take
+    /// no click: the grid under them is edited as in the normal view.
     /// The form controls of the sheet on display, drawn again when what they show may have changed.
     and renderFormControls (content: Element) (metrics: SpreadsheetLayout.SheetMetrics) =
         let frozenRows = max 0 (min metrics.RowCount model.FrozenRows)
@@ -5495,7 +5495,7 @@ type Spreadsheet(container: Element) as this =
                     when rowDefault = model.DefaultRowHeight && colDefault = model.DefaultColumnWidth
                          && known.Length = key.Length && Array.forall2 (fun (a: obj) (b: obj) -> obj.ReferenceEquals(a, b)) known key -> pages
                 | _ ->
-                    let pages = Rbt.Spreadsheet.Pdf.Pagination.paginatePrinted model
+                    let pages = Rbt.Spreadsheet.Pdf.Pagination.paginatePreview model
                     pagesKnown <- Some (key, model.DefaultRowHeight, model.DefaultColumnWidth, pages)
                     pages
             let setup = model.PageSetup
@@ -8629,11 +8629,11 @@ type Spreadsheet(container: Element) as this =
     member _.GetPageSetup(?sheetIndex: obj) : obj =
         Host.pageSetupToObj (sheetArg "GetPageSetup" (defaultArg sheetIndex null)).PageSetup
 
-    /// The pages a sheet (the active one, or `sheetIndex`) prints on, as the
-    /// PDF export lays them out (the same pagination: manual page breaks,
-    /// the scale or the fit to pages, a print area of several areas, print
-    /// titles and the row / column headings taken off every page) - for a
-    /// print preview or a page-break view:
+    /// The pages a sheet (the active one, or `sheetIndex`) exports to PDF
+    /// using its stored column widths (direct print layout: manual breaks,
+    /// scale or fit to pages, multiple print areas, print titles and headings).
+    /// Page Break Preview is an interactive layout and may refit best-fit
+    /// columns; its displayed frames can differ from a direct export.
     /// { sheetIndex, sheetName,
     ///   setup: the object of GetPageSetup,
     ///   scale: the scale the sheet is printed at, in percent (the one that
