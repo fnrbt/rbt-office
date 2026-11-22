@@ -671,10 +671,18 @@ Newton / secant / finite-difference variant in r, 1/(1+r) or 1+r (analytic or nu
 x 7 step sizes) reproduces the digits on 120 + 120 probes; the errors are close to Newton in 1/(1+r)
 (about 1.15 times) without being it. XIRR is coarser: within ~1e-8 relative, the result the guess plus
 steps of a power of two (guess 0.1 and 0.2 give the same digits, `-1000, 1100` a year later is
-0.0999999940395 = 3355443 x 2^-25 with guess 0.1, 26843545 x 2^-28 with 0.5 or 1), a negative guess with a
-positive root #NUM!; a stepping search (step-halving, bracket and bisect, 6 starts x 10 tolerances) does
-not reproduce it either. Both stay within 1e-6 of ours (the 16 corpus XIRR cells and 5 of the real-estate
-models are "near").
+0.0999999940395 = 3355443 x 2^-25 with guess 0.1, 26843545 x 2^-28 with 0.5 or 1).
+A stepping search (step-halving, bracket and bisect, 6 starts x 10 tolerances) did not reproduce it.
+
+The [guess-domain probe](../tools/excel-parity/make-xirr-domain-probe.py) compares 25 cash-flow
+series at 29 guesses in Excel 2019 ([results](../tools/excel-parity/xirr-domain-results.tsv)).
+All 50 guesses of −1 and −2 returned `#NUM!`, including cases with a valid root; `IFERROR`
+took its fallback. Reject guesses at or below −1 for XIRR, without changing IRR or XNPV.
+Within the valid domain the selection rule remains open. A tiny positive root can return a
+number with a negative guess. Of two annual series with two sign changes, one with roots
+10% and 20% returned `#NUM!` even at a 15% guess; one with roots of opposite signs returned
+the positive root at the default guess. Neither rejecting all multiple-root series nor choosing
+a root by the sign of the guess matches Excel.
 
 ## Grid sizes and theme fills against Excel 2019, 2026-11-21
 

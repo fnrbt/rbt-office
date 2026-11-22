@@ -146,6 +146,9 @@ for k, wanted in xirrWanted do
 match evaluateFormula "=XIRR(A1:A3,B1:B3)" xirrModel None with
 | CellValue.Error "NUM!" -> pass <- pass + 1
 | got -> fail <- fail + 1; printfn "FAIL xirr-too-near-minus-1 expected #NUM! got %A" got
+match evaluateFormula "=XIRR(A1:A8,B1:B8,-1)" xirrModel None with
+| CellValue.Error "NUM!" -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL xirr-invalid-guess expected #NUM! got %A" got
 
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail

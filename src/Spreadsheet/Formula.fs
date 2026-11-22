@@ -13066,6 +13066,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             | Result.Error e -> err e
             | Ok guess ->
             if values.Length <> dates.Length || values.Length < 2 || not (Array.exists (fun v -> v > 0.0) values) || not (Array.exists (fun v -> v < 0.0) values) then err Err.num
+            // Excel rejects an out-of-domain guess even when the flows have another valid root.
+            elif guess <= -1.0 then err Err.num
             else
                 let f r = datedPresentValue r values dates
                 match rootOf f guess with
