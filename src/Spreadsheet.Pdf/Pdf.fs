@@ -286,7 +286,8 @@ let private appendDrawTextOps
         | Some primaryTtf ->
             let sz v = v * pxToPt * placement.Scale
             let xPt x = placement.LeftPtOffset + sz x
-            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y + placement.TextRaisePt
+            // (A baseline Excel's PDF gave - `PaintText.Baseline` - is from the grid's lines, not raised.)
+            let yPdf y = placement.PageHeightPt - placement.TopPtOffset - sz y + (if t.Baseline <> 0.0 then 0.0 else placement.TextRaisePt)
             // PaintText.FontSize is stored in points. Draw in PDF points,
             // but use CSS-pixel metrics for layout because cell geometry is
             // still page-local CSS px before translateItem applies pxToPt.
@@ -336,7 +337,11 @@ let private appendDrawTextOps
             // Super/subscript shifts the baseline relative to the
             // line's normal baseline. BaselineShift is page-local CSS px;
             // yPdf converts it to PDF coords together with the baseline.
-            let baselineY = blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
+            // (Cell text says where Excel prints its baseline: `PaintText.Baseline`.)
+            let baselineY =
+                if t.Baseline > 0.0 then t.Rect.Y + t.Baseline + t.BaselineShift
+                elif t.Baseline < 0.0 then blockTopY - t.Baseline + float t.LineIndex * lineHeight + ascent + t.BaselineShift
+                else blockTopY + float t.LineIndex * lineHeight + ascent + t.BaselineShift
             let textColor = parseHexColor (bwStroke placement.BlackAndWhite t.Color)
             // Cell-text rotation (Excel `<alignment textRotation>`).
             // 0 = horizontal, 1..90 = CCW degrees, 91..180 = CW degrees
@@ -989,6 +994,7 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         // Body text gets a small PDF-only lift; heading labels need to stay
         // visually centered inside the shorter heading strip.
         BaselineShift = 2.0
+        Baseline = 0.0
         Rotation = 0
         Clip = None }
 

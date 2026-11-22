@@ -321,6 +321,23 @@ do
                                                 && pads "_(\"$\"* #,##0_);_(\"$\"* \\(#,##0\\)" (Number 5.0) = ("(", ")") && pads "0_W_)" (Number 1.0) = ("", "W)")
                                                 && pads "_(@_)" (String "a") = ("(", ")") && pads "[>=100]0_)" (Number 1.0) = ("", "") && pads "0\\)" (Number 1.0) = ("", "")) ""
     // Rows an AutoFilter hides print nothing (houseflipping's REPAIR ESTIMATOR): synthetic-print-pages-filter, "print pages:" below.
+    // Where a line stands in its cell (synthetic-print-pages-place "Place", Excel's PDF): the text at the bottom of row 3 (30 pt,
+    // Calibri 11 to 20, Arial, Segoe UI, Times, Trebuchet, Tahoma) on one baseline, 51.5 dots above the row's bottom in Excel
+    // (Calibri 20's descent, 7 px, and 1, at 6.05 dots a pixel: 48.4); at the top / in the middle by the font's own metrics.
+    let place =
+        let book = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "test-documents-excel", "synthetic-print-pages-place.xlsx")
+        let imported = Rbt.Spreadsheet.XlsxBridge.Import.importWorkbook (XlsxReader.loadBytesNative (System.IO.File.ReadAllBytes book) |> Option.get)
+        Pagination.withPrintSizes imported.Sheets.[0].Model
+    let viewport : Rbt.Spreadsheet.Layout.Viewport =
+        { ScrollX = 0.0; ScrollY = 0.0; Width = 2000.0; Height = 600.0; HeaderHeight = 0.0; RowHeaderWidth = 0.0
+          Measurer = Some (fun s _ _ _ _ -> 6.0 * float s.Length) }
+    let placed = [ for item in paint place viewport do match item with Rbt.Spreadsheet.Paint.DrawText t when t.Text = "xH" -> yield t | _ -> () ]
+    let rowTop (row: int) = Seq.sum [ for r in 0 .. row - 1 -> Rbt.Spreadsheet.SheetOps.axisSize true r place ]
+    let inRow (row: int) = placed |> List.filter (fun t -> abs (t.Rect.Y - rowTop row) < 0.5)
+    let above (t: Rbt.Spreadsheet.Paint.PaintText) = (t.Rect.Height - t.Baseline) * 6.25
+    let bottoms = inRow 2 |> List.map above
+    ok "print: text at the bottom of a row on one baseline" (bottoms.Length = 8 && bottoms |> List.forall (fun b -> abs (b - bottoms.Head) < 1e-6 && abs (b - 51.5) <= 4.0)) (sprintf "%A" bottoms)
+    ok "print: text at the top and in the middle by the font" (inRow 4 |> List.forall (fun t -> t.Baseline < 0.0) && inRow 3 |> List.forall (fun t -> t.Baseline < 0.0 && t.Baseline > -0.01)) ""
 
 
 // ----- pages as Excel 2019's PDF lays them out (make-print-pages-fixture.py; Excel's facts in *.excel.tsv: Page Break

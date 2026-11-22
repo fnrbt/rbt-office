@@ -42,6 +42,10 @@ type PaintText = {
     /// Used for superscript (negative — shift up) and subscript (positive
     /// — shift down). Zero for normal text.
     BaselineShift: float
+    /// Where the line's baseline is, in pixels below the top of `Rect`, as Excel 2019 prints it (`Paint`: cell text);
+    /// negative - placed by the font's metrics (its Windows ascent and descent at its size) and `VerticalAlign`, and
+    /// -`Baseline` lower, from the grid's lines; 0 - the renderer places it by the font's metrics and `VerticalAlign`.
+    Baseline: float
     /// Cell-text rotation in degrees. 0 = horizontal (default), 1..90 =
     /// CCW (text rises left-to-right), 91..180 = CW (encoded as
     /// 90 + |angle|), 255 = stacked (each glyph on its own line). The
@@ -353,6 +357,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineIndex = 0
                     LineCount = 1
                     BaselineShift = 0.0
+                    Baseline = 0.0
                     Rotation = 0
                     Clip = None
                 }
@@ -375,6 +380,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     LineIndex = 0
                     LineCount = 1
                     BaselineShift = 0.0
+                    Baseline = 0.0
                     Rotation = 0
                     Clip = None
                 }
@@ -436,6 +442,37 @@ let printWrapMargin = 4.48
 let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): (ViewportZone * PaintItem) list =
     let visible = visibleRange model viewport
     let padX = printPadXOf model
+    // The largest descent (`FontMetrics.lineOf`, screen pixels) of the text at the bottom of its cells, by row: the
+    // cells of a row so aligned meet at one baseline (Excel 2019's PDF).
+    let rowDescents = Dictionary<int, float>()
+    let rowDescent (row: int) =
+        if rowDescents.Count = 0 then
+            rowDescents.[-1] <- 0.0
+            let multiRow (addr: CellAddress) =
+                not model.MergedCells.IsEmpty
+                && (match findMergedCell addr model with Some merge -> merge.EndRow > merge.StartRow | None -> false)
+            for KeyValue(addr, data) in model.Cells do
+                let format = data.Format
+                if (match format.VerticalAlign with None | Some "bottom" -> true | Some _ -> false) && format.TextRotation = 0
+                   && (match unwrapFormulaValue data.Value with CellValue.Empty | CellValue.String "" -> false | _ -> true)
+                   && not (multiRow addr) then
+                    let points = defaultArg format.FontSize 11.0
+                    let struct (_, descent) = FontMetrics.lineOf format.FontName points format.Bold format.Italic
+                    let mutable most = descent
+                    match Map.tryFind addr model.RichRuns with
+                    | Some runs ->
+                        for _, run in runs do
+                            let struct (_, d) =
+                                FontMetrics.lineOf (run.FontName |> Option.orElse format.FontName) (defaultArg run.FontSize points)
+                                    (defaultArg run.Bold format.Bold) (defaultArg run.Italic format.Italic)
+                            most <- max most d
+                    | None -> ()
+                    match rowDescents.TryGetValue addr.Row with
+                    | true, known when known >= most -> ()
+                    | _ -> rowDescents.[addr.Row] <- most
+        match rowDescents.TryGetValue row with
+        | true, descent -> descent
+        | _ -> 0.0
     let cells = visibleCells model viewport
     // Selection is rendered as a separate overlay (see `selectionPaintItems`)
     // so cursor moves don't invalidate the cached grid paint items.
@@ -732,6 +769,27 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                     else [ displayText ]
                 let vAlign = look.VerticalAlign
                 let lineCount = lines.Length
+                // Where Excel 2019 prints each line (make-print-place-fixture.py "Place", the rowunit fixtures: 24 Normal
+                // fonts and 7 cell fonts in rows of 15 - 45 pt, from the grid's lines): at the bottom and in the middle laid
+                // out in the pixels of the screen and scaled as the row is (`PrintRowScale` dots a pixel) - at the bottom,
+                // the baseline (the row's largest descent of its text at the bottom + 1) px above the cell's bottom, every
+                // such cell of the row on that baseline, each line a line of its font (`FontMetrics.lineOf`) above the
+                // one below. At the top and in the middle, whatever the Normal font, by the font's own ascent and descent
+                // at its size: at the top 4.5 dots lower than that (Calibri 11 90.5 dots below the top, Arial 10 79.5,
+                // Segoe UI 10 91.5, under Calibri 11 and Segoe UI 10 alike), in the middle centred. Within a pixel of
+                // Excel's PDF.
+                let lineBaseline =
+                    let rowScale = (if model.PrintRowScale > 0.0 then model.PrintRowScale else 6.05) / 6.25
+                    let struct (ownLine, ownDescent) = FontMetrics.lineOf format.FontName fontPt format.Bold format.Italic
+                    let height = textRect.Height
+                    fun (i: int) ->
+                        if format.TextRotation <> 0 || height <= 0.0 then 0.0
+                        else
+                            let below = float (lineCount - 1 - i) * ownLine * rowScale
+                            match vAlign with
+                            | VAlignBottom -> height - (max ownDescent (rowDescent cell.Address.Row) + 1.0) * rowScale - below
+                            | VAlignTop -> -0.72
+                            | VAlignMiddle -> -1e-6
                 let richRuns = Map.tryFind cell.Address model.RichRuns
                 // Text overflow: a line of text wider than its cell is drawn
                 // over the empty cells beside it and cut off at the first
@@ -870,6 +928,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                                 LineIndex = i
                                 LineCount = lineCount
                                 BaselineShift = baselineShift
+                                Baseline = lineBaseline i
                                 Rotation = format.TextRotation
                                 Clip = textClip
                             }
@@ -893,6 +952,7 @@ let private buildCellPaintItems (model: SpreadsheetModel) (viewport: Viewport): 
                             LineIndex = i
                             LineCount = lineCount
                             BaselineShift = 0.0
+                            Baseline = lineBaseline i
                             Rotation = format.TextRotation
                             Clip = textClip
                         }
@@ -1084,6 +1144,7 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           LineIndex = 0
           LineCount = 1
           BaselineShift = 0.0
+          Baseline = 0.0
           Rotation = 0
           Clip = None
       } ]
@@ -1149,6 +1210,7 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                 LineIndex = 0
                 LineCount = 1
                 BaselineShift = 0.0
+                Baseline = 0.0
                 Rotation = rotation
                 Clip = None })
         match item with
@@ -1329,6 +1391,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineIndex = 0
                             LineCount = 1
                             BaselineShift = 0.0
+                            Baseline = 0.0
                             Rotation = 0
                             Clip = None
                         })
@@ -1356,6 +1419,7 @@ let buildViewportPaintItems (model: SpreadsheetModel) (viewport: Viewport): View
                             LineIndex = 0
                             LineCount = 1
                             BaselineShift = 0.0
+                            Baseline = 0.0
                             Rotation = 0
                             Clip = None
                         })
