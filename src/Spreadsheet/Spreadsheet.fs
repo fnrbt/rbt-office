@@ -4022,13 +4022,12 @@ type Spreadsheet(container: Element) as this =
         let mutable barDraw : DataBarDraw option = None
         match look.DataBar with
         | Some draw when draw.From = 0.0 && not draw.Gradient && draw.Border.IsNone && draw.Axis.IsNone ->
-            // A plain bar from the left edge, behind the text, two pixels in from the cell's top and
-            // bottom as Excel draws it (the painter's too).
+            // A plain bar, behind the text, two pixels in from the cell's grid lines all round as Excel draws it.
             let percent = int (System.Math.Round (draw.To * 100.0))
             add "background-image" ("linear-gradient(to right, " + draw.Color + " " + string percent + "%, transparent " + string percent + "%)")
             add "background-repeat" "no-repeat"
-            add "background-position" "0 2px"
-            add "background-size" "100% calc(100% - 4px)"
+            add "background-position" "2px 2px"
+            add "background-size" "calc(100% - 4px) calc(100% - 4px)"
             bar <- percent
         | Some draw ->
             // A bar of Excel 2010+ (an axis, negative values, a border, a gradient): drawn by nodes of its own.
@@ -4285,13 +4284,19 @@ type Spreadsheet(container: Element) as this =
                  + ";z-index:-1;pointer-events:none")
             setAttribute fill "data-cf-bar-from" (percent draw.From)
             setAttribute fill "data-cf-bar-color" draw.Color
-            if draw.To > draw.From then appendChild cell fill
+            // (The bar's room: from 2 px right of the cell's left grid line to 2 px short of its right one - a full bar
+            // in a 64-px column is pixels 2 .. 61, as Excel 2019 draws it.)
+            let room = createElement "div"
+            setClassName room "spreadsheet-cf-bar-room"
+            setCssText room "position:absolute;left:2px;right:2px;top:0;bottom:0;z-index:-1;pointer-events:none"
+            appendChild cell room
+            if draw.To > draw.From then appendChild room fill
             match draw.Axis with
             | Some (at, color) ->
                 let axis = createElement "div"
                 setClassName axis "spreadsheet-cf-axis"
                 setCssText axis ("position:absolute;top:0;bottom:0;left:" + percent at + ";width:0;border-left:1px dashed " + color + ";z-index:-1;pointer-events:none")
-                appendChild cell axis
+                appendChild room axis
             | None -> ()
         | None -> ()
         match icon with

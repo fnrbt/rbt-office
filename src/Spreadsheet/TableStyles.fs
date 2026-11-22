@@ -369,14 +369,19 @@ type PivotShape = {
     ShowLastColumn: bool
 }
 
-/// The order Excel lays the elements of a pivot style over each other in: a later one wins a cell's fill, font
-/// and the lines of the edges it draws.
+/// The order Excel lays the elements of a pivot style over each other in: a later one wins a cell's fill and font.
+/// Found in Excel 2019 (tools/excel-parity/probe-pivot-style-order.vbs: a style of an own colour an element, every
+/// two elements that cover one cell alone - which one shows - on compact, outline and tabular pivot tables).
 let private pivotOrder =
-    [| "wholeTable"; "pageFieldLabels"; "pageFieldValues"; "firstColumnStripe"; "secondColumnStripe"; "firstRowStripe"
+    [| "wholeTable"; "firstColumnStripe"; "secondColumnStripe"; "pageFieldLabels"; "pageFieldValues"; "firstRowStripe"
        "secondRowStripe"; "firstColumn"; "headerRow"; "firstHeaderCell"; "firstSubtotalColumn"; "secondSubtotalColumn"
-       "thirdSubtotalColumn"; "blankRow"; "firstSubtotalRow"; "secondSubtotalRow"; "thirdSubtotalRow"; "firstColumnSubheading"
-       "secondColumnSubheading"; "thirdColumnSubheading"; "firstRowSubheading"; "secondRowSubheading"; "thirdRowSubheading"
-       "lastColumn"; "totalRow" |]
+       "thirdSubtotalColumn"; "firstColumnSubheading"; "secondColumnSubheading"; "thirdColumnSubheading"; "blankRow"
+       "firstSubtotalRow"; "secondSubtotalRow"; "thirdSubtotalRow"; "firstRowSubheading"; "secondRowSubheading"
+       "thirdRowSubheading"; "lastColumn"; "totalRow" |]
+
+// (Their lines are laid in the same order. Excel's lines do not follow one order: probe-pivot-style-order.vbs finds
+// a row stripe's line over a row subheading's where the stripe's row is below, the subheading's where it is
+// below, the header row's over both - not matched: 50 of the 1,779 cells of synthetic-pivot-styles.xlsx, an edge.)
 
 let private levelName = [| "first"; "second"; "third" |]
 
@@ -421,7 +426,7 @@ let pivotBlocks (shape: PivotShape) : (string * (int * int * int * int)) list =
         | _ ->
             let level = repeat + count - 1
             if level >= 0 && level < 3 then add (levelName.[level] + "SubtotalRow") (row, c0, row, c1)
-        if kind <> "grand" && shape.ShowRowStripes then
+        if shape.ShowRowStripes then
             add (if stripe % 2 = 0 then "firstRowStripe" else "secondRowStripe") (row, c0, row, c1)
         stripe <- stripe + 1
     let columns = shape.ColumnLines
@@ -458,10 +463,20 @@ let pivotLooks (elements: TableStyleElement list) (shape: PivotShape) : int -> i
         let italics = Array.create (height * width) false
         let covered = Array.create (height * width) false
         // (Edges: across the top of each row and one below the last; down the left of each column and one past the last.)
-        let across : TableLine option array = Array.create ((height + 1) * width) None
+        // An edge between two rows gets a line from three sides: the top of a block below it, the bottom of a block above
+        // it, a block across it (its lines between rows). Excel 2019 shows the top of the block below, unless the block
+        // above is the header (its bottom line stays) or its bottom is the heavier line; either beats a line between a
+        // block's rows
+        // (probe-pivot-style-order.vbs; synthetic-pivot-styles.xlsx: a row stripe's top over the subheading above, the
+        // header's bottom over the subheading below, a column subheading's bottom over the whole table's inner line).
+        let lowerTops : TableLine option array = Array.create ((height + 1) * width) None
+        let upperBottoms : TableLine option array = Array.create ((height + 1) * width) None
+        let headerBottoms = Array.create ((height + 1) * width) false
+        let insides : TableLine option array = Array.create ((height + 1) * width) None
         let down : TableLine option array = Array.create (height * (width + 1)) None
         let blocks = pivotBlocks shape
-        for kind in pivotOrder do
+        let paint (order: string array) (withFill: bool) (withLines: bool) =
+          for kind in order do
             match elements |> List.tryFind (fun element -> element.Kind = kind) with
             | None -> ()
             | Some element ->
@@ -472,26 +487,46 @@ let pivotLooks (elements: TableStyleElement list) (shape: PivotShape) : int -> i
                         let left, right = max left c0, min right c1
                         for row in top .. bottom do
                             for col in left .. right do
-                                let at = (row - r0) * width + (col - c0)
+                              let at = (row - r0) * width + (col - c0)
+                              if withFill then
                                 covered.[at] <- true
                                 if format.Fill.IsSome then fills.[at] <- format.Fill
                                 if format.Text.IsSome then texts.[at] <- format.Text
                                 match format.Bold with Some b -> bolds.[at] <- b | None -> ()
                                 match format.Italic with Some i -> italics.[at] <- i | None -> ()
+                              if withLines then
                                 let lineAcross (edgeRow: int) (line: TableLine option) =
-                                    if line.IsSome then across.[(edgeRow - r0) * width + (col - c0)] <- line
+                                    if line.IsSome then
+                                        let at = (edgeRow - r0) * width + (col - c0)
+                                        if edgeRow = top then lowerTops.[at] <- line
+                                        elif edgeRow = bottom + 1 then
+                                            upperBottoms.[at] <- line
+                                            headerBottoms.[at] <- (kind = "headerRow" || kind = "firstHeaderCell")
+                                        else insides.[at] <- line
                                 let lineDown (edgeCol: int) (line: TableLine option) =
                                     if line.IsSome then down.[(row - r0) * (width + 1) + (edgeCol - c0)] <- line
                                 lineAcross row (if row = top then format.Top else format.Horizontal)
                                 if row = bottom then lineAcross (row + 1) format.Bottom
                                 lineDown col (if col = left then format.Left else format.Vertical)
                                 if col = right then lineDown (col + 1) format.Right
+        paint pivotOrder true true
         fun row col ->
             if row < r0 || row > r1 || col < c0 || col > c1 then None
             else
                 let at = (row - r0) * width + (col - c0)
-                let top = across.[at]
-                let bottom = across.[at + width]
+                let weight (line: TableLine option) =
+                    match line with
+                    | Some l when l.Style = "medium" -> 2
+                    | Some l when l.Style = "thick" || l.Style = "double" -> 3
+                    | Some _ -> 1
+                    | None -> 0
+                let across (edge: int) =
+                    let lower, upper = lowerTops.[edge], upperBottoms.[edge]
+                    if headerBottoms.[edge] && upper.IsSome then upper
+                    elif weight upper > weight lower then upper
+                    else lower |> Option.orElse upper |> Option.orElse insides.[edge]
+                let top = across at
+                let bottom = across (at + width)
                 let left = down.[(row - r0) * (width + 1) + (col - c0)]
                 let right = down.[(row - r0) * (width + 1) + (col - c0) + 1]
                 if not covered.[at] && top.IsNone && bottom.IsNone && left.IsNone && right.IsNone then None

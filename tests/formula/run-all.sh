@@ -98,6 +98,7 @@ stages=(
     stage61-financial-functions
     stage62-text-array-info-functions
     stage63-macro-showcase
+    stage64-pivot-styles
     stage65-sparklines
     stage66-icon-sets
     numbertext
