@@ -4,11 +4,14 @@
 //
 //   dotnet fsi tools/excel-parity/compare-values.fsx VALUES.tsv DOCS_DIR [--list N] [--cached | --cached-new]
 //
-// --cached: every workbook is compared against the values its file keeps (what the Excel that saved it
-// computed: Excel 365 for most), not against VALUES.tsv - every formula cell and every cell a dynamic
-// array spilled into. --cached-new: so are the workbooks Excel 2019 cannot calculate - those whose
-// formulas call a function it does not have (`newFunctions`: dynamic arrays, `@`, LET ...) or that keep
-// dynamic arrays (xl/metadata.xml); the others against VALUES.tsv.
+// --cached: enumerate every .xlsx/.xlsm in DOCS_DIR (except Office's ~$ lock files), ignoring
+// VALUES.tsv, and compare against the values the files keep (what the Excel that saved them
+// computed: Excel 365 for most), including dynamic-array spills. --cached-new: select only
+// workbooks named by VALUES.tsv; compare those whose formulas call a function Excel 2019 lacks
+// (`newFunctions`: dynamic arrays, `@`, LET ...) or keep dynamic arrays (xl/metadata.xml)
+// against their cached values, and the others against VALUES.tsv.
+// Any workbook failure, missing oracle sheet, difference beyond "near", or zero comparisons
+// exits nonzero. Excel dump ERROR rows fail; temporary Office lock files are not workbooks.
 //
 // Cells are left out where Excel cannot say: #NAME? (a function this Excel does not have: the VM's
 // is 2019's engine) and the volatile functions (RAND, NOW, TODAY ...). Numbers agree to 1e-9 relative;
@@ -25,20 +28,40 @@ module Bridge = Rbt.Spreadsheet.XlsxBridge
 module Wb = Rbt.Spreadsheet.Workbook
 
 let args = fsi.CommandLineArgs |> Array.skip 1
+if args.Length < 2 then failwith "Usage: compare-values.fsx VALUES.tsv DOCS_DIR [--list N] [--cached | --cached-new]"
 let valuesPath, docsDir = args.[0], args.[1]
 let listCount = match Array.tryFindIndex ((=) "--list") args with Some i -> int args.[i + 1] | None -> 5
 let cachedAll = Array.contains "--cached" args
 let cachedNew = Array.contains "--cached-new" args
+if cachedAll && cachedNew then failwith "Choose either --cached or --cached-new"
+if not (Directory.Exists docsDir) then failwithf "Workbook directory not found: %s" docsDir
 
 type Expected = { Sheet: string; Address: string; Kind: string; Text: string }
+let isOfficeLock (book: string) = book.StartsWith("~$", StringComparison.Ordinal)
 let expected =
-    File.ReadAllLines(valuesPath, Text.Encoding.Unicode)
-    |> Array.choose (fun line ->
-        match line.Split '\t' with
-        | [| book; sheet; address; kind; text |] when kind <> "ERROR" -> Some (book, { Sheet = sheet; Address = address; Kind = kind; Text = text })
-        | _ -> None)
-    |> Array.groupBy fst
-    |> Array.map (fun (book, rows) -> book, rows |> Array.map snd)
+    if cachedAll then [||]
+    else
+        File.ReadAllLines(valuesPath, Text.Encoding.Unicode)
+        |> Array.choose (fun line ->
+            match line.Split '\t' with
+            | [| book; _; _; "ERROR"; message |] when not (isOfficeLock book) ->
+                failwithf "Excel could not open %s: %s" book message
+            | [| book; sheet; address; kind; text |] when not (isOfficeLock book) ->
+                Some (book, { Sheet = sheet; Address = address; Kind = kind; Text = text })
+            | _ -> None)
+        |> Array.groupBy fst
+        |> Array.map (fun (book, rows) -> book, rows |> Array.map snd)
+let books =
+    if cachedAll then
+        Directory.EnumerateFiles docsDir
+        |> Seq.map Path.GetFileName
+        |> Seq.filter (fun book ->
+            not (isOfficeLock book) &&
+            (book.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase) ||
+             book.EndsWith(".xlsm", StringComparison.OrdinalIgnoreCase)))
+        |> Seq.map (fun book -> book, [||])
+        |> Seq.toArray
+    else expected
 
 /// Functions Excel 2019 does not have (its #NAME?, or its implicit intersection where 365 spills).
 let newFunctions =
@@ -90,6 +113,7 @@ let mutable totalCompared = 0
 let mutable totalAgreed = 0
 let mutable totalSkipped = 0
 let mutable totalNear = 0
+let mutable failedBooks = 0
 let lines = ResizeArray<string>()
 let colName c = let rec go c = if c < 26 then string (char (65 + c)) else go (c / 26 - 1) + string (char (65 + c % 26)) in go c
 let kindOf (value: CellValue) =
@@ -99,9 +123,12 @@ let kindOf (value: CellValue) =
     | Boolean b -> "b", (if b then "True" else "False")
     | Error e -> "e", (if e.StartsWith "#" then e else "#" + e)
     | _ -> "x", ""
-for book, cells in expected |> Array.sortBy fst do
+for book, cells in books |> Array.sortBy fst do
     let path = Path.Combine(docsDir, book)
-    if File.Exists path then
+    if not (File.Exists path) then
+        failedBooks <- failedBooks + 1
+        lines.Add (sprintf "FAIL %s: workbook not found in %s" book docsDir)
+    else
         try
             let imported = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative (File.ReadAllBytes path) |> Option.get)
             let context = imported.Context
@@ -153,14 +180,27 @@ for book, cells in expected |> Array.sortBy fst do
                         if agree want got then agreed <- agreed + 1
                         elif near want got then nearly <- nearly + 1
                         elif differences.Count < listCount then differences.Add (sprintf "    %s!%s =%s  Excel %s %s, ours %s" want.Sheet want.Address formula want.Kind want.Text (show got))
-                | None -> skipped <- skipped + 1
+                | None -> failwithf "Oracle sheet %s not found" want.Sheet
             totalCompared <- totalCompared + compared
             totalAgreed <- totalAgreed + agreed
             totalSkipped <- totalSkipped + skipped
             totalNear <- totalNear + nearly
-            lines.Add (sprintf "%s %s: %d of %d agree%s (%d left out)%s" (if agreed + nearly = compared then "ok  " else "DIFF") book agreed compared (if nearly > 0 then sprintf ", %d near" nearly else "") skipped (if fromFile then " [against the file's values]" else ""))
+            if compared = 0 then
+                failedBooks <- failedBooks + 1
+                lines.Add (sprintf "FAIL %s: no comparable cells (%d left out)" book skipped)
+            elif agreed + nearly <> compared then
+                failedBooks <- failedBooks + 1
+                lines.Add (sprintf "DIFF %s: %d of %d agree%s (%d left out)%s" book agreed compared (if nearly > 0 then sprintf ", %d near" nearly else "") skipped (if fromFile then " [against the file's values]" else ""))
+            else
+                lines.Add (sprintf "ok   %s: %d of %d agree%s (%d left out)%s" book agreed compared (if nearly > 0 then sprintf ", %d near" nearly else "") skipped (if fromFile then " [against the file's values]" else ""))
             lines.AddRange differences
-        with error -> lines.Add (sprintf "FAIL %s: %s" book (error.Message.Split('\n').[0]))
+        with error ->
+            failedBooks <- failedBooks + 1
+            lines.Add (sprintf "FAIL %s: %s" book (error.Message.Split('\n').[0]))
 for line in lines do printfn "%s" line
 printfn "\nFORMULA VALUES AGAINST EXCEL: %d of %d cells agree (%.2f%%), %d near (1e-6), %d left out, %d workbooks"
-    totalAgreed totalCompared (100.0 * float totalAgreed / float (max 1 totalCompared)) totalNear totalSkipped expected.Length
+    totalAgreed totalCompared (100.0 * float totalAgreed / float (max 1 totalCompared)) totalNear totalSkipped books.Length
+if books.Length = 0 then
+    eprintfn "FAIL: no workbooks selected"
+    exit 1
+if failedBooks > 0 then exit 1
