@@ -1917,6 +1917,11 @@ module Xlsx =
             CellValue.Error stripped
         | _, Some v ->
             match tryParseFloat v with
+            // Excel discards subnormal numeric cell values, including formula
+            // caches. Do not apply this to style/geometry or shared-string
+            // indices parsed through tryParseFloat.
+            | Some n when n > -2.2250738585072014e-308 && n < 2.2250738585072014e-308 ->
+                Number (n * 0.0)
             | Some n -> Number n
             | None -> if v = "" then Empty else String v
         | _ ->

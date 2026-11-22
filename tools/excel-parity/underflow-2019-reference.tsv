@@ -1,0 +1,114 @@
+# Synthetic Excel 2019 oracle, 2026-11-22, winvm; no private data.
+# Formula rows were evaluated using eval-cells-on-vm.sh in a new Excel instance, CalculateFull.
+# A1=2^-1022, A2=A1*1.5-A1, A3=EXP(-740), A4=-A2, A6=A1*1.5.
+# Exact column is integer mantissa * 2^exponent, from eval-cells.vbs; errors/booleans as shown.
+formula	Excel result	exact or note
+=A1	2.22507385850720E-308	1*2^-1022
+=A2	2^-1023	1*2^-1023
+=A3	4.19955798965060E-322	85*2^-1074
+=A2*2	2.22507385850720E-308	1*2^-1022
+=A4*2	-2.22507385850720E-308	-1*2^-1022
+=A2*1	0	0
+=A1*0.5	0	0
+=-A1*0.5	0	0
+=A6*0.5	0	0
+=PRODUCT(A2,2)	2.22507385850720E-308	1*2^-1022
+=PRODUCT(A1,0.5)	0	0
+=A2/0.5	2.22507385850720E-308	1*2^-1022
+=A4/0.5	-2.22507385850720E-308	-1*2^-1022
+=A1/2	0	0
+=-A1/2	0	0
+=A1/A2	#DIV/0!	
+=0/A2	#DIV/0!	
+=IFERROR(A2/(-A2),7)	7	
+=A2^1	0	0
+=A4^1	0	0
+=A2^0	1	
+=A2^-1	#DIV/0!	
+=(-A2)^-1	#DIV/0!	
+=A2^0.5	1.05476866148630E-154	94906265:41892813:-564 (hi:lo:e as in eval-cells.vbs)
+=(-A2)^0.5	#NUM!	
+=POWER(A2,1)	0	0
+=SUM(A2,A2)	2.22507385850720E-308	1*2^-1022
+=A2<>0	TRUE	
+=IF(A2,1,2)	1	
+=A1*0.99999999999999	0	0
+=A1*1.00000000000001	2.22507385850722E-308	(67108864*2^26+45)*2^-1074
+=A1/1.00000000000001	0	0
+=A1/0.99999999999999	2.22507385850722E-308	(67108864*2^26+45)*2^-1074
+# CSE array formula, CHOOSE builds TRUE/min normal/half normal array without invalid formula-valued array literals.
+{=SUM(CHOOSE({1,2,3},TRUE,A1,A2)*0.5)}	0.5	
+{=SUM(IFERROR(A1:A2/A2,7))}	14	
+# Additional separately evaluated synthetic cells, same A1 and A2 definitions.
+=PRODUCT(A1,0.5,4)	0	
+=PRODUCT(A1,4,0.5)	4.45014771701440E-308	1*2^-1021
+=PRODUCT(0.5,A1,4)	0	
+# B1:B2 = {0.5;4}; B3:B4 = {4;0.5}.
+=PRODUCT(A1,B1:B2)	0	
+=PRODUCT(A1,B3:B4)	4.45014771701440E-308	1*2^-1021
+# A3:A5 each = A1; B6:B8 each = 0.5.
+=SUMPRODUCT(A3:A5,B6:B8)	0	
+=A2^-0.5	9.48075190810918E+153	(94906265*2^26+41892812)*2^459
+=POWER(A2,-0.5)	9.48075190810918E+153	(94906265*2^26+41892812)*2^459
+=A2^-0.25	9.73691527543982E+76	(112863206*2^26+22729705)*2^203
+=A2^-0.1	6.24264381817733E+30	(82620702*2^26+67076970)*2^50
+=(-A2)^-0.5	#NUM!	
+=(-A2)^-2	#DIV/0!	
+=(-A2)^-3	#DIV/0!	
+=0^-0.5	#DIV/0!	
+# Further negative power matrix. L=A1-EXP(-745), the largest subnormal, exact (2^52-1)*2^-1074.
+=A2^-0.9	1.43984919468569E+277	
+=A2^-0.99	7.48425728259438E+304	
+=A2^-1.001	#DIV/0!	
+=A2^-1.1	#DIV/0!	
+=A2^-1.2	#DIV/0!	
+=A2^-2	#DIV/0!	
+=POWER(A2,-1)	#DIV/0!	
+=1/A2	#DIV/0!	
+=L^-0.9	7.71596078459174E+276	
+=L^-0.99	3.76815720438025E+304	
+=L^-1	#DIV/0!	
+=L^-1.001	#DIV/0!	
+=L^-1.2	#DIV/0!	
+=L^-2	#DIV/0!	
+=1/L	#DIV/0!	
+=A1^-1	4.49423283715579E+307	
+=1/A1	4.49423283715579E+307	
+=A1^-1.001	#DIV/0!	mathematical real result is finite
+=1E-200^-2	#DIV/0!	base stored in a cell
+=1E-100^-2	1.00000000000000E+200	base stored in a cell
+=1E-100^-4	#DIV/0!	base stored in a cell
+=1E-300^-1.001	1.99526231496871E+300	base stored in a cell
+=1E-300^-1.2	#DIV/0!	base stored in a cell
+# Overflow controls: H1=1E200, H2=-1E200.
+=H1^-2	0	
+=POWER(H1,-2)	0	
+=H1^2	#NUM!	
+=1/(H1^2)	#NUM!	
+=H2^-2	0	
+=H2^-3	0	
+=H2^2	#NUM!	
+=H2^3	#NUM!	
+=(-2)^-3	-0.125	
+=H1^-1.5	9.99999999999910E-301	
+=H1^-1	1.00000000000000E-200	
+# Formula assignment controls: eval-cells.vbs sets Excel Range.Formula directly.
+# Direct assignment of 1E-310 produces text, not a numeric cell.
+1E-310	text	1E-310
+# Assigning =1E-310 to Range.Formula was rejected with VBScript Unknown runtime error;
+# this is not a worksheet error value. =1E-310<>0 was in the aborted batch and not evaluated.
+=VALUE("1E-310")	#VALUE!	
+=VALUE("-1E-310")	#VALUE!	
+=A2%	0	A2 is exactly 2^-1023
+# Separate synthetic XLSX, explicit numeric <v> values in A and =1 formula caches in B.
+# Excel opened it with application calculation manual, observed Value2 before calculation; both A and B matched.
+# <v> decimal	Excel Value2 (plain cell and cached formula)
+4.9406564584124654E-324	0
+-4.9406564584124654E-324	0
+1.1125369292536007E-308	0
+-1.1125369292536007E-308	0
+2.225073858507201E-308	0
+2.2250738585072014E-308	2.2250738585072E-308
+-2.2250738585072014E-308	-2.2250738585072E-308
+2.225073858507202E-308	2.2250738585072E-308
+0	0

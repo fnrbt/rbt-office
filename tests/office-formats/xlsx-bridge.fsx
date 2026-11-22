@@ -1249,6 +1249,11 @@ let cachePackage () =
         + "<c r=\"G1\" t=\"str\"><f>IF(FALSE,1, \"\")</f><v></v></c>"
         + "<c r=\"H1\" t=\"str\"><f>1+2</f></c>"
         + "<c r=\"I1\"><f>A1+10</f><v/></c>"
+        + "<c r=\"J1\"><v>4.9406564584124654E-324</v></c>"
+        + "<c r=\"K1\"><f>1</f><v>-1.1125369292536007E-308</v></c>"
+        + "<c r=\"L1\"><v>2.2250738585072014E-308</v></c>"
+        + "<c r=\"M1\" t=\"b\"><v>1</v></c>"
+        + "<c r=\"N1\" t=\"e\"><v>#NUM!</v></c>"
         + "</row></sheetData></worksheet>"
     let parts =
         [ "[Content_Types].xml", "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>"
@@ -1271,6 +1276,14 @@ let expectedCacheValues =
     [ CellValue.String ""; CellValue.Number 2.0; CellValue.Number 99.0; CellValue.String ""
       CellValue.String ""; CellValue.Number 3.0; CellValue.String ""; CellValue.Number 3.0; CellValue.String "" ]
 eq "opened empty versus missing formula caches" (cacheValues cacheImported) expectedCacheValues
+let importedValue (imported: Bridge.ImportedWorkbook) col =
+    imported.Sheets.[0].Model |> getCell (addr 0 col) |> Option.map (fun c -> unwrapFormulaValue c.Value)
+let underflowCacheValues imported = [ for col in 9 .. 13 -> importedValue imported col ]
+let expectedUnderflowCache =
+    [ Some (CellValue.Number 0.0); Some (CellValue.Number 0.0)
+      Some (CellValue.Number 2.2250738585072014e-308)
+      Some (CellValue.Boolean true); Some (CellValue.Error "NUM!") ]
+eq "imported numeric and formula subnormal caches" (underflowCacheValues cacheImported) expectedUnderflowCache
 let cacheSaved =
     XlsxPackageWriter.writeWorkbookPackageBytes
         (Bridge.Export.toWorkbookOut (inputOf cacheImported (modelsOf cacheImported) cacheImported.Context.Names))
@@ -1293,6 +1306,7 @@ ok "saved acyclic missing caches carry calculated numbers"
    (sprintf "%s / %s" (cacheCellXml "F1") (cacheCellXml "H1"))
 let cacheReopened = Bridge.Import.importWorkbook (XlsxReader.loadBytesNative cacheSaved |> Option.get)
 eq "empty and computed formula caches after save/reopen" (cacheValues cacheReopened) expectedCacheValues
+eq "subnormal caches after save/reopen" (underflowCacheValues cacheReopened) expectedUnderflowCache
 
 printfn ""
 printfn "XLSX bridge tests: %d passed, %d failed" pass fail

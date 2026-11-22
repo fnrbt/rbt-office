@@ -4596,6 +4596,41 @@ let private compound (rate: float) (periods: float) : float =
         factor
     else (1.0 + rate) ** periods
 
+// Excel drops subnormal results of arithmetic that multiplies/divides (and
+// powers), but not those of addition/subtraction or functions such as EXP.
+// Keep the sign of zero; a subnormal operand can still produce a normal result.
+let private minNormal = 2.2250738585072014e-308
+// Only powers whose reciprocal approaches the normal/subnormal boundary need
+// a second pow. The small band covers rounding at that binary boundary.
+let private reciprocalUnderflowCutoff = (1.0 / minNormal) * (1.0 - 1e-12)
+
+let private flushProductUnderflow (x: float) : float =
+    if x > -minNormal && x < minNormal then x * 0.0 else x
+
+let private finiteProduct (x: float) : CellValue =
+    if Double.IsInfinity x || Double.IsNaN x then err Err.num
+    else CellValue.Number (flushProductUnderflow x)
+
+let private powerNumber (a: float) (b: float) : Result<float, string> =
+    let p = a ** b
+    // A negative power can have a subnormal positive-power denominator even
+    // when its reciprocal fits a double. Most negative powers are nowhere
+    // near that boundary and retain their original single-pow path.
+    if Double.IsNaN p then Result.Error Err.num
+    elif b < 0.0 && a = 0.0 then Result.Error Err.div0
+    elif b < 0.0 && (Double.IsInfinity p || abs p >= reciprocalUnderflowCutoff) then
+        let denominator = a ** (-b)
+        if denominator > -minNormal && denominator < minNormal then Result.Error Err.div0
+        elif Double.IsInfinity p then Result.Error Err.num
+        else Ok (flushProductUnderflow p)
+    elif Double.IsInfinity p then Result.Error Err.num
+    else Ok (flushProductUnderflow p)
+
+let private powerProduct (a: float) (b: float) : CellValue =
+    match powerNumber a b with
+    | Ok value -> CellValue.Number value
+    | Result.Error e -> err e
+
 /// Apply a prefix/postfix unary operator to one value (shared by scalar eval
 /// and element-wise array broadcasting).
 let applyUnary (op: string) (v: CellValue) : CellValue =
@@ -4605,7 +4640,7 @@ let applyUnary (op: string) (v: CellValue) : CellValue =
     // and TRUE stays TRUE (`=+A1` is how Lotus-style formulas are typed).
     // Minus and percent do coerce: numeric text converts, other text is #VALUE!.
     | "+" -> v
-    | "%" -> (match coerceNumber v with Ok n -> CellValue.Number (n / 100.0) | Result.Error e -> err e)
+    | "%" -> (match coerceNumber v with Ok n -> finiteProduct (n / 100.0) | Result.Error e -> err e)
     | _ -> err Err.value
 
 /// `applyBin` for any two values.
@@ -4636,9 +4671,9 @@ let private applyBinGeneral (op: string) (lv: CellValue) (rv: CellValue) : CellV
                 match op with
                 | "+" -> finite (a + b)
                 | "-" -> finite (a - b)
-                | "*" -> finite (a * b)
-                | "/" -> if b = 0.0 then err Err.div0 else finite (a / b)
-                | "^" -> (let p = a ** b in if Double.IsNaN p || Double.IsInfinity p then err Err.num else CellValue.Number p)
+                | "*" -> finiteProduct (a * b)
+                | "/" -> if b > -minNormal && b < minNormal then err Err.div0 else finiteProduct (a / b)
+                | "^" -> powerProduct a b
                 | _ -> err Err.value)
 
 /// Apply a binary operator to two values (shared by scalar eval and array
@@ -4653,8 +4688,8 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
             match op with
             | "+" -> (let x = a + b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
             | "-" -> (let x = a - b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
-            | "*" -> (let x = a * b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
-            | "/" -> if b = 0.0 then err Err.div0 else (let x = a / b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
+            | "*" -> finiteProduct (a * b)
+            | "/" -> if b > -minNormal && b < minNormal then err Err.div0 else finiteProduct (a / b)
             | "{o}" -> CellValue.Boolean (compareNumbers a b = 0)
             | "{o}" -> CellValue.Boolean (compareNumbers a b <> 0)
             | "{o}" -> CellValue.Boolean (compareNumbers a b < 0)
@@ -7760,17 +7795,15 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 match op with
                 | "-" -> Ok -n
                 | "+" -> Ok n
-                | "%" -> Ok (n / 100.0)
+                | "%" -> Ok (flushProductUnderflow (n / 100.0))
                 | _ -> Result.Error Err.value
         let arithmeticNumber op a b =
             match op with
             | "+" -> Ok (a + b)
             | "-" -> Ok (a - b)
-            | "*" -> Ok (a * b)
-            | "/" -> if b = 0.0 then Result.Error Err.div0 else Ok (a / b)
-            | "^" ->
-                let p = a ** b
-                if Double.IsNaN p || Double.IsInfinity p then Result.Error Err.num else Ok p
+            | "*" -> Ok (flushProductUnderflow (a * b))
+            | "/" -> if b > -minNormal && b < minNormal then Result.Error Err.div0 else Ok (flushProductUnderflow (a / b))
+            | "^" -> powerNumber a b
             | _ -> Result.Error Err.value
         let collectStoredDenseRangePairNumeric (left: RangeAccess) (right: RangeAccess) op =
             let count = left.Count
@@ -8037,7 +8070,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             | "SUM" | "AVERAGE" | "AVERAGEA" ->
                 total <- total + n
             | "PRODUCT" ->
-                productValue <- productValue * n
+                productValue <- flushProductUnderflow (productValue * n)
             | "SUMSQ" ->
                 total <- total + n * n
             | "MIN" | "MINA" ->
@@ -8186,12 +8219,27 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 rank <- rank + repeats
         if found then CellValue.Number (float rank) else err Err.na
     let isErr v = match unwrapValue v with CellValue.Error _ -> true | _ -> false
-    let repeatedProduct factor repeats =
-        if repeats <= 0L then 1.0
-        elif factor = 0.0 then 0.0
-        elif factor = 1.0 then 1.0
-        elif factor = -1.0 then if repeats % 2L = 0L then 1.0 else -1.0
-        else Math.Pow(factor, float repeats)
+    let repeatedProduct product factor repeats =
+        if repeats <= 0L then product
+        elif factor = 0.0 then flushProductUnderflow (product * factor)
+        elif factor = 1.0 then product
+        elif factor = -1.0 then if repeats % 2L = 0L then product else -product
+        else
+            let endValue = product * Math.Pow(factor, float repeats)
+            // Keep compressed repetition when no step can cross the normal
+            // boundary; otherwise multiply in order until zero is reached.
+            if abs factor >= 1.0 && (product <= -minNormal || product >= minNormal)
+               || abs factor < 1.0 && (endValue <= -minNormal || endValue >= minNormal) then
+                endValue
+            elif abs factor < 1.0 && abs product <= 1.0 && abs endValue < minNormal / 2.0 then
+                endValue * 0.0
+            else
+                let mutable value = product
+                let mutable remaining = repeats
+                while remaining > 0L && value <> 0.0 do
+                    value <- flushProductUnderflow (value * factor)
+                    remaining <- remaining - 1L
+                value
     let varianceOptions =
         match fnName with
         | "STDEV" | "STDEV.S" -> ValueSome (true, true)
@@ -8273,7 +8321,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     numericCount <- numericCount + repeats
                                 | "COUNT" -> numericCount <- numericCount + repeats
                                 | "PRODUCT" ->
-                                    productValue <- productValue * repeatedProduct n repeats
+                                    productValue <- repeatedProduct productValue n repeats
                                     numericCount <- numericCount + repeats
                                 | "SUMSQ" ->
                                     total <- total + n * n * float repeats
@@ -8351,12 +8399,24 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | _ -> ()
                             if sparseEligible then
                                 let visited = HashSet<int>()
-                                let visit offset =
-                                    if visited.Add offset then
+                                if fnName = "PRODUCT" then
+                                    // Products are order-dependent at the normal boundary.
+                                    // Process the stored offsets and intervening blank runs in row order.
+                                    let offsets = ResizeArray<int>()
+                                    iterOffsets (fun offset -> if visited.Add offset then offsets.Add offset)
+                                    offsets.Sort()
+                                    let mutable nextOffset = 0
+                                    for offset in offsets do
+                                        if offset > nextOffset then consume nextOffset (int64 (offset - nextOffset)) gapValue
                                         consume offset 1L (readAt offset)
-                                iterOffsets visit
-                                if visited.Count < count then
-                                    consume 0 (int64 (count - visited.Count)) gapValue
+                                        nextOffset <- offset + 1
+                                    if nextOffset < count then consume nextOffset (int64 (count - nextOffset)) gapValue
+                                else
+                                    let visit offset =
+                                        if visited.Add offset then consume offset 1L (readAt offset)
+                                    iterOffsets visit
+                                    if visited.Count < count then
+                                        consume 0 (int64 (count - visited.Count)) gapValue
                             else
                                 let mutable offset = 0
                                 while ValueOption.isNone firstErr && offset < count do
@@ -8473,7 +8533,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 numericCount <- numericCount + repeats
                             | "COUNT" -> numericCount <- numericCount + repeats
                             | "PRODUCT" ->
-                                productValue <- productValue * repeatedProduct n repeats
+                                productValue <- repeatedProduct productValue n repeats
                                 numericCount <- numericCount + repeats
                             | "SUMSQ" ->
                                 total <- total + n * n * float repeats
@@ -8551,12 +8611,22 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                             | _ -> ()
                         if sparseEligible then
                             let visited = HashSet<int>()
-                            let visit offset =
-                                if visited.Add offset then
+                            if fnName = "PRODUCT" then
+                                let offsets = ResizeArray<int>()
+                                iterOffsets (fun offset -> if visited.Add offset then offsets.Add offset)
+                                offsets.Sort()
+                                let mutable nextOffset = 0
+                                for offset in offsets do
+                                    if offset > nextOffset then consume nextOffset (int64 (offset - nextOffset)) gapValue
                                     consume offset 1L (readAt offset)
-                            iterOffsets visit
-                            if visited.Count < count then
-                                consume 0 (int64 (count - visited.Count)) gapValue
+                                    nextOffset <- offset + 1
+                                if nextOffset < count then consume nextOffset (int64 (count - nextOffset)) gapValue
+                            else
+                                let visit offset =
+                                    if visited.Add offset then consume offset 1L (readAt offset)
+                                iterOffsets visit
+                                if visited.Count < count then
+                                    consume 0 (int64 (count - visited.Count)) gapValue
                         else
                             let mutable offset = 0
                             while ValueOption.isNone firstErr && offset < count do
@@ -8684,7 +8754,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match op with
                                     | "+" -> results.Add(numberOk n)
                                     | "-" -> results.Add(numberOk -n)
-                                    | "%" -> results.Add(numberOk (n / 100.0))
+                                    | "%" -> results.Add(numberOk (flushProductUnderflow (n / 100.0)))
                                     | _ -> results.Add numberUnsupported
                                 elif innerKind = 1 then
                                     results.Add(numberError e)
@@ -8703,10 +8773,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match op with
                                     | "+" -> results.Add(numberOk (leftNumber + rightNumber))
                                     | "-" -> results.Add(numberOk (leftNumber - rightNumber))
-                                    | "*" -> results.Add(numberOk (leftNumber * rightNumber))
-                                    | "/" when rightNumber = 0.0 -> results.Add(numberError Err.div0)
-                                    | "/" -> results.Add(numberOk (leftNumber / rightNumber))
-                                    | "^" -> results.Add(numberOk (Math.Pow(leftNumber, rightNumber)))
+                                    | "*" -> results.Add(numberOk (flushProductUnderflow (leftNumber * rightNumber)))
+                                    | "/" when rightNumber > -minNormal && rightNumber < minNormal -> results.Add(numberError Err.div0)
+                                    | "/" -> results.Add(numberOk (flushProductUnderflow (leftNumber / rightNumber)))
+                                    | "^" ->
+                                        match powerNumber leftNumber rightNumber with
+                                        | Ok n -> results.Add(numberOk n)
+                                        | Result.Error e -> results.Add(numberError e)
                                     | _ -> results.Add numberUnsupported
                             | _ ->
                                 match expr with
@@ -8900,7 +8973,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         match op with
                         | "+" -> results.Add(numericOk n)
                         | "-" -> results.Add(numericOk -n)
-                        | "%" -> results.Add(numericOk (n / 100.0))
+                        | "%" -> results.Add(numericOk (flushProductUnderflow (n / 100.0)))
                         | _ -> results.Add numericUnsupported
                     elif innerKind = 1 then
                         results.Add(numericError e)
@@ -8919,10 +8992,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         match op with
                         | "+" -> results.Add(numericOk (leftValue + rightValue))
                         | "-" -> results.Add(numericOk (leftValue - rightValue))
-                        | "*" -> results.Add(numericOk (leftValue * rightValue))
-                        | "/" when rightValue = 0.0 -> results.Add(numericError Err.div0)
-                        | "/" -> results.Add(numericOk (leftValue / rightValue))
-                        | "^" -> results.Add(numericOk (Math.Pow(leftValue, rightValue)))
+                        | "*" -> results.Add(numericOk (flushProductUnderflow (leftValue * rightValue)))
+                        | "/" when rightValue > -minNormal && rightValue < minNormal -> results.Add(numericError Err.div0)
+                        | "/" -> results.Add(numericOk (flushProductUnderflow (leftValue / rightValue)))
+                        | "^" ->
+                            match powerNumber leftValue rightValue with
+                            | Ok n -> results.Add(numericOk n)
+                            | Result.Error e -> results.Add(numericError e)
                         | "=" | "<>" | "<" | ">" | "<=" | ">=" ->
                             let c = compareNumbers leftValue rightValue
                             let matched =
@@ -9224,6 +9300,28 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | _ -> ValueNone
                     | _ -> ValueNone
                 | _ -> ValueNone
+        // A symbolic bilinear form cannot encode the zero produced at an
+        // intermediate multiplication/division/power. Decline it for tiny or
+        // extreme coefficients; the numeric MAKEARRAY stream still runs
+        // without materializing the array.
+        let sensitiveNumber n = n <> 0.0 && (abs n < 1e-150 || abs n > 1e150)
+        let sensitiveBilinear (struct (rc, r, c, k)) =
+            sensitiveNumber rc || sensitiveNumber r || sensitiveNumber c || sensitiveNumber k
+        let rec unsafeSymbolic rowName colName expr =
+            let resultSensitive =
+                match expr with
+                | BinOp (_, ("*" | "/"), _) | UnaryOp ("%", _) ->
+                    match tryBilinear rowName colName expr with
+                    | ValueSome (Ok value) -> sensitiveBilinear value
+                    | _ -> false
+                | _ -> false
+            resultSensitive ||
+                (match expr with
+                 | Number n -> sensitiveNumber n
+                 | UnaryOp (_, inner) -> unsafeSymbolic rowName colName inner
+                 | BinOp (_, "^", _) -> true
+                 | BinOp (left, _, right) -> unsafeSymbolic rowName colName left || unsafeSymbolic rowName colName right
+                 | _ -> false)
         let makeArrayStreamOfArgs makeArgs =
             match makeArgs with
             | [ rowsExpr; colsExpr; lambdaExpr ] ->
@@ -9274,7 +9372,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | ValueSome (Ok (count, nextNumber, _)) ->
                         let mapped () =
                             match nextNumber () with
-                            | Ok n -> Ok (factor * n)
+                            | Ok n -> Ok (if factor = 1.0 || factor = -1.0 then factor * n else flushProductUnderflow (factor * n))
                             | Result.Error e -> Result.Error e
                         struct (true, ValueSome (Ok (count, mapped, true)))
                     | ValueSome (Result.Error e) -> struct (true, ValueSome (Result.Error e))
@@ -9348,7 +9446,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | BinOp (_, op, _) when op = "*" || op = "/" -> true
                     | _ -> false
 
-                if not (isMulDiv root) then
+                if not (isMulDiv root) || (match root with BinOp (left, _, right) -> isMulDiv left || isMulDiv right | _ -> false) then
                     struct (false, ValueNone)
                 else
                     let stack = ResizeArray<struct (bool * Expr)>()
@@ -9387,7 +9485,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok value ->
                                         if numerator then
                                             scalar <- scalar * value
-                                        elif value = 0.0 then
+                                        elif value > -minNormal && value < minNormal then
                                             firstErr <- ValueSome Err.div0
                                         else
                                             scalar <- scalar / value
@@ -9402,7 +9500,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                             if foundStream then
                                 let mapped () =
                                     match streamNext () with
-                                    | Ok n -> Ok (scalar * n)
+                                    | Ok n -> Ok (flushProductUnderflow (scalar * n))
                                     | Result.Error e -> Result.Error e
                                 struct (true, ValueSome (Ok (streamCount, mapped, true)))
                             else
@@ -9435,7 +9533,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok n ->
                                         match op with
                                         | "-" -> Ok -n
-                                        | "%" -> Ok (n / 100.0)
+                                        | "%" -> Ok (flushProductUnderflow (n / 100.0))
                                         | _ -> Ok n
                                     | Result.Error e -> Result.Error e
                                 ValueSome (Ok (count, mapped, true))
@@ -9453,9 +9551,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                             match op with
                                             | "+" -> Ok (n + scalar)
                                             | "-" -> Ok (n - scalar)
-                                            | "*" -> Ok (n * scalar)
-                                            | "/" when scalar <> 0.0 -> Ok (n / scalar)
-                                            | "/" -> Result.Error Err.div0
+                                            | "*" -> Ok (flushProductUnderflow (n * scalar))
+                                            | "/" when scalar > -minNormal && scalar < minNormal -> Result.Error Err.div0
+                                            | "/" -> Ok (flushProductUnderflow (n / scalar))
                                             | _ -> Result.Error Err.value
                                     ValueSome (Ok (count, mapped, true))
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
@@ -9472,7 +9570,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                                 match op with
                                                 | "+" -> Ok (scalar + n)
                                                 | "-" -> Ok (scalar - n)
-                                                | "*" -> Ok (scalar * n)
+                                                | "*" -> Ok (flushProductUnderflow (scalar * n))
                                                 | _ -> Result.Error Err.value
                                         ValueSome (Ok (count, mapped, true))
                                 | other -> other
@@ -9533,7 +9631,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | "SUM" | "AVERAGE" ->
                             total <- total + n
                         | "PRODUCT" ->
-                            productValue <- productValue * n
+                            productValue <- flushProductUnderflow (productValue * n)
                         | "MIN" ->
                             if n < minValue then minValue <- n
                         | "MAX" ->
@@ -9571,7 +9669,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | "SUM" | "AVERAGE" ->
                         total <- total + n
                     | "PRODUCT" ->
-                        productValue <- productValue * n
+                        productValue <- flushProductUnderflow (productValue * n)
                     | "MIN" ->
                         if n < minValue then minValue <- n
                     | "MAX" ->
@@ -9603,7 +9701,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 let valueAt r c = rowColCoeff * float r * float c + rowCoeff * float r + colCoeff * float c + constant
                 let result =
                     match fnName with
-                    | "PRODUCT" -> CellValue.Number (Math.Pow(constant, total))
+                    | "PRODUCT" -> CellValue.Number (flushProductUnderflow (Math.Pow(constant, total)))
                     | "SUM" -> CellValue.Number sum
                     | "AVERAGE" -> CellValue.Number (sum / total)
                     | "COUNT" -> CellValue.Number total
@@ -9667,7 +9765,10 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
 
                     match tryBilinearMakeArrayExpr current with
                     | ValueSome (Ok (rows, cols, value)) ->
-                        struct (true, ValueSome (Ok (rows, cols, scaleBilinear factor value)))
+                        if factor <> 1.0 && factor <> -1.0
+                           && (sensitiveBilinear value || sensitiveBilinear (scaleBilinear factor value)) then
+                            struct (true, ValueNone)
+                        else struct (true, ValueSome (Ok (rows, cols, scaleBilinear factor value)))
                     | ValueSome (Result.Error e) -> struct (true, ValueSome (Result.Error e))
                     | ValueNone -> struct (true, ValueNone)
 
@@ -9740,7 +9841,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | BinOp (_, op, _) when op = "*" || op = "/" -> true
                     | _ -> false
 
-                if not (isMulDiv root) then
+                if not (isMulDiv root) || (match root with BinOp (left, _, right) -> isMulDiv left || isMulDiv right | _ -> false) then
                     struct (false, ValueNone)
                 else
                     let stack = ResizeArray<struct (bool * Expr)>()
@@ -9781,7 +9882,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok value ->
                                         if numerator then
                                             scalar <- scalar * value
-                                        elif value = 0.0 then
+                                        elif value > -minNormal && value < minNormal then
                                             firstErr <- ValueSome Err.div0
                                         else
                                             scalar <- scalar / value
@@ -9794,7 +9895,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | ValueSome e -> struct (true, ValueSome (Result.Error e))
                         | ValueNone ->
                             if foundArray then
-                                struct (true, ValueSome (Ok (rows, cols, scaleBilinear scalar arrayValue)))
+                                if sensitiveNumber scalar || sensitiveBilinear arrayValue || sensitiveBilinear (scaleBilinear scalar arrayValue) then
+                                    struct (false, ValueNone)
+                                else struct (true, ValueSome (Ok (rows, cols, scaleBilinear scalar arrayValue)))
                             else
                                 struct (true, ValueNone)
 
@@ -9822,7 +9925,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     if rows < 1 || cols < 1 then
                                         ValueSome (Result.Error Err.value)
                                     else
-                                        match tryBilinear rowName colName body with
+                                        match (if unsafeSymbolic rowName colName body then ValueNone else tryBilinear rowName colName body) with
                                         | ValueSome (Ok value) -> ValueSome (Ok (rows, cols, value))
                                         | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                                         | ValueNone -> ValueNone
@@ -9835,12 +9938,14 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | UnaryOp (op, inner) when op = "+" || op = "-" || op = "%" ->
                             match tryBilinearMakeArrayExpr inner with
                             | ValueSome (Ok (rows, cols, value)) ->
-                                let mapped =
-                                    match op with
-                                    | "-" -> scaleBilinear -1.0 value
-                                    | "%" -> scaleBilinear 0.01 value
-                                    | _ -> value
-                                ValueSome (Ok (rows, cols, mapped))
+                                if op = "%" && (sensitiveBilinear value || sensitiveBilinear (scaleBilinear 0.01 value)) then ValueNone
+                                else
+                                    let mapped =
+                                        match op with
+                                        | "-" -> scaleBilinear -1.0 value
+                                        | "%" -> scaleBilinear 0.01 value
+                                        | _ -> value
+                                    ValueSome (Ok (rows, cols, mapped))
                             | other -> other
                         | BinOp (left, op, right) when op = "+" || op = "-" || op = "*" || op = "/" ->
                             match tryBilinearMakeArrayExpr left with
@@ -9851,9 +9956,11 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match op with
                                     | "+" -> ValueSome (Ok (rows, cols, addBilinearConstant scalar value))
                                     | "-" -> ValueSome (Ok (rows, cols, addBilinearConstant -scalar value))
+                                    | "*" when sensitiveNumber scalar || sensitiveBilinear value || sensitiveBilinear (scaleBilinear scalar value) -> ValueNone
                                     | "*" -> ValueSome (Ok (rows, cols, scaleBilinear scalar value))
-                                    | "/" when scalar <> 0.0 -> ValueSome (Ok (rows, cols, scaleBilinear (1.0 / scalar) value))
-                                    | "/" -> ValueSome (Result.Error Err.div0)
+                                    | "/" when scalar > -minNormal && scalar < minNormal -> ValueNone
+                                    | "/" when sensitiveBilinear value || sensitiveBilinear (scaleBilinear (1.0 / scalar) value) -> ValueNone
+                                    | "/" -> ValueSome (Ok (rows, cols, scaleBilinear (1.0 / scalar) value))
                                     | _ -> ValueNone
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                             | _ ->
@@ -9865,6 +9972,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                         match op with
                                         | "+" -> ValueSome (Ok (rows, cols, addBilinearConstant scalar value))
                                         | "-" -> ValueSome (Ok (rows, cols, subBilinear (struct (0.0, 0.0, 0.0, scalar)) value))
+                                        | "*" when sensitiveNumber scalar || sensitiveBilinear value || sensitiveBilinear (scaleBilinear scalar value) -> ValueNone
                                         | "*" -> ValueSome (Ok (rows, cols, scaleBilinear scalar value))
                                         | _ -> ValueNone
                                 | other -> other
@@ -9979,12 +10087,12 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         ValueNone
                     else
                         let affineResult =
-                            match tryBilinear rowName colName body with
+                            match (if unsafeSymbolic rowName colName body then ValueNone else tryBilinear rowName colName body) with
                             | ValueSome (Result.Error e) -> ValueSome (err e)
                             | ValueSome (Ok (struct (rowColCoeff, rowCoeff, colCoeff, constant))) ->
                                 if fnName = "PRODUCT" then
                                     if rowColCoeff = 0.0 && rowCoeff = 0.0 && colCoeff = 0.0 then
-                                        ValueSome (CellValue.Number (Math.Pow(constant, float totalCells)))
+                                        ValueSome (CellValue.Number (flushProductUnderflow (Math.Pow(constant, float totalCells))))
                                     else
                                         ValueNone
                                 else
@@ -10032,7 +10140,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     total <- total + n
                                     numericCount <- numericCount + 1L
                                 | "PRODUCT" ->
-                                    productValue <- productValue * n
+                                    productValue <- flushProductUnderflow (productValue * n)
                                     numericCount <- numericCount + 1L
                                 | "AVERAGE" ->
                                     total <- total + n
@@ -10182,6 +10290,53 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                             offset <- offset + 1L
                             value
                         ValueSome (Ok (count, nextNumber, true))
+        // Collapse a SEQUENCE mul/div chain only when its progression and
+        // every intermediate result AND accumulated scale stay well within
+        // normal finite doubles. Inspect the AST once, never generated cells.
+        let safeSequenceMulDivChain root =
+            let margin = minNormal * 4.0
+            let safe lo hi =
+                not (Double.IsNaN lo || Double.IsNaN hi || Double.IsInfinity lo || Double.IsInfinity hi)
+                && ((lo > margin && hi > margin) || (lo < -margin && hi < -margin))
+            let literalValue = function
+                | Number n -> ValueSome n
+                | UnaryOp ("-", Number n) -> ValueSome -n
+                | _ -> ValueNone
+            let literalDefault index fallback args =
+                match List.tryItem index args with
+                | None | Some MissingArg -> ValueSome fallback
+                | Some arg -> literalValue arg
+            let rec bounds expr =
+                match expr with
+                | Function (name, args) when equalsOrdinalIgnoreCase name "SEQUENCE" ->
+                    match literalDefault 0 nan args, literalDefault 1 1.0 args,
+                          literalDefault 2 1.0 args, literalDefault 3 1.0 args with
+                    | ValueSome rows, ValueSome cols, ValueSome start, ValueSome step
+                        when rows >= 1.0 && cols >= 1.0 && rows <= 2147483647.0 && cols <= 2147483647.0
+                             && rows = floor rows && cols = floor cols ->
+                        let count = int64 rows * int64 cols
+                        let last = start + float (count - 1L) * step
+                        let lo, hi = min start last, max start last
+                        if safe lo hi then ValueSome (struct (count, start, step, lo, hi, 1.0))
+                        else ValueNone
+                    | _ -> ValueNone
+                | BinOp (left, op, right) when op = "*" || op = "/" ->
+                    match bounds left, literalValue right with
+                    | ValueSome (struct (count, start, step, lo, hi, scale)), ValueSome factor ->
+                        if op = "/" && factor > -minNormal && factor < minNormal then ValueNone
+                        else
+                            let nextScale = if op = "*" then scale * factor else scale / factor
+                            let first = if op = "*" then lo * factor else lo / factor
+                            let last = if op = "*" then hi * factor else hi / factor
+                            let lower, upper = min first last, max first last
+                            if safe lower upper && safe nextScale nextScale then
+                                ValueSome (struct (count, start, step, lower, upper, nextScale))
+                            else ValueNone
+                    | _ -> ValueNone
+                | _ -> ValueNone
+            match bounds root with
+            | ValueSome (struct (count, start, step, _, _, scale)) -> ValueSome (struct (count, start, step, scale))
+            | ValueNone -> ValueNone
         let rec sequenceStreamOfExpr expr =
             let tryUnaryChain root =
                 let isUnary expr =
@@ -10207,7 +10362,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
 
                     match sequenceStreamOfExpr current with
                     | ValueSome (Ok (count, nextNumber, countAsNumber)) ->
-                        ValueSome (Ok (count, (fun () -> factor * nextNumber ()), countAsNumber))
+                        ValueSome (Ok (count, (fun () -> let n = factor * nextNumber () in if factor = 1.0 || factor = -1.0 then n else flushProductUnderflow n), countAsNumber))
                         |> fun result -> struct (true, result)
                     | ValueSome (Result.Error e) -> struct (true, ValueSome (Result.Error e))
                     | ValueNone -> struct (true, ValueNone)
@@ -10277,7 +10432,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | BinOp (_, op, _) when op = "*" || op = "/" -> true
                     | _ -> false
 
-                if not (isMulDiv root) then
+                if not (isMulDiv root)
+                   || (match root with BinOp (left, _, right) -> isMulDiv left || isMulDiv right | _ -> false) then
                     struct (false, ValueNone)
                 else
                     let stack = ResizeArray<struct (bool * Expr)>()
@@ -10318,7 +10474,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok value ->
                                         if numerator then
                                             scalar <- scalar * value
-                                        elif value = 0.0 then
+                                        elif value > -minNormal && value < minNormal then
                                             firstErr <- ValueSome Err.div0
                                         else
                                             scalar <- scalar / value
@@ -10331,7 +10487,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | ValueSome e -> struct (true, ValueSome (Result.Error e))
                         | ValueNone ->
                             if foundStream then
-                                ValueSome (Ok (streamCount, (fun () -> scalar * streamNext ()), streamCountAsNumber))
+                                ValueSome (Ok (streamCount, (fun () -> flushProductUnderflow (scalar * streamNext ())), streamCountAsNumber))
                                 |> fun result -> struct (true, result)
                             else
                                 struct (true, ValueNone)
@@ -10344,7 +10500,19 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                 if isAddSubChain then
                     addSubResult
                 else
-                    let struct (isMulDivChain, mulDivResult) = tryMulDivChain expr
+                    let struct (isMulDivChain, mulDivResult) =
+                        match expr with
+                        | BinOp (BinOp (_, ("*" | "/"), _), ("*" | "/"), _) ->
+                            match safeSequenceMulDivChain expr with
+                            | ValueSome (struct (count, start, step, scale)) ->
+                                let mutable offset = 0L
+                                let nextNumber () =
+                                    let value = start + float offset * step
+                                    offset <- offset + 1L
+                                    scale * value
+                                struct (true, ValueSome (Ok (count, nextNumber, true)))
+                            | ValueNone -> tryMulDivChain expr
+                        | _ -> tryMulDivChain expr
                     if isMulDivChain then
                         mulDivResult
                     else
@@ -10361,7 +10529,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 let mapped =
                                     match op with
                                     | "-" -> fun () -> -(nextNumber ())
-                                    | "%" -> fun () -> nextNumber () / 100.0
+                                    | "%" -> fun () -> flushProductUnderflow (nextNumber () / 100.0)
                                     | _ -> nextNumber
                                 ValueSome (Ok (count, mapped, countAsNumber))
                             | other -> other
@@ -10374,9 +10542,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match op with
                                     | "+" -> ValueSome (Ok (count, (fun () -> nextNumber () + scalar), countAsNumber))
                                     | "-" -> ValueSome (Ok (count, (fun () -> nextNumber () - scalar), countAsNumber))
-                                    | "*" -> ValueSome (Ok (count, (fun () -> nextNumber () * scalar), countAsNumber))
-                                    | "/" when scalar <> 0.0 -> ValueSome (Ok (count, (fun () -> nextNumber () / scalar), countAsNumber))
-                                    | "/" -> ValueSome (Result.Error Err.div0)
+                                    | "*" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (nextNumber () * scalar)), countAsNumber))
+                                    | "/" when scalar > -minNormal && scalar < minNormal -> ValueSome (Result.Error Err.div0)
+                                    | "/" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (nextNumber () / scalar)), countAsNumber))
                                     | _ -> ValueNone
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                             | _ ->
@@ -10388,7 +10556,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                         match op with
                                         | "+" -> ValueSome (Ok (count, (fun () -> scalar + nextNumber ()), countAsNumber))
                                         | "-" -> ValueSome (Ok (count, (fun () -> scalar - nextNumber ()), countAsNumber))
-                                        | "*" -> ValueSome (Ok (count, (fun () -> scalar * nextNumber ()), countAsNumber))
+                                        | "*" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (scalar * nextNumber ())), countAsNumber))
                                         | _ -> ValueNone
                                 | other -> other
                         | BinOp (left, op, right) when op = "=" || op = "<>" || op = "<" || op = ">" || op = "<=" || op = ">=" ->
@@ -10439,7 +10607,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | "SUM" | "AVERAGE" ->
                             total <- total + n
                         | "PRODUCT" ->
-                            productValue <- productValue * n
+                            productValue <- flushProductUnderflow (productValue * n)
                         | "MIN" ->
                             if n < minValue then minValue <- n
                         | "MAX" ->
@@ -10517,7 +10685,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
 
                     match randStreamOfExpr current with
                     | ValueSome (Ok (count, nextNumber, countAsNumber)) ->
-                        ValueSome (Ok (count, (fun () -> factor * nextNumber ()), countAsNumber))
+                        ValueSome (Ok (count, (fun () -> let n = factor * nextNumber () in if factor = 1.0 || factor = -1.0 then n else flushProductUnderflow n), countAsNumber))
                         |> fun result -> struct (true, result)
                     | ValueSome (Result.Error e) -> struct (true, ValueSome (Result.Error e))
                     | ValueNone -> struct (true, ValueNone)
@@ -10587,7 +10755,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     | BinOp (_, op, _) when op = "*" || op = "/" -> true
                     | _ -> false
 
-                if not (isMulDiv root) then
+                if not (isMulDiv root) || (match root with BinOp (left, _, right) -> isMulDiv left || isMulDiv right | _ -> false) then
                     struct (false, ValueNone)
                 else
                     let stack = ResizeArray<struct (bool * Expr)>()
@@ -10628,7 +10796,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     | Ok value ->
                                         if numerator then
                                             scalar <- scalar * value
-                                        elif value = 0.0 then
+                                        elif value > -minNormal && value < minNormal then
                                             firstErr <- ValueSome Err.div0
                                         else
                                             scalar <- scalar / value
@@ -10641,7 +10809,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | ValueSome e -> struct (true, ValueSome (Result.Error e))
                         | ValueNone ->
                             if foundStream then
-                                ValueSome (Ok (streamCount, (fun () -> scalar * streamNext ()), streamCountAsNumber))
+                                ValueSome (Ok (streamCount, (fun () -> flushProductUnderflow (scalar * streamNext ())), streamCountAsNumber))
                                 |> fun result -> struct (true, result)
                             else
                                 struct (true, ValueNone)
@@ -10671,7 +10839,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 let mapped =
                                     match op with
                                     | "-" -> fun () -> -(nextNumber ())
-                                    | "%" -> fun () -> nextNumber () / 100.0
+                                    | "%" -> fun () -> flushProductUnderflow (nextNumber () / 100.0)
                                     | _ -> nextNumber
                                 ValueSome (Ok (count, mapped, countAsNumber))
                             | other -> other
@@ -10684,9 +10852,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                     match op with
                                     | "+" -> ValueSome (Ok (count, (fun () -> nextNumber () + scalar), countAsNumber))
                                     | "-" -> ValueSome (Ok (count, (fun () -> nextNumber () - scalar), countAsNumber))
-                                    | "*" -> ValueSome (Ok (count, (fun () -> nextNumber () * scalar), countAsNumber))
-                                    | "/" when scalar <> 0.0 -> ValueSome (Ok (count, (fun () -> nextNumber () / scalar), countAsNumber))
-                                    | "/" -> ValueSome (Result.Error Err.div0)
+                                    | "*" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (nextNumber () * scalar)), countAsNumber))
+                                    | "/" when scalar > -minNormal && scalar < minNormal -> ValueSome (Result.Error Err.div0)
+                                    | "/" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (nextNumber () / scalar)), countAsNumber))
                                     | _ -> ValueNone
                             | ValueSome (Result.Error e) -> ValueSome (Result.Error e)
                             | _ ->
@@ -10698,7 +10866,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                         match op with
                                         | "+" -> ValueSome (Ok (count, (fun () -> scalar + nextNumber ()), countAsNumber))
                                         | "-" -> ValueSome (Ok (count, (fun () -> scalar - nextNumber ()), countAsNumber))
-                                        | "*" -> ValueSome (Ok (count, (fun () -> scalar * nextNumber ()), countAsNumber))
+                                        | "*" -> ValueSome (Ok (count, (fun () -> flushProductUnderflow (scalar * nextNumber ())), countAsNumber))
                                         | _ -> ValueNone
                                 | other -> other
                         | BinOp (left, op, right) when op = "=" || op = "<>" || op = "<" || op = ">" || op = "<=" || op = ">=" ->
@@ -10749,7 +10917,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                         | "SUM" | "AVERAGE" ->
                             total <- total + n
                         | "PRODUCT" ->
-                            productValue <- productValue * n
+                            productValue <- flushProductUnderflow (productValue * n)
                         | "MIN" ->
                             if n < minValue then minValue <- n
                         | "MAX" ->
@@ -10882,7 +11050,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 total <- total + n
                                 count <- count + 1
                             | "PRODUCT" ->
-                                productValue <- productValue * n
+                                productValue <- flushProductUnderflow (productValue * n)
                                 count <- count + 1
                             | "AVERAGE" ->
                                 total <- total + n
@@ -11656,7 +11824,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                                 | ValueNone ->
                                     match trySparseFilterAggregate () with
                                     | ValueSome result -> result
-                                    | ValueNone -> foldNumericArgs (numAggFold 1.0 ( * ) (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
+                                    | ValueNone -> foldNumericArgs (numAggFold 1.0 (fun acc x -> flushProductUnderflow (acc * x)) (fun n a -> CellValue.Number (if n = 0 then 0.0 else a))) args ctx
     | "AVERAGE" ->
         match tryRangeUnaryAggregate () with
         | ValueSome result -> result
@@ -12485,7 +12653,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     let mutable product = 1.0
                     for arr in arrays do
                         match unwrapValue arr.[r].[c] with
-                        | CellValue.Number n -> product <- product * n
+                        | CellValue.Number n -> product <- flushProductUnderflow (product * n)
                         | CellValue.Error e -> (if ValueOption.isNone firstErr then firstErr <- ValueSome e)
                         | _ -> product <- 0.0
                     total <- total + product
@@ -12530,9 +12698,7 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         if nargs <> 2 then err Err.value else
         match argNum 0, argNum 1 with
         | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok b, Ok p ->
-            let r = b ** p
-            if Double.IsNaN r || Double.IsInfinity r then err Err.num else CellValue.Number r
+        | Ok b, Ok p -> powerProduct b p
     // ----- extended math ----------------------------------------------------
     | "PI" -> CellValue.Number Math.PI
     | "EXP" -> unaryNum (exp >> CellValue.Number)

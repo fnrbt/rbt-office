@@ -786,6 +786,29 @@ match XlsxReader.loadBytesNative prefixedWorkbook with
        (sprintf "%A" (sheet |> Option.map (fun s -> s.Hyperlinks)))
 | None -> ok "prefixed-workbook-loads" false "package did not load"
 
+// Both worksheet readers must discard only subnormal numeric <v> values;
+// a cached formula value is a value in the file, not a formula literal.
+let numericBoundaryBody =
+    """<sheetData><row r="1"><c r="A1"><v>4.9406564584124654E-324</v></c><c r="B1"><v>-1.1125369292536007E-308</v></c><c r="C1"><v>2.225073858507201E-308</v></c><c r="D1"><v>2.2250738585072014E-308</v></c><c r="E1"><v>-2.2250738585072014E-308</v></c><c r="F1"><v>2.225073858507202E-308</v></c><c r="G1"><f>1</f><v>-4.9406564584124654E-324</v></c><c r="H1"><v>0.30000000000000004</v></c><c r="I1" t="b"><v>1</v></c><c r="J1" t="e"><v>#NUM!</v></c></row></sheetData>"""
+for label, pad in bothPaths do
+    let wb = loadOne pad "" numericBoundaryBody []
+    let value reference = cellOf wb reference |> Option.map (fun c -> c.Value)
+    let values = [ for col in 'A' .. 'J' -> value (sprintf "%c1" col) ]
+    let expected =
+        [ Some (XlsxReader.Number 0.0)
+          Some (XlsxReader.Number 0.0)
+          Some (XlsxReader.Number 0.0)
+          Some (XlsxReader.Number 2.2250738585072014e-308)
+          Some (XlsxReader.Number -2.2250738585072014e-308)
+          Some (XlsxReader.Number 2.225073858507202e-308)
+          Some (XlsxReader.Number 0.0)
+          Some (XlsxReader.Number (0.1 + 0.2))
+          Some (XlsxReader.Boolean true)
+          Some (XlsxReader.Error "NUM!") ]
+    ok (sprintf "numeric-normal-boundary-%s" label)
+       (values = expected && (cellOf wb "G1" |> Option.bind (fun c -> c.Formula)) = Some "1")
+       (sprintf "expected %A, got %A" expected values)
+
 // ----- invariant-culture parsing ---------------------------------------------
 
 let cultureBody = "<sheetData><row r=\"1\" ht=\"12.5\" customHeight=\"1\"><c r=\"A1\"><v>1.5</v></c><c r=\"B1\"><v>-2</v></c><c r=\"C1\" t=\"s\"><v>oops</v></c><c r=\"D1\" t=\"s\"><v>0.0</v></c></row></sheetData>"

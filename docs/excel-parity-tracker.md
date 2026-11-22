@@ -672,9 +672,34 @@ the functions over `cmpModel`).
 Not probed (Excel 2019 has none of them): XLOOKUP, XMATCH - taken to compare as MATCH does (binary);
 SORT / SORTBY / UNIQUE - left binary. FILTER's condition is an operator and rounds.
 
-Found, not matched: Excel keeps no subnormal number from `*`, `/` and `^` (`=2^-1074`, `=1E-307/1E10`,
-`=1E-200*1E-120`, `=(2^-1022/4)*4` are 0) nor from a file (`<v>4.9E-324</v>` = 0 TRUE); `+`, `-`, SUM, EXP
-and negation do keep one (`=2^-1022*1.5-2^-1022` is 2^-1023, `EXP(-740)` 4.2e-322). Ours keeps them all.
+Matched (Excel 2019): multiplication, division and exponentiation discard a **subnormal result** to zero,
+not a subnormal operand. Let `A1=2^-1022` (minimum normal), `A2=A1*1.5-A1=2^-1023`, `A3=-A2`:
+`A1*0.5`, `A1/2`, `A2*1`, `A2^1`, `2^-1074` are zero, also with negative signs; `A1*1`,
+`A2*2`, `A2/0.5`, `A3*2`, `A3/0.5` are signed minimum normals. `A2^0.5` and
+`A2^-0.5` amplify to normals; `A2^-1`, `(-A2)^-2` and even `A1^-1.001` are #DIV/0!
+because the corresponding positive-power denominator is subnormal, though
+`A2^-1`'s mathematical reciprocal fits a double; `A2^-0.99` is finite.
+`A1/A2`, `0/A2`, `A1/A3` also give #DIV/0! (subnormal divisor).
+`(-A2)^0.5` and `(-A2)^-0.5` give #NUM!. `POWER` mirrors `^`; postfix `%`
+discards a subnormal result. Addition, subtraction, SUM, EXP, negation,
+comparison and IF keep subnormals (`SUM(A2,A2)=A1`, `A2<>0`, `IF(A2,1,2)=1`,
+`EXP(-740)>0`). The same operator rule holds in array arithmetic
+(`SUM(A1:A3*0.5)=0.5` for `A3=TRUE`). Excel's PRODUCT drops each subnormal
+intermediate (`PRODUCT(A1,0.5,4)=0`, reversed order `PRODUCT(A1,4,0.5)=2*A1`);
+SUMPRODUCT drops each subnormal elementwise product before summing: for
+`C1:C3=A1` and `D1:D3=0.5`, `SUMPRODUCT(C1:C3,D1:D3)=0`.
+Plain numeric and cached-formula XLSX `<v>` values below minimum normal (including
+`2.225073858507201E-308` and negatives) open as zero; exact `±2.2250738585072014E-308`
+and larger normals survive; `<v>0.30000000000000004</v>` still keeps its binary value.
+Implemented in `Formula.applyBin` / `applyBinGeneral`, `POWER`, `PRODUCT`,
+`SUMPRODUCT` and their numeric array/stream folds, plus `XlsxReader.Xlsx.cellValueFromParts`.
+Symbolic MAKEARRAY simplifications with tiny coefficients decline to its ordered
+numeric stream; no global numeric/text/style parse flush. Entered formula text,
+VALUE and typed cell input follow separate rules; do not apply the stored-`<v>` rule.
+Separate Excel 2019 COM-entry observation (not imposed on the UI): assigning
+`1E-310` through `.Formula` stores text, assigning `=1E-310` is rejected,
+and `VALUE("1E-310")` is #VALUE!. These are input/locale/parse behaviors,
+not the stored-XLSX-`<v>` normalization.
 
 ### IRR / RATE / XIRR (found, not matched)
 

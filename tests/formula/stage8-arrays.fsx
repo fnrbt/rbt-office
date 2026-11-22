@@ -53,6 +53,31 @@ check "unique case-insens" (arrOf "=UNIQUE(C1:C3)") [| [| CellValue.String "a" |
 check "broadcast bools" ((arrOf "=A1:A8>2") |> Array.sumBy (fun r -> if r.[0] = CellValue.Boolean true then 1 else 0)) 4
 check "broadcast mul"   (nums (arrOf "=SEQUENCE(3)*2")) [2.;4.;6.]
 
+// The optimized scalar/range folds and array broadcasts use the same operator
+// semantics as scalar formulas, including mixed boolean and error values.
+let smallestNormal = 2.0 ** -1022.0
+let tinyModel =
+    { createEmpty 8 2 with
+        Cells = Map.ofList
+            [ { Row = 0; Col = 0 }, cell (n smallestNormal)
+              { Row = 1; Col = 0 }, cell (n (smallestNormal / 2.0))
+              { Row = 2; Col = 0 }, cell (CellValue.Boolean true)
+              { Row = 3; Col = 0 }, cell (CellValue.Error "N/A") ] }
+let tinyArray formula =
+    match parseFormula formula with
+    | Ok expr -> evalArray expr (contextOf tinyModel)
+    | Result.Error message -> failwithf "parse %s: %s" formula message
+check "array subnormal, bool, error" (tinyArray "=A1:A4*0.5")
+    [| [| n 0.0 |]; [| n 0.0 |]; [| n 0.5 |]; [| CellValue.Error "N/A" |] |]
+check "array normal after division" (tinyArray "=A1:A2/0.5")
+    [| [| n (smallestNormal * 2.0) |]; [| n smallestNormal |] |]
+check "array subnormal divisor" (tinyArray "=A1:A2/A2")
+    [| [| CellValue.Error "DIV/0!" |]; [| CellValue.Error "DIV/0!" |] |]
+check "array power underflow" (tinyArray "=A1:A2^1")
+    [| [| n smallestNormal |]; [| n 0.0 |] |]
+check "optimized SUM range product" (evaluateFormula "=SUM(A1:A3*0.5)" tinyModel None) (n 0.5)
+check "optimized SUM error" (evaluateFormula "=SUM(A1:A4*0.5)" tinyModel None) (CellValue.Error "N/A")
+
 // ── consumed by aggregates (streaming foldArgs over the array) ─────────
 check "sum sequence"        (ev "=SUM(SEQUENCE(10))")            (n 55.0)
 check "sum sequence 3x3"    (ev "=SUM(SEQUENCE(3,3))")           (n 45.0)
