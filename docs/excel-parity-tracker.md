@@ -1444,3 +1444,7 @@ Remaining visual limits: Excel rasterizes both into PDF images, whereas ours emi
   Aptos/Display 11 and Lato 11. Six tested body-font families use measured
   GDI levels; other normals retain previous placement. Screen baselines,
   row heights, line pitches, and top/middle print alignment are unchanged.
+- Corpus check: oyabayo now prints 39 pages, matching Excel; the affected
+  right-aligned number pages moved from roughly 4.5 pt right to 0.21–0.27 pt
+  right (median). The Segoe-heavy Summary sample now aligns vertically within
+  0.02 pt on pages 1 and 3; Financials still has pages about 0.73 pt low.
