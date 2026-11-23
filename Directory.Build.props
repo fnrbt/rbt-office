@@ -11,6 +11,10 @@
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <RbtVbPackageVersion Condition="'$(RbtVbPackageVersion)' == ''">0.9.0</RbtVbPackageVersion>
     <RbtTextPackageVersion Condition="'$(RbtTextPackageVersion)' == ''">0.1.3</RbtTextPackageVersion>
+    <!-- Rbt.Pdf 0.1.25 is compiled against Rbt.OpenType.Core 0.1.9; pinning
+         OpenType to Rbt.Text.Engine's older version loads a different
+         assembly and makes the subset/CID writer fail at runtime. -->
+    <RbtOpenTypePackageVersion Condition="'$(RbtOpenTypePackageVersion)' == ''">0.1.9</RbtOpenTypePackageVersion>
     <RbtPdfPackageVersion Condition="'$(RbtPdfPackageVersion)' == ''">0.1.25</RbtPdfPackageVersion>
     <RbtRendererPackageVersion Condition="'$(RbtRendererPackageVersion)' == ''">0.1.4</RbtRendererPackageVersion>
     <RbtWispPackageVersion Condition="'$(RbtWispPackageVersion)' == ''">0.1.0</RbtWispPackageVersion>

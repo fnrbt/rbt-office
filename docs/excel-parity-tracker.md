@@ -356,6 +356,12 @@ Found, not matched:
 - oyabayo's right-aligned numbers in some columns 4.6 pt right of Excel's (not found).
 - The PDF's text of a glyph two characters share is the other one: Calibri's hyphen is U+2010 in our PDFs' text
   ("31‐Jan‐16"), from Rbt.Pdf's ToUnicode (its extra glyph mappings do not override the cmap's); words differ.
+  Fixed 2026-11-23: the writers now emit per-source-sequence CIDs, so U+002D and U+2010 keep their own
+  ToUnicode entries while `CIDToGIDMap` draws the one glyph. The first attempt still failed because the
+  office repo pinned `Rbt.OpenType.Core` 0.1.3 while `Rbt.Pdf` 0.1.25 is built against 0.1.9, so the
+  subset call threw and every font took the old glyph-ID fallback; `RbtOpenTypePackageVersion` now pins
+  0.1.9. Subset failure also retries the full font with the same CID mapping, so only fonts with more
+  than 65,535 distinct `(glyph, source)` pairs lose colliding-character identity.
 - Fonts the machine has no file of (Aptos, Book Antiqua, Century Gothic, Myriad Pro) are set in Calibri.
 
 ### Direct-PDF numeric overflow, 2026-11-22

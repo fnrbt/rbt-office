@@ -9,6 +9,6 @@
   <ItemGroup>
     <ProjectReference Include="../Word/Rbt.Word.fsproj" />
     <PackageReference Include="Rbt.Text.Engine" Version="$(RbtTextPackageVersion)" />
-    <PackageReference Include="Rbt.OpenType.Core" Version="$(RbtTextPackageVersion)" />
+    <PackageReference Include="Rbt.OpenType.Core" Version="$(RbtOpenTypePackageVersion)" />
   </ItemGroup>
 </Project>

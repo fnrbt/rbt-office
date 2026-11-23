@@ -99,6 +99,7 @@ native_fixtures=(
     tests/word/native-painter/document.xml
     tests/word/native-painter/expected.json
     tests/test-documents-excel/synthetic-drawing-extras.xlsx
+    tests/test-documents-excel/synthetic-pdf-hyphen-control.xlsx
 )
 
 required=()
@@ -111,8 +112,8 @@ if [ "$profile" = core ]; then
     required+=("${core_fixtures[@]}")
 else
     projects=("${native_projects[@]}")
-    required=(tests/word/native-painter.fsx tests/word/native-embedded-fonts.fsx tests/word/wisp-editorhost.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/native-import.fsx tests/native-pdf.fsx "${native_fixtures[@]}")
-    for tool in pdftotext pdfimages; do
+    required=(tests/word/native-painter.fsx tests/word/native-embedded-fonts.fsx tests/word/wisp-editorhost.fsx tests/spreadsheet/wisp-editorhost.fsx tests/spreadsheet/native-import.fsx tests/native-pdf.fsx tests/native-pdf-unicode.fsx "${native_fixtures[@]}")
+    for tool in pdftotext pdfimages pdffonts; do
         if ! command -v "$tool" >/dev/null; then
             echo "MISSING NATIVE PDF TOOL: $tool (install Poppler utilities)" >&2
             exit 1
@@ -205,6 +206,7 @@ else
     run_suite "spreadsheet-wisp-editorhost" "tests/spreadsheet/wisp-editorhost.fsx"
     run_suite "spreadsheet-native-import" "tests/spreadsheet/native-import.fsx"
     run_suite "native-pdf" "tests/native-pdf.fsx"
+    run_suite "native-pdf-unicode" "tests/native-pdf-unicode.fsx"
     echo "--- spreadsheet-wisp-executable ---"
     dotnet spreadsheet-wisp/bin/Debug/net10.0/Rbt.SpreadsheetWisp.dll --selftest || failed=1
 fi

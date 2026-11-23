@@ -167,15 +167,27 @@ let private remappedPairCacheKeyComparer =
             (hash key.FontName * 397)
             ^^^ System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(key.Pairs) }
 
+/// Character codes for one embedded face. A code is assigned to each distinct
+/// (glyph, source sequence) pair, so characters that share one glyph — an ASCII
+/// hyphen and a Unicode minus in a font that draws both with `hyphen` — keep
+/// their own Unicode in ToUnicode while rendering with the same glyph.
+type private CidTable = {
+    CodesByGid: System.Collections.Generic.Dictionary<int, System.Collections.Generic.Dictionary<string, int>>
+    /// Distinct pairs in first-use order; entry `i` is CID `i + 1`. The
+    /// package's `loadFontBytesSubsetWithCidMapping` assigns CIDs in this order.
+    Occurrences: ResizeArray<int * string>
+    mutable NextCid: int
+}
+
 type private TextContext = {
     FontSet: Rbt.Word.ShaperText.FontSet
     mutable FontBytes: Map<string, byte[]>
     FontNamesByBytes: System.Collections.Generic.Dictionary<byte[], string>
     PdfFontCache: System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>
     mutable PdfFonts: Map<string, PdfFont.TrueTypeFont>
-    GlyphText: System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>
+    CidTables: System.Collections.Generic.Dictionary<string, CidTable>
     ShapeCache: System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>
-    PdfRunCache: System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>
+    PdfRunCache: System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * string[] * (int * int)[]) list>
     GlyphUsagePairCache: System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>
     ColorCache: System.Collections.Generic.Dictionary<string, PdfColor.Color>
     ExternalShapeText: (string -> TextStyle -> (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option) option
@@ -250,9 +262,9 @@ let private createTextContext (options: RenderOptions) =
         FontNamesByBytes = fontNamesByBytes
         PdfFontCache = System.Collections.Generic.Dictionary<string, PdfFont.TrueTypeFont>()
         PdfFonts = Map.empty
-        GlyphText = System.Collections.Generic.Dictionary<string, System.Collections.Generic.Dictionary<int, string>>()
+        CidTables = System.Collections.Generic.Dictionary<string, CidTable>()
         ShapeCache = System.Collections.Generic.Dictionary<TextCacheKey, (Rbt.Text.Engine.TextFont * Rbt.Text.Engine.ShapedText) option>()
-        PdfRunCache = System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * (int * string)[]) list>()
+        PdfRunCache = System.Collections.Generic.Dictionary<PdfRunCacheKey, (float * float * (int * int)[] * string[] * (int * int)[]) list>()
         GlyphUsagePairCache = System.Collections.Generic.Dictionary<RemappedPairCacheKey, unit>(remappedPairCacheKeyComparer)
         ColorCache = System.Collections.Generic.Dictionary<string, PdfColor.Color>()
         ExternalShapeText = options.ShapeText
@@ -371,7 +383,11 @@ let private controlWhitespaceAt (text: string) index =
         | '\t' | '\n' | '\r' -> true
         | _ -> false
 
-let private clusterTextMappings (text: string) (glyphs: Rbt.Text.Engine.PositionedGlyph[]) =
+/// The source text each glyph in a run represents, aligned with `glyphs`.
+/// The first glyph of a cluster carries the cluster's text; later glyphs of
+/// the same cluster carry "", so extraction does not repeat the text. Control
+/// whitespace is omitted exactly as `glyphKernPairs` omits its glyphs.
+let private clusterGlyphSources (text: string) (glyphs: Rbt.Text.Engine.PositionedGlyph[]) : string[] =
     let clusterSet = System.Collections.Generic.HashSet<int>()
     let clusters = System.Collections.Generic.List<int>()
     for glyph in glyphs do
@@ -383,26 +399,61 @@ let private clusterTextMappings (text: string) (glyphs: Rbt.Text.Engine.Position
     for i = 0 to clusters.Count - 1 do
         let finish = if i + 1 < clusters.Count then clusters.[i + 1] else text.Length
         clusterEnds.[clusters.[i]] <- finish
+    let sources = Array.create glyphs.Length ""
     let seen = System.Collections.Generic.HashSet<int>()
-    let mappings = System.Collections.Generic.List<int * string>(clusters.Count)
-    for glyph in glyphs do
-        let cluster = max 0 (min text.Length glyph.Cluster)
+    for i = 0 to glyphs.Length - 1 do
+        let cluster = max 0 (min text.Length glyphs.[i].Cluster)
         if not (controlWhitespaceAt text cluster) && seen.Add cluster then
             match Portable.Dict.tryFind cluster clusterEnds with
             | ValueSome finish when finish > cluster ->
-                mappings.Add(glyph.GlyphId, text.Substring(cluster, finish - cluster))
+                sources.[i] <- text.Substring(cluster, finish - cluster)
             | _ -> ()
-    mappings.ToArray()
+    sources
 
-let private addGlyphTextMappings (textContext: TextContext) faceName (mappings: (int * string)[]) =
-    if mappings.Length > 0 then
-        if not (textContext.GlyphText.ContainsKey faceName) then
-            textContext.GlyphText.[faceName] <- System.Collections.Generic.Dictionary<int, string>()
-        let fontMappings = textContext.GlyphText.[faceName]
-        for gid, text in mappings do
-            match Portable.Dict.tryFind gid fontMappings with
-            | ValueSome existing when existing.Length >= text.Length -> ()
-            | _ -> fontMappings.[gid] <- text
+/// The character code for one rendered glyph occurrence. Distinct source
+/// sequences that share a glyph get distinct codes; repeated occurrences of
+/// the same pair reuse theirs.
+let private cidFor (textContext: TextContext) faceName gid source =
+    let table =
+        match Portable.Dict.tryFind faceName textContext.CidTables with
+        | ValueSome table -> table
+        | ValueNone ->
+            let table =
+                { CodesByGid = System.Collections.Generic.Dictionary<int, System.Collections.Generic.Dictionary<string, int>>()
+                  Occurrences = ResizeArray<int * string>()
+                  NextCid = 1 }
+            textContext.CidTables.[faceName] <- table
+            table
+    let codes =
+        match Portable.Dict.tryFind gid table.CodesByGid with
+        | ValueSome codes -> codes
+        | ValueNone ->
+            let codes = System.Collections.Generic.Dictionary<string, int>()
+            table.CodesByGid.[gid] <- codes
+            codes
+    match Portable.Dict.tryFind source codes with
+    | ValueSome cid -> cid
+    | ValueNone ->
+        let cid = table.NextCid
+        table.NextCid <- cid + 1
+        codes.[source] <- cid
+        table.Occurrences.Add((gid, source))
+        cid
+
+/// A CID is a two-byte character code. The package's subset/CID helper allows
+/// 65,535 distinct occurrences because it prepends .notdef as CID 0.
+let private maxCid = 0xFFFF
+
+/// Embed the full font with the same per-occurrence CID mapping, for when
+/// subsetting fails. Rendering and extraction are preserved; only the file is
+/// larger. Occurrences above `maxCid` cannot be represented.
+let private embedFullFontWithCidMapping (builder: PdfDoc.DocBuilder) (fontName: string) (data: byte[]) (occurrences: ResizeArray<int * string>) =
+    let entries = Array.append [| 0, "" |] (occurrences |> Seq.toArray)
+    let ttf = PdfFont.parseTrueType data
+    let fontRef = PdfFont.embedTrueTypeWithCidMapping builder.Doc ttf fontName entries
+    let resourceName = $"F{Map.count builder.Fonts + Map.count builder.EmbeddedFonts}"
+    builder.EmbeddedFonts <-
+        Map.add fontName { Name = resourceName; ObjRef = fontRef; Font = ttf } builder.EmbeddedFonts
 
 let private equalsOrdinalIgnoreCase (left: string) (right: string) =
     String.Equals(left, right, StringComparison.OrdinalIgnoreCase)
@@ -583,7 +634,7 @@ let private pdfFontName (style: WordPaint.TextPaintStyle) =
     | false, true -> "Helvetica-Oblique"
     | false, false -> "Helvetica"
 
-let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Rbt.Text.Engine.PositionedGlyph[]) =
+let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize: float) characterSpacing (glyphs: Rbt.Text.Engine.PositionedGlyph[]) (glyphSources: string[]) =
     let mutable count = 0
     let mutable firstX = 0.0
     let mutable firstY = 0.0
@@ -595,8 +646,10 @@ let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize
             count <- count + 1
     if count = 0 then None else
     let pairs = Array.zeroCreate<int * int> count
+    let sources = Array.create count ""
     let mutable writeIndex = 0
-    for glyph in glyphs do
+    for i = 0 to glyphs.Length - 1 do
+        let glyph = glyphs.[i]
         if not (controlWhitespaceAt text glyph.Cluster) then
             let baseWidthFu =
                 if glyph.GlyphId >= 0 && glyph.GlyphId < font.GlyphWidths.Length then font.GlyphWidths.[glyph.GlyphId]
@@ -606,8 +659,9 @@ let private glyphKernPairs (text: string) (font: PdfFont.TrueTypeFont) (fontSize
             let diff = baseWidthPt - actualAdvancePt
             let kern = int (Math.Round(diff / fontSize * 1000.0))
             pairs.[writeIndex] <- glyph.GlyphId, kern
+            sources.[writeIndex] <- if i < glyphSources.Length then glyphSources.[i] else ""
             writeIndex <- writeIndex + 1
-    Some (firstX, firstY, pairs)
+    Some (firstX, firstY, pairs, sources)
 
 let private recordFontUse (usage: GlyphUsage) name =
     if not (usage.ContainsKey name) then
@@ -647,22 +701,29 @@ let private addEmbeddedTextOps (ops: ResizeArray<PdfDraw.DrawOp>) (textContext: 
                 let value =
                     shapedText.Runs
                     |> List.choose (fun run ->
-                        match glyphKernPairs text pdfFont style.FontSize style.CharacterSpacing run.Glyphs with
-                        | Some (firstX, firstY, pairs) ->
-                            Some (firstX, firstY, pairs, clusterTextMappings text run.Glyphs)
+                        let sources = clusterGlyphSources text run.Glyphs
+                        match glyphKernPairs text pdfFont style.FontSize style.CharacterSpacing run.Glyphs sources with
+                        | Some (firstX, firstY, pairs, glyphSources) ->
+                            // Cache the emitted codes with the run: repeated
+                            // pages must not reallocate them or reassign CIDs.
+                            let codedPairs =
+                                Array.init pairs.Length (fun i ->
+                                    let gid, kern = pairs.[i]
+                                    let source = if i < glyphSources.Length then glyphSources.[i] else ""
+                                    cidFor textContext faceName gid source, kern)
+                            Some (firstX, firstY, pairs, glyphSources, codedPairs)
                         | None -> None)
                 textContext.PdfRunCache.[cacheKey] <- value
                 value
         if traceTimingEnabled then textContext.TextRunMs <- textContext.TextRunMs + (nowMs () - runStart)
         let allocStart = timingStart ()
-        for runDx, runDy, pairs, mappings in runs do
-            addGlyphTextMappings textContext faceName mappings
+        for runDx, runDy, pairs, _, codedPairs in runs do
             recordGlyphPairs textContext usage faceName pairs
             ops.Add PdfDraw.BeginText
             ops.Add(PdfDraw.SetFillColor (cachedPdfColor textContext style.Color))
             ops.Add(PdfDraw.SetFont (faceName, style.FontSize))
             ops.Add(PdfDraw.TextMatrix (horizontalScale, 0.0, 0.0, 1.0, x + runDx, yPdf (baseline - runDy)))
-            ops.Add(PdfDraw.ShowTextHexWithKern pairs)
+            ops.Add(PdfDraw.ShowTextHexWithKern codedPairs)
             ops.Add PdfDraw.EndText
         if traceTimingEnabled then
             textContext.TextOpCount <- textContext.TextOpCount + 1
@@ -1096,14 +1157,49 @@ let toBytesWithPaintPlan (options: RenderOptions) (plan: PaintPlan) =
     for KeyValue(fontName, gids) in usage do
         match Map.tryFind fontName textContext.FontBytes with
         | Some bytes when not (Set.isEmpty gids) ->
-            let remap =
+            let occurrences =
+                match Portable.Dict.tryFind fontName textContext.CidTables with
+                | ValueSome table -> table.Occurrences
+                | ValueNone -> ResizeArray<int * string>()
+            let verifyCodes mapping =
+                // Content streams already carry these codes; the package
+                // assigns CID i + 1 to occurrence i. A mismatch would leave
+                // glyphs pointing at the wrong characters, so do not use it.
+                occurrences
+                |> Seq.iteri (fun i (gid, source) ->
+                    match Map.tryFind (gid, source) mapping with
+                    | Some cid when cid = i + 1 -> ()
+                    | _ -> failwith "CID assignment order differs from the emitted codes")
+            // > 65,535 distinct pairs have no two-byte CID space. They take the
+            // glyph-ID fallback, where content codes are remapped before writing.
+            let canKeepSource = occurrences.Count > 0 && occurrences.Count <= maxCid
+            let embeddedWithCids =
+                if canKeepSource then
+                    try
+                        PdfDoc.loadFontBytesSubsetWithCidMapping builder fontName bytes occurrences
+                        |> verifyCodes
+                        true
+                    with _ ->
+                        try
+                            embedFullFontWithCidMapping builder fontName bytes occurrences
+                            true
+                        with _ -> false
+                else false
+            if embeddedWithCids then
+                usedEmbeddedFontNames.Add fontName
+            else
+                // The full font is glyph-ID addressed: rewrite every emitted
+                // code back to the occurrence's original glyph. Install the
+                // map even if embedding fails, so a code above 0xFFFF (only
+                // possible when the CID space overflowed) can never reach the
+                // content stream.
+                remaps <-
+                    remaps
+                    |> Map.add fontName (occurrences |> Seq.mapi (fun i (gid, _) -> i + 1, gid) |> Map.ofSeq)
                 try
-                    PdfDoc.loadFontBytesSubset builder fontName bytes gids
-                with _ ->
                     PdfDoc.loadFontBytes builder fontName bytes |> ignore
-                    Map.empty
-            remaps <- remaps |> Map.add fontName remap
-            usedEmbeddedFontNames.Add fontName
+                with _ -> ()
+                usedEmbeddedFontNames.Add fontName
         | _ -> ()
     trace (sprintf "toBytes:subset:done fonts=%d" usedEmbeddedFontNames.Count)
 

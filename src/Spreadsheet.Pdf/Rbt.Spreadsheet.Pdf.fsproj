@@ -12,6 +12,6 @@
     <ProjectReference Include="../Spreadsheet/Rbt.Spreadsheet.fsproj" />
     <PackageReference Include="Rbt.Pdf" Version="$(RbtPdfPackageVersion)" />
     <!-- (For the Fable build: Rbt.Pdf's Fable sources inflate with Rbt.OpenType's Inflate.) -->
-    <PackageReference Include="Rbt.OpenType.Core" Version="$(RbtTextPackageVersion)" />
+    <PackageReference Include="Rbt.OpenType.Core" Version="$(RbtOpenTypePackageVersion)" />
   </ItemGroup>
 </Project>

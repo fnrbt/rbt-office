@@ -21,6 +21,18 @@ type FontFace = {
     Data: byte[]
 }
 
+/// Character codes for one embedded face, assigned per distinct codepoint.
+/// A font may draw several codepoints (ASCII hyphen, U+2010, U+2212) with one
+/// glyph; each still gets its own code so ToUnicode extraction keeps the
+/// original character while the same outline is drawn.
+type private FaceCidTable = {
+    CodeByCodepoint: System.Collections.Generic.Dictionary<int, int>
+    GidByCodepoint: System.Collections.Generic.Dictionary<int, int>
+    /// Distinct (glyph, source) pairs in first-use order; entry `i` is CID `i + 1`.
+    Occurrences: ResizeArray<int * string>
+    mutable NextCid: int
+}
+
 type RenderOptions = {
     /// Default family to use when a cell didn't request one.
     DefaultFontFamily: string
@@ -185,27 +197,54 @@ let private appendHex4 (sb: System.Text.StringBuilder) value =
     else
         sb.Append(value.ToString("X")) |> ignore
 
-/// Re-encode a substring as hex glyph IDs, applying a per-face subset
-/// remap when present. With an empty remap (face was full-embedded), the
-/// output matches PdfFont.toGlyphHex. With a remap, original GIDs are
-/// translated to the post-subset numbering; missing entries collapse to
-/// GID 0 (.notdef), which prints as a missing-glyph box.
-let private toRemappedHex (ttf: PdfFont.TrueTypeFont) (remap: Map<int, int>) (text: string) =
+/// Re-encode a substring as the character codes chosen for this face: per
+/// codepoint CIDs when the font was embedded with a source-preserving CID
+/// map, original glyph IDs when it was full-embedded. Missing entries
+/// collapse to 0 (.notdef).
+let private toCodedHex (ttf: PdfFont.TrueTypeFont) (codes: Map<int, int>) (text: string) =
     let sb = System.Text.StringBuilder(text.Length * 4)
-    let isEmpty = Map.isEmpty remap
+    let hasCodes = not (Map.isEmpty codes)
     for ch in text do
-        let origGid =
-            match ttf.Cmap.TryFind (int ch) with
-            | Some gid -> gid
-            | None -> 0
-        let gid =
-            if isEmpty then origGid
-            else
-                match remap.TryFind origGid with
-                | Some mapped -> mapped
+        let codepoint = int ch
+        let code =
+            if hasCodes then
+                match codes.TryFind codepoint with
+                | Some code -> code
                 | None -> 0
-        appendHex4 sb gid
+            else
+                match ttf.Cmap.TryFind codepoint with
+                | Some gid -> gid
+                | None -> 0
+        appendHex4 sb code
     sb.ToString()
+
+/// Assign the next character code to a codepoint on first use. The code is
+/// per (glyph, source) pair, but a codepoint always selects one glyph in a
+/// face, so tracking it per codepoint is equivalent.
+let private recordCid (table: FaceCidTable) (gid: int) (codepoint: int) =
+    match table.CodeByCodepoint.TryGetValue codepoint with
+    | true, _ -> ()
+    | _ ->
+        let cid = table.NextCid
+        table.NextCid <- cid + 1
+        table.CodeByCodepoint.[codepoint] <- cid
+        table.GidByCodepoint.[codepoint] <- gid
+        table.Occurrences.Add((gid, string (char codepoint)))
+
+/// A CID is a two-byte character code. The package's subset/CID helper allows
+/// 65,535 distinct occurrences because it prepends .notdef as CID 0.
+let private maxCid = 0xFFFF
+
+/// Embed the full font with the same per-codepoint CID mapping, for when
+/// subsetting fails. Rendering and extraction are preserved; only the file is
+/// larger. Occurrences above `maxCid` cannot be represented.
+let private embedFullFontWithCidMapping (builder: PdfDoc.DocBuilder) (fontName: string) (data: byte[]) (occurrences: ResizeArray<int * string>) =
+    let entries = Array.append [| 0, "" |] (occurrences |> Seq.toArray)
+    let ttf = PdfFont.parseTrueType data
+    let fontRef = PdfFont.embedTrueTypeWithCidMapping builder.Doc ttf fontName entries
+    let resourceName = $"F{Map.count builder.Fonts + Map.count builder.EmbeddedFonts}"
+    builder.EmbeddedFonts <-
+        Map.add fontName { Name = resourceName; ObjRef = fontRef; Font = ttf } builder.EmbeddedFonts
 
 let private tryGetMappedFace (faceByName: Map<string, PdfFont.TrueTypeFont>) (face: FontFace) =
     Map.tryFind face.FaceName faceByName
@@ -394,7 +433,7 @@ let private appendDrawTextOps
                     match faceRemap.TryFind faceName with
                     | Some found -> found
                     | None -> Map.empty
-                let hex = toRemappedHex ttf remap s
+                let hex = toCodedHex ttf remap s
                 ops.Add(PdfDraw.SetFont (faceName, fontSizePt))
                 // Position this segment's anchor in PDF coords.
                 // Without rotation: anchor + (cumWidth, 0).
@@ -1141,7 +1180,7 @@ let private appendSectionOps
             match faceRemap.TryFind faceName with
             | Some found -> found
             | None -> Map.empty
-        let hex = toRemappedHex ttf remap text
+        let hex = toCodedHex ttf remap text
         let fillColor =
             match color with
             | Some color -> parseHexColor color
@@ -1229,7 +1268,7 @@ let private appendSectionOps
                     match faceRemap.TryFind faceName with
                     | Some found -> found
                     | None -> Map.empty
-                let hex = toRemappedHex segment.Ttf remap segment.Text
+                let hex = toCodedHex segment.Ttf remap segment.Text
                 let fillColor =
                     match segment.Color with
                     | Some color -> parseHexColor color
@@ -1367,6 +1406,7 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
     // Collect used GIDs across every page's items, plus header / footer
     // sections (so their glyphs land in the subset too).
     let usedGids = System.Collections.Generic.Dictionary<string, System.Collections.Generic.HashSet<int>>()
+    let usedCids = System.Collections.Generic.Dictionary<string, FaceCidTable>()
     let recordGids (faceName: string) (ttf: PdfFont.TrueTypeFont) (text: string) =
         let set =
             match Portable.Dict.tryFind faceName usedGids with
@@ -1375,12 +1415,25 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                 let s = System.Collections.Generic.HashSet<int>()
                 usedGids.[faceName] <- s
                 s
+        let cids =
+            match Portable.Dict.tryFind faceName usedCids with
+            | ValueSome table -> table
+            | _ ->
+                let table =
+                    { CodeByCodepoint = System.Collections.Generic.Dictionary<int, int>()
+                      GidByCodepoint = System.Collections.Generic.Dictionary<int, int>()
+                      Occurrences = ResizeArray<int * string>()
+                      NextCid = 1 }
+                usedCids.[faceName] <- table
+                table
         for ch in text do
+            let codepoint = int ch
             let gid =
-                match ttf.Cmap.TryFind (int ch) with
+                match ttf.Cmap.TryFind codepoint with
                 | Some found -> found
                 | None -> 0
             set.Add gid |> ignore
+            recordCid cids gid codepoint
     let recordTextGids bold italic fontName text =
         if not (String.IsNullOrEmpty text) then
             match pickFace options fontName bold italic with
@@ -1415,6 +1468,11 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
         | DrawText t -> recordPaintTextGids t
         | VecGroup (_, children) | Clipped (_, children) ->
             for child in children do
+                recordPaintItemGids child
+        // A picture the PDF cannot hold is drawn as a labelled frame at
+        // translation time; its label is text too, so record its codes.
+        | DrawImage (rect, image) ->
+            for child in drawingFrameItems rect image.Label do
                 recordPaintItemGids child
         | _ -> ()
     let planSheet (sheet: PdfSheet) =
@@ -1823,19 +1881,49 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                         gids <- Set.add gid gids
                     gids
                 | _ -> Set.empty
-            if Set.isEmpty used then () else
-            try
-                let remap = PdfDoc.loadFontBytesSubset builder face.FaceName face.Data used
-                if Map.isEmpty remap then
-                    PdfDoc.loadFontBytes builder face.FaceName face.Data |> ignore
-                    faceRemap.[face.FaceName] <- Map.empty
-                else
-                    faceRemap.[face.FaceName] <- remap
-            with _ ->
-                try
-                    PdfDoc.loadFontBytes builder face.FaceName face.Data |> ignore
-                    faceRemap.[face.FaceName] <- Map.empty
-                with _ -> ()
+            if not (Set.isEmpty used) then
+                match Portable.Dict.tryFind face.FaceName usedCids with
+                | ValueNone -> ()
+                | ValueSome cidTable ->
+                    let codesFor useCids =
+                        cidTable.CodeByCodepoint
+                        |> Seq.map (fun pair ->
+                            let codepoint = pair.Key
+                            let code = if useCids then pair.Value else cidTable.GidByCodepoint.[codepoint]
+                            codepoint, code)
+                        |> Map.ofSeq
+                    let verifyCodes mapping =
+                        // The page ops emit cidTable's codes; CID i + 1
+                        // belongs to occurrence i. Do not ship a shifted CMap.
+                        cidTable.Occurrences
+                        |> Seq.iteri (fun i (gid, source) ->
+                            match Map.tryFind (gid, source) mapping with
+                            | Some cid when cid = i + 1 -> ()
+                            | _ -> failwith "CID assignment order differs from the emitted codes")
+                    // > 65,535 distinct pairs have no two-byte CID space; this
+                    // face takes glyph IDs, which are also two bytes.
+                    let canKeepSource = cidTable.Occurrences.Count <= maxCid
+                    let embeddedWithCids =
+                        if canKeepSource then
+                            try
+                                PdfDoc.loadFontBytesSubsetWithCidMapping
+                                    builder face.FaceName face.Data cidTable.Occurrences
+                                |> verifyCodes
+                                faceRemap.[face.FaceName] <- codesFor true
+                                true
+                            with _ ->
+                                try
+                                    embedFullFontWithCidMapping builder face.FaceName face.Data cidTable.Occurrences
+                                    faceRemap.[face.FaceName] <- codesFor true
+                                    true
+                                with _ -> false
+                        else false
+                    if not embeddedWithCids then
+                        try
+                            PdfDoc.loadFontBytes builder face.FaceName face.Data |> ignore
+                            faceRemap.[face.FaceName] <- codesFor false
+                        with _ ->
+                            faceRemap.[face.FaceName] <- Map.empty
     for face in options.Fonts do embedFace face
     for face in options.CjkFallback do embedFace face
 
