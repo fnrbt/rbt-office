@@ -1704,23 +1704,25 @@ italic 5.12/1.96; Calibri 11 `0.00%` upright 2.11/1.97, italic 4.14/1.97; a 30-c
 (width-independent); accounting `_)` formats add no reserve on top of the pad (Excel 6.68 vs ours 6.28). The inferred
 italic placement offset (Excel italic gap - Excel upright gap, same face/size) is 0.200 x point size for Aptos
 Narrow at 9/11/14/20 pt (1.808/2.198/2.810/3.992) and 0.186 x point size for Calibri at 8/11/14/20 pt
-(1.440/2.040/2.640/3.720); ours applies 0.000 at every size. Held out: Aptos 14 italic hashes 2.48 (not 2.81);
-Calibri 12 italic `#,##0.0` width 24 observed gap delta -2.525 against -2.47 predicted. Center-aligned italic shifts
-about half (-0.995 at Aptos 14); left-aligned is unaffected (+0.321).
+(1.440/2.040/2.640/3.720); ours applies 0.000 at every size. Held out: Aptos 14 italic hashes reserve 1.440, not
+2.794 (same-string upright twin gives gap 3.450 vs italic 4.890; widths identical, dxMin == dxMax == 1.440);
+Calibri 12 italic `#,##0.0` width 24 reserve 2.280 against 2.221 predicted (+0.059, pass). Center-aligned italic
+shifts about half (-0.995 at Aptos 14); left-aligned is unaffected (+0.321).
 
 Falsified: the offset is **not** the last glyph's outline overhang. From the installed matching faces (real Calibri
 `artifacts/fonts/windows/calibrii.ttf`, Aptos Narrow Italic `artifacts/fonts/windows-extra/aptosnarrow-28903934312.ttf`),
 italic minus upright `(outline xMax - horizontal advance)/em`: Aptos `%` +0.0039, `#` -0.0547, `0` -0.0229, `9`
 -0.0273; Calibri `%` +0.0181, `#` +0.0430, `0` +0.0322, `9` +0.0352. At print sizes those are +/-0.1 - 0.8 pt and of
-the wrong sign for `%`: Aptos 14 predicts +0.05 pt for `%` and -0.77 for `#` against observed offsets 2.81 and 2.48.
+the wrong sign for `%`: Aptos 14 predicts +0.05 pt for `%` and -0.77 for `#` against observed offsets 2.81 and 1.44.
 The word-box xMax is advance-based besides, so outline overhang is not what the gap measures.
 
 Refuted out of sample: the candidate `fontPt * tan(|italicAngle|) * ascentEm` (typo ascent when OS/2
 USE_TYPO_METRICS, else usWinAscent) fits the faces it was fitted on, but a pre-registered validation does not
 (`print-right-edge-predictions.tsv`, written before the export; results `print-right-edge-validation.tsv`;
 acceptance |observed - predicted| <= 0.10 pt). Fails: Arial 14 -0.174, Arial 20 -0.248, Arial 14 digit -0.174, Arial
-14 at 75 % -0.220, Times New Roman 14 -1.256, Cambria 14 -0.438, Aptos 14 with a trailing `0_)` -2.779. Passes:
-Aptos Narrow 14 at 75 % +0.003, Calibri 12 `#,##0.0` +0.059, Arial 8 -0.099 (at the edge); the rows the candidate was
+14 at 75 % -0.220, Times New Roman 14 -1.256, Cambria 14 -0.438, Aptos 14 hashes -1.354, Aptos 14 with a trailing
+`0_)` -2.779. Passes: Aptos Narrow 14 at 75 % +0.003, Calibri 12 `#,##0.0` +0.059, Arial 8 -0.099 (at the edge); the
+rows the candidate was
 fitted on (Aptos 9/11/14/20 and Calibri 8/11/14/20 at 100 %) also pass. Observed coefficients at 100 % are Arial
 0.180, Times 0.171, Cambria 0.178, Aptos `%` 0.201 but `#` 0.103, Calibri 12 0.190. The `#`/`%` split inside one face,
 and identical italic/upright word widths with dxMin == dxMax for those strings, rule out both a single per-face
@@ -1735,3 +1737,88 @@ tools/spreadsheet-pdf-runner -- artifacts/real-estate/oyabayo-pari-passu-pref-re
 `python3 tools/excel-parity/compare-pdf-words.py /tmp/oyabayo-fresh/excel/oyabayo-1.pdf /tmp/ours.pdf` (page 13
 median +0.21, largest cell text +3.20 on the italic `-97.54%`); targeted right edges with
 `pdftotext -bbox -f 13 -l 13 <pdf> - | grep -E '98\.41%|103,000|\(90,000\)'`.
+
+## Print italic reserve: GDI printer measurement and a shipped right-alignment rule, 2026-11-23
+
+Round 5 left the printed italic offset with no model. This round measured the printer device directly, found that no
+GDI text-extent metric produces it, and found an empirical layout rule that does: Excel 2019's printed right alignment
+reserves a fifth of GDI's ascent for an italic run, cut down to whole printer dots.
+
+**Device and DC.** Excel 2019's default printer on the VM is `Microsoft Print to PDF` (driver `Microsoft Print To PDF`,
+port `PORTPROMPT:`; `Win32_Printer` Horizontal/VerticalResolution 600). The direct PDFs set font sizes in whole 600-dpi
+dots (14 pt is `/F1 14.04 Tf`, 20 pt 20.04, 10.5 pt at 75 % 10.56), so the layout is 600 dpi. `CreateDC("WINSPOOL",
+"Microsoft Print to PDF")` in the desktop session (1600 % CPU session? no: `run-vbs-in-session.ps1`) realizes the real
+faces (`GetTextFaceW`: Arial, Calibri, Cambria, Times New Roman, Georgia, Tahoma, Aptos Narrow loaded privately from
+`artifacts/fonts/windows-extra`). `GetDeviceCaps`: see `devcap` rows of the probe output (TECHNOLOGY 2, LOGPIXELSX/Y
+600; PDF media units are points, the layout is dots). `GetTextMetricsW` for every real italic and every synthesized
+italic (Arial Black, Lucida Console, MS Sans Serif, Small Fonts) has **tmOverhang = 0**; `GetTextExtentPoint32W`
+equals the sum of `GetCharABCWidthsW` A+B+C to the dot for every string measured; `GetTextExtentExPointW` agrees;
+`GetCharABCWidthsFloatW` agrees; `GetGlyphOutlineW` GGO_METRICS is not available on this printer DC. So the reserve is
+**not** tmOverhang, not an ABC side bearing, not a hinted whole-run width, and not the last glyph's outline overhang
+(the latter is +/-0.1 - 0.8 pt and the wrong sign for `%`, as round 5 found).
+Tools: `tools/excel-parity/gdi-print-italic-metrics.ps1` (printer DC, faces, strings, synthesized italics, Aptos
+private), run through `run-vbs-in-session.ps1`. The format controls are
+`tools/excel-parity/make-print-italic-format-controls.py` and `print-italic-format-controls-predictions.tsv`
+(excel export in `/tmp/italic-fmt`, not retained; the predictions and measured conclusions are).
+
+**Rule.** For a right-aligned printed italic run, Excel's layout width is the font's advance width plus
+`floor(tmAscent / 5)` printer dots, where `tmAscent` is GDI's ascent of the run's face at the printed pixel height
+`round(points x scale x 600 / 72)`. In points the reserve is `floor(tmAscent / 5) x 72/600` (3.6 printer dots/pt).
+It is a layout offset, not a glyph metric: it is width-independent, applies to literal and formatted displayed
+strings alike, and is invisible at left alignment. The PDF renderer computes it from the face it actually draws
+(`winMetrics primaryTtf` and `.UnitsPerEm` in `Spreadsheet.Pdf`), including a fallback face, as
+`round(usWinAscent x heightDots / upm)`, then floors by five; this is a **candid approximation of GDI's tmAscent**:
+GDI's integer ascent differs by one dot for a few face/size pairs, giving at most 0.12 pt of reserve error (Arial 14
+at 75 %: GDI 79, formula 80, so 1.92 against Excel's 1.80). Cambria is the other known residual (formula 2.64 against
+2.49-2.52). No per-face offsets were added, and no generated per-face metric table is shipped.
+
+Applied in `Paint.buildCellPaintItems` as the semantic flag `PaintText.PrintItalicEligible` (print only, italic,
+right-aligned, unrotated cell text); `Spreadsheet.Pdf` measures and subtracts the reserve from the aligned x for
+`AlignRight`. Suppression is the **active section's unquoted `*` fill** (Excel's accounting/fill number layout draws
+several runs), not the `_)` pad: the format controls (`print-italic-format-controls-predictions.tsv`) measured a
+numeric `0.00_)` at the full 2.782 pt, `0.00"_)"` full, `0.00;[Red]-0.00_)` full even on the negative (pad-only)
+section, while `* 0.00`, `_(* 0.00_)` and standard accounting are 0.008-0.022 pt; literal cells under the same codes
+all take 2.768-2.782 pt. `CellText.numberFormatUsesFillForValue` selects the section by Excel's sign/condition rules
+and ignores quoted/escaped `*` and inactive sections. Also suppressed for `###` overflow placeholders whose raw
+formatted text differs from the displayed hashes; a numeric cell with a custom `"#######"` format is not overflow and
+**does** get the reserve. Centred italic is still uncorrected (about half the reserve, -1.0 pt at Aptos Narrow 14);
+left alignment needs none.
+
+**Blind holdouts.** The floor variant was preregistered in
+`print-italic-holdout-predictions.tsv` before `synthetic-print-italic-holdout.xlsx` was exported
+(sha256 `3b0d9f46...`). Fresh direct Excel export via `excel-print-pages.sh`, then Poppler word-box gaps (italic sheet
+less upright sheet) in `print-italic-holdout-results.tsv`. Verdana 13 at 85 % (2.160 predicted/observed), Segoe UI
+10.5 at 90 % (2.040/2.047), formatted hashes 2.160/2.160 and literal accounting 2.760/2.781 passed; Georgia 15 at
+100 % observed 2.7525 against the floor prediction 2.64, a **fail (+0.11)**. The rounded-ascent variant predicts 2.76
+and was then tested blind on a second workbook, `synthetic-print-italic-holdout2.xlsx` (sha256 `f9268670...`),
+predictions `print-italic-holdout2-predictions.tsv` written before export: Tahoma 16 at 80 % 2.520/2.520, Garamond 11
+at 115 % 2.160/2.1465, Verdana 9 at 110 % 1.920/1.920, Calibri 10.5 at 95 % 1.800/1.800 - all pass
+(`print-italic-holdout2-results.tsv`). The first workbook's other cases also pass under the rounded variant. This is
+honest post-hoc revision: the floor model was falsified by a blind case, the rounded model is blind-validated on four
+fresh face/size/scale combinations.
+
+**Format path.** `0.00_)` full, `0.00"_)"` full, `0.00;[Red]-0.00_)` full for both signs, `* 0.00` and
+`_(* 0.00_)` and standard accounting ~0 for numeric; every literal twin full. So the discriminator is an active
+unquoted `*` fill token, not a pad or an accounting label.
+
+**End-to-end improvement (ours, PDF runner).** Same first workbook, ours rendered with
+`RB_WORD_FONT_DIR=artifacts/fonts/windows:artifacts/fonts/windows-extra` and the new rule; reserve deltas
+ours - Excel: Verdana 13/85 % +0.000, Georgia 15 +0.008, Segoe UI 10.5/90 % -0.007, formatted hashes +0.000, numeric
+accounting -0.016, literal accounting -0.016, overflow hashes -1.440 (unchanged: Excel's overflow placeholder is a
+separate layout and is not modelled). Second workbook: Tahoma +0.000, Garamond +0.012, Verdana +0.000, Calibri
++0.000. Before the change all ordinary/hash/literal reserves were 0, so the improvement is the full reserve
+(1.44-2.76 pt). On oyabayo page 13 the italic `-98.41%` word xMax is now 118.6101 against Excel's 118.2996
+(+0.3105, was +3.0705); the upright `(90,000)` remains +0.285 (page/column geometry), so the italic-specific error
+is gone and the residual matches the sheet's upright text.
+
+Verification commands:
+`python3 tools/excel-parity/make-print-italic-holdout.py tests/test-documents-excel/synthetic-print-italic-holdout.xlsx`;
+`tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-italic-holdout.xlsx /tmp/italic-holdout`;
+`python3 tools/excel-parity/measure-print-italic-holdout.py /tmp/italic-holdout /tmp/italic-holdout` (with
+`ours-<n>.pdf` from the runner); `dotnet fsi tests/print/helpers.fsx` (240 passed, 0 failed);
+`dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj --no-restore` and
+`dotnet build src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj --no-restore`.
+
+Left: the GDI ascent formula is rounded, not a GDI-table lookup (Arial 14 at 75 % and Cambria residuals above); the
+centred half and Excel's `###` overflow reserve are not shipped; linked-cell/camera pictures are built from the screen
+paint path and do not get the reserve; rich-text runs use the cell format's italic flag for the whole block.

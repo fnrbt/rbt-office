@@ -694,5 +694,56 @@ do
          | _ -> false)
         "PDF scales the screen-cell picture across the printed column"
 
+
+// ----- printed italic reserve (docs/excel-parity-tracker.md, "Print italic reserve") -----
+do
+    let shift win upm pt scale = Rbt.Spreadsheet.FontMetrics.printItalicShiftPt win upm pt scale
+    let near a b = abs (a - b) <= 0.001
+    ok "print italic: Calibri 11 is 2.04 pt" (near (shift 1950.0 2048.0 11.0 1.0) 2.04) (sprintf "%g" (shift 1950.0 2048.0 11.0 1.0))
+    ok "print italic: Calibri 8 is 1.44 pt" (near (shift 1950.0 2048.0 8.0 1.0) 1.44) (sprintf "%g" (shift 1950.0 2048.0 8.0 1.0))
+    ok "print italic: Arial 14 is 2.52 pt" (near (shift 1854.0 2048.0 14.0 1.0) 2.52) (sprintf "%g" (shift 1854.0 2048.0 14.0 1.0))
+    ok "print italic: Arial 14 at 75 % is 1.92 pt (GDI 1.80: one dot of ascent)" (near (shift 1854.0 2048.0 14.0 0.75) 1.92) (sprintf "%g" (shift 1854.0 2048.0 14.0 0.75))
+    ok "print italic: Aptos Narrow 14 is 2.76 pt" (near (shift 2068.0 2048.0 14.0 1.0) 2.76) (sprintf "%g" (shift 2068.0 2048.0 14.0 1.0))
+    ok "print italic: Georgia 15 is 2.76 pt" (near (shift 1878.0 2048.0 15.0 1.0) 2.76) (sprintf "%g" (shift 1878.0 2048.0 15.0 1.0))
+    ok "print italic: Tahoma 16 at 80 % is 2.52 pt" (near (shift 2049.0 2048.0 16.0 0.8) 2.52) (sprintf "%g" (shift 2049.0 2048.0 16.0 0.8))
+    // The format controls (print-italic-format-controls): an unquoted `*` fill in the active section suppresses the
+    // reserve; `_)` alone does not; quotes and inactive sections do not.
+    let fill (code: string) (n: float) = Rbt.Spreadsheet.CellText.numberFormatUsesFillForValue code n
+    ok "print italic: 0.00_) is not a fill layout" (not (fill "0.00_)" 0.5)) ""
+    ok "print italic: * 0.00 is a fill layout" (fill "* 0.00" 0.5) ""
+    ok "print italic: a quoted *) is not a fill" (not (fill "0.00\"*\"" 0.5)) ""
+    ok "print italic: inactive-section * does not count" (not (fill "0.00;[Red]* -0.00" 0.5) && fill "0.00;[Red]* -0.00" -0.5) ""
+    ok "print italic: standard accounting is a fill layout" (fill "_($* #,##0.00_);_($* \\(#,##0.00\\);_($* \"-\"??_);_(@_)" -0.5) ""
+    let eligible (value: CellValue) (format: CellFormat) (width: float) =
+        let model =
+            createEmpty 3 3
+            |> setCell { Row = 0; Col = 1 } { Value = value; Format = format; Comment = None }
+            |> setColumnWidth 1 width
+            |> Pagination.withPrintSizes
+        let viewport : Rbt.Spreadsheet.Layout.Viewport =
+            { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
+              HeaderHeight = 0.0; RowHeaderWidth = 0.0
+              Measurer = Some (fun text _ _ _ _ -> 7.0 * float text.Length) }
+        [ for item in Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.Text <> "" && t.Align <> Rbt.Spreadsheet.Layout.AlignCenter ->
+                yield t.Text, t.PrintItalicEligible
+            | _ -> () ]
+    let italic = { defaultFormat with Italic = true; FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some "right" }
+    let ordinary = eligible (Number 0.5) { italic with NumberFormat = Some "0.00" } 100.0
+    ok "print italic: right-aligned italic number is eligible" (ordinary.Length = 1 && ordinary.Head |> snd) (sprintf "%A" ordinary)
+    let padOnly = eligible (Number 0.5) { italic with NumberFormat = Some "0.00_)" } 100.0
+    ok "print italic: trailing _) alone stays eligible" (padOnly.Length = 1 && padOnly.Head |> snd) (sprintf "%A" padOnly)
+    let accounting = eligible (Number -0.5) { italic with NumberFormat = Some "_($* #,##0.00_);_($* \\(#,##0.00\\);_($* \"-\"??_);_(@_)" } 100.0
+    ok "print italic: numeric accounting is not eligible" (accounting.Length = 1 && not (accounting.Head |> snd)) (sprintf "%A" accounting)
+    let literalHashes = eligible (String "#######") { italic with NumberFormat = Some "\"#######\"" } 100.0
+    ok "print italic: literal/formatted hashes stay eligible" (literalHashes.Length = 1 && literalHashes.Head |> snd) (sprintf "%A" literalHashes)
+    let overflowHashes = eligible (Number -0.9841) { italic with NumberFormat = Some "0.000%" } 20.0
+    ok "print italic: ### overflow is not eligible"
+        (overflowHashes.Length = 1 && overflowHashes.Head |> fst |> Seq.forall ((=) '#') && not (overflowHashes.Head |> snd))
+        (sprintf "%A" overflowHashes)
+    let left = eligible (Number 0.5) { italic with HorizontalAlign = Some "left"; NumberFormat = Some "0.00" } 100.0
+    ok "print italic: left-aligned is not eligible" (left.Length = 1 && not (left.Head |> snd)) (sprintf "%A" left)
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -1,0 +1,9 @@
+# Measured 2026-11-23 after print-italic-holdout-predictions.tsv. Floor variant was preregistered; Georgia 15 failed it (+0.11 pt), so round(winAscent*h/upm) was adopted and is shown as the revised prediction.
+upright_sheet	italic_sheet	face	points	scale	format	case	floor_predicted	round_predicted	observed_reserve	residual_round	verdict
+H01_verdana13_85	H02_verdana13_85_italic	Verdana	13	85	0.00%	ordinary	2.16	2.16	2.16	+0.0000	pass
+H03_georgia15	H04_georgia15_italic	Georgia	15	100	#,##0.00	ordinary	2.64	2.76	2.7525	-0.0075	FAIL (floor); pass (round)
+H05_segoe10p5_90	H06_segoe10p5_90_italic	Segoe UI	10.5	90	0.00	ordinary	2.04	2.04	2.0471	+0.0071	pass
+H07_verdana13_85_hash	H08_verdana13_85_hash_italic	Verdana	13	85	"#######"	formatted hashes (not overflow)	2.16	2.16	2.16	+0.0000	pass
+H09_aptos14_acct	H10_aptos14_acct_italic	Aptos Narrow	14	100	accounting numeric	accounting	0.0	0.0	0.0214	+0.0214	pass
+H11_aptos14_acctlit	H12_aptos14_acctlit_italic	Aptos Narrow	14	100	accounting literal	literal	2.76	2.76	2.7814	+0.0214	pass
+H13_aptos14_overflow	H14_aptos14_overflow_italic	Aptos Narrow	14	100	0.000% width 10	overflow hashes	1.44	0.0	1.44	+1.4400	not modelled; ours 0

@@ -1,0 +1,13 @@
+# Measured 2026-11-23 after print-italic-format-controls-predictions.tsv from Excel 2019's direct PDFs of
+# synthetic-print-italic-format-controls.xlsx. Reserve = italic sheet gap - upright sheet gap for the same word.
+# H_pad (active _(/_)) is falsified; H_star (active unquoted * fill) fits every case.
+case	word	source	code	numeric_reserve	literal_reserve	H_pad_predicted	H_star_predicted	verdict
+F01_pad	0.50	num	0.00_)	2.7817	2.7817	0.000	2.760	H_pad FAIL; H_star pass
+F02_pad_quoted	0.50_)	num	0.00"_)"	2.7677	2.7677	2.760	2.760	both pass (quoted *)
+F03_star	0.50	num	* 0.00	0.0217	2.7817	2.760	H_pad FAIL; H_star pass
+F04_star_pad	0.50	num	_(* 0.00_)	0.0217	2.7817	0.000	0.000	both pass
+F05_lead_pad	0.50	num	_(0.00)	2.7817	2.7817	0.000	2.760	H_pad FAIL; H_star pass
+F06_inactive_pos	0.50	num	0.00;[Red]-0.00_)	2.7817	2.7817	2.760	2.760	both pass
+F06_inactive_pos	-0.50	num	0.00;[Red]-0.00_)	2.7817	2.7817	0.000	2.760	H_pad FAIL; H_star pass
+F07_accounting	0.50	num	standard accounting	0.0217	2.7817	0.000	0.000	both pass
+F07_accounting	(0.50)	num	standard accounting	0.0077	2.7677	0.000	0.000	both pass

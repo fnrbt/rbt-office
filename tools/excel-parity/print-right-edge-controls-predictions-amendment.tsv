@@ -1,0 +1,18 @@
+# Amendment written 2026-11-23T18:19Z after the pilot export and before the amended workbook's fresh export.
+# The original print-right-edge-controls-predictions.tsv is unchanged. The pilot exposed two invalid controls, so
+# only those controls are repaired here; the reported reserves are still measured against the preregistered metric.
+# Pilot facts (not used to predict any reserve):
+#   - Excel General 123456789 in width 10 Aptos 14 shows "1.2E+08" upright and "1E+08" italic, never hashes.
+#     Therefore no General-format hash control exists; the row is retained as a documented scientific-notation
+#     control, exempt from pair identity and hash predictions.
+#   - A literal text cell carrying an accounting number format receives the format's text section _( @ _), so it
+#     carries both leading and trailing pads. The acc_neg literal is therefore moved to General (no pad), while the
+#     acc_pad_neg literal deliberately carries the accounting text-section pads to twin the padded numeric negative.
+# Replacement controls and predictions (same metric and acceptance as the original):
+test	sheets	face	size	scale	format	last_glyph	predicted	accept
+general_hash_premise	C00/C01 row 7	Aptos Narrow	14	100	General	n/a	Excel shows scientific notation, not a seven-hash string	report observed; no hash pair
+hash_fmt_lit_reserve	C00/C01 numeric "#######" vs literal	C00/C01	14	100	"#######"	#	literal and numeric both 2.76 (pilot literal-hash reserve); source independence	abs(obs-2.76) <= 0.10 and abs(literal-numeric) <= 0.05
+hash_pct_overflow_reserve	C00/C01 0.000% overflow vs literal	C00/C01	14	100	0.000%	#	numeric overflow stays 1.44 (prior); literal twin is 2.76; overflow path differs by ~1.32	report both; numeric abs(obs-1.44) <= 0.10; literal abs(obs-2.76) <= 0.10
+acc_neg_no_pad	C06/C07 standard negative vs General literal	C06/C07	14	100	accounting/General	)	literal and numeric both 0.008; equal gap	abs(obs-0.008) <= 0.10 and abs(literal-numeric) <= 0.05
+acc_pad_neg	C06/C07 padded negative vs padded literal	C06/C07	14	100	accounting pad	)	literal and numeric both 0.008; equal padded gap	abs(obs-0.008) <= 0.10 and abs(literal-numeric) <= 0.05
+acc_pos	C06/C07 standard positive vs padded literal	C06/C07	14	100	accounting	digit	literal and numeric both 0.035; equal padded gap	abs(obs-0.035) <= 0.10 and abs(literal-numeric) <= 0.05

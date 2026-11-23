@@ -25,6 +25,10 @@ type PaintText = {
     FontName: string option
     Bold: bool
     Italic: bool
+    /// Whether Excel 2019's printed layout gives this run its italic right-alignment reserve: printed, italic,
+    /// right-aligned, unrotated cell text whose numeric format does not use an active `*` fill and which is not a
+    /// `###` overflow placeholder. The PDF renderer measures the reserve from the face it actually draws.
+    PrintItalicEligible: bool
     /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
     Underline: bool
     /// Render two parallel strokes for `<u val="double"/>` instead of one.
@@ -349,6 +353,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     FontName = None
                     Bold = false
                     Italic = false
+                    PrintItalicEligible = false
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -372,6 +377,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     FontName = None
                     Bold = false
                     Italic = false
+                    PrintItalicEligible = false
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -923,6 +929,26 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 // else the cell's own, else its table's: `cellLook`.)
                 let color = look.TextColor |> Option.defaultValue "#000000"
                 let align = look.Align
+                // Excel 2019's printed layout reserves a fifth of GDI's ascent for an italic run and right-aligns
+                // the wider run (`FontMetrics.printItalicShiftPt`). Its fill/accounting number layout and the `###`
+                // overflow placeholder use their own layout and do not take it. Only eligibility is decided here;
+                // the PDF renderer measures the reserve from the face it actually draws.
+                let italicEligible =
+                    printing && format.Italic && format.TextRotation = 0 && align = AlignRight
+                    && (match unwrapFormulaValue value with
+                        | CellValue.Number n ->
+                            let fillLayout =
+                                match format.NumberFormat with
+                                | Some code -> try numberFormatUsesFillForValue code n with _ -> false
+                                | None -> false
+                            let raw =
+                                match format.NumberFormat with
+                                | Some code -> try formatNumberWithCodeIn model.Date1904 code n with _ -> ""
+                                | None -> ""
+                            let overflowHashes =
+                                displayText <> "" && displayText |> Seq.forall (fun c -> c = '#') && raw <> displayText
+                            not fillLayout && not overflowHashes
+                        | _ -> true)
                 // Wrapping and manual `\n` line breaks only apply when wrapText
                 // is ON (unwrapped, the look's text has none).
                 let lines =
@@ -1087,6 +1113,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                                 FontName = fName
                                 Bold = bold
                                 Italic = italic
+                                PrintItalicEligible = false
                                 Underline = underline
                                 UnderlineDouble = underlineDouble
                                 Strikethrough = strike
@@ -1111,6 +1138,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             FontName = format.FontName
                             Bold = format.Bold
                             Italic = format.Italic
+                            PrintItalicEligible = italicEligible
                             Underline = format.Underline
                             UnderlineDouble = format.UnderlineDouble
                             Strikethrough = format.Strikethrough
@@ -1264,6 +1292,7 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           FontName = None
           Bold = false
           Italic = false
+          PrintItalicEligible = false
           Underline = false
           UnderlineDouble = false
           Strikethrough = false
@@ -1330,6 +1359,7 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                 FontName = Some face.Value
                 Bold = bold
                 Italic = italic
+                PrintItalicEligible = false
                 Underline = false
                 UnderlineDouble = false
                 Strikethrough = false
@@ -1601,6 +1631,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             FontName = None
                             Bold = false
                             Italic = false
+                            PrintItalicEligible = false
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false
@@ -1629,6 +1660,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             FontName = None
                             Bold = false
                             Italic = false
+                            PrintItalicEligible = false
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false

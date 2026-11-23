@@ -144,7 +144,22 @@ let printLevelPx (face: string option) (points: float) (bold: bool) (italic: boo
         max d (a + d - float px)
     | _ -> descentPx face points bold italic
 
-/// The Normal font's 96/600-dpi GDI baseline levels, for Normal sizes measured in Excel 2019's PDFs.
+/// How far Excel 2019's printed layout sets an italic run left of where its PDF font's advances put it, in points,
+/// from the chosen face's Windows ascent: `floor(round(usWinAscent x heightDots / unitsPerEm) / 5) x 72/600`, where
+/// `heightDots = round(points x scale x 600 / 72)` is GDI's font height at 600 dpi. The printer DC measurement and
+/// the blind holdouts are in docs/excel-parity-tracker.md ("Print italic reserve"): Aptos Narrow 14 23 dots
+/// (2.76 pt), Calibri 11 17 (2.04), Arial 14 21 (2.52), Georgia 15 23 (2.76), Tahoma 16 at 80 % 21 (2.52).
+/// The ascent is usWinAscent scaled and rounded; GDI's own tmAscent differs by one dot for a few face/size pairs
+/// (Arial 14 at 75 % is 79 dots, where this gives 80 and 1.92 pt against Excel's 1.80; errors are at most
+/// 0.12 pt). Excel applies it to right-aligned text only; centred text takes about half, left-aligned none, and
+/// numeric formats with an active `*` fill (accounting) or `###` overflow use their own layout.
+let printItalicShiftPt (winAscent: float) (unitsPerEm: float) (points: float) (scale: float) : float =
+    if unitsPerEm <= 0.0 || points <= 0.0 || scale <= 0.0 then 0.0
+    else
+        let heightDots = Math.Floor (points * scale * 600.0 / 72.0 + 0.5)
+        let ascentDots = Math.Floor (winAscent * heightDots / unitsPerEm + 0.5)
+        Math.Floor (ascentDots / 5.0) * 72.0 / 600.0
+
 /// These are *printer* metrics, not row-height scales (the latter do not predict printed baselines).
 let private printNormalLevels =
     dict [ ("calibri", 15), (4.0, 25.0); ("calibri", 27), (7.0, 45.0); ("calibri", 11), (3.0, 18.0)

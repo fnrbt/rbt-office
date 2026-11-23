@@ -354,16 +354,21 @@ let private appendDrawTextOps
                     totalWidthPx <- totalWidthPx + widthScale * fontPx
             let rectXPt = xPt t.Rect.X
             let rectWidthPt = sz t.Rect.Width
-            let alignedXPt =
-                match t.Align with
-                | AlignLeft -> rectXPt
-                | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
-                | AlignRight -> rectXPt + rectWidthPt - totalWidthPt
             // Baseline from the primary font's win-metrics so a Calibri
             // line with embedded CJK glyphs doesn't jitter when fallback
             // ascents differ. Mirrors SpreadsheetGrid.toRendererCommands.
             let scaleY = fontPx / float primaryTtf.UnitsPerEm
             let winAscent, winDescent = winMetrics primaryTtf
+            // The printed italic reserve, from the face actually chosen for this run (including a fallback):
+            // floor(GDI's ascent at 600 dpi / 5) dots, where the ascent is usWinAscent scaled to round(pt x scale x 600/72).
+            let italicShiftPt =
+                if not t.PrintItalicEligible then 0.0
+                else Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
+            let alignedXPt =
+                match t.Align with
+                | AlignLeft -> rectXPt
+                | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
+                | AlignRight -> rectXPt + rectWidthPt - totalWidthPt - italicShiftPt
             let ascent = winAscent * scaleY
             let descent = winDescent * scaleY
             let lineHeight = ascent + descent
@@ -1042,6 +1047,7 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         FontName = None
         Bold = false
         Italic = false
+        PrintItalicEligible = false
         Underline = false
         UnderlineDouble = false
         Strikethrough = false

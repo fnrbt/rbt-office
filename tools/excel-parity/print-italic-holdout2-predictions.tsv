@@ -1,0 +1,14 @@
+# Second blind holdout for the print italic reserve, written 2026-11-23T18:36Z before any Excel export of
+# tests/test-documents-excel/synthetic-print-italic-holdout2.xlsx (sha256 f92686706bef4d3df1fcef10d00272571419c4b81e0faa599706ad4618e730b5;
+# generator sha256 bb8811514c5919cb66020410bec1210258656422ab02e72d12e9afd3acaf36a5).
+# Why a second holdout: the first (print-italic-holdout-predictions.tsv) preregistered floor(floor(winAscent*h/upm)/5)
+# and Georgia 15 at 100 % observed 2.75 against a 2.64 prediction (fail). The revised variant below uses
+# round(winAscent*h/upm) before the /5 floor, chosen after that failure; this workbook is its blind test.
+# Model used for these predictions: reserve = floor(round(usWinAscent x round(points x scale x 600/72) / upm) / 5) x 72/600 pt.
+# Metric and device identical to the first holdout: Poppler word-box xMax to the printed #FFF2CC fill's right edge;
+# Microsoft Print to PDF, Microsoft Print To PDF driver, PORTPROMPT:, 600 x 600 dpi, Excel 2019 direct export.
+pair	face	points	scale	format	height_dots	win_ascent	win_derived_ascent	rounded_ascent	reserve_predicted	acceptance
+H16_tahoma16_80_italic - H15_tahoma16_80_upright	Tahoma	16	80	0.00%	107	2049	107.05	107	2.520	|obs-2.520|<=0.10
+H18_garamond11_115_italic - H17_garamond11_115_upright	Garamond	11	115	#,##0.00	105	1765	90.49	90	2.160	|obs-2.160|<=0.10
+H20_verdana9_110_italic - H19_verdana9_110_upright	Verdana	9	110	0.00	83	2059	83.45	83	1.920	|obs-1.920|<=0.10
+H22_calibri10p5_95_italic - H21_calibri10p5_95_upright	Calibri	10.5	95	0.00%	83	1950	79.03	79	1.800	|obs-1.800|<=0.10

@@ -1,0 +1,213 @@
+test	config	detail	excel_observed	ours_observed	predicted	verdict	notes
+pair_identity	C00_hash_upright/hash_fmt_lit	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C00_hash_upright/hash_fmt_lit	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C00_hash_upright/hash_pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C00_hash_upright/hash_pct_a	numeric gap - literal gap	+1.080	+0.000	0 +/- 0.05 unless overflow hashes	expected-difference	numeric overflow draw path
+pair_identity	C00_hash_upright/hash_pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C00_hash_upright/hash_pct_b	numeric gap - literal gap	+1.080	+0.000	0 +/- 0.05 unless overflow hashes	expected-difference	numeric overflow draw path
+pair_identity	C01_hash_italic/hash_fmt_lit	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C01_hash_italic/hash_fmt_lit	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C01_hash_italic/hash_pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C01_hash_italic/hash_pct_a	numeric gap - literal gap	-0.240	+0.000	0 +/- 0.05 unless overflow hashes	expected-difference	numeric overflow draw path
+pair_identity	C01_hash_italic/hash_pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C01_hash_italic/hash_pct_b	numeric gap - literal gap	-0.240	+0.000	0 +/- 0.05 unless overflow hashes	expected-difference	numeric overflow draw path
+pair_identity	C02_pct_upright/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C02_pct_upright/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C02_pct_upright/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C02_pct_upright/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C02_pct_upright/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C02_pct_upright/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C02_pct_upright/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C02_pct_upright/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C03_pct_italic/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C03_pct_italic/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C03_pct_italic/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C03_pct_italic/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C03_pct_italic/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C03_pct_italic/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C03_pct_italic/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C03_pct_italic/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C04_num_upright/num_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C04_num_upright/num_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C04_num_upright/num_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C04_num_upright/num_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C04_num_upright/num_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C04_num_upright/num_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C04_num_upright/num_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C04_num_upright/num_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C05_num_italic/num_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C05_num_italic/num_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C05_num_italic/num_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C05_num_italic/num_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C05_num_italic/num_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C05_num_italic/num_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C05_num_italic/num_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C05_num_italic/num_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C06_acc_upright/acc_neg	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C06_acc_upright/acc_neg	numeric gap - literal gap	+0.000	+0.016	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C06_acc_upright/acc_pad_neg	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C06_acc_upright/acc_pad_neg	numeric gap - literal gap	+0.000	+2.619	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C06_acc_upright/acc_pos	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C06_acc_upright/acc_pos	numeric gap - literal gap	+0.000	+2.634	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C07_acc_italic/acc_neg	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C07_acc_italic/acc_neg	numeric gap - literal gap	-2.760	+0.016	0 +/- 0.05 unless overflow hashes	FAIL	
+pair_identity	C07_acc_italic/acc_pad_neg	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C07_acc_italic/acc_pad_neg	numeric gap - literal gap	-2.760	+2.619	0 +/- 0.05 unless overflow hashes	FAIL	
+pair_identity	C07_acc_italic/acc_pos	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C07_acc_italic/acc_pos	numeric gap - literal gap	-2.760	+2.634	0 +/- 0.05 unless overflow hashes	FAIL	
+pair_identity	C08_georgia12_upright/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C08_georgia12_upright/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C08_georgia12_upright/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C08_georgia12_upright/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C08_georgia12_upright/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C08_georgia12_upright/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C08_georgia12_upright/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C08_georgia12_upright/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C09_georgia12_italic/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C09_georgia12_italic/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C09_georgia12_italic/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C09_georgia12_italic/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C09_georgia12_italic/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C09_georgia12_italic/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C09_georgia12_italic/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Georgia'/'BCDEEE+Georgia'
+source_equality	C09_georgia12_italic/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C10_kg_upright/kg_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C10_kg_upright/kg_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C10_kg_upright/kg_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C10_kg_upright/kg_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C10_kg_upright/kg_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C10_kg_upright/kg_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C11_kg_italic/kg_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C11_kg_italic/kg_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C11_kg_italic/kg_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C11_kg_italic/kg_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C11_kg_italic/kg_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C11_kg_italic/kg_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C12_scale60_upright/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C12_scale60_upright/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C12_scale60_upright/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C12_scale60_upright/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C12_scale60_upright/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C12_scale60_upright/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C12_scale60_upright/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow'/'BCDEEE+Aptos Narrow'
+source_equality	C12_scale60_upright/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C13_scale60_italic/pct_a	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C13_scale60_italic/pct_a	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C13_scale60_italic/pct_b	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C13_scale60_italic/pct_b	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C13_scale60_italic/pct_c	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C13_scale60_italic/pct_c	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+pair_identity	C13_scale60_italic/pct_d	num vs lit	text=True font=True dWidth=0.000	dWidth=0.000	same text/font/width	pass	fonts 'BCDEEE+Aptos Narrow,Italic'/'BCDEEE+Aptos Narrow,Italic'
+source_equality	C13_scale60_italic/pct_d	numeric gap - literal gap	+0.000	+0.000	0 +/- 0.05 unless overflow hashes	pass	
+hash_fmt_lit_reserve	C00_hash_upright/C01_hash_italic/hash_fmt_lit	numeric reserve	+2.760	+0.000	2.760 +/- 0.10	pass	
+hash_fmt_lit_reserve	C00_hash_upright/C01_hash_italic/hash_fmt_lit	literal reserve	+2.760	+0.000	2.760 +/- 0.10	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_fmt_lit	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_fmt_lit	literal		+0.000	0.000 +/- 0.05	pass	
+hash_pct_overflow_reserve	C00_hash_upright/C01_hash_italic/hash_pct_a	numeric reserve	+1.440	+0.000	1.440 +/- 0.10	pass	
+hash_pct_overflow_reserve	C00_hash_upright/C01_hash_italic/hash_pct_a	literal reserve	+2.760	+0.000	2.760 +/- 0.10	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_pct_a	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_pct_a	literal		+0.000	0.000 +/- 0.05	pass	
+hash_pct_overflow_reserve	C00_hash_upright/C01_hash_italic/hash_pct_b	numeric reserve	+1.440	+0.000	1.440 +/- 0.10	pass	
+hash_pct_overflow_reserve	C00_hash_upright/C01_hash_italic/hash_pct_b	literal reserve	+2.760	+0.000	2.760 +/- 0.10	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_pct_b	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C00_hash_upright/C01_hash_italic/hash_pct_b	literal		+0.000	0.000 +/- 0.05	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_a	numeric reserve	+2.806	+0.007	2.806 +/- 0.10	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_a	literal reserve	+2.806	+0.007	2.806 +/- 0.10	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_a	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_a	literal		+0.007	0.000 +/- 0.05	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_b	numeric reserve	+2.806	+0.007	2.806 +/- 0.10	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_b	literal reserve	+2.806	+0.007	2.806 +/- 0.10	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_b	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_b	literal		+0.007	0.000 +/- 0.05	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_c	numeric reserve	+2.806	+0.000	2.806 +/- 0.10	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_c	literal reserve	+2.806	+0.000	2.806 +/- 0.10	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_c	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_c	literal		+0.000	0.000 +/- 0.05	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_d	numeric reserve	+2.820	+0.000	2.806 +/- 0.10	pass	
+pct_reserve	C02_pct_upright/C03_pct_italic/pct_d	literal reserve	+2.820	+0.000	2.806 +/- 0.10	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_d	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C02_pct_upright/C03_pct_italic/pct_d	literal		+0.000	0.000 +/- 0.05	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_a	numeric reserve	+2.782	+0.014	2.782 +/- 0.10	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_a	literal reserve	+2.782	+0.014	2.782 +/- 0.10	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_a	numeric		+0.014	0.000 +/- 0.05	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_a	literal		+0.014	0.000 +/- 0.05	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_b	numeric reserve	+2.782	+0.014	2.782 +/- 0.10	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_b	literal reserve	+2.782	+0.014	2.782 +/- 0.10	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_b	numeric		+0.014	0.000 +/- 0.05	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_b	literal		+0.014	0.000 +/- 0.05	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_c	numeric reserve	+2.812	+0.007	2.782 +/- 0.10	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_c	literal reserve	+2.812	+0.007	2.782 +/- 0.10	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_c	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_c	literal		+0.007	0.000 +/- 0.05	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_d	numeric reserve	+2.782	+0.007	2.782 +/- 0.10	pass	
+num_reserve	C04_num_upright/C05_num_italic/num_d	literal reserve	+2.782	+0.007	2.782 +/- 0.10	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_d	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C04_num_upright/C05_num_italic/num_d	literal		+0.007	0.000 +/- 0.05	pass	
+acc_neg_no_pad	C06_acc_upright/C07_acc_italic/acc_neg	numeric reserve	+0.008	+0.007	0.008 +/- 0.10	pass	
+acc_neg_no_pad	C06_acc_upright/C07_acc_italic/acc_neg	literal reserve	+2.768	+0.007	0.008 +/- 0.10	FAIL	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_neg	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_neg	literal		+0.007	0.000 +/- 0.05	pass	
+acc_pad_neg	C06_acc_upright/C07_acc_italic/acc_pad_neg	numeric reserve	+0.008	+0.007	0.008 +/- 0.10	pass	
+acc_pad_neg	C06_acc_upright/C07_acc_italic/acc_pad_neg	literal reserve	+2.768	+0.007	0.008 +/- 0.10	FAIL	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_pad_neg	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_pad_neg	literal		+0.007	0.000 +/- 0.05	pass	
+acc_pos	C06_acc_upright/C07_acc_italic/acc_pos	numeric reserve	+0.022	+0.007	0.035 +/- 0.10	pass	
+acc_pos	C06_acc_upright/C07_acc_italic/acc_pos	literal reserve	+2.782	+0.007	0.035 +/- 0.10	FAIL	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_pos	numeric		+0.007	0.000 +/- 0.05	pass	
+ours_reserve	C06_acc_upright/C07_acc_italic/acc_pos	literal		+0.007	0.000 +/- 0.05	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_a	numeric reserve	+2.172	+0.000	source equality; held-out band 1..4	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_a	literal reserve	+2.172	+0.000	equals numeric reserve	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_a	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_a	literal		+0.000	0.000 +/- 0.05	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_b	numeric reserve	+2.160	+0.000	source equality; held-out band 1..4	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_b	literal reserve	+2.160	+0.000	equals numeric reserve	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_b	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_b	literal		+0.000	0.000 +/- 0.05	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_c	numeric reserve	+2.160	+0.000	source equality; held-out band 1..4	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_c	literal reserve	+2.160	+0.000	equals numeric reserve	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_c	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_c	literal		+0.000	0.000 +/- 0.05	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_d	numeric reserve	+2.172	+0.002	source equality; held-out band 1..4	pass	
+font_holdout_georgia12	C08_georgia12_upright/C09_georgia12_italic/pct_d	literal reserve	+2.172	+0.002	equals numeric reserve	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_d	numeric		+0.002	0.000 +/- 0.05	pass	
+ours_reserve	C08_georgia12_upright/C09_georgia12_italic/pct_d	literal		+0.002	0.000 +/- 0.05	pass	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_a	numeric reserve	+2.774	+0.010	source equality only	report	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_a	literal reserve	+2.774	+0.010	equals numeric reserve	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_a	numeric		+0.010	0.000 +/- 0.05	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_a	literal		+0.010	0.000 +/- 0.05	pass	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_b	numeric reserve	+2.774	+0.003	source equality only	report	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_b	literal reserve	+2.774	+0.003	equals numeric reserve	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_b	numeric		+0.003	0.000 +/- 0.05	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_b	literal		+0.003	0.000 +/- 0.05	pass	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_c	numeric reserve	+2.746	+0.003	source equality only	report	
+string_holdout_kg	C10_kg_upright/C11_kg_italic/kg_c	literal reserve	+2.746	+0.003	equals numeric reserve	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_c	numeric		+0.003	0.000 +/- 0.05	pass	
+ours_reserve	C10_kg_upright/C11_kg_italic/kg_c	literal		+0.003	0.000 +/- 0.05	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_a	numeric reserve	+1.704	+0.004	1.684 +/- 0.10	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_a	literal reserve	+1.704	+0.004	1.684 +/- 0.10	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_a	numeric		+0.004	0.000 +/- 0.05	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_a	literal		+0.004	0.000 +/- 0.05	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_b	numeric reserve	+1.704	+0.004	1.684 +/- 0.10	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_b	literal reserve	+1.704	+0.004	1.684 +/- 0.10	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_b	numeric		+0.004	0.000 +/- 0.05	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_b	literal		+0.004	0.000 +/- 0.05	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_c	numeric reserve	+1.704	+0.000	1.684 +/- 0.10	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_c	literal reserve	+1.704	+0.000	1.684 +/- 0.10	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_c	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_c	literal		+0.000	0.000 +/- 0.05	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_d	numeric reserve	+1.704	+0.000	1.684 +/- 0.10	pass	
+scale_holdout_60	C12_scale60_upright/C13_scale60_italic/pct_d	literal reserve	+1.704	+0.000	1.684 +/- 0.10	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_d	numeric		+0.000	0.000 +/- 0.05	pass	
+ours_reserve	C12_scale60_upright/C13_scale60_italic/pct_d	literal		+0.000	0.000 +/- 0.05	pass	
+general_hash_premise	C00_hash_upright	General numeric overflow	1.2E+08	1.2E+08	Excel shows scientific notation, not hashes	report	General cannot express the requested seven-hash control
+general_hash_premise	C01_hash_italic	General numeric overflow	1E+08	1E+08	Excel shows scientific notation, not hashes	report	General cannot express the requested seven-hash control
+acc_pad_gap	upright	num	+4.320		padded gap exceeds no-pad gap	pass	
+acc_pad_gap	upright	lit	+4.320		padded gap exceeds no-pad gap	pass	
+acc_pad_gap	italic	num	+4.320		padded gap exceeds no-pad gap	pass	
+acc_pad_gap	italic	lit	+4.320		padded gap exceeds no-pad gap	pass	
+posthoc_hash_overflow	hash_pct_a	numeric overflow vs literal seven hashes	num +1.440 / lit +2.760		the overflow draw path differs from literal/custom hashes	finding	the custom-format numeric hash row matches the literal twin and reserve 2.760
+posthoc_hash_overflow	hash_pct_b	numeric overflow vs literal seven hashes	num +1.440 / lit +2.760		the overflow draw path differs from literal/custom hashes	finding	the custom-format numeric hash row matches the literal twin and reserve 2.760
+posthoc_accounting	acc_neg	numeric accounting vs literal twin	num +0.008 / lit +2.768		the numeric accounting formatter suppresses the italic shift	finding	pad shifts both by +4.320 but does not change the reserve
+posthoc_accounting	acc_pad_neg	numeric accounting vs literal twin	num +0.008 / lit +2.768		the numeric accounting formatter suppresses the italic shift	finding	pad shifts both by +4.320 but does not change the reserve
+posthoc_accounting	acc_pos	numeric accounting vs literal twin	num +0.022 / lit +2.782		the numeric accounting formatter suppresses the italic shift	finding	pad shifts both by +4.320 but does not change the reserve
+posthoc_ours_text_pad	C06/C07	ours accounting literal text-section pad	numeric-literal upright gap +2.619/+2.634		ours does not give literal text the accounting _( @_) pad	finding	separate from the italic reserve; the measured value word width is still identical

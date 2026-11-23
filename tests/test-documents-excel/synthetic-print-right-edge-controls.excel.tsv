@@ -1,0 +1,420 @@
+C00_hash_upright	1	pdf	synthetic-print-right-edge-controls-1.pdf
+C01_hash_italic	2	pdf	synthetic-print-right-edge-controls-2.pdf
+C02_pct_upright	3	pdf	synthetic-print-right-edge-controls-3.pdf
+C03_pct_italic	4	pdf	synthetic-print-right-edge-controls-4.pdf
+C04_num_upright	5	pdf	synthetic-print-right-edge-controls-5.pdf
+C05_num_italic	6	pdf	synthetic-print-right-edge-controls-6.pdf
+C06_acc_upright	7	pdf	synthetic-print-right-edge-controls-7.pdf
+C07_acc_italic	8	pdf	synthetic-print-right-edge-controls-8.pdf
+C08_georgia12_upright	9	pdf	synthetic-print-right-edge-controls-9.pdf
+C09_georgia12_italic	10	pdf	synthetic-print-right-edge-controls-10.pdf
+C10_kg_upright	11	pdf	synthetic-print-right-edge-controls-11.pdf
+C11_kg_italic	12	pdf	synthetic-print-right-edge-controls-12.pdf
+C12_scale60_upright	13	pdf	synthetic-print-right-edge-controls-13.pdf
+C13_scale60_italic	14	pdf	synthetic-print-right-edge-controls-14.pdf
+C00_hash_upright	1	setup.orientation	1
+C00_hash_upright	1	setup.paper	1
+C00_hash_upright	1	setup.zoom	100
+C00_hash_upright	1	setup.fitwide	1
+C00_hash_upright	1	setup.fittall	1
+C00_hash_upright	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+C00_hash_upright	1	setup.center	False False
+C00_hash_upright	1	setup.printarea	
+C00_hash_upright	1	setup.titlerows	
+C00_hash_upright	1	setup.titlecols	
+C00_hash_upright	1	setup.order	1
+C00_hash_upright	1	setup.firstpage	-4105
+C00_hash_upright	1	setup.gridlines	False
+C00_hash_upright	1	setup.headings	False
+C00_hash_upright	1	setup.bw	False
+C00_hash_upright	1	setup.draft	False
+C00_hash_upright	1	setup.errors	0
+C00_hash_upright	1	setup.header	||
+C00_hash_upright	1	setup.footer	||
+C00_hash_upright	1	used	$B$1:$B$7
+C00_hash_upright	1	preview.col	1 11.29 63
+C00_hash_upright	1	preview.col	2 9.29 52.5
+C00_hash_upright	1	preview.col	3 8.43 48
+C00_hash_upright	1	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C00_hash_upright	1	widths.provenance	preview.col before preview; preview.colafter after preview
+C00_hash_upright	1	preview.colafter	1 11.29 63
+C00_hash_upright	1	preview.colafter	2 9.29 52.5
+C00_hash_upright	1	preview.colafter	3 8.43 48
+C01_hash_italic	2	setup.orientation	1
+C01_hash_italic	2	setup.paper	1
+C01_hash_italic	2	setup.zoom	100
+C01_hash_italic	2	setup.fitwide	1
+C01_hash_italic	2	setup.fittall	1
+C01_hash_italic	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+C01_hash_italic	2	setup.center	False False
+C01_hash_italic	2	setup.printarea	
+C01_hash_italic	2	setup.titlerows	
+C01_hash_italic	2	setup.titlecols	
+C01_hash_italic	2	setup.order	1
+C01_hash_italic	2	setup.firstpage	-4105
+C01_hash_italic	2	setup.gridlines	False
+C01_hash_italic	2	setup.headings	False
+C01_hash_italic	2	setup.bw	False
+C01_hash_italic	2	setup.draft	False
+C01_hash_italic	2	setup.errors	0
+C01_hash_italic	2	setup.header	||
+C01_hash_italic	2	setup.footer	||
+C01_hash_italic	2	used	$B$1:$B$7
+C01_hash_italic	2	preview.col	1 11.29 63
+C01_hash_italic	2	preview.col	2 9.29 52.5
+C01_hash_italic	2	preview.col	3 8.43 48
+C01_hash_italic	2	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C01_hash_italic	2	widths.provenance	preview.col before preview; preview.colafter after preview
+C01_hash_italic	2	preview.colafter	1 11.29 63
+C01_hash_italic	2	preview.colafter	2 9.29 52.5
+C01_hash_italic	2	preview.colafter	3 8.43 48
+C02_pct_upright	3	setup.orientation	1
+C02_pct_upright	3	setup.paper	1
+C02_pct_upright	3	setup.zoom	100
+C02_pct_upright	3	setup.fitwide	1
+C02_pct_upright	3	setup.fittall	1
+C02_pct_upright	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+C02_pct_upright	3	setup.center	False False
+C02_pct_upright	3	setup.printarea	
+C02_pct_upright	3	setup.titlerows	
+C02_pct_upright	3	setup.titlecols	
+C02_pct_upright	3	setup.order	1
+C02_pct_upright	3	setup.firstpage	-4105
+C02_pct_upright	3	setup.gridlines	False
+C02_pct_upright	3	setup.headings	False
+C02_pct_upright	3	setup.bw	False
+C02_pct_upright	3	setup.draft	False
+C02_pct_upright	3	setup.errors	0
+C02_pct_upright	3	setup.header	||
+C02_pct_upright	3	setup.footer	||
+C02_pct_upright	3	used	$B$1:$B$8
+C02_pct_upright	3	preview.col	1 11.29 63
+C02_pct_upright	3	preview.col	2 17.29 94.5
+C02_pct_upright	3	preview.col	3 8.43 48
+C02_pct_upright	3	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C02_pct_upright	3	widths.provenance	preview.col before preview; preview.colafter after preview
+C02_pct_upright	3	preview.colafter	1 11.29 63
+C02_pct_upright	3	preview.colafter	2 17.29 94.5
+C02_pct_upright	3	preview.colafter	3 8.43 48
+C03_pct_italic	4	setup.orientation	1
+C03_pct_italic	4	setup.paper	1
+C03_pct_italic	4	setup.zoom	100
+C03_pct_italic	4	setup.fitwide	1
+C03_pct_italic	4	setup.fittall	1
+C03_pct_italic	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+C03_pct_italic	4	setup.center	False False
+C03_pct_italic	4	setup.printarea	
+C03_pct_italic	4	setup.titlerows	
+C03_pct_italic	4	setup.titlecols	
+C03_pct_italic	4	setup.order	1
+C03_pct_italic	4	setup.firstpage	-4105
+C03_pct_italic	4	setup.gridlines	False
+C03_pct_italic	4	setup.headings	False
+C03_pct_italic	4	setup.bw	False
+C03_pct_italic	4	setup.draft	False
+C03_pct_italic	4	setup.errors	0
+C03_pct_italic	4	setup.header	||
+C03_pct_italic	4	setup.footer	||
+C03_pct_italic	4	used	$B$1:$B$8
+C03_pct_italic	4	preview.col	1 11.29 63
+C03_pct_italic	4	preview.col	2 17.29 94.5
+C03_pct_italic	4	preview.col	3 8.43 48
+C03_pct_italic	4	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C03_pct_italic	4	widths.provenance	preview.col before preview; preview.colafter after preview
+C03_pct_italic	4	preview.colafter	1 11.29 63
+C03_pct_italic	4	preview.colafter	2 17.29 94.5
+C03_pct_italic	4	preview.colafter	3 8.43 48
+C04_num_upright	5	setup.orientation	1
+C04_num_upright	5	setup.paper	1
+C04_num_upright	5	setup.zoom	100
+C04_num_upright	5	setup.fitwide	1
+C04_num_upright	5	setup.fittall	1
+C04_num_upright	5	setup.margins	50.4 50.4 54 54 21.6 21.6
+C04_num_upright	5	setup.center	False False
+C04_num_upright	5	setup.printarea	
+C04_num_upright	5	setup.titlerows	
+C04_num_upright	5	setup.titlecols	
+C04_num_upright	5	setup.order	1
+C04_num_upright	5	setup.firstpage	-4105
+C04_num_upright	5	setup.gridlines	False
+C04_num_upright	5	setup.headings	False
+C04_num_upright	5	setup.bw	False
+C04_num_upright	5	setup.draft	False
+C04_num_upright	5	setup.errors	0
+C04_num_upright	5	setup.header	||
+C04_num_upright	5	setup.footer	||
+C04_num_upright	5	used	$B$1:$B$8
+C04_num_upright	5	preview.col	1 11.29 63
+C04_num_upright	5	preview.col	2 17.29 94.5
+C04_num_upright	5	preview.col	3 8.43 48
+C04_num_upright	5	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C04_num_upright	5	widths.provenance	preview.col before preview; preview.colafter after preview
+C04_num_upright	5	preview.colafter	1 11.29 63
+C04_num_upright	5	preview.colafter	2 17.29 94.5
+C04_num_upright	5	preview.colafter	3 8.43 48
+C05_num_italic	6	setup.orientation	1
+C05_num_italic	6	setup.paper	1
+C05_num_italic	6	setup.zoom	100
+C05_num_italic	6	setup.fitwide	1
+C05_num_italic	6	setup.fittall	1
+C05_num_italic	6	setup.margins	50.4 50.4 54 54 21.6 21.6
+C05_num_italic	6	setup.center	False False
+C05_num_italic	6	setup.printarea	
+C05_num_italic	6	setup.titlerows	
+C05_num_italic	6	setup.titlecols	
+C05_num_italic	6	setup.order	1
+C05_num_italic	6	setup.firstpage	-4105
+C05_num_italic	6	setup.gridlines	False
+C05_num_italic	6	setup.headings	False
+C05_num_italic	6	setup.bw	False
+C05_num_italic	6	setup.draft	False
+C05_num_italic	6	setup.errors	0
+C05_num_italic	6	setup.header	||
+C05_num_italic	6	setup.footer	||
+C05_num_italic	6	used	$B$1:$B$8
+C05_num_italic	6	preview.col	1 11.29 63
+C05_num_italic	6	preview.col	2 17.29 94.5
+C05_num_italic	6	preview.col	3 8.43 48
+C05_num_italic	6	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C05_num_italic	6	widths.provenance	preview.col before preview; preview.colafter after preview
+C05_num_italic	6	preview.colafter	1 11.29 63
+C05_num_italic	6	preview.colafter	2 17.29 94.5
+C05_num_italic	6	preview.colafter	3 8.43 48
+C06_acc_upright	7	setup.orientation	1
+C06_acc_upright	7	setup.paper	1
+C06_acc_upright	7	setup.zoom	100
+C06_acc_upright	7	setup.fitwide	1
+C06_acc_upright	7	setup.fittall	1
+C06_acc_upright	7	setup.margins	50.4 50.4 54 54 21.6 21.6
+C06_acc_upright	7	setup.center	False False
+C06_acc_upright	7	setup.printarea	
+C06_acc_upright	7	setup.titlerows	
+C06_acc_upright	7	setup.titlecols	
+C06_acc_upright	7	setup.order	1
+C06_acc_upright	7	setup.firstpage	-4105
+C06_acc_upright	7	setup.gridlines	False
+C06_acc_upright	7	setup.headings	False
+C06_acc_upright	7	setup.bw	False
+C06_acc_upright	7	setup.draft	False
+C06_acc_upright	7	setup.errors	0
+C06_acc_upright	7	setup.header	||
+C06_acc_upright	7	setup.footer	||
+C06_acc_upright	7	used	$B$1:$B$7
+C06_acc_upright	7	preview.col	1 11.29 63
+C06_acc_upright	7	preview.col	2 17.29 94.5
+C06_acc_upright	7	preview.col	3 8.43 48
+C06_acc_upright	7	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C06_acc_upright	7	widths.provenance	preview.col before preview; preview.colafter after preview
+C06_acc_upright	7	preview.colafter	1 11.29 63
+C06_acc_upright	7	preview.colafter	2 17.29 94.5
+C06_acc_upright	7	preview.colafter	3 8.43 48
+C07_acc_italic	8	setup.orientation	1
+C07_acc_italic	8	setup.paper	1
+C07_acc_italic	8	setup.zoom	100
+C07_acc_italic	8	setup.fitwide	1
+C07_acc_italic	8	setup.fittall	1
+C07_acc_italic	8	setup.margins	50.4 50.4 54 54 21.6 21.6
+C07_acc_italic	8	setup.center	False False
+C07_acc_italic	8	setup.printarea	
+C07_acc_italic	8	setup.titlerows	
+C07_acc_italic	8	setup.titlecols	
+C07_acc_italic	8	setup.order	1
+C07_acc_italic	8	setup.firstpage	-4105
+C07_acc_italic	8	setup.gridlines	False
+C07_acc_italic	8	setup.headings	False
+C07_acc_italic	8	setup.bw	False
+C07_acc_italic	8	setup.draft	False
+C07_acc_italic	8	setup.errors	0
+C07_acc_italic	8	setup.header	||
+C07_acc_italic	8	setup.footer	||
+C07_acc_italic	8	used	$B$1:$B$7
+C07_acc_italic	8	preview.col	1 11.29 63
+C07_acc_italic	8	preview.col	2 17.29 94.5
+C07_acc_italic	8	preview.col	3 8.43 48
+C07_acc_italic	8	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C07_acc_italic	8	widths.provenance	preview.col before preview; preview.colafter after preview
+C07_acc_italic	8	preview.colafter	1 11.29 63
+C07_acc_italic	8	preview.colafter	2 17.29 94.5
+C07_acc_italic	8	preview.colafter	3 8.43 48
+C08_georgia12_upright	9	setup.orientation	1
+C08_georgia12_upright	9	setup.paper	1
+C08_georgia12_upright	9	setup.zoom	100
+C08_georgia12_upright	9	setup.fitwide	1
+C08_georgia12_upright	9	setup.fittall	1
+C08_georgia12_upright	9	setup.margins	50.4 50.4 54 54 21.6 21.6
+C08_georgia12_upright	9	setup.center	False False
+C08_georgia12_upright	9	setup.printarea	
+C08_georgia12_upright	9	setup.titlerows	
+C08_georgia12_upright	9	setup.titlecols	
+C08_georgia12_upright	9	setup.order	1
+C08_georgia12_upright	9	setup.firstpage	-4105
+C08_georgia12_upright	9	setup.gridlines	False
+C08_georgia12_upright	9	setup.headings	False
+C08_georgia12_upright	9	setup.bw	False
+C08_georgia12_upright	9	setup.draft	False
+C08_georgia12_upright	9	setup.errors	0
+C08_georgia12_upright	9	setup.header	||
+C08_georgia12_upright	9	setup.footer	||
+C08_georgia12_upright	9	used	$B$1:$B$8
+C08_georgia12_upright	9	preview.col	1 11.29 63
+C08_georgia12_upright	9	preview.col	2 17.29 94.5
+C08_georgia12_upright	9	preview.col	3 8.43 48
+C08_georgia12_upright	9	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C08_georgia12_upright	9	widths.provenance	preview.col before preview; preview.colafter after preview
+C08_georgia12_upright	9	preview.colafter	1 11.29 63
+C08_georgia12_upright	9	preview.colafter	2 17.29 94.5
+C08_georgia12_upright	9	preview.colafter	3 8.43 48
+C09_georgia12_italic	10	setup.orientation	1
+C09_georgia12_italic	10	setup.paper	1
+C09_georgia12_italic	10	setup.zoom	100
+C09_georgia12_italic	10	setup.fitwide	1
+C09_georgia12_italic	10	setup.fittall	1
+C09_georgia12_italic	10	setup.margins	50.4 50.4 54 54 21.6 21.6
+C09_georgia12_italic	10	setup.center	False False
+C09_georgia12_italic	10	setup.printarea	
+C09_georgia12_italic	10	setup.titlerows	
+C09_georgia12_italic	10	setup.titlecols	
+C09_georgia12_italic	10	setup.order	1
+C09_georgia12_italic	10	setup.firstpage	-4105
+C09_georgia12_italic	10	setup.gridlines	False
+C09_georgia12_italic	10	setup.headings	False
+C09_georgia12_italic	10	setup.bw	False
+C09_georgia12_italic	10	setup.draft	False
+C09_georgia12_italic	10	setup.errors	0
+C09_georgia12_italic	10	setup.header	||
+C09_georgia12_italic	10	setup.footer	||
+C09_georgia12_italic	10	used	$B$1:$B$8
+C09_georgia12_italic	10	preview.col	1 11.29 63
+C09_georgia12_italic	10	preview.col	2 17.29 94.5
+C09_georgia12_italic	10	preview.col	3 8.43 48
+C09_georgia12_italic	10	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C09_georgia12_italic	10	widths.provenance	preview.col before preview; preview.colafter after preview
+C09_georgia12_italic	10	preview.colafter	1 11.29 63
+C09_georgia12_italic	10	preview.colafter	2 17.29 94.5
+C09_georgia12_italic	10	preview.colafter	3 8.43 48
+C10_kg_upright	11	setup.orientation	1
+C10_kg_upright	11	setup.paper	1
+C10_kg_upright	11	setup.zoom	100
+C10_kg_upright	11	setup.fitwide	1
+C10_kg_upright	11	setup.fittall	1
+C10_kg_upright	11	setup.margins	50.4 50.4 54 54 21.6 21.6
+C10_kg_upright	11	setup.center	False False
+C10_kg_upright	11	setup.printarea	
+C10_kg_upright	11	setup.titlerows	
+C10_kg_upright	11	setup.titlecols	
+C10_kg_upright	11	setup.order	1
+C10_kg_upright	11	setup.firstpage	-4105
+C10_kg_upright	11	setup.gridlines	False
+C10_kg_upright	11	setup.headings	False
+C10_kg_upright	11	setup.bw	False
+C10_kg_upright	11	setup.draft	False
+C10_kg_upright	11	setup.errors	0
+C10_kg_upright	11	setup.header	||
+C10_kg_upright	11	setup.footer	||
+C10_kg_upright	11	used	$B$1:$B$6
+C10_kg_upright	11	preview.col	1 11.29 63
+C10_kg_upright	11	preview.col	2 23.29 126
+C10_kg_upright	11	preview.col	3 8.43 48
+C10_kg_upright	11	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C10_kg_upright	11	widths.provenance	preview.col before preview; preview.colafter after preview
+C10_kg_upright	11	preview.colafter	1 11.29 63
+C10_kg_upright	11	preview.colafter	2 23.29 126
+C10_kg_upright	11	preview.colafter	3 8.43 48
+C11_kg_italic	12	setup.orientation	1
+C11_kg_italic	12	setup.paper	1
+C11_kg_italic	12	setup.zoom	100
+C11_kg_italic	12	setup.fitwide	1
+C11_kg_italic	12	setup.fittall	1
+C11_kg_italic	12	setup.margins	50.4 50.4 54 54 21.6 21.6
+C11_kg_italic	12	setup.center	False False
+C11_kg_italic	12	setup.printarea	
+C11_kg_italic	12	setup.titlerows	
+C11_kg_italic	12	setup.titlecols	
+C11_kg_italic	12	setup.order	1
+C11_kg_italic	12	setup.firstpage	-4105
+C11_kg_italic	12	setup.gridlines	False
+C11_kg_italic	12	setup.headings	False
+C11_kg_italic	12	setup.bw	False
+C11_kg_italic	12	setup.draft	False
+C11_kg_italic	12	setup.errors	0
+C11_kg_italic	12	setup.header	||
+C11_kg_italic	12	setup.footer	||
+C11_kg_italic	12	used	$B$1:$B$6
+C11_kg_italic	12	preview.col	1 11.29 63
+C11_kg_italic	12	preview.col	2 23.29 126
+C11_kg_italic	12	preview.col	3 8.43 48
+C11_kg_italic	12	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C11_kg_italic	12	widths.provenance	preview.col before preview; preview.colafter after preview
+C11_kg_italic	12	preview.colafter	1 11.29 63
+C11_kg_italic	12	preview.colafter	2 23.29 126
+C11_kg_italic	12	preview.colafter	3 8.43 48
+C12_scale60_upright	13	setup.orientation	1
+C12_scale60_upright	13	setup.paper	1
+C12_scale60_upright	13	setup.zoom	60
+C12_scale60_upright	13	setup.fitwide	1
+C12_scale60_upright	13	setup.fittall	1
+C12_scale60_upright	13	setup.margins	50.4 50.4 54 54 21.6 21.6
+C12_scale60_upright	13	setup.center	False False
+C12_scale60_upright	13	setup.printarea	
+C12_scale60_upright	13	setup.titlerows	
+C12_scale60_upright	13	setup.titlecols	
+C12_scale60_upright	13	setup.order	1
+C12_scale60_upright	13	setup.firstpage	-4105
+C12_scale60_upright	13	setup.gridlines	False
+C12_scale60_upright	13	setup.headings	False
+C12_scale60_upright	13	setup.bw	False
+C12_scale60_upright	13	setup.draft	False
+C12_scale60_upright	13	setup.errors	0
+C12_scale60_upright	13	setup.header	||
+C12_scale60_upright	13	setup.footer	||
+C12_scale60_upright	13	used	$B$1:$B$8
+C12_scale60_upright	13	preview.col	1 11.29 63
+C12_scale60_upright	13	preview.col	2 17.29 94.5
+C12_scale60_upright	13	preview.col	3 8.43 48
+C12_scale60_upright	13	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C12_scale60_upright	13	widths.provenance	preview.col before preview; preview.colafter after preview
+C12_scale60_upright	13	preview.colafter	1 11.29 63
+C12_scale60_upright	13	preview.colafter	2 17.29 94.5
+C12_scale60_upright	13	preview.colafter	3 8.43 48
+C13_scale60_italic	14	setup.orientation	1
+C13_scale60_italic	14	setup.paper	1
+C13_scale60_italic	14	setup.zoom	60
+C13_scale60_italic	14	setup.fitwide	1
+C13_scale60_italic	14	setup.fittall	1
+C13_scale60_italic	14	setup.margins	50.4 50.4 54 54 21.6 21.6
+C13_scale60_italic	14	setup.center	False False
+C13_scale60_italic	14	setup.printarea	
+C13_scale60_italic	14	setup.titlerows	
+C13_scale60_italic	14	setup.titlecols	
+C13_scale60_italic	14	setup.order	1
+C13_scale60_italic	14	setup.firstpage	-4105
+C13_scale60_italic	14	setup.gridlines	False
+C13_scale60_italic	14	setup.headings	False
+C13_scale60_italic	14	setup.bw	False
+C13_scale60_italic	14	setup.draft	False
+C13_scale60_italic	14	setup.errors	0
+C13_scale60_italic	14	setup.header	||
+C13_scale60_italic	14	setup.footer	||
+C13_scale60_italic	14	used	$B$1:$B$8
+C13_scale60_italic	14	preview.col	1 11.29 63
+C13_scale60_italic	14	preview.col	2 17.29 94.5
+C13_scale60_italic	14	preview.col	3 8.43 48
+C13_scale60_italic	14	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+C13_scale60_italic	14	widths.provenance	preview.col before preview; preview.colafter after preview
+C13_scale60_italic	14	preview.colafter	1 11.29 63
+C13_scale60_italic	14	preview.colafter	2 17.29 94.5
+C13_scale60_italic	14	preview.colafter	3 8.43 48
+C00_hash_upright	1	direct.pages	1
+C01_hash_italic	2	direct.pages	1
+C02_pct_upright	3	direct.pages	1
+C03_pct_italic	4	direct.pages	1
+C04_num_upright	5	direct.pages	1
+C05_num_italic	6	direct.pages	1
+C06_acc_upright	7	direct.pages	1
+C07_acc_italic	8	direct.pages	1
+C08_georgia12_upright	9	direct.pages	1
+C09_georgia12_italic	10	direct.pages	1
+C10_kg_upright	11	direct.pages	1
+C11_kg_italic	12	direct.pages	1
+C12_scale60_upright	13	direct.pages	1
+C13_scale60_italic	14	direct.pages	1

@@ -1,0 +1,105 @@
+sheet	index	row	kind	expected_text	pair	face	size	style	scale	format
+C00_hash_upright	1	1	num	#######	hash_pct_a	Aptos Narrow	14	upright	100	0.000%
+C00_hash_upright	1	2	lit	#######	hash_pct_a	Aptos Narrow	14	upright	100	0.000%
+C00_hash_upright	1	3	num	#######	hash_fmt_lit	Aptos Narrow	14	upright	100	"#######"
+C00_hash_upright	1	4	lit	#######	hash_fmt_lit	Aptos Narrow	14	upright	100	"#######"
+C00_hash_upright	1	5	num	#######	hash_pct_b	Aptos Narrow	14	upright	100	0.000%
+C00_hash_upright	1	6	lit	#######	hash_pct_b	Aptos Narrow	14	upright	100	0.000%
+C00_hash_upright	1	7	num	1.2E+08		Aptos Narrow	14	upright	100	General
+C01_hash_italic	2	1	num	#######	hash_pct_a	Aptos Narrow	14	italic	100	0.000%
+C01_hash_italic	2	2	lit	#######	hash_pct_a	Aptos Narrow	14	italic	100	0.000%
+C01_hash_italic	2	3	num	#######	hash_fmt_lit	Aptos Narrow	14	italic	100	"#######"
+C01_hash_italic	2	4	lit	#######	hash_fmt_lit	Aptos Narrow	14	italic	100	"#######"
+C01_hash_italic	2	5	num	#######	hash_pct_b	Aptos Narrow	14	italic	100	0.000%
+C01_hash_italic	2	6	lit	#######	hash_pct_b	Aptos Narrow	14	italic	100	0.000%
+C01_hash_italic	2	7	num	1.2E+08		Aptos Narrow	14	italic	100	General
+C02_pct_upright	3	1	num	-98.41%	pct_a	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	2	lit	-98.41%	pct_a	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	3	num	-100.00%	pct_b	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	4	lit	-100.00%	pct_b	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	5	num	50.00%	pct_c	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	6	lit	50.00%	pct_c	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	7	num	123456700.00%	pct_d	Aptos Narrow	14	upright	100	0.00%
+C02_pct_upright	3	8	lit	123456700.00%	pct_d	Aptos Narrow	14	upright	100	0.00%
+C03_pct_italic	4	1	num	-98.41%	pct_a	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	2	lit	-98.41%	pct_a	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	3	num	-100.00%	pct_b	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	4	lit	-100.00%	pct_b	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	5	num	50.00%	pct_c	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	6	lit	50.00%	pct_c	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	7	num	123456700.00%	pct_d	Aptos Narrow	14	italic	100	0.00%
+C03_pct_italic	4	8	lit	123456700.00%	pct_d	Aptos Narrow	14	italic	100	0.00%
+C04_num_upright	5	1	num	-0.98	num_a	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	2	lit	-0.98	num_a	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	3	num	-1.00	num_b	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	4	lit	-1.00	num_b	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	5	num	0.50	num_c	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	6	lit	0.50	num_c	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	7	num	1234567.00	num_d	Aptos Narrow	14	upright	100	0.00
+C04_num_upright	5	8	lit	1234567.00	num_d	Aptos Narrow	14	upright	100	0.00
+C05_num_italic	6	1	num	-0.98	num_a	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	2	lit	-0.98	num_a	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	3	num	-1.00	num_b	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	4	lit	-1.00	num_b	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	5	num	0.50	num_c	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	6	lit	0.50	num_c	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	7	num	1234567.00	num_d	Aptos Narrow	14	italic	100	0.00
+C05_num_italic	6	8	lit	1234567.00	num_d	Aptos Narrow	14	italic	100	0.00
+C06_acc_upright	7	1	num	(0.98)	acc_neg	Aptos Narrow	14	upright	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C06_acc_upright	7	2	lit	(0.98)	acc_neg	Aptos Narrow	14	upright	100	General
+C06_acc_upright	7	3	num	(0.98)	acc_pad_neg	Aptos Narrow	14	upright	100	_(* #,##0.00_);_(* \(#,##0.00\)_);_(* "-"??_);_(@_)
+C06_acc_upright	7	4	lit	(0.98)	acc_pad_neg	Aptos Narrow	14	upright	100	_(* #,##0.00_);_(* \(#,##0.00\)_);_(* "-"??_);_(@_)
+C06_acc_upright	7	5	num	0.50	acc_pos	Aptos Narrow	14	upright	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C06_acc_upright	7	6	lit	0.50	acc_pos	Aptos Narrow	14	upright	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C06_acc_upright	7	7	num	1,234,567.00		Aptos Narrow	14	upright	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C07_acc_italic	8	1	num	(0.98)	acc_neg	Aptos Narrow	14	italic	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C07_acc_italic	8	2	lit	(0.98)	acc_neg	Aptos Narrow	14	italic	100	General
+C07_acc_italic	8	3	num	(0.98)	acc_pad_neg	Aptos Narrow	14	italic	100	_(* #,##0.00_);_(* \(#,##0.00\)_);_(* "-"??_);_(@_)
+C07_acc_italic	8	4	lit	(0.98)	acc_pad_neg	Aptos Narrow	14	italic	100	_(* #,##0.00_);_(* \(#,##0.00\)_);_(* "-"??_);_(@_)
+C07_acc_italic	8	5	num	0.50	acc_pos	Aptos Narrow	14	italic	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C07_acc_italic	8	6	lit	0.50	acc_pos	Aptos Narrow	14	italic	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C07_acc_italic	8	7	num	1,234,567.00		Aptos Narrow	14	italic	100	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)
+C08_georgia12_upright	9	1	num	-98.41%	pct_a	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	2	lit	-98.41%	pct_a	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	3	num	-100.00%	pct_b	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	4	lit	-100.00%	pct_b	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	5	num	50.00%	pct_c	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	6	lit	50.00%	pct_c	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	7	num	123456700.00%	pct_d	Georgia	12	upright	100	0.00%
+C08_georgia12_upright	9	8	lit	123456700.00%	pct_d	Georgia	12	upright	100	0.00%
+C09_georgia12_italic	10	1	num	-98.41%	pct_a	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	2	lit	-98.41%	pct_a	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	3	num	-100.00%	pct_b	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	4	lit	-100.00%	pct_b	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	5	num	50.00%	pct_c	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	6	lit	50.00%	pct_c	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	7	num	123456700.00%	pct_d	Georgia	12	italic	100	0.00%
+C09_georgia12_italic	10	8	lit	123456700.00%	pct_d	Georgia	12	italic	100	0.00%
+C10_kg_upright	11	1	num	-0.98 kg	kg_a	Aptos Narrow	14	upright	100	0.00" kg"
+C10_kg_upright	11	2	lit	-0.98 kg	kg_a	Aptos Narrow	14	upright	100	0.00" kg"
+C10_kg_upright	11	3	num	0.50 kg	kg_b	Aptos Narrow	14	upright	100	0.00" kg"
+C10_kg_upright	11	4	lit	0.50 kg	kg_b	Aptos Narrow	14	upright	100	0.00" kg"
+C10_kg_upright	11	5	num	1234567.00 kg	kg_c	Aptos Narrow	14	upright	100	0.00" kg"
+C10_kg_upright	11	6	lit	1234567.00 kg	kg_c	Aptos Narrow	14	upright	100	0.00" kg"
+C11_kg_italic	12	1	num	-0.98 kg	kg_a	Aptos Narrow	14	italic	100	0.00" kg"
+C11_kg_italic	12	2	lit	-0.98 kg	kg_a	Aptos Narrow	14	italic	100	0.00" kg"
+C11_kg_italic	12	3	num	0.50 kg	kg_b	Aptos Narrow	14	italic	100	0.00" kg"
+C11_kg_italic	12	4	lit	0.50 kg	kg_b	Aptos Narrow	14	italic	100	0.00" kg"
+C11_kg_italic	12	5	num	1234567.00 kg	kg_c	Aptos Narrow	14	italic	100	0.00" kg"
+C11_kg_italic	12	6	lit	1234567.00 kg	kg_c	Aptos Narrow	14	italic	100	0.00" kg"
+C12_scale60_upright	13	1	num	-98.41%	pct_a	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	2	lit	-98.41%	pct_a	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	3	num	-100.00%	pct_b	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	4	lit	-100.00%	pct_b	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	5	num	50.00%	pct_c	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	6	lit	50.00%	pct_c	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	7	num	123456700.00%	pct_d	Aptos Narrow	14	upright	60	0.00%
+C12_scale60_upright	13	8	lit	123456700.00%	pct_d	Aptos Narrow	14	upright	60	0.00%
+C13_scale60_italic	14	1	num	-98.41%	pct_a	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	2	lit	-98.41%	pct_a	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	3	num	-100.00%	pct_b	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	4	lit	-100.00%	pct_b	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	5	num	50.00%	pct_c	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	6	lit	50.00%	pct_c	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	7	num	123456700.00%	pct_d	Aptos Narrow	14	italic	60	0.00%
+C13_scale60_italic	14	8	lit	123456700.00%	pct_d	Aptos Narrow	14	italic	60	0.00%

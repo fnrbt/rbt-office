@@ -223,6 +223,27 @@ let private selectedSectionForValue (code: string) (n: float) : string =
         let struct (section, _, _) = sectionSelectionForValue code (splitSections code) n
         section
 
+/// Whether the section of `code` that value `n` uses contains an unquoted `*` fill token - Excel's accounting/fill
+/// number layout, which draws the number as several text runs and does not take the printed italic reserve. A quoted
+/// or escaped asterisk and a `[...]` colour/condition do not count, and a `*` in an inactive section does not count
+/// (print-italic-format-controls: `0.00_)` keeps the reserve, `* 0.00` and standard accounting suppress it,
+/// `0.00"_)"` keeps it, `0.00;[Red]-0.00_)` keeps it).
+let numberFormatUsesFillForValue (code: string) (n: float) : bool =
+    let section = selectedSectionForValue code n
+    let mutable index = 0
+    let mutable quoted = false
+    let mutable bracket = false
+    let mutable found = false
+    while not found && index < section.Length do
+        let c = section.[index]
+        if c = '"' then quoted <- not quoted
+        elif not quoted && c = '[' then bracket <- true
+        elif not quoted && bracket && c = ']' then bracket <- false
+        elif not quoted && not bracket && c = '\\' then index <- index + 1
+        elif not quoted && not bracket && c = '*' then found <- true
+        index <- index + 1
+    found
+
 let private equalsIgnoreCase (left: string) (right: string) =
     if left.Length <> right.Length then
         false

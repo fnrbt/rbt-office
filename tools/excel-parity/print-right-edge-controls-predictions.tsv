@@ -1,0 +1,27 @@
+# Predictions written before the controls workbook's fresh Excel export/measurement (2026-11-23T18:15Z).
+# Metric: Poppler word box (pdftotext -bbox xMax) to the printed #FFF2CC fill's right edge (physical cell border),
+# never raster ink. Pairs are adjacent numeric/literal rows with identical displayed text, face, size, italic,
+# alignment, column width, fill and border.
+# Primary hypothesis (source independence): a numeric cell and a literal text cell with the same displayed string
+# have the same word box and therefore the same word-gap. Accept |literal_gap - numeric_gap| <= 0.05 pt for Excel
+# and ours. Corollary: any italic reserve is a property of the rendered string/face/size, not of number formatting.
+# Secondary: our engine applies no italic placement reserve; predicted reserve 0.000 for every observed pair.
+# Pair identity must also hold: equal pdftotext text, equal pdffonts/pdftohtml font, word-box width difference
+# <= 0.01 pt. A failed identity is a confound, not a pass.
+# Absolute reserves below are prior observations (print-right-edge-reference.tsv) re-tested here; held-out rows
+# state only relations that do not use the new export.
+test	sheets	face	size	scale	format	last_glyph	predicted	accept
+pair_equality	all pairs	Aptos Narrow/Georgia	14/12	100/60	mixed	mixed	literal gap == numeric gap	abs(delta) <= 0.05 pt
+pair_identity	all pairs	Aptos Narrow/Georgia	14/12	100/60	mixed	mixed	text, font and word width identical	text equal, font equal, width diff <= 0.01 pt
+hash_pct_reserve	C00/C01 Aptos 14 0.000%	Aptos Narrow	14	100	0.000%	#	literal and numeric both 1.440	abs(obs-1.440) <= 0.10
+hash_gen_reserve	C00/C01 Aptos 14 General	Aptos Narrow	14	100	General	#	literal and numeric both 1.440	abs(obs-1.440) <= 0.10
+pct_reserve	C02/C03 Aptos 14 0.00%	Aptos Narrow	14	100	0.00%	%	literal and numeric both 2.806	abs(obs-2.806) <= 0.10
+num_reserve	C04/C05 Aptos 14 0.00	Aptos Narrow	14	100	0.00	digit	literal and numeric both 2.782	abs(obs-2.782) <= 0.10
+acc_neg_reserve	C06/C07 standard accounting negative	Aptos Narrow	14	100	accounting	)	literal and numeric both 0.008	abs(obs-0.008) <= 0.10
+acc_pad_neg_reserve	C06/C07 negative section with trailing pad	Aptos Narrow	14	100	accounting pad	)	pad must not change the reserve; literal and numeric both 0.008	abs(obs-0.008) <= 0.10
+acc_pos_reserve	C06/C07 standard positive accounting	Aptos Narrow	14	100	accounting	digit	literal and numeric both 0.035	abs(obs-0.035) <= 0.10
+acc_pos_pad_gap	C06/C07 standard positive accounting vs literal	Aptos Narrow	14	100	accounting	digit	numeric gap exceeds literal gap by the trailing pad; reserve still ~0	report observed; reserve abs(obs) <= 0.10
+font_holdout_georgia12	C08/C09 Georgia 12 0.00%	Georgia	12	100	0.00%	%	no per-face absolute model: source independence; reserve expected in 1.0..4.0	abs(literal-numeric) <= 0.05; reserve in 1.0..4.0
+string_holdout_kg	C10/C11 Aptos 14 0.00" kg"	Aptos Narrow	14	100	0.00" kg"	g	no absolute model: source independence only	abs(literal-numeric) <= 0.05
+scale_holdout_60	C12/C13 Aptos 14 0.00% at 60%	Aptos Narrow	14	60	0.00%	%	0.60 * 2.806 = 1.684	literal and numeric both 1.684; abs(obs-1.684) <= 0.10
+ours_reserve	all C* pairs	all	all	all	all	all	0.000 for every literal and numeric pair	abs(obs) <= 0.05

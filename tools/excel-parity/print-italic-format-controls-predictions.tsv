@@ -1,0 +1,25 @@
+# Predictions written 2026-11-23T18:44Z before the fresh Excel export of
+# tests/test-documents-excel/synthetic-print-italic-format-controls.xlsx (sha256 8d8fc078bd309a22f603f8e79fdbe1e1b2052e881c8596086ef5d9c6bf186c67).
+# Metric: italic reserve = italic sheet gap - upright sheet gap for the same displayed word (Poppler xMax to fill edge).
+# Two candidate suppression rules. H_pad: the active section (chosen by Excel's sign/condition rules) has an unquoted
+# _( or _) -> numeric reserve 0. H_star: the active section has an unquoted * fill -> numeric reserve 0. Literal cells
+# in every case are predicted to get the full Aptos Narrow 14 reserve 2.760.
+case	word	source	code	H_pad_numeric_reserve	H_star_numeric_reserve	literal_reserve_predicted
+F01_pad	0.50	num	0.00_)	0.000	2.760	2.760
+F01_pad	0.50	lit	0.00_)	0.000	2.760	2.760
+F02_pad_quoted	0.50_)	num	0.00"_)"	2.760	2.760	2.760
+F02_pad_quoted	0.50_)	lit	0.00"_)"	2.760	2.760	2.760
+F03_star	0.50	num	* 0.00	2.760	0.000	2.760
+F03_star	0.50	lit	* 0.00	2.760	0.000	2.760
+F04_star_pad	0.50	num	_(* 0.00_)	0.000	0.000	2.760
+F04_star_pad	0.50	lit	_(* 0.00_)	0.000	0.000	2.760
+F05_lead_pad	0.50	num	_(0.00)	0.000	2.760	2.760
+F05_lead_pad	0.50	lit	_(0.00)	0.000	2.760	2.760
+F06_inactive_pos	0.50	num	0.00;[Red]-0.00_)	2.760	2.760	2.760
+F06_inactive_pos	0.50	lit	0.00;[Red]-0.00_)	2.760	2.760	2.760
+F06_inactive_pos	-0.50	num	0.00;[Red]-0.00_)	0.000	2.760	2.760
+F06_inactive_pos	-0.50	lit	0.00;[Red]-0.00_)	0.000	2.760	2.760
+F07_accounting	0.50	num	standard accounting	0.000	0.000	2.760
+F07_accounting	0.50	lit	standard accounting	0.000	0.000	2.760
+F07_accounting	(0.50)	num	standard accounting	0.000	0.000	2.760
+F07_accounting	(0.50)	lit	standard accounting	0.000	0.000	2.760

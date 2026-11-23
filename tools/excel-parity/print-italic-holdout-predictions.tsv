@@ -1,0 +1,21 @@
+# Predictions for tools/excel-parity/make-print-italic-holdout.py and tests/test-documents-excel/synthetic-print-italic-holdout.xlsx,
+# written 2026-11-23T18:32Z before any Excel export of that workbook (workbook sha256 3b0d9f4603a4cb73778e7388e4728162d35d26e95fa6ee5895a3391f0d49e78d,
+# generator sha256 2ec1b91e38ecbd53ce8408d2e322d7dc5a5eaf800d943e9df7f94aa0d2f4b52f).
+# Device for the oracle: Excel 2019's default printer, Microsoft Print to PDF (Microsoft Print To PDF driver, port
+# PORTPROMPT:, 600 x 600 dpi); measured through CreateDC("WINSPOOL", ...) in the desktop session: GetTextExtentPoint32W
+# equals the sum of GetCharABCWidthsW A+B+C, tmOverhang is 0 for real and synthesized italics, so this is not GDI's
+# tmOverhang.
+# Model: reserve = floor(floor(usWinAscent x round(points x scale x 600/72) / upm) / 5) x 72/600 points, applied to
+# right-aligned italic text. Metric: Poppler word-box xMax to the printed #FFF2CC fill's right edge; pair reserve =
+# italic gap - upright gap on adjacent sheets with identical text/face/size/scale/format/column.
+# Out of scope but recorded: overflow ### uses Excel's own placeholder layout (prior Aptos Narrow 14 observation 1.44,
+# not this model); numeric accounting suppresses the reserve; centered text takes about half; Cambria 14 is a known
+# -0.155 pt residual.
+pair	face	points	scale	format	case	excel_reserve_predicted	ours_reserve_predicted	acceptance
+H02_verdana13_85_italic - H01_verdana13_85_upright	Verdana	13	85	0.00%	ordinary	2.160	2.160	|observed-2.160|<=0.10
+H04_georgia15_italic - H03_georgia15_upright	Georgia	15	100	#,##0.00	ordinary	2.640	2.640	|observed-2.640|<=0.10
+H06_segoe10p5_90_italic - H05_segoe10p5_90_upright	Segoe UI	10.5	90	0.00	ordinary	2.040	2.040	|observed-2.040|<=0.10
+H08_verdana13_85_hash_italic - H07_verdana13_85_hash_upright	Verdana	13	85	"#######"	formatted-hashes (not overflow)	2.160	2.160	|observed-2.160|<=0.10
+H10_aptos14_acct_italic - H09_aptos14_acct_upright	Aptos Narrow	14	100	accounting numeric	accounting	0.000	0.000	|observed|<=0.10
+H12_aptos14_acctlit_italic - H11_aptos14_acctlit_upright	Aptos Narrow	14	100	accounting literal	literal	2.760	2.760	|observed-2.760|<=0.10
+H14_aptos14_overflow_italic - H13_aptos14_overflow_upright	Aptos Narrow	14	100	0.000% width 10	overflow hashes	1.440 (prior, not model)	0.000	record; not a model acceptance

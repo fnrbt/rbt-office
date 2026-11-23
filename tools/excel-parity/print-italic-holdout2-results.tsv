@@ -1,0 +1,6 @@
+# Measured 2026-11-23 after print-italic-holdout2-predictions.tsv (revised round variant, second blind holdout).
+upright_sheet	italic_sheet	face	points	scale	format	case	predicted	observed_reserve	residual	verdict
+H15_tahoma16_80	H16_tahoma16_80_italic	Tahoma	16	80	0.00%	ordinary	2.52	2.52	+0.0000	pass
+H17_garamond11_115	H18_garamond11_115_italic	Garamond	11	115	#,##0.00	ordinary	2.16	2.1465	-0.0135	pass
+H19_verdana9_110	H20_verdana9_110_italic	Verdana	9	110	0.00	ordinary	1.92	1.92	+0.0000	pass
+H21_calibri10p5_95	H22_calibri10p5_95_italic	Calibri	10.5	95	0.00%	ordinary	1.8	1.8	+0.0000	pass
