@@ -727,23 +727,63 @@ do
         [ for item in Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport do
             match item with
             | Rbt.Spreadsheet.Paint.DrawText t when t.Text <> "" && t.Align <> Rbt.Spreadsheet.Layout.AlignCenter ->
-                yield t.Text, t.PrintItalicEligible
+                yield t.Text, t.PrintItalicEligible, t.PrintOverflowHashes
             | _ -> () ]
+    let italicEligibleOf (_, flag, _) = flag
+    let textOf (text, _, _) = text
     let italic = { defaultFormat with Italic = true; FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some "right" }
     let ordinary = eligible (Number 0.5) { italic with NumberFormat = Some "0.00" } 100.0
-    ok "print italic: right-aligned italic number is eligible" (ordinary.Length = 1 && ordinary.Head |> snd) (sprintf "%A" ordinary)
+    ok "print italic: right-aligned italic number is eligible" (ordinary.Length = 1 && italicEligibleOf ordinary.Head) (sprintf "%A" ordinary)
     let padOnly = eligible (Number 0.5) { italic with NumberFormat = Some "0.00_)" } 100.0
-    ok "print italic: trailing _) alone stays eligible" (padOnly.Length = 1 && padOnly.Head |> snd) (sprintf "%A" padOnly)
+    ok "print italic: trailing _) alone stays eligible" (padOnly.Length = 1 && italicEligibleOf padOnly.Head) (sprintf "%A" padOnly)
     let accounting = eligible (Number -0.5) { italic with NumberFormat = Some "_($* #,##0.00_);_($* \\(#,##0.00\\);_($* \"-\"??_);_(@_)" } 100.0
-    ok "print italic: numeric accounting is not eligible" (accounting.Length = 1 && not (accounting.Head |> snd)) (sprintf "%A" accounting)
+    ok "print italic: numeric accounting is not eligible" (accounting.Length = 1 && not (italicEligibleOf accounting.Head)) (sprintf "%A" accounting)
     let literalHashes = eligible (String "#######") { italic with NumberFormat = Some "\"#######\"" } 100.0
-    ok "print italic: literal/formatted hashes stay eligible" (literalHashes.Length = 1 && literalHashes.Head |> snd) (sprintf "%A" literalHashes)
+    ok "print italic: literal/formatted hashes stay eligible" (literalHashes.Length = 1 && italicEligibleOf literalHashes.Head) (sprintf "%A" literalHashes)
     let overflowHashes = eligible (Number -0.9841) { italic with NumberFormat = Some "0.000%" } 20.0
     ok "print italic: ### overflow is not eligible"
-        (overflowHashes.Length = 1 && overflowHashes.Head |> fst |> Seq.forall ((=) '#') && not (overflowHashes.Head |> snd))
+        (overflowHashes.Length = 1 && textOf overflowHashes.Head |> Seq.forall ((=) '#') && not (italicEligibleOf overflowHashes.Head))
         (sprintf "%A" overflowHashes)
     let left = eligible (Number 0.5) { italic with HorizontalAlign = Some "left"; NumberFormat = Some "0.00" } 100.0
-    ok "print italic: left-aligned is not eligible" (left.Length = 1 && not (left.Head |> snd)) (sprintf "%A" left)
+    ok "print italic: left-aligned is not eligible" (left.Length = 1 && not (italicEligibleOf left.Head)) (sprintf "%A" left)
+    // Excel prints a true numeric overflow placeholder centred whatever the cell's alignment; literal text
+    // hashes and a custom quoted-hash number format keep the ordinary alignment path.
+    let flags (value: CellValue) (format: CellFormat) (width: float) =
+        let model =
+            createEmpty 3 3
+            |> setCell { Row = 0; Col = 1 } { Value = value; Format = format; Comment = None }
+            |> setColumnWidth 1 width
+            |> Pagination.withPrintSizes
+        let viewport : Rbt.Spreadsheet.Layout.Viewport =
+            { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
+              HeaderHeight = 0.0; RowHeaderWidth = 0.0
+              Measurer = Some (fun text _ _ _ _ -> 7.0 * float text.Length) }
+        [ for item in Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.Text <> "" -> yield t.Text, t.Align, t.PrintOverflowHashes
+            | _ -> () ]
+    let hashFormat (align: string) : CellFormat =
+        { defaultFormat with FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some align; NumberFormat = Some "0.000%" }
+    let overflowFlag align =
+        match flags (Number -0.9841) (hashFormat align) 20.0
+              |> List.filter (fun (text, _, _) -> text <> "" && text |> Seq.forall ((=) '#')) with
+        | [ _, _, isOverflow ] -> isOverflow
+        | _ -> false
+    ok "print hash geometry: true overflow is a placeholder for right alignment" (overflowFlag "right") ""
+    ok "print hash geometry: true overflow is a placeholder for left alignment" (overflowFlag "left") ""
+    ok "print hash geometry: true overflow is a placeholder for centred alignment" (overflowFlag "center") ""
+    let customFlag =
+        match flags (Number 123.0) { defaultFormat with FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some "right"; NumberFormat = Some "\"#####\"" } 100.0
+              |> List.tryFind (fun (text, _, _) -> text = "#####") with
+        | Some (_, _, isOverflow) -> not isOverflow
+        | None -> false
+    ok "print hash geometry: custom quoted hashes are not overflow" customFlag ""
+    let literalFlag =
+        match flags (String "#####") { defaultFormat with FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some "right" } 100.0
+              |> List.tryFind (fun (text, _, _) -> text = "#####") with
+        | Some (_, _, isOverflow) -> not isOverflow
+        | None -> false
+    ok "print hash geometry: literal hashes are not overflow" literalFlag ""
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

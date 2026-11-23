@@ -1,0 +1,281 @@
+# locked before Excel export; model in predict-print-hash-geometry.py
+sheet	column	width_chars	align	face	size_pt	italic	scale	kind	pred_W_pt	pred_advance_pt	pred_n	pred_slope_xMaxLeft	pred_slope_xMinLeft	pred_slope_rightGap	note
+R_aptos14_upright	2	8	right	Aptos Narrow	14	0	100	overflow	45.750	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	3	8.25	right	Aptos Narrow	14	0	100	overflow	47.062	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	4	8.5	right	Aptos Narrow	14	0	100	overflow	48.375	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	5	8.75	right	Aptos Narrow	14	0	100	overflow	49.688	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	6	9	right	Aptos Narrow	14	0	100	overflow	51.000	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	7	9.25	right	Aptos Narrow	14	0	100	overflow	52.312	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	8	9.5	right	Aptos Narrow	14	0	100	overflow	53.625	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	9	9.75	right	Aptos Narrow	14	0	100	overflow	54.938	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	10	10	right	Aptos Narrow	14	0	100	overflow	56.250	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	11	10.25	right	Aptos Narrow	14	0	100	overflow	57.562	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	12	10.5	right	Aptos Narrow	14	0	100	overflow	58.875	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	13	10.75	right	Aptos Narrow	14	0	100	overflow	60.188	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	14	11	right	Aptos Narrow	14	0	100	overflow	61.500	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	15	11.25	right	Aptos Narrow	14	0	100	overflow	62.812	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	16	11.5	right	Aptos Narrow	14	0	100	overflow	64.125	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	17	11.75	right	Aptos Narrow	14	0	100	overflow	65.438	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	18	12	right	Aptos Narrow	14	0	100	overflow	66.750	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	19	12.25	right	Aptos Narrow	14	0	100	overflow	68.062	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	20	12.5	right	Aptos Narrow	14	0	100	overflow	69.375	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	21	12.75	right	Aptos Narrow	14	0	100	overflow	70.688	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_upright	22	13	right	Aptos Narrow	14	0	100	overflow	72.000	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	2	8	left	Aptos Narrow	14	0	100	overflow	45.750	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	3	8.25	left	Aptos Narrow	14	0	100	overflow	47.062	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	4	8.5	left	Aptos Narrow	14	0	100	overflow	48.375	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	5	8.75	left	Aptos Narrow	14	0	100	overflow	49.688	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	6	9	left	Aptos Narrow	14	0	100	overflow	51.000	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	7	9.25	left	Aptos Narrow	14	0	100	overflow	52.312	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	8	9.5	left	Aptos Narrow	14	0	100	overflow	53.625	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	9	9.75	left	Aptos Narrow	14	0	100	overflow	54.938	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	10	10	left	Aptos Narrow	14	0	100	overflow	56.250	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	11	10.25	left	Aptos Narrow	14	0	100	overflow	57.562	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	12	10.5	left	Aptos Narrow	14	0	100	overflow	58.875	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	13	10.75	left	Aptos Narrow	14	0	100	overflow	60.188	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	14	11	left	Aptos Narrow	14	0	100	overflow	61.500	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	15	11.25	left	Aptos Narrow	14	0	100	overflow	62.812	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	16	11.5	left	Aptos Narrow	14	0	100	overflow	64.125	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	17	11.75	left	Aptos Narrow	14	0	100	overflow	65.438	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	18	12	left	Aptos Narrow	14	0	100	overflow	66.750	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	19	12.25	left	Aptos Narrow	14	0	100	overflow	68.062	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	20	12.5	left	Aptos Narrow	14	0	100	overflow	69.375	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	21	12.75	left	Aptos Narrow	14	0	100	overflow	70.688	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_upright	22	13	left	Aptos Narrow	14	0	100	overflow	72.000	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+C_aptos14_upright	2	8	center	Aptos Narrow	14	0	100	overflow	45.750	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	3	8.25	center	Aptos Narrow	14	0	100	overflow	47.062	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	4	8.5	center	Aptos Narrow	14	0	100	overflow	48.375	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	5	8.75	center	Aptos Narrow	14	0	100	overflow	49.688	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	6	9	center	Aptos Narrow	14	0	100	overflow	51.000	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	7	9.25	center	Aptos Narrow	14	0	100	overflow	52.312	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	8	9.5	center	Aptos Narrow	14	0	100	overflow	53.625	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	9	9.75	center	Aptos Narrow	14	0	100	overflow	54.938	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	10	10	center	Aptos Narrow	14	0	100	overflow	56.250	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	11	10.25	center	Aptos Narrow	14	0	100	overflow	57.562	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	12	10.5	center	Aptos Narrow	14	0	100	overflow	58.875	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	13	10.75	center	Aptos Narrow	14	0	100	overflow	60.188	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	14	11	center	Aptos Narrow	14	0	100	overflow	61.500	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	15	11.25	center	Aptos Narrow	14	0	100	overflow	62.812	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	16	11.5	center	Aptos Narrow	14	0	100	overflow	64.125	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	17	11.75	center	Aptos Narrow	14	0	100	overflow	65.438	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	18	12	center	Aptos Narrow	14	0	100	overflow	66.750	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	19	12.25	center	Aptos Narrow	14	0	100	overflow	68.062	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	20	12.5	center	Aptos Narrow	14	0	100	overflow	69.375	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	21	12.75	center	Aptos Narrow	14	0	100	overflow	70.688	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_upright	22	13	center	Aptos Narrow	14	0	100	overflow	72.000	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+R_aptos14_italic	2	8	right	Aptos Narrow	14	1	100	overflow	45.750	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	3	8.25	right	Aptos Narrow	14	1	100	overflow	47.062	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	4	8.5	right	Aptos Narrow	14	1	100	overflow	48.375	6.9600	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	5	8.75	right	Aptos Narrow	14	1	100	overflow	49.688	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	6	9	right	Aptos Narrow	14	1	100	overflow	51.000	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	7	9.25	right	Aptos Narrow	14	1	100	overflow	52.312	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	8	9.5	right	Aptos Narrow	14	1	100	overflow	53.625	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	9	9.75	right	Aptos Narrow	14	1	100	overflow	54.938	6.9600	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	10	10	right	Aptos Narrow	14	1	100	overflow	56.250	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	11	10.25	right	Aptos Narrow	14	1	100	overflow	57.562	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	12	10.5	right	Aptos Narrow	14	1	100	overflow	58.875	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	13	10.75	right	Aptos Narrow	14	1	100	overflow	60.188	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	14	11	right	Aptos Narrow	14	1	100	overflow	61.500	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	15	11.25	right	Aptos Narrow	14	1	100	overflow	62.812	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	16	11.5	right	Aptos Narrow	14	1	100	overflow	64.125	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	17	11.75	right	Aptos Narrow	14	1	100	overflow	65.438	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	18	12	right	Aptos Narrow	14	1	100	overflow	66.750	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	19	12.25	right	Aptos Narrow	14	1	100	overflow	68.062	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	20	12.5	right	Aptos Narrow	14	1	100	overflow	69.375	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	21	12.75	right	Aptos Narrow	14	1	100	overflow	70.688	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic	22	13	right	Aptos Narrow	14	1	100	overflow	72.000	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	2	8	left	Aptos Narrow	14	1	100	overflow	45.750	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	3	8.25	left	Aptos Narrow	14	1	100	overflow	47.062	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	4	8.5	left	Aptos Narrow	14	1	100	overflow	48.375	6.9600	5	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	5	8.75	left	Aptos Narrow	14	1	100	overflow	49.688	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	6	9	left	Aptos Narrow	14	1	100	overflow	51.000	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	7	9.25	left	Aptos Narrow	14	1	100	overflow	52.312	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	8	9.5	left	Aptos Narrow	14	1	100	overflow	53.625	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	9	9.75	left	Aptos Narrow	14	1	100	overflow	54.938	6.9600	6	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	10	10	left	Aptos Narrow	14	1	100	overflow	56.250	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	11	10.25	left	Aptos Narrow	14	1	100	overflow	57.562	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	12	10.5	left	Aptos Narrow	14	1	100	overflow	58.875	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	13	10.75	left	Aptos Narrow	14	1	100	overflow	60.188	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	14	11	left	Aptos Narrow	14	1	100	overflow	61.500	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	15	11.25	left	Aptos Narrow	14	1	100	overflow	62.812	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	16	11.5	left	Aptos Narrow	14	1	100	overflow	64.125	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	17	11.75	left	Aptos Narrow	14	1	100	overflow	65.438	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	18	12	left	Aptos Narrow	14	1	100	overflow	66.750	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	19	12.25	left	Aptos Narrow	14	1	100	overflow	68.062	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	20	12.5	left	Aptos Narrow	14	1	100	overflow	69.375	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	21	12.75	left	Aptos Narrow	14	1	100	overflow	70.688	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_aptos14_italic	22	13	left	Aptos Narrow	14	1	100	overflow	72.000	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+C_aptos14_italic	2	8	center	Aptos Narrow	14	1	100	overflow	45.750	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	3	8.25	center	Aptos Narrow	14	1	100	overflow	47.062	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	4	8.5	center	Aptos Narrow	14	1	100	overflow	48.375	6.9600	5	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	5	8.75	center	Aptos Narrow	14	1	100	overflow	49.688	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	6	9	center	Aptos Narrow	14	1	100	overflow	51.000	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	7	9.25	center	Aptos Narrow	14	1	100	overflow	52.312	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	8	9.5	center	Aptos Narrow	14	1	100	overflow	53.625	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	9	9.75	center	Aptos Narrow	14	1	100	overflow	54.938	6.9600	6	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	10	10	center	Aptos Narrow	14	1	100	overflow	56.250	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	11	10.25	center	Aptos Narrow	14	1	100	overflow	57.562	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	12	10.5	center	Aptos Narrow	14	1	100	overflow	58.875	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	13	10.75	center	Aptos Narrow	14	1	100	overflow	60.188	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	14	11	center	Aptos Narrow	14	1	100	overflow	61.500	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	15	11.25	center	Aptos Narrow	14	1	100	overflow	62.812	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	16	11.5	center	Aptos Narrow	14	1	100	overflow	64.125	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	17	11.75	center	Aptos Narrow	14	1	100	overflow	65.438	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	18	12	center	Aptos Narrow	14	1	100	overflow	66.750	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	19	12.25	center	Aptos Narrow	14	1	100	overflow	68.062	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	20	12.5	center	Aptos Narrow	14	1	100	overflow	69.375	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	21	12.75	center	Aptos Narrow	14	1	100	overflow	70.688	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_aptos14_italic	22	13	center	Aptos Narrow	14	1	100	overflow	72.000	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+R_literal_aptos14	2	10	right	Aptos Narrow	14	0	100	literal	56.250	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	3	10.5	right	Aptos Narrow	14	0	100	literal	58.875	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	4	11	right	Aptos Narrow	14	0	100	literal	61.500	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	5	11.5	right	Aptos Narrow	14	0	100	literal	64.125	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	6	12	right	Aptos Narrow	14	0	100	literal	66.750	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	7	12.5	right	Aptos Narrow	14	0	100	literal	69.375	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	8	13	right	Aptos Narrow	14	0	100	literal	72.000	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	9	13.5	right	Aptos Narrow	14	0	100	literal	74.625	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	10	14	right	Aptos Narrow	14	0	100	literal	77.250	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	11	14.5	right	Aptos Narrow	14	0	100	literal	79.875	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14	12	15	right	Aptos Narrow	14	0	100	literal	82.500	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	2	10	left	Aptos Narrow	14	0	100	literal	56.250	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	3	10.5	left	Aptos Narrow	14	0	100	literal	58.875	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	4	11	left	Aptos Narrow	14	0	100	literal	61.500	6.9600	7	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	5	11.5	left	Aptos Narrow	14	0	100	literal	64.125	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	6	12	left	Aptos Narrow	14	0	100	literal	66.750	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	7	12.5	left	Aptos Narrow	14	0	100	literal	69.375	6.9600	8	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	8	13	left	Aptos Narrow	14	0	100	literal	72.000	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	9	13.5	left	Aptos Narrow	14	0	100	literal	74.625	6.9600	9	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	10	14	left	Aptos Narrow	14	0	100	literal	77.250	6.9600	10	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	11	14.5	left	Aptos Narrow	14	0	100	literal	79.875	6.9600	10	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+L_literal_aptos14	12	15	left	Aptos Narrow	14	0	100	literal	82.500	6.9600	10	0.00	0.00	1.00	count may be off by one within one advance of a boundary
+C_literal_aptos14	2	10	center	Aptos Narrow	14	0	100	literal	56.250	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	3	10.5	center	Aptos Narrow	14	0	100	literal	58.875	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	4	11	center	Aptos Narrow	14	0	100	literal	61.500	6.9600	7	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	5	11.5	center	Aptos Narrow	14	0	100	literal	64.125	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	6	12	center	Aptos Narrow	14	0	100	literal	66.750	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	7	12.5	center	Aptos Narrow	14	0	100	literal	69.375	6.9600	8	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	8	13	center	Aptos Narrow	14	0	100	literal	72.000	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	9	13.5	center	Aptos Narrow	14	0	100	literal	74.625	6.9600	9	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	10	14	center	Aptos Narrow	14	0	100	literal	77.250	6.9600	10	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	11	14.5	center	Aptos Narrow	14	0	100	literal	79.875	6.9600	10	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+C_literal_aptos14	12	15	center	Aptos Narrow	14	0	100	literal	82.500	6.9600	10	0.50	0.50	0.50	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	2	10	right	Aptos Narrow	14	1	100	literal	56.250	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	3	10.5	right	Aptos Narrow	14	1	100	literal	58.875	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	4	11	right	Aptos Narrow	14	1	100	literal	61.500	6.9600	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	5	11.5	right	Aptos Narrow	14	1	100	literal	64.125	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	6	12	right	Aptos Narrow	14	1	100	literal	66.750	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	7	12.5	right	Aptos Narrow	14	1	100	literal	69.375	6.9600	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	8	13	right	Aptos Narrow	14	1	100	literal	72.000	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	9	13.5	right	Aptos Narrow	14	1	100	literal	74.625	6.9600	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	10	14	right	Aptos Narrow	14	1	100	literal	77.250	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	11	14.5	right	Aptos Narrow	14	1	100	literal	79.875	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_literal_aptos14_i	12	15	right	Aptos Narrow	14	1	100	literal	82.500	6.9600	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	2	8	right	Calibri	11	0	100	overflow	45.750	5.5200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	3	8.25	right	Calibri	11	0	100	overflow	47.062	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	4	8.5	right	Calibri	11	0	100	overflow	48.375	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	5	8.75	right	Calibri	11	0	100	overflow	49.688	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	6	9	right	Calibri	11	0	100	overflow	51.000	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	7	9.25	right	Calibri	11	0	100	overflow	52.312	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	8	9.5	right	Calibri	11	0	100	overflow	53.625	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	9	9.75	right	Calibri	11	0	100	overflow	54.938	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	10	10	right	Calibri	11	0	100	overflow	56.250	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	11	10.25	right	Calibri	11	0	100	overflow	57.562	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	12	10.5	right	Calibri	11	0	100	overflow	58.875	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	13	10.75	right	Calibri	11	0	100	overflow	60.188	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	14	11	right	Calibri	11	0	100	overflow	61.500	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	15	11.25	right	Calibri	11	0	100	overflow	62.812	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	16	11.5	right	Calibri	11	0	100	overflow	64.125	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	17	11.75	right	Calibri	11	0	100	overflow	65.438	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	18	12	right	Calibri	11	0	100	overflow	66.750	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	19	12.25	right	Calibri	11	0	100	overflow	68.062	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	20	12.5	right	Calibri	11	0	100	overflow	69.375	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	21	12.75	right	Calibri	11	0	100	overflow	70.688	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11	22	13	right	Calibri	11	0	100	overflow	72.000	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	2	8	right	Calibri	11	1	100	overflow	45.750	5.5200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	3	8.25	right	Calibri	11	1	100	overflow	47.062	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	4	8.5	right	Calibri	11	1	100	overflow	48.375	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	5	8.75	right	Calibri	11	1	100	overflow	49.688	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	6	9	right	Calibri	11	1	100	overflow	51.000	5.5200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	7	9.25	right	Calibri	11	1	100	overflow	52.312	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	8	9.5	right	Calibri	11	1	100	overflow	53.625	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	9	9.75	right	Calibri	11	1	100	overflow	54.938	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	10	10	right	Calibri	11	1	100	overflow	56.250	5.5200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	11	10.25	right	Calibri	11	1	100	overflow	57.562	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	12	10.5	right	Calibri	11	1	100	overflow	58.875	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	13	10.75	right	Calibri	11	1	100	overflow	60.188	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	14	11	right	Calibri	11	1	100	overflow	61.500	5.5200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	15	11.25	right	Calibri	11	1	100	overflow	62.812	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	16	11.5	right	Calibri	11	1	100	overflow	64.125	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	17	11.75	right	Calibri	11	1	100	overflow	65.438	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	18	12	right	Calibri	11	1	100	overflow	66.750	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	19	12.25	right	Calibri	11	1	100	overflow	68.062	5.5200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	20	12.5	right	Calibri	11	1	100	overflow	69.375	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	21	12.75	right	Calibri	11	1	100	overflow	70.688	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_calibri11_italic	22	13	right	Calibri	11	1	100	overflow	72.000	5.5200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	2	10	right	Arial	12	0	100	overflow	56.250	6.7200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	3	10.25	right	Arial	12	0	100	overflow	57.562	6.7200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	4	10.5	right	Arial	12	0	100	overflow	58.875	6.7200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	5	10.75	right	Arial	12	0	100	overflow	60.188	6.7200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	6	11	right	Arial	12	0	100	overflow	61.500	6.7200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	7	11.25	right	Arial	12	0	100	overflow	62.812	6.7200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	8	11.5	right	Arial	12	0	100	overflow	64.125	6.7200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	9	11.75	right	Arial	12	0	100	overflow	65.438	6.7200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	10	12	right	Arial	12	0	100	overflow	66.750	6.7200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	11	12.25	right	Arial	12	0	100	overflow	68.062	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	12	12.5	right	Arial	12	0	100	overflow	69.375	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	13	12.75	right	Arial	12	0	100	overflow	70.688	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	14	13	right	Arial	12	0	100	overflow	72.000	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	15	13.25	right	Arial	12	0	100	overflow	73.312	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	16	13.5	right	Arial	12	0	100	overflow	74.625	6.7200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	17	13.75	right	Arial	12	0	100	overflow	75.938	6.7200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	18	14	right	Arial	12	0	100	overflow	77.250	6.7200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	19	14.25	right	Arial	12	0	100	overflow	78.562	6.7200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	20	14.5	right	Arial	12	0	100	overflow	79.875	6.7200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	21	14.75	right	Arial	12	0	100	overflow	81.188	6.7200	10	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	22	15	right	Arial	12	0	100	overflow	82.500	6.7200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	23	15.25	right	Arial	12	0	100	overflow	83.812	6.7200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	24	15.5	right	Arial	12	0	100	overflow	85.125	6.7200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	25	15.75	right	Arial	12	0	100	overflow	86.438	6.7200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_arial12	26	16	right	Arial	12	0	100	overflow	87.750	6.7200	11	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	2	8	right	Aptos Narrow	14	0	75	overflow	34.312	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	3	8.25	right	Aptos Narrow	14	0	75	overflow	35.297	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	4	8.5	right	Aptos Narrow	14	0	75	overflow	36.281	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	5	8.75	right	Aptos Narrow	14	0	75	overflow	37.266	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	6	9	right	Aptos Narrow	14	0	75	overflow	38.250	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	7	9.25	right	Aptos Narrow	14	0	75	overflow	39.234	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	8	9.5	right	Aptos Narrow	14	0	75	overflow	40.219	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	9	9.75	right	Aptos Narrow	14	0	75	overflow	41.203	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	10	10	right	Aptos Narrow	14	0	75	overflow	42.188	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	11	10.25	right	Aptos Narrow	14	0	75	overflow	43.172	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	12	10.5	right	Aptos Narrow	14	0	75	overflow	44.156	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	13	10.75	right	Aptos Narrow	14	0	75	overflow	45.141	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	14	11	right	Aptos Narrow	14	0	75	overflow	46.125	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	15	11.25	right	Aptos Narrow	14	0	75	overflow	47.109	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	16	11.5	right	Aptos Narrow	14	0	75	overflow	48.094	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	17	11.75	right	Aptos Narrow	14	0	75	overflow	49.078	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	18	12	right	Aptos Narrow	14	0	75	overflow	50.062	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	19	12.25	right	Aptos Narrow	14	0	75	overflow	51.047	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	20	12.5	right	Aptos Narrow	14	0	75	overflow	52.031	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	21	12.75	right	Aptos Narrow	14	0	75	overflow	53.016	5.2200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_75	22	13	right	Aptos Narrow	14	0	75	overflow	54.000	5.2200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	2	8	right	Aptos Narrow	14	1	75	overflow	34.312	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	3	8.25	right	Aptos Narrow	14	1	75	overflow	35.297	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	4	8.5	right	Aptos Narrow	14	1	75	overflow	36.281	5.2200	5	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	5	8.75	right	Aptos Narrow	14	1	75	overflow	37.266	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	6	9	right	Aptos Narrow	14	1	75	overflow	38.250	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	7	9.25	right	Aptos Narrow	14	1	75	overflow	39.234	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	8	9.5	right	Aptos Narrow	14	1	75	overflow	40.219	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	9	9.75	right	Aptos Narrow	14	1	75	overflow	41.203	5.2200	6	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	10	10	right	Aptos Narrow	14	1	75	overflow	42.188	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	11	10.25	right	Aptos Narrow	14	1	75	overflow	43.172	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	12	10.5	right	Aptos Narrow	14	1	75	overflow	44.156	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	13	10.75	right	Aptos Narrow	14	1	75	overflow	45.141	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	14	11	right	Aptos Narrow	14	1	75	overflow	46.125	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	15	11.25	right	Aptos Narrow	14	1	75	overflow	47.109	5.2200	7	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	16	11.5	right	Aptos Narrow	14	1	75	overflow	48.094	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	17	11.75	right	Aptos Narrow	14	1	75	overflow	49.078	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	18	12	right	Aptos Narrow	14	1	75	overflow	50.062	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	19	12.25	right	Aptos Narrow	14	1	75	overflow	51.047	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	20	12.5	right	Aptos Narrow	14	1	75	overflow	52.031	5.2200	8	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	21	12.75	right	Aptos Narrow	14	1	75	overflow	53.016	5.2200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary
+R_aptos14_italic_75	22	13	right	Aptos Narrow	14	1	75	overflow	54.000	5.2200	9	1.00	1.00	0.00	count may be off by one within one advance of a boundary

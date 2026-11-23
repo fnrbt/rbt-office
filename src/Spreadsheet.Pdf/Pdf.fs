@@ -361,14 +361,20 @@ let private appendDrawTextOps
             let winAscent, winDescent = winMetrics primaryTtf
             // The printed italic reserve, from the face actually chosen for this run (including a fallback):
             // floor(GDI's ascent at 600 dpi / 5) dots, where the ascent is usWinAscent scaled to round(pt x scale x 600/72).
+            // A true `###` overflow placeholder is centred (whatever the cell's alignment) and takes half the
+            // reserve when italic, as Excel 2019 prints it (HashGeometryOracle: R/L/C sheets agree; Aptos 14
+            // italic centre is 1.38 pt left of upright, half its 2.76 pt right-alignment reserve).
             let italicShiftPt =
-                if not t.PrintItalicEligible then 0.0
+                if not (t.PrintItalicEligible || (t.PrintOverflowHashes && t.Italic)) then 0.0
                 else Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
             let alignedXPt =
-                match t.Align with
-                | AlignLeft -> rectXPt
-                | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
-                | AlignRight -> rectXPt + rectWidthPt - totalWidthPt - italicShiftPt
+                if t.PrintOverflowHashes then
+                    rectXPt + (rectWidthPt - totalWidthPt) / 2.0 - (if t.Italic then italicShiftPt / 2.0 else 0.0)
+                else
+                    match t.Align with
+                    | AlignLeft -> rectXPt
+                    | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
+                    | AlignRight -> rectXPt + rectWidthPt - totalWidthPt - italicShiftPt
             let ascent = winAscent * scaleY
             let descent = winDescent * scaleY
             let lineHeight = ascent + descent
@@ -1048,6 +1054,7 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         Bold = false
         Italic = false
         PrintItalicEligible = false
+        PrintOverflowHashes = false
         Underline = false
         UnderlineDouble = false
         Strikethrough = false

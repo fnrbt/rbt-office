@@ -1804,8 +1804,8 @@ unquoted `*` fill token, not a pad or an accounting label.
 **End-to-end improvement (ours, PDF runner).** Same first workbook, ours rendered with
 `RB_WORD_FONT_DIR=artifacts/fonts/windows:artifacts/fonts/windows-extra` and the new rule; reserve deltas
 ours - Excel: Verdana 13/85 % +0.000, Georgia 15 +0.008, Segoe UI 10.5/90 % -0.007, formatted hashes +0.000, numeric
-accounting -0.016, literal accounting -0.016, overflow hashes -1.440 (unchanged: Excel's overflow placeholder is a
-separate layout and is not modelled). Second workbook: Tahoma +0.000, Garamond +0.012, Verdana +0.000, Calibri
+accounting -0.016, literal accounting -0.016, overflow hashes -1.440 (then unchanged: Excel's overflow placeholder
+has its own layout; its placement was modelled separately on 2026-11-23, below). Second workbook: Tahoma +0.000, Garamond +0.012, Verdana +0.000, Calibri
 +0.000. Before the change all ordinary/hash/literal reserves were 0, so the improvement is the full reserve
 (1.44-2.76 pt). On oyabayo page 13 the italic `-98.41%` word xMax is now 118.6101 against Excel's 118.2996
 (+0.3105, was +3.0705); the upright `(90,000)` remains +0.285 (page/column geometry), so the italic-specific error
@@ -1819,6 +1819,52 @@ Verification commands:
 `dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj --no-restore` and
 `dotnet build src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj --no-restore`.
 
-Left: the GDI ascent formula is rounded, not a GDI-table lookup (Arial 14 at 75 % and Cambria residuals above); the
-centred half and Excel's `###` overflow reserve are not shipped; linked-cell/camera pictures are built from the screen
+Left: the GDI ascent formula is rounded, not a GDI-table lookup (Arial 14 at 75 % and Cambria residuals above);
+centred italic text outside a true overflow placeholder still takes no half reserve (the placeholder's centred
+placement and half reserve are shipped, below); linked-cell/camera pictures are built from the screen
 paint path and do not get the reserve; rich-text runs use the cell format's italic flag for the whole block.
+
+## Printed hash geometry: true overflow is centred, 2026-11-23
+
+Fresh direct Excel 2019 exports of the public `synthetic-print-hash-geometry.xlsx`
+(`make-print-hash-geometry.py`; 15 sheets changing one of alignment, face/size, print scale, or
+overflow/literal; every test column carries its own solid fill whose printed rectangle is the physical
+cell edge). Measured through `HashGeometryOracle`'s tools (`predict-print-hash-geometry.py`,
+`measure-print-hash-geometry.py`, `analyze-print-hash-geometry.py`): Poppler's word box
+(`pdftotext -bbox`) against both fill edges, an advance box rather than ink. Predictions were locked
+before the export: `print-hash-geometry-predictions-round1.tsv` (slope 1 right / 0.5 centred / 0 left
+by the cell's alignment) was refuted; `-round2.tsv` locked the alternative before its confirming
+export; measurements in `print-hash-geometry-reference.tsv`.
+
+| Rule (Excel 2019) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A true numeric overflow placeholder (`###`, where the displayed hashes differ from the formatted text) is **centred in the cell's content box whatever the cell's horizontal alignment**: d(right edge from cell left)/d(physical width) = 0.50. | R/L/C Aptos Narrow 14 overflow rows identical (max |ΔxMin| = |ΔxMax| = 0.000 over 21 widths); 53 fixed-count groups over right/left/centre, upright/italic, Aptos 14, Calibri 11, Arial 12, 100 % and 75 %: slope mean +0.501 (0.454..0.518). At the 7->8 boundary the jump is dxMin = -a/2 + dW/2, dxMax = +a/2 + dW/2. | followed the cell's alignment (right +2.80 pt, left -2.45 pt from Excel; centre already +0.43) | `PaintText.PrintOverflowHashes`; the PDF centres that run |
+| The same placeholder in italic takes **half the printed italic reserve** (Aptos 14 -1.394 pt, Aptos 14 at 75 % -1.025, Calibri 11 -1.018); run width unchanged. | the oracle's italic vs upright sheets. | no shift | PDF subtracts reserve/2 for `PrintOverflowHashes && Italic` |
+| Literal hash text and a custom number format whose quoted text is hashes are ordinary text/numbers: they keep the cell's alignment (right slope +1.0004, centre +0.4997, left 0.0000) and the ordinary italic reserve. | literal sheets of the oracle; a scratch export with custom `"#####"` in all three alignments gives custom geometry identical to the literal cells on every sheet. | already so | unchanged; the flag is set only when the raw formatted text differs from the displayed hash run |
+| The hash **count** is the existing fit rule, unchanged: the largest run of the face's `#` advance that fits the printed cell's content width. | 213/245 overflow/short rows exact, 32 off by one; literal counts 44/44. | existing rule | unchanged (placement only) |
+
+Quantified on the controlled sweep (97 fixed-count overflow pairs, same counts): absolute centre error
+vs Excel mean 2.229 pt / max 5.646 before and 0.397 / 0.455 after; by alignment right +2.795 -> -0.389,
+left -2.445 -> -0.406, centre +0.434 -> -0.406. The residual -0.4 pt is a word-box convention, not
+placement: Excel's centred ordinary and literal text also reads +0.41 from the fill centre through
+Poppler while ours reads 0.00. Literal rows are identical before and after (88/88); custom-format and
+browser/screen alignment paths are untouched, and no count or per-face/size constant changed.
+
+Limits: the metric is a word box; the half reserve is applied to true overflow only, not to other
+centred italic text; the pre-existing count rule keeps its off-by-one cases; the 1.44 pt overflow
+italic residual quoted in the italic-reserve section is now explained by the half reserve, not a
+separate layout.
+
+Verification:
+`python3 tools/excel-parity/make-print-hash-geometry.py tests/test-documents-excel/synthetic-print-hash-geometry.xlsx tools/excel-parity/print-hash-geometry.meta.tsv`;
+`tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-hash-geometry.xlsx /tmp/hashgeo/excel`;
+`python3 tools/excel-parity/measure-print-hash-geometry.py tools/excel-parity/print-hash-geometry.meta.tsv tools/excel-parity/print-hash-geometry-predictions-round2.tsv /tmp/hashgeo/excel /tmp/hashgeo/results.tsv`;
+`python3 tools/excel-parity/analyze-print-hash-geometry.py /tmp/hashgeo/results.tsv /tmp/hashgeo/summary.tsv`;
+`RB_WORD_FONT_DIR=artifacts/fonts/windows:artifacts/fonts/windows-extra tools/spreadsheet-pdf-runner/bin/Debug/net10.0/SpreadsheetPdfRunner tests/test-documents-excel/synthetic-print-hash-geometry.xlsx /tmp/hashgeo/ours-<n>.pdf <n-1>`;
+`dotnet fsi tests/print/helpers.fsx` (250 passed, 0 failed); rebuild `src/Spreadsheet`, `src/Spreadsheet.Pdf` and the runner from source.
+Browser/screen path: `bash scripts/build-dist.sh dist`, then load `dist/spreadsheet` through `tools/browser-runner`
+(`npm --prefix tools/browser-runner run dev`, import the fixture, screenshot/inspect the cells); the new flag is
+print-only and no DOM/grid code consumes it, so alignment there is unchanged. Independent Chromium 147 gate
+(HashGeometryOracle, frozen dist + runner, Fable `Spreadsheet.ExportPdf` against native): 11 PDFs, equal page
+counts, browser vs native max 0.0002 pt; same-count overflow |centre residual| max 0.456 / mean 0.396 pt,
+literal/custom right-gap max 0.469 and xMaxLeft max 0.503 pt; gate passed.
