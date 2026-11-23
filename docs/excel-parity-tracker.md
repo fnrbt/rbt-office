@@ -634,7 +634,8 @@ distinction matters: at a deliberately chosen rounding boundary, Excel gives `0.
 engine `0.100001` after `ROUND(rate,6)`. Both display `10.00%`, but a comparison can flip.
 For a positive one-year return with a negative starting guess, Excel returned `#NUM!` where the
 engine found a root. Neither case was the traced workbook's decision. Retain the solver; a
-constant bias, rounding all XIRRs, or a blanket guess-sign restriction is not supported.
+constant bias, rounding all XIRRs, or a blanket guess-sign restriction is not supported. The
+2026-11-23 threshold probe below separates this stopping difference from root selection.
 
 Each rule below was confirmed on generated cells in Excel 2019 (`eval-cells-on-vm.sh`):
 
@@ -774,6 +775,60 @@ number with a negative guess. Of two annual series with two sign changes, one wi
 10% and 20% returned `#NUM!` even at a 15% guess; one with roots of opposite signs returned
 the positive root at the default guess. Neither rejecting all multiple-root series nor choosing
 a root by the sign of the guess matches Excel.
+
+### XIRR six-decimal boundaries: stopping, not selection, 2026-11-23
+
+The public [impact probe](../tools/excel-parity/xirr-impact-results.tsv) has one boundary pair
+(`-1000, 1100.0005` one year apart, exact root 0.1000005) whose `ROUND(...,6)` differs: Excel returns
+0.100000494718552 (`0.100000`), the engine the root (`0.100001`); both guesses reproduce it. Its other
+18 numeric rows agree after rounding; at the boundary the rounded hurdle test also flips
+(`reject` vs `accept`). The [guess-domain probe](../tools/excel-parity/xirr-domain-results.tsv)
+has **no** same-root six-decimal flip in its 725 direct XIRR outcomes: of its 441 outcomes where both sides
+return a number, 16 differ by more than 2e-8 and also by `ROUND(...,6)`, and all 16 are root selection (the two
+annual series with roots 0 and 0.5, and -0.366025 and 1.366025); 207 more cells are Excel `#NUM!`
+where the engine returns a valid root, mostly for guesses on the wrong side of zero for the
+one-root series. Its rounded disagreements are therefore selection, not a threshold effect.
+
+The [threshold probe generator](../tools/excel-parity/make-xirr-threshold-probe.py) and
+[Excel/engine observations](../tools/excel-parity/xirr-threshold-results.tsv) test this directly
+(the engine side by [`xirr-cells-engine.fsx`](../tools/excel-parity/xirr-cells-engine.fsx)).
+Its 18 public synthetic cases were solved in decimal to exact roots and their Excel/engine
+`ROUND(...,6)` results predicted in `CASES` **before** their measurement (`pred_*_ok` columns in the
+results). Eleven single-root one-year rows move the root through 0.1000004, 0.10000049, 0.1000005,
+0.100000503, 0.10000051 and 0.1000006 (plus the negative mirror, a 1e6-scale copy and one repeat at
+guess 0.5); the rest are multi-root selection cases and two held-out shapes (an irregular three-flow
+and a 13-flow monthly waterfall, each with its last flow solved to a root just above the boundary).
+
+| case | exact root | Excel 2019 | engine | `ROUND(...,6)` | cause |
+| --- | --- | --- | --- | --- | --- |
+| T3 at boundary | 0.1000005 | 0.100000494719 | 0.10000050000000013 | 0.1 vs 0.100001 | stopping (same root) |
+| T10 at boundary, 1e6 scale | 0.1000005 | 0.100000494719 | 0.1000005 | 0.1 vs 0.100001 | stopping (same root) |
+| T4 +3e-9 | 0.100000503 | 0.100000506639 | 0.10000050300000007 | 0.100001 both | agree (predicted down) |
+| T4 +3e-9, guess 0.5 | 0.100000503 | 0.100000504404 | 0.10000050299999991 | 0.100001 both | agree (predicted down) |
+| T7 negative boundary | -0.1000005 | -0.100000499561 | -0.10000049999999996 | -0.1 both | agree (predicted -0.100001) |
+| M3 irregular +3e-9 | 0.100000503 | 0.100000506639 | 0.10000050299999964 | 0.100001 both | agree (predicted down) |
+| M4 monthly +3e-9 | 0.100000503 | 0.100000506639 | 0.10000050299999966 | 0.100001 both | agree |
+| M1 two positive roots | 0.100000503, 0.3 | `#NUM!` | 0.10000050299999938 | `#NUM!` vs 0.100001 | Excel rejects a valid root |
+| M2 opposite-signed, guess 0 | -0.100000503, 0.3 | 0.299999995117 | -0.10000050300000012 | 0.3 vs -0.100001 | root selection |
+
+Only the two cases whose exact root is the decimal half-way value flip, and the flip follows
+Excel's stopping point rather than a bias: near this boundary Excel's numeric answers take a few
+values (0.100000494719, 0.100000504404, 0.100000506639, 0.100000602007) with errors of -5.3e-9,
++1.4e-9, +3.6e-9 and +2.0e-9 against their roots. The same input at guess 0.5 stops at
+0.100000504404 where the default guess stops at 0.100000506639, and T4/T5 share 0.100000506639
+although their roots differ by 7e-9, so the error is neither a constant nor a function of the root;
+the pre-registered negative-bias prediction failed on T4, T4 at guess 0.5, T7 and M3 (and the engine
+prediction failed on T7 and on M2's default guess, where Newton finds the positive root like Excel).
+Reproducing the flip would need Excel's exact iterate and stopping rule,
+which the 120 + 120 IRR probes and the XIRR stepping search above did not reproduce; a constant offset
+or a snap to the observed grid would falsify T4/T7 and replace a root good to about 1e-15 (the tests
+allow 1e-12) with one off by ~5e-9. **Keep the solver.** The [`Formula.rootOf`](../src/Spreadsheet/Formula.fs) candidate ordering
+is also unchanged: M1/M2 show Excel can reject a valid root or pick the other one, and its choices are not
+consistent enough for a general selection rule (two positive roots always `#NUM!`; opposite-signed roots
+positive at guess 0 but `#NUM!` for negative guesses). The new `stage12-financial` cases
+(`xirr-boundary-root`, `xirr-boundary-round6`, `xirr-neg-boundary`, `xirr-multiple-positive-root`,
+`xirr-opposite-sign-guess0`) pin the accurate root and keep valid roots alive: 58 pass, 0 fail on
+2026-11-23. No solver source changed.
 
 ## Grid sizes and theme fills against Excel 2019, 2026-11-21
 

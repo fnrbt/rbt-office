@@ -149,6 +149,35 @@ match evaluateFormula "=XIRR(A1:A3,B1:B3)" xirrModel None with
 match evaluateFormula "=XIRR(A1:A8,B1:B8,-1)" xirrModel None with
 | CellValue.Error "NUM!" -> pass <- pass + 1
 | got -> fail <- fail + 1; printfn "FAIL xirr-invalid-guess expected #NUM! got %A" got
+// Six-decimal boundaries (tools/excel-parity/xirr-threshold-results.tsv): Excel's
+// coarser stopping lands just below 0.1000005 where its finite-difference
+// Newton stops, so ROUND(..,6) is 0.1 while the exact root (and this solver)
+// rounds to 0.100001. Keep the accurate root: matching Excel here would mean a
+// ~5e-9 stopping error, and the next probe row (root 0.100000503) shows Excel's
+// error can be positive too, so no constant bias or snap rule is general.
+let xirrExact label f (expected: float) =
+    match evaluateFormula f model None with
+    | CellValue.Number g when abs (g - expected) <= 1e-12 * max 1.0 (abs expected) -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-24s expected ~%s got %A" label (expected.ToString "R") got
+let xirrRound6 label f (expected: float) =
+    match evaluateFormula f model None with
+    | CellValue.Number g when g = expected -> pass <- pass + 1
+    | got -> fail <- fail + 1; printfn "FAIL %-24s expected %s got %A" label (expected.ToString "R") got
+xirrExact "xirr-boundary-root" "=XIRR({-1000,1100.0005},{43831,44196})" 0.1000005
+xirrRound6 "xirr-boundary-round6" "=ROUND(XIRR({-1000,1100.0005},{43831,44196}),6)" 0.100001
+xirrExact "xirr-boundary-above" "=XIRR({-1000,1100.000503},{43831,44196})" 0.100000503
+xirrRound6 "xirr-boundary-above-r6" "=ROUND(XIRR({-1000,1100.000503},{43831,44196}),6)" 0.100001
+xirrExact "xirr-neg-boundary" "=XIRR({-1000,899.9995},{43831,44196})" -0.1000005
+xirrRound6 "xirr-neg-boundary-r6" "=ROUND(XIRR({-1000,899.9995},{43831,44196}),6)" -0.1
+// Excel rejects this two-positive-root series; a valid root must stay found.
+match evaluateFormula "=XIRR({-1000,2400.000503,-1430.0006539},{43831,44196,44561})" model None with
+| CellValue.Number g when abs (g - 0.100000503) < 1e-9 -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL xirr-multiple-positive-root expected a root near 0.100000503 got %A" got
+// Excel also rejects the opposite-signed series at guess 0; whichever valid root
+// is selected, the solver must not return #NUM!.
+match evaluateFormula "=XIRR({-1000,2199.999497,-1169.9993461},{43831,44196,44561},0)" model None with
+| CellValue.Number g when g > -1.0 -> pass <- pass + 1
+| got -> fail <- fail + 1; printfn "FAIL xirr-opposite-sign-guess0 expected a valid root got %A" got
 
 printfn ""
 printfn "Stage 12 financial tests: %d passed, %d failed" pass fail
