@@ -332,6 +332,38 @@ let private appendDrawTextOps
             // still page-local CSS px before translateItem applies pxToPt.
             let fontPx = t.FontSize * 96.0 / 72.0
             let fontSizePt = t.FontSize * placement.Scale
+            let winAscent, winDescent = winMetrics primaryTtf
+            // Excel's true `###` overflow run is the largest whole number of GDI's printed `#` advances that fits
+            // the cell's content width. In printer dots (600 dpi) the advance is the rounded design width at
+            // round(points x scale x 600/72); the content width is the physical cell less
+            // digit advance / 2 + 0.875 pt, plus the face's full printed italic reserve for an italic run. The
+            // active section's leading `_x` positions each cost one hash (`PaintText.PrintHashSlots`).
+            // Checked on the direct-export hash-geometry sweep (243/245 exact; the two misses are 0.02-0.06 pt from
+            // a transition) and on a blind font/scale holdout whose 388 locked count predictions were all exact.
+            // Only the run length is recomputed here: overflow decision, placement and literal/custom hashes stay
+            // as Paint emitted them.
+            let t =
+                // `PrintOverflowHashes` is set by Paint only for a true placeholder, whose text is all `#`; the
+                // single-line guard keeps wrapped placeholders on their previous path. The `0.875 pt` term is
+                // empirical (fitted to the printer intercepts; the rest is the font's half digit advance), not a
+                // font metric.
+                if t.PrintOverflowHashes && t.LineCount = 1 && t.Text.Length > 0 then
+                    let unitEm ch = float (PdfFont.getTextWidth primaryTtf (string ch)) / float primaryTtf.UnitsPerEm
+                    let dots = Math.Floor (fontSizePt * 600.0 / 72.0 + 0.5)
+                    let pitchPt = max (72.0 / 600.0) (Math.Floor (unitEm '#' * dots + 0.5) * 72.0 / 600.0)
+                    let reserve =
+                        if t.Italic then
+                            Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
+                        else 0.0
+                    let fullCellWidth = if t.PrintHashCellWidth > 0.0 then t.PrintHashCellWidth else t.Rect.Width
+                    let contentPt = sz fullCellWidth - (unitEm '0' * fontSizePt / 2.0 + 0.875 + reserve)
+                    // Paint flags this only for a non-empty all-`#` display, so a true placeholder keeps at least
+                    // one hash even when the printer-unit width rounds below one (the narrow-cell control shows
+                    // Excel prints nothing only where Paint already emitted no placeholder at all).
+                    let count = max 1 (int (Math.Floor (contentPt / pitchPt + 1e-9)) - t.PrintHashSlots)
+                    if count = t.Text.Length then t
+                    else { t with Text = System.String('#', count) }
+                else t
             let singlePrimarySegment =
                 t.Text.Length > 0
                 && (List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf t.Text)
@@ -358,7 +390,6 @@ let private appendDrawTextOps
             // line with embedded CJK glyphs doesn't jitter when fallback
             // ascents differ. Mirrors SpreadsheetGrid.toRendererCommands.
             let scaleY = fontPx / float primaryTtf.UnitsPerEm
-            let winAscent, winDescent = winMetrics primaryTtf
             // The printed italic reserve, from the face actually chosen for this run (including a fallback):
             // floor(GDI's ascent at 600 dpi / 5) dots, where the ascent is usWinAscent scaled to round(pt x scale x 600/72).
             // A true `###` overflow placeholder is centred (whatever the cell's alignment) and takes half the
@@ -1055,6 +1086,8 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         Italic = false
         PrintItalicEligible = false
         PrintOverflowHashes = false
+        PrintHashSlots = 0
+        PrintHashCellWidth = 0.0
         Underline = false
         UnderlineDouble = false
         Strikethrough = false

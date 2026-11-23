@@ -33,6 +33,12 @@ type PaintText = {
     /// formatted text) centred in the cell whatever the cell's horizontal alignment; literal hash text and a
     /// custom format whose quoted text is hashes follow the alignment instead. Print only.
     PrintOverflowHashes: bool
+    /// Leading `_x` width pads of the active format section, which Excel's printed overflow keeps as hash
+    /// positions (each one a `#` short). Used only with `PrintOverflowHashes`.
+    PrintHashSlots: int
+    /// The full cell content width (before the text rectangle's 2 x padX inset) that Excel measures the
+    /// printed overflow run against. Used only with `PrintOverflowHashes`; 0 means `Rect.Width`.
+    PrintHashCellWidth: float
     /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
     Underline: bool
     /// Render two parallel strokes for `<u val="double"/>` instead of one.
@@ -359,6 +365,8 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Italic = false
                     PrintItalicEligible = false
                     PrintOverflowHashes = false
+                    PrintHashSlots = 0
+                    PrintHashCellWidth = 0.0
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -384,6 +392,8 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     Italic = false
                     PrintItalicEligible = false
                     PrintOverflowHashes = false
+                    PrintHashSlots = 0
+                    PrintHashCellWidth = 0.0
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -939,7 +949,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 // the wider run (`FontMetrics.printItalicShiftPt`). Its fill/accounting number layout and the `###`
                 // overflow placeholder use their own layout and do not take it. Only eligibility is decided here;
                 // the PDF renderer measures the reserve from the face it actually draws.
-                let fillLayout, overflowHashes =
+                let fillLayout, overflowHashes, hashSlots =
                     match unwrapFormulaValue value with
                     | CellValue.Number n ->
                         let fillLayout =
@@ -950,9 +960,13 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             match format.NumberFormat with
                             | Some code -> try formatNumberWithCodeIn model.Date1904 code n with _ -> ""
                             | None -> ""
-                        fillLayout,
-                        (displayText <> "" && displayText |> Seq.forall (fun c -> c = '#') && raw <> displayText)
-                    | _ -> false, false
+                        let overflow =
+                            displayText <> "" && displayText |> Seq.forall (fun c -> c = '#') && raw <> displayText
+                        // Excel's printed overflow keeps the active section's leading `_x` positions as hashes:
+                        // the PDF recount subtracts one hash per slot (`CellText.leadingPrintHashSlots`).
+                        let slots = if overflow then leadingPrintHashSlotsFor format value else 0
+                        fillLayout, overflow, slots
+                    | _ -> false, false, 0
                 let italicEligible =
                     printing && format.Italic && format.TextRotation = 0 && align = AlignRight
                     && not fillLayout && not overflowHashes
@@ -1122,6 +1136,8 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                                 Italic = italic
                                 PrintItalicEligible = false
                                 PrintOverflowHashes = false
+                                PrintHashSlots = 0
+                                PrintHashCellWidth = 0.0
                                 Underline = underline
                                 UnderlineDouble = underlineDouble
                                 Strikethrough = strike
@@ -1148,6 +1164,8 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             Italic = format.Italic
                             PrintItalicEligible = italicEligible
                             PrintOverflowHashes = printing && overflowHashes
+                            PrintHashSlots = hashSlots
+                            PrintHashCellWidth = baseRect.Width
                             Underline = format.Underline
                             UnderlineDouble = format.UnderlineDouble
                             Strikethrough = format.Strikethrough
@@ -1303,6 +1321,8 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           Italic = false
           PrintItalicEligible = false
           PrintOverflowHashes = false
+          PrintHashSlots = 0
+          PrintHashCellWidth = 0.0
           Underline = false
           UnderlineDouble = false
           Strikethrough = false
@@ -1371,6 +1391,8 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                 Italic = italic
                 PrintItalicEligible = false
                 PrintOverflowHashes = false
+                PrintHashSlots = 0
+                PrintHashCellWidth = 0.0
                 Underline = false
                 UnderlineDouble = false
                 Strikethrough = false
@@ -1644,6 +1666,8 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             Italic = false
                             PrintItalicEligible = false
                             PrintOverflowHashes = false
+                            PrintHashSlots = 0
+                            PrintHashCellWidth = 0.0
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false
@@ -1674,6 +1698,8 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             Italic = false
                             PrintItalicEligible = false
                             PrintOverflowHashes = false
+                            PrintHashSlots = 0
+                            PrintHashCellWidth = 0.0
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false

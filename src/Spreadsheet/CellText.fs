@@ -1720,6 +1720,20 @@ let private leadingPrintHashSlots (section: string) =
         i <- i + 2
     slots
 
+/// The leading `_x` slots the active section of a printed number's format reserves when it overflows
+/// (`leadingPrintHashSlots` for the section the value shows in).
+let leadingPrintHashSlotsFor (format: CellFormat) (value: CellValue) : int =
+    match unwrapFormulaValue value with
+    | CellValue.Number n ->
+        match format.NumberFormat with
+        | Some code when not (isDateOrTimeFormat code || hasElapsedBracket code) ->
+            try
+                let _, selected = formatExcelNumber code n
+                leadingPrintHashSlots selected
+            with _ -> 0
+        | _ -> 0
+    | _ -> 0
+
 /// Per-cell display text logic, in a workbook's date system (`date1904`). Public so the VBA-style API surface
 /// (Spreadsheet GetVbaLayoutCells) can return the same text Excel's
 /// `cell.Text` would produce — including `#####` overflow, format-applied

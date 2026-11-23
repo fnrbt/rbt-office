@@ -1841,7 +1841,7 @@ export; measurements in `print-hash-geometry-reference.tsv`.
 | A true numeric overflow placeholder (`###`, where the displayed hashes differ from the formatted text) is **centred in the cell's content box whatever the cell's horizontal alignment**: d(right edge from cell left)/d(physical width) = 0.50. | R/L/C Aptos Narrow 14 overflow rows identical (max |ΔxMin| = |ΔxMax| = 0.000 over 21 widths); 53 fixed-count groups over right/left/centre, upright/italic, Aptos 14, Calibri 11, Arial 12, 100 % and 75 %: slope mean +0.501 (0.454..0.518). At the 7->8 boundary the jump is dxMin = -a/2 + dW/2, dxMax = +a/2 + dW/2. | followed the cell's alignment (right +2.80 pt, left -2.45 pt from Excel; centre already +0.43) | `PaintText.PrintOverflowHashes`; the PDF centres that run |
 | The same placeholder in italic takes **half the printed italic reserve** (Aptos 14 -1.394 pt, Aptos 14 at 75 % -1.025, Calibri 11 -1.018); run width unchanged. | the oracle's italic vs upright sheets. | no shift | PDF subtracts reserve/2 for `PrintOverflowHashes && Italic` |
 | Literal hash text and a custom number format whose quoted text is hashes are ordinary text/numbers: they keep the cell's alignment (right slope +1.0004, centre +0.4997, left 0.0000) and the ordinary italic reserve. | literal sheets of the oracle; a scratch export with custom `"#####"` in all three alignments gives custom geometry identical to the literal cells on every sheet. | already so | unchanged; the flag is set only when the raw formatted text differs from the displayed hash run |
-| The hash **count** is the existing fit rule, unchanged: the largest run of the face's `#` advance that fits the printed cell's content width. | 213/245 overflow/short rows exact, 32 off by one; literal counts 44/44. | existing rule | unchanged (placement only) |
+| The hash **count** is the existing fit rule, unchanged: the largest run of the face's `#` advance that fits the printed cell's content width. | 213/245 overflow/short rows exact, 32 off by one; literal counts 44/44. | existing rule | unchanged here (placement only); the count rule is superseded in the next section |
 
 Quantified on the controlled sweep (97 fixed-count overflow pairs, same counts): absolute centre error
 vs Excel mean 2.229 pt / max 5.646 before and 0.397 / 0.455 after; by alignment right +2.795 -> -0.389,
@@ -1868,3 +1868,55 @@ print-only and no DOM/grid code consumes it, so alignment there is unchanged. In
 (HashGeometryOracle, frozen dist + runner, Fable `Spreadsheet.ExportPdf` against native): 11 PDFs, equal page
 counts, browser vs native max 0.0002 pt; same-count overflow |centre residual| max 0.456 / mean 0.396 pt,
 literal/custom right-gap max 0.469 and xMaxLeft max 0.503 pt; gate passed.
+
+## Printed hash count: printer-unit recount, 2026-11-23
+
+The count left open by the centred-placement round (`213/245` exact, 32 off by one) is now modelled
+and shipped. Trace: `Paint.cellLookFitted` still decides *whether* a number overflows; only a true
+placeholder (`PrintOverflowHashes`, raw formatted text differs from the all-`#` display) reaches the
+new recount. The PDF renderer (`Pdf.appendDrawTextOps`) replaces that run's length from the face it
+actually draws; placement, alignment, the overflow decision, literal/custom hash text and the
+browser/screen path are unchanged.
+
+| Rule (Excel 2019, printer units of 600 dpi) | Evidence | Ours before | Now |
+| --- | --- | --- | --- |
+| A true overflow run has `n = floor((W - c) / a) - slots`; `a = round(hashEm x dots) x 72/600`, `dots = round(points x scale x 600/72)`; `W` is the full cell content width (not the text rect's padded width); `c_upright = digitEm x points x scale / 2 + 0.875 pt`; italic adds the **full** right-align reserve (`FontMetrics.printItalicShiftPt`), not the screen overhang; `slots` counts the active section's leading `_x` pads. It is not a constant inset: Calibri 11 is 3.66 pt, Arial 12 4.21, Aptos 14 4.42. | Direct-export geometry sweep: 243/245 exact (the two misses, Calibri 10.5 and Arial 10.25, sit 0.02-0.06 pt below a transition because the PDF fill edge is 0.10-0.15 pt wider than the layout width); literal 44/44 and the row-2 controls unchanged. CountTransitions' dense 1/16-char training: 781/786 with measured W (overflow 695/700, full 86/86), 769/786 with the pre-registered W model (overflow 688/700, full 81/86); every miss is one hash at a transition or the hash/full edge and there is no pitch drift. The current rule replicated on that sample is 621/786 (539/700 overflow). | c9fe8034 runtime measured here: 213/245, 32 off by one (the oracle's Python replica of `fittedRoom`/`fittedHashes` reads 194/245; the runtime's `fittedHashes` reserve and exact measure put it at 213). | `PaintText.PrintHashSlots` / `PrintHashCellWidth`; PDF recount above |
+| The formatted number still **fits** when its printed text width is at most `W - c` (the same `c`, italic reserve included). | Training full transitions: every fitted `c_text` interval contains the count `c`. Blind holdout: 127 full-number rows predicted exactly, including Georgia italic at 16.6875/16.75 chars (Excel prints 8 hashes although the text is 0.02-0.05 pt inside `W-c`, because the measured PDF W is wider than the layout W); the first full is 16.8125. | existing fit rule | unchanged here (overflow decision kept) |
+
+**Blind holdout.** `make-print-count-fixture.py`'s second workbook (Verdana 13 upright 100 % `0.00%`;
+Georgia 15 italic 90 % `#,##0.00`; widths 8.00-15.00 and 16.00-21.00 by 1/16 char) was not exported
+until `print-count-holdout-predictions-countmodel.tsv` was locked: **388/388 count predictions exact**
+(overflow 261, full 127), with no count contradiction. Rendering the workbook through the shipped
+native path agrees with all 383 predictions on cells where the existing overflow decision matches
+Excel; the 5 residual rows are decision mismatches outside this slice - Verdana 17.375/17.4375/17.5
+(the old fit prints 8 hashes where Excel prints the full number) and Georgia italic 16.6875/16.75
+(the old fit prints the full number where Excel prints 8 hashes). The count rule is not applied to
+those because the decision is intentionally untouched.
+
+Limits: the 600-dpi pitch is the rounded design advance; GDI's own A+B+C equals it in the measured
+core faces but a marginal face could differ by a dot; `W` is the layout cell width, so Excel's PDF
+fill edge being 0.10-0.15 pt wider leaves the two coarse-fixture boundary cases and the train
+one-less transition misses. A narrow-cell control (Aptos 14, widths 0.5/1/2/3/4 chars, fresh direct
+Excel PDF) prints nothing at 0.5 and 1, one hash at 2 and 3, two at 4; ours prints nothing at 0.5/1/2
+and one/two at 3/4, the width-2 case being the same one-dot layout-width boundary, not a new hide
+rule; the recount clamps a flagged placeholder to at least one hash, so it can never blank a cell
+Paint already printed as hashes. The `0.875 pt` part of `c` is empirical: half the digit advance is the font's, the rest was
+fitted to the printer intercept intervals and has no separate metric derivation. The overflow
+decision's own full/hash borders (above) remain old; only true numeric placeholders are recounted
+(literal and custom `"#####"` formats keep their strings).
+
+Verification:
+`dotnet build src/Spreadsheet/Rbt.Spreadsheet.fsproj --no-restore`;
+`dotnet build src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj --no-restore`;
+`dotnet build tools/spreadsheet-pdf-runner/SpreadsheetPdfRunner.fsproj --no-restore`;
+`RB_WORD_FONT_DIR=$PWD/artifacts/fonts/windows:$PWD/artifacts/fonts/windows-extra tools/spreadsheet-pdf-runner/bin/Debug/net10.0/SpreadsheetPdfRunner
+tests/test-documents-excel/synthetic-print-hash-geometry.xlsx /tmp/countmodel-ours/ours-<n>.pdf <n-1>`;
+`python3 tools/excel-parity/measure-print-hash-geometry.py /tmp/hashfinal/synthetic-print-hash-geometry.meta.tsv
+tools/excel-parity/print-hash-geometry-predictions-round2.tsv /tmp/countmodel-meas /tmp/countmodel-meas/results-ours.tsv`
+(243/245 overflow row-1 counts, 0 non-overflow/literal count changes);
+`RB_WORD_FONT_DIR=... SpreadsheetPdfRunner tests/test-documents-excel/synthetic-print-count-holdout.xlsx /tmp/countmodel-holdout/holdout-<n>.pdf <n-1>`;
+`python3 tools/excel-parity/measure-print-count-transitions.py tools/excel-parity/print-count-holdout.meta.tsv /tmp/countmodel-holdout /tmp/countmodel-holdout/results-ours.tsv`
+(383/383 decision-agreeing counts equal the locked predictions);
+`dotnet fsi tests/print/helpers.fsx` (254 passed, 0 failed; includes the consumer-level regression render of
+Aptos 14 at 8.25 characters, which asserts printed `######`, plus ordinary/-98.41, full/42 and literal/`#####`
+controls through `Render.toBytes` + `pdftotext`).

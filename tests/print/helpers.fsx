@@ -619,6 +619,38 @@ do
     ok "print sizes: rows" (dots (Pagination.printRowHeightPx 6.05 20.0) = 121.0 && dots (Pagination.printRowHeightPx 6.05 546.0) = 3303.0 && dots (Pagination.printRowHeightPx (130.0 / 21.0) 10.0) = 62.0) ""
 
 
+// ----- Printed hash count: the old-failing public case, through the PDF consumer -----
+// Aptos Narrow 14 in a 8.25-character column (58 px) printed 5 hashes before the printer-unit recount; Excel
+// prints 6. The same sheet keeps ordinary, full-number and literal-hash controls.
+do
+    let aptos = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "artifacts", "fonts", "windows-extra", "aptosnarrow-27970306811.ttf")
+    if System.IO.File.Exists aptos then
+        let fmt : CellFormat =
+            { defaultFormat with FontName = Some "Aptos Narrow"; FontSize = Some 14.0; HorizontalAlign = Some "right"; NumberFormat = Some "0" }
+        let cell value format = { Value = value; Format = format; Comment = None }
+        let widthPx = Rbt.Spreadsheet.FontMetrics.columnWidthPx 7.0 8.25
+        let model =
+            { createEmpty 4 1 with
+                ColumnWidths = Map.ofList [ 0, widthPx ]
+                Cells =
+                    Map.ofList
+                        [ { Row = 0; Col = 0 }, cell (CellValue.Number 1123456789012.0) fmt
+                          { Row = 1; Col = 0 }, cell (CellValue.Number -98.41) { fmt with NumberFormat = Some "0.00" }
+                          { Row = 2; Col = 0 }, cell (CellValue.Number 42.0) fmt
+                          { Row = 3; Col = 0 }, cell (CellValue.String "#####") { fmt with NumberFormat = None } ] }
+        let face = Render.fontFace "Aptos Narrow" "Aptos Narrow" false false (System.IO.File.ReadAllBytes aptos)
+        let options : Render.RenderOptions =
+            { DefaultFontFamily = "Aptos Narrow"; Fonts = [ face ]; CjkFallback = []; SheetName = "HashCount"; FileName = "f" }
+        let path = System.IO.Path.GetTempFileName()
+        System.IO.File.WriteAllBytes(path, Render.toBytes options model)
+        let p = System.Diagnostics.Process.Start(System.Diagnostics.ProcessStartInfo("pdftotext", sprintf "-layout \"%s\" -" path, RedirectStandardOutput = true))
+        let text = p.StandardOutput.ReadToEnd() in p.WaitForExit()
+        let lines = text.Split('\n') |> Array.map (fun line -> line.Trim()) |> Array.filter ((<>) "")
+        ok "print hash count: Aptos 14 at 8.25 characters prints 6" (lines |> Array.contains "######") text
+        ok "print hash count: ordinary number is unchanged" (lines |> Array.exists (fun line -> line.Contains "-98.41")) text
+        ok "print hash count: full number is unchanged" (lines |> Array.contains "42") text
+        ok "print hash count: literal hashes keep their text" (lines |> Array.contains "#####") text
+
 // ----- Icon and sparkline artwork shared by DOM, native raster and PDF -----
 do
     let rect : Rbt.Spreadsheet.Layout.Rect = { X = 100.0; Y = 20.0; Width = 75.0; Height = 30.0 }
