@@ -306,3 +306,17 @@ BlankLastColFill	11	pages	3
 BlankLastColFont	12	pages	4
 BlankLastRowFill	13	pages	3
 BlankLastShape	14	pages	3
+Place	1	direct.pages	2
+Blank	2	direct.pages	4
+BlankGrid	3	direct.pages	4
+BlankFill	4	direct.pages	4
+BlankBorder	5	direct.pages	4
+BlankLast	6	direct.pages	3
+BlankLastTwo	7	direct.pages	4
+BlankLastGrid	8	direct.pages	3
+Pads	9	direct.pages	2
+BlankOverflow	10	direct.pages	3
+BlankLastColFill	11	direct.pages	3
+BlankLastColFont	12	direct.pages	4
+BlankLastRowFill	13	direct.pages	3
+BlankLastShape	14	direct.pages	3

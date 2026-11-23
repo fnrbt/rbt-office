@@ -1,0 +1,92 @@
+Hit	1	pdf	synthetic-print-pages-blockhold-holdout-1.pdf
+Miss	2	pdf	synthetic-print-pages-blockhold-holdout-2.pdf
+Hit	1	setup.orientation	1
+Hit	1	setup.paper	1
+Hit	1	setup.zoom	100
+Hit	1	setup.fitwide	1
+Hit	1	setup.fittall	1
+Hit	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+Hit	1	setup.center	False False
+Hit	1	setup.printarea	
+Hit	1	setup.titlerows	
+Hit	1	setup.titlecols	
+Hit	1	setup.order	1
+Hit	1	setup.firstpage	-4105
+Hit	1	setup.gridlines	True
+Hit	1	setup.headings	False
+Hit	1	setup.bw	False
+Hit	1	setup.draft	False
+Hit	1	setup.errors	0
+Hit	1	setup.header	||
+Hit	1	setup.footer	||
+Hit	1	used	$A$1:$I$60
+Hit	1	preview.col	1 8.43 48
+Hit	1	preview.col	2 8.43 48
+Hit	1	preview.col	3 8.43 48
+Hit	1	preview.col	4 8.43 48
+Hit	1	preview.col	5 8.43 48
+Hit	1	preview.col	6 8.43 48
+Hit	1	preview.col	7 8.43 48
+Hit	1	preview.col	8 8.43 48
+Hit	1	preview.col	9 8.43 48
+Hit	1	preview.col	10 8.43 48
+Hit	1	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+Hit	1	preview.hbreak	48 manual
+Hit	1	preview.vbreak	9 manual
+Hit	1	widths.provenance	preview.col before preview; preview.colafter after preview
+Hit	1	preview.colafter	1 8.43 48
+Hit	1	preview.colafter	2 8.43 48
+Hit	1	preview.colafter	3 8.43 48
+Hit	1	preview.colafter	4 8.43 48
+Hit	1	preview.colafter	5 8.43 48
+Hit	1	preview.colafter	6 8.43 48
+Hit	1	preview.colafter	7 8.43 48
+Hit	1	preview.colafter	8 8.43 48
+Hit	1	preview.colafter	9 8.43 48
+Hit	1	preview.colafter	10 8.43 48
+Miss	2	setup.orientation	1
+Miss	2	setup.paper	1
+Miss	2	setup.zoom	100
+Miss	2	setup.fitwide	1
+Miss	2	setup.fittall	1
+Miss	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+Miss	2	setup.center	False False
+Miss	2	setup.printarea	
+Miss	2	setup.titlerows	
+Miss	2	setup.titlecols	
+Miss	2	setup.order	1
+Miss	2	setup.firstpage	-4105
+Miss	2	setup.gridlines	True
+Miss	2	setup.headings	False
+Miss	2	setup.bw	False
+Miss	2	setup.draft	False
+Miss	2	setup.errors	0
+Miss	2	setup.header	||
+Miss	2	setup.footer	||
+Miss	2	used	$A$1:$I$60
+Miss	2	preview.col	1 8.43 48
+Miss	2	preview.col	2 8.43 48
+Miss	2	preview.col	3 8.43 48
+Miss	2	preview.col	4 8.43 48
+Miss	2	preview.col	5 8.43 48
+Miss	2	preview.col	6 8.43 48
+Miss	2	preview.col	7 8.43 48
+Miss	2	preview.col	8 8.43 48
+Miss	2	preview.col	9 8.43 48
+Miss	2	preview.col	10 8.43 48
+Miss	2	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+Miss	2	preview.hbreak	48 manual
+Miss	2	preview.vbreak	9 manual
+Miss	2	widths.provenance	preview.col before preview; preview.colafter after preview
+Miss	2	preview.colafter	1 8.43 48
+Miss	2	preview.colafter	2 8.43 48
+Miss	2	preview.colafter	3 8.43 48
+Miss	2	preview.colafter	4 8.43 48
+Miss	2	preview.colafter	5 8.43 48
+Miss	2	preview.colafter	6 8.43 48
+Miss	2	preview.colafter	7 8.43 48
+Miss	2	preview.colafter	8 8.43 48
+Miss	2	preview.colafter	9 8.43 48
+Miss	2	preview.colafter	10 8.43 48
+Hit	1	direct.pages	4
+Miss	2	direct.pages	3

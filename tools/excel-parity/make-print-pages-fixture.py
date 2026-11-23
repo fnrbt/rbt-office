@@ -6,7 +6,8 @@ Preview's breaks and each sheet's PDF) and `compare-print-pages.fsx` / `pdftotex
 
 Sheets (SHEETS below): where the printed range starts and ends (values only from C5; a fill, a border, a bold font,
 a number format past the values), rows of given heights, columns fitted to a page wide, explicit scales, long sheets
-broken automatically.
+broken automatically. "blockhold" and "blockhold-holdout": an inherited printable column style, a used cell reaching
+it, and a used row in the same absolute 16-row block as a trailing blank page (or in the next block).
 
 Deterministic: run it again and the bytes are the same.
 
@@ -262,6 +263,28 @@ def sets():
     ]
     # A row of the Normal font as it prints: 60 rows of the default height (and gridlines), for `rowunit-<face><size>`.
     out['rowunit'] = [sheet('Rows', [(r, 1, f'r{r}', 0) for r in range(1, 61)])]
+    # Trailing blank pages held by an inherited printable column style: a used cell reaches the styled column in the
+    # same absolute 16-row block as a visible used row on the otherwise blank page. The sheets distinguish a target in
+    # that block from one in the next (BlockHit / BlockMiss), the column style's necessity (NoStyleHit) and its being
+    # insufficient alone (FillOnly). The holdout moves the row break and the column page to column I.
+    def rows_after(row):
+        return f'<rowBreaks count="1" manualBreakCount="1"><brk id="{row}" max="16383" man="1"/></rowBreaks>'
+
+    def cols_after(col):
+        return f'<colBreaks count="1" manualBreakCount="1"><brk id="{col}" max="1048575" man="1"/></colBreaks>'
+
+    block_base = [(1, 1, 'x', 0), (39, 11, 'x', 0), (60, 1, 'x', 0)]
+    out['blockhold'] = [
+        sheet('BlockHit', block_base + [(45, 2, 'x', 0)], colstyles={11: 1}, breaks=rows_after(41)),
+        sheet('BlockMiss', block_base + [(49, 2, 'x', 0)], colstyles={11: 1}, breaks=rows_after(41)),
+        sheet('NoStyleHit', block_base + [(45, 2, 'x', 0)], breaks=rows_after(41)),
+        sheet('FillOnly', block_base, colstyles={11: 1}, breaks=rows_after(41)),
+    ]
+    holdout_base = [(1, 1, 'x', 0), (47, 9, 'x', 0), (60, 1, 'x', 0)]
+    out['blockhold-holdout'] = [
+        sheet('Hit', holdout_base + [(48, 2, 'x', 0)], colstyles={9: 1}, breaks=rows_after(47) + cols_after(8)),
+        sheet('Miss', holdout_base + [(49, 2, 'x', 0)], colstyles={9: 1}, breaks=rows_after(47) + cols_after(8)),
+    ]
     return out
 
 

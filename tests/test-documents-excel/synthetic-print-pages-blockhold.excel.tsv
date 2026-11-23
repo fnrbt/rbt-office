@@ -1,0 +1,200 @@
+BlockHit	1	pdf	synthetic-print-pages-blockhold-1.pdf
+BlockMiss	2	pdf	synthetic-print-pages-blockhold-2.pdf
+NoStyleHit	3	pdf	synthetic-print-pages-blockhold-3.pdf
+FillOnly	4	pdf	synthetic-print-pages-blockhold-4.pdf
+BlockHit	1	setup.orientation	1
+BlockHit	1	setup.paper	1
+BlockHit	1	setup.zoom	100
+BlockHit	1	setup.fitwide	1
+BlockHit	1	setup.fittall	1
+BlockHit	1	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlockHit	1	setup.center	False False
+BlockHit	1	setup.printarea	
+BlockHit	1	setup.titlerows	
+BlockHit	1	setup.titlecols	
+BlockHit	1	setup.order	1
+BlockHit	1	setup.firstpage	-4105
+BlockHit	1	setup.gridlines	True
+BlockHit	1	setup.headings	False
+BlockHit	1	setup.bw	False
+BlockHit	1	setup.draft	False
+BlockHit	1	setup.errors	0
+BlockHit	1	setup.header	||
+BlockHit	1	setup.footer	||
+BlockHit	1	used	$A$1:$K$60
+BlockHit	1	preview.col	1 8.43 48
+BlockHit	1	preview.col	2 8.43 48
+BlockHit	1	preview.col	3 8.43 48
+BlockHit	1	preview.col	4 8.43 48
+BlockHit	1	preview.col	5 8.43 48
+BlockHit	1	preview.col	6 8.43 48
+BlockHit	1	preview.col	7 8.43 48
+BlockHit	1	preview.col	8 8.43 48
+BlockHit	1	preview.col	9 8.43 48
+BlockHit	1	preview.col	10 8.43 48
+BlockHit	1	preview.col	11 8.43 48
+BlockHit	1	preview.col	12 8.43 48
+BlockHit	1	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+BlockHit	1	preview.hbreak	42 manual
+BlockHit	1	preview.vbreak	10 auto
+BlockHit	1	widths.provenance	preview.col before preview; preview.colafter after preview
+BlockHit	1	preview.colafter	1 8.43 48
+BlockHit	1	preview.colafter	2 8.43 48
+BlockHit	1	preview.colafter	3 8.43 48
+BlockHit	1	preview.colafter	4 8.43 48
+BlockHit	1	preview.colafter	5 8.43 48
+BlockHit	1	preview.colafter	6 8.43 48
+BlockHit	1	preview.colafter	7 8.43 48
+BlockHit	1	preview.colafter	8 8.43 48
+BlockHit	1	preview.colafter	9 8.43 48
+BlockHit	1	preview.colafter	10 8.43 48
+BlockHit	1	preview.colafter	11 8.43 48
+BlockHit	1	preview.colafter	12 8.43 48
+BlockMiss	2	setup.orientation	1
+BlockMiss	2	setup.paper	1
+BlockMiss	2	setup.zoom	100
+BlockMiss	2	setup.fitwide	1
+BlockMiss	2	setup.fittall	1
+BlockMiss	2	setup.margins	50.4 50.4 54 54 21.6 21.6
+BlockMiss	2	setup.center	False False
+BlockMiss	2	setup.printarea	
+BlockMiss	2	setup.titlerows	
+BlockMiss	2	setup.titlecols	
+BlockMiss	2	setup.order	1
+BlockMiss	2	setup.firstpage	-4105
+BlockMiss	2	setup.gridlines	True
+BlockMiss	2	setup.headings	False
+BlockMiss	2	setup.bw	False
+BlockMiss	2	setup.draft	False
+BlockMiss	2	setup.errors	0
+BlockMiss	2	setup.header	||
+BlockMiss	2	setup.footer	||
+BlockMiss	2	used	$A$1:$K$60
+BlockMiss	2	preview.col	1 8.43 48
+BlockMiss	2	preview.col	2 8.43 48
+BlockMiss	2	preview.col	3 8.43 48
+BlockMiss	2	preview.col	4 8.43 48
+BlockMiss	2	preview.col	5 8.43 48
+BlockMiss	2	preview.col	6 8.43 48
+BlockMiss	2	preview.col	7 8.43 48
+BlockMiss	2	preview.col	8 8.43 48
+BlockMiss	2	preview.col	9 8.43 48
+BlockMiss	2	preview.col	10 8.43 48
+BlockMiss	2	preview.col	11 8.43 48
+BlockMiss	2	preview.col	12 8.43 48
+BlockMiss	2	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+BlockMiss	2	preview.hbreak	42 manual
+BlockMiss	2	preview.vbreak	10 auto
+BlockMiss	2	widths.provenance	preview.col before preview; preview.colafter after preview
+BlockMiss	2	preview.colafter	1 8.43 48
+BlockMiss	2	preview.colafter	2 8.43 48
+BlockMiss	2	preview.colafter	3 8.43 48
+BlockMiss	2	preview.colafter	4 8.43 48
+BlockMiss	2	preview.colafter	5 8.43 48
+BlockMiss	2	preview.colafter	6 8.43 48
+BlockMiss	2	preview.colafter	7 8.43 48
+BlockMiss	2	preview.colafter	8 8.43 48
+BlockMiss	2	preview.colafter	9 8.43 48
+BlockMiss	2	preview.colafter	10 8.43 48
+BlockMiss	2	preview.colafter	11 8.43 48
+BlockMiss	2	preview.colafter	12 8.43 48
+NoStyleHit	3	setup.orientation	1
+NoStyleHit	3	setup.paper	1
+NoStyleHit	3	setup.zoom	100
+NoStyleHit	3	setup.fitwide	1
+NoStyleHit	3	setup.fittall	1
+NoStyleHit	3	setup.margins	50.4 50.4 54 54 21.6 21.6
+NoStyleHit	3	setup.center	False False
+NoStyleHit	3	setup.printarea	
+NoStyleHit	3	setup.titlerows	
+NoStyleHit	3	setup.titlecols	
+NoStyleHit	3	setup.order	1
+NoStyleHit	3	setup.firstpage	-4105
+NoStyleHit	3	setup.gridlines	True
+NoStyleHit	3	setup.headings	False
+NoStyleHit	3	setup.bw	False
+NoStyleHit	3	setup.draft	False
+NoStyleHit	3	setup.errors	0
+NoStyleHit	3	setup.header	||
+NoStyleHit	3	setup.footer	||
+NoStyleHit	3	used	$A$1:$K$60
+NoStyleHit	3	preview.col	1 8.43 48
+NoStyleHit	3	preview.col	2 8.43 48
+NoStyleHit	3	preview.col	3 8.43 48
+NoStyleHit	3	preview.col	4 8.43 48
+NoStyleHit	3	preview.col	5 8.43 48
+NoStyleHit	3	preview.col	6 8.43 48
+NoStyleHit	3	preview.col	7 8.43 48
+NoStyleHit	3	preview.col	8 8.43 48
+NoStyleHit	3	preview.col	9 8.43 48
+NoStyleHit	3	preview.col	10 8.43 48
+NoStyleHit	3	preview.col	11 8.43 48
+NoStyleHit	3	preview.col	12 8.43 48
+NoStyleHit	3	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+NoStyleHit	3	preview.hbreak	42 manual
+NoStyleHit	3	preview.vbreak	10 auto
+NoStyleHit	3	widths.provenance	preview.col before preview; preview.colafter after preview
+NoStyleHit	3	preview.colafter	1 8.43 48
+NoStyleHit	3	preview.colafter	2 8.43 48
+NoStyleHit	3	preview.colafter	3 8.43 48
+NoStyleHit	3	preview.colafter	4 8.43 48
+NoStyleHit	3	preview.colafter	5 8.43 48
+NoStyleHit	3	preview.colafter	6 8.43 48
+NoStyleHit	3	preview.colafter	7 8.43 48
+NoStyleHit	3	preview.colafter	8 8.43 48
+NoStyleHit	3	preview.colafter	9 8.43 48
+NoStyleHit	3	preview.colafter	10 8.43 48
+NoStyleHit	3	preview.colafter	11 8.43 48
+NoStyleHit	3	preview.colafter	12 8.43 48
+FillOnly	4	setup.orientation	1
+FillOnly	4	setup.paper	1
+FillOnly	4	setup.zoom	100
+FillOnly	4	setup.fitwide	1
+FillOnly	4	setup.fittall	1
+FillOnly	4	setup.margins	50.4 50.4 54 54 21.6 21.6
+FillOnly	4	setup.center	False False
+FillOnly	4	setup.printarea	
+FillOnly	4	setup.titlerows	
+FillOnly	4	setup.titlecols	
+FillOnly	4	setup.order	1
+FillOnly	4	setup.firstpage	-4105
+FillOnly	4	setup.gridlines	True
+FillOnly	4	setup.headings	False
+FillOnly	4	setup.bw	False
+FillOnly	4	setup.draft	False
+FillOnly	4	setup.errors	0
+FillOnly	4	setup.header	||
+FillOnly	4	setup.footer	||
+FillOnly	4	used	$A$1:$K$60
+FillOnly	4	preview.col	1 8.43 48
+FillOnly	4	preview.col	2 8.43 48
+FillOnly	4	preview.col	3 8.43 48
+FillOnly	4	preview.col	4 8.43 48
+FillOnly	4	preview.col	5 8.43 48
+FillOnly	4	preview.col	6 8.43 48
+FillOnly	4	preview.col	7 8.43 48
+FillOnly	4	preview.col	8 8.43 48
+FillOnly	4	preview.col	9 8.43 48
+FillOnly	4	preview.col	10 8.43 48
+FillOnly	4	preview.col	11 8.43 48
+FillOnly	4	preview.col	12 8.43 48
+FillOnly	4	breaks.provenance	page-break-preview; may refit columns; not direct PDF pagination
+FillOnly	4	preview.hbreak	42 manual
+FillOnly	4	preview.vbreak	10 auto
+FillOnly	4	widths.provenance	preview.col before preview; preview.colafter after preview
+FillOnly	4	preview.colafter	1 8.43 48
+FillOnly	4	preview.colafter	2 8.43 48
+FillOnly	4	preview.colafter	3 8.43 48
+FillOnly	4	preview.colafter	4 8.43 48
+FillOnly	4	preview.colafter	5 8.43 48
+FillOnly	4	preview.colafter	6 8.43 48
+FillOnly	4	preview.colafter	7 8.43 48
+FillOnly	4	preview.colafter	8 8.43 48
+FillOnly	4	preview.colafter	9 8.43 48
+FillOnly	4	preview.colafter	10 8.43 48
+FillOnly	4	preview.colafter	11 8.43 48
+FillOnly	4	preview.colafter	12 8.43 48
+BlockHit	1	direct.pages	4
+BlockMiss	2	direct.pages	3
+NoStyleHit	3	direct.pages	3
+FillOnly	4	direct.pages	3
