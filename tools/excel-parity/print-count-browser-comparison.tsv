@@ -1,0 +1,7 @@
+model	dataset	exact	denominator	overflow_exact	overflow_n	full_exact	full_n	note
+final-browser-fable	holdout-388	383	388	259	261	124	127	dist built from Pdf.fs 8738b08, Paint 2145bf89, CellText 0309d36f
+baseline-browser-fable	holdout-388	357	388	233	261	124	127	c9fe8034 published dist dated 19:57
+final-vs-baseline	changed-counts	26	26	-	-	-	-	every changed count now equals Excel; 0 decision flips
+final-vs-locked-native	decision-agreeing	383	383	-	-	-	-	final browser == CountModel locked pred_n on all agreeing cells
+final-literal-guard	literal-rows	78	78	-	-	-	-	text and xMin/xMax identical to baseline
+final-centering-guard	same-count-columns	362	362	-	-	-	-	xMin/xMax identical; changed-count centre delta <= 0.003 pt

@@ -6,7 +6,10 @@ Reuses measure-print-hash-geometry.py's PDF readers (fill rectangle -> physical
 cell edges, Poppler word box -> printed run) rather than duplicating them. Emits
 one row per printed word with the metadata needed to fit the count rule.
 
-    python3 tools/excel-parity/measure-print-count-transitions.py META.tsv EXCELDIR OUT.tsv
+    python3 tools/excel-parity/measure-print-count-transitions.py META.tsv EXCELDIR OUT.tsv [--allow-missing-sheets]
+
+By default every sheet in META must have a PDF in EXCELDIR (a missing sheet is an error). Pass
+--allow-missing-sheets only for a deliberate partial control set, e.g. the four literal sheets.
 """
 import collections
 import importlib.util
@@ -20,7 +23,11 @@ spec.loader.exec_module(hashmeasure)
 
 
 def main():
-    meta_path, excel_dir, out_path = sys.argv[1:4]
+    argv = [a for a in sys.argv[1:] if a != '--allow-missing-sheets']
+    allow_missing = '--allow-missing-sheets' in sys.argv[1:]
+    if len(argv) != 3:
+        raise SystemExit(__doc__)
+    meta_path, excel_dir, out_path = argv
     meta = [l.rstrip('\n').split('\t') for l in open(meta_path, encoding='utf-8')]
     head, meta = meta[0], meta[1:]
     tsv = os.path.join(excel_dir, sorted(f for f in os.listdir(excel_dir) if f.endswith('.tsv'))[0])
@@ -39,6 +46,11 @@ def main():
             'xMin\txMax\trunWidth\tcellLeft\tcellRight\tcellWidth\txMinLeft\txMaxLeft\trightGap\t'
             'diagnostics\tpage\tpdf_fonts']
     for sheet, items in by_sheet.items():
+        if sheet not in pdf_of:
+            if allow_missing:
+                continue
+            raise SystemExit(f'missing PDF for sheet {sheet!r} under {excel_dir}; '
+                             'pass --allow-missing-sheets only for a partial control set')
         pdf = os.path.join(excel_dir, pdf_of[sheet])
         pages = hashmeasure.pdf_pages(pdf)
         for page in range(1, pages + 1):
