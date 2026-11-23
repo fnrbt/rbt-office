@@ -353,7 +353,11 @@ pages with the same starts, and the page is blank in both; see "Print round 4", 
 Found, not matched:
 - Text placement: Segoe UI and Segoe UI Black a pixel lower than Excel at the bottom (their descent in the GDI table
   a pixel short of what Excel places them by): acre-property's words 0.7 pt low; at the top Trebuchet 1 px.
-- oyabayo's right-aligned numbers in some columns 4.6 pt right of Excel's (not found).
+- oyabayo's right-aligned *italic* numbers stand 2.8 - 3.2 pt right of Excel's (Aptos Narrow 14/11; the round-3 figure
+  "4.6 pt" is Excel's own word-box inset from the cell border, not our delta - see "Print round 5", below). Upright
+  numbers and currency pair within 0.03 - 0.36 pt. The offset is a placement rule, not glyph ink: a font-metric
+  formula (italic angle x ascent) fits the two faces it was derived on but is refuted out of sample (Arial, Times,
+  Cambria, hashes, trailing `_x`); no product code changed.
 - The PDF's text of a glyph two characters share is the other one: Calibri's hyphen is U+2010 in our PDFs' text
   ("31‐Jan‐16"), from Rbt.Pdf's ToUnicode (its extra glyph mappings do not override the cmap's); words differ.
   Fixed 2026-11-23: the writers now emit per-source-sequence CIDs, so U+002D and U+2010 keep their own
@@ -1667,3 +1671,67 @@ BlankOverflow 3, BlankLastColFill 3, BlankLastColFont 4, BlankLastRowFill 3, Bla
 
 Verification: `dotnet fsi tests/print/helpers.fsx` -> 227 passed, 0 failed; oyabayo's direct PDF is 39 pages and the
 runner's PDF is 39.
+
+## Print round 5: oyabayo's right-aligned italic numbers, 2026-11-23
+
+The round-3 item "a workbook's right-aligned numbers 4.6 pt right" reproduces only for **italic** right-aligned text,
+and not at 4.6 pt as a delta. Fresh Excel 2019 direct export (`excel-print-pages.sh`, before any sheet activation or
+Page Break Preview; `/tmp/oyabayo-fresh/excel/oyabayo-1.pdf`, 39 pages, sha256 `025a65bd...`; the workbook's sha256
+`ea15d9ae...` equals `artifacts/real-estate/oyabayo-pari-passu-pref-return-waterfall-v1.1.xlsx`) against native
+`a0477030` with `RB_WORD_FONT_DIR` = `artifacts/fonts/windows:artifacts/fonts/windows-extra`
+(`/tmp/oyabayo-fresh/ours-aptos.pdf`):
+
+- Cell Y25/Y28 (Aptos Narrow 14 italic, `0.00%`, right): Excel's word edge xMax 118.2996 pt, ours 121.3701 pt, so
+  ours is **+3.07 pt** right. A neighbouring upright 14 pt cell Y21 (`#,##0_);[Red](#,##0)`, `(90,000)`) has Excel
+  121.08768, ours 121.3724 (+0.28): the columns, borders and page origin agree.
+- All 122 paired negative percent words: delta median **+3.17 pt**, range +0.90 to +3.20; the 26 positive percent
+  words have median +0.07 and maximum +3.18 (the shifted ones are its italic subgroup). Page 13's upright numeric
+  median is +0.21.
+- Removing the Aptos face (the older `ours.pdf` with only Calibri embedded) moves the *left* edge by ~4.5 pt (the
+  glyphs are narrower) but leaves the right edge at 121.373: this is not font substitution. The old 4.6 pt figure is
+  Excel's own *word-box* inset from the cell's right border (~5.1 pt: pad 1.92 + italic placement offset 2.8),
+  measured from a naive column edge (123.39 pt) rather than from Excel's word edge; the actual delta is ~3.0 pt.
+- Remaining +0.2 - +0.3 pt on upright table numbers is page/column geometry: our column is 72.4800 pt, Excel's
+  cumulative edges average 72.4927 pt and are quantized per boundary; the shared grid inset is 0.48 pt. It is inside
+  the existing print tolerance and is not the reported offset.
+
+Synthetic controls (`tools/excel-parity/make-print-right-edge-fixture.py`,
+`tests/test-documents-excel/synthetic-print-right-edge.xlsx`; one variable per sheet, fresh direct Excel export and
+native; oracle table `tools/excel-parity/print-right-edge-reference.tsv`). The measured quantity is **Poppler's word
+box** (`pdftotext -bbox` xMax) to the printed `#FFF2CC` fill's right edge - a word-box gap, not raster ink and not a
+glyph outline. Excel vs ours: Aptos Narrow 14 `0.00%` upright 2.41/1.98, italic 5.22/1.98; Aptos Narrow 14 `0.00`
+italic 5.12/1.96; Calibri 11 `0.00%` upright 2.11/1.97, italic 4.14/1.97; a 30-character column 5.19/1.99
+(width-independent); accounting `_)` formats add no reserve on top of the pad (Excel 6.68 vs ours 6.28). The inferred
+italic placement offset (Excel italic gap - Excel upright gap, same face/size) is 0.200 x point size for Aptos
+Narrow at 9/11/14/20 pt (1.808/2.198/2.810/3.992) and 0.186 x point size for Calibri at 8/11/14/20 pt
+(1.440/2.040/2.640/3.720); ours applies 0.000 at every size. Held out: Aptos 14 italic hashes 2.48 (not 2.81);
+Calibri 12 italic `#,##0.0` width 24 observed gap delta -2.525 against -2.47 predicted. Center-aligned italic shifts
+about half (-0.995 at Aptos 14); left-aligned is unaffected (+0.321).
+
+Falsified: the offset is **not** the last glyph's outline overhang. From the installed matching faces (real Calibri
+`artifacts/fonts/windows/calibrii.ttf`, Aptos Narrow Italic `artifacts/fonts/windows-extra/aptosnarrow-28903934312.ttf`),
+italic minus upright `(outline xMax - horizontal advance)/em`: Aptos `%` +0.0039, `#` -0.0547, `0` -0.0229, `9`
+-0.0273; Calibri `%` +0.0181, `#` +0.0430, `0` +0.0322, `9` +0.0352. At print sizes those are +/-0.1 - 0.8 pt and of
+the wrong sign for `%`: Aptos 14 predicts +0.05 pt for `%` and -0.77 for `#` against observed offsets 2.81 and 2.48.
+The word-box xMax is advance-based besides, so outline overhang is not what the gap measures.
+
+Refuted out of sample: the candidate `fontPt * tan(|italicAngle|) * ascentEm` (typo ascent when OS/2
+USE_TYPO_METRICS, else usWinAscent) fits the faces it was fitted on, but a pre-registered validation does not
+(`print-right-edge-predictions.tsv`, written before the export; results `print-right-edge-validation.tsv`;
+acceptance |observed - predicted| <= 0.10 pt). Fails: Arial 14 -0.174, Arial 20 -0.248, Arial 14 digit -0.174, Arial
+14 at 75 % -0.220, Times New Roman 14 -1.256, Cambria 14 -0.438, Aptos 14 with a trailing `0_)` -2.779. Passes:
+Aptos Narrow 14 at 75 % +0.003, Calibri 12 `#,##0.0` +0.059, Arial 8 -0.099 (at the edge); the rows the candidate was
+fitted on (Aptos 9/11/14/20 and Calibri 8/11/14/20 at 100 %) also pass. Observed coefficients at 100 % are Arial
+0.180, Times 0.171, Cambria 0.178, Aptos `%` 0.201 but `#` 0.103, Calibri 12 0.190. The `#`/`%` split inside one face,
+and identical italic/upright word widths with dxMin == dxMax for those strings, rule out both a single per-face
+constant and a last-glyph advance artifact. No model covers the corpus, so no product code is shipped and screen
+placement is unchanged. What survives is the phenomenon and scope (print, right-aligned, italic; width-independent;
+about half for centered italic; none for left-aligned; none on trailing uninked `_x` pads), the Aptos/Calibri fitted
+rows, and the falsification of the outline-overhang account.
+
+Verification: `pdfinfo /tmp/oyabayo-fresh/excel/oyabayo-1.pdf` (39 pages);
+`RB_WORD_FONT_DIR=$PWD/artifacts/fonts/windows:$PWD/artifacts/fonts/windows-extra dotnet run --project
+tools/spreadsheet-pdf-runner -- artifacts/real-estate/oyabayo-pari-passu-pref-return-waterfall-v1.1.xlsx /tmp/ours.pdf 0`;
+`python3 tools/excel-parity/compare-pdf-words.py /tmp/oyabayo-fresh/excel/oyabayo-1.pdf /tmp/ours.pdf` (page 13
+median +0.21, largest cell text +3.20 on the italic `-97.54%`); targeted right edges with
+`pdftotext -bbox -f 13 -l 13 <pdf> - | grep -E '98\.41%|103,000|\(90,000\)'`.

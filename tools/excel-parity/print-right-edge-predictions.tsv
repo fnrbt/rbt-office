@@ -1,0 +1,18 @@
+# Predictions written before this fixture's Excel export/measurement.
+# Candidate: reserve = fontPt * tan(|italicAngle|) * ascentEm; ascentEm = sTypoAscender/upm if OS/2 fsSelection bit7 else usWinAscent/upm. Printed reserve at pageSetup scale s = s * 100%-reserve.
+# Pairs are italic vs upright of the same sheet strings; reserve = Excel_italic_word_gap - Excel_upright_word_gap.
+# Accept if observed is within 0.10 pt of predicted (engine's in-sample residuals were <=0.05).
+pair	face	size	scale	format	coef	predicted_reserve
+S26/S27	Arial	8	100	0.00%	0.19242	1.5394
+S28/S29	Arial	14	100	0.00%	0.19242	2.6939
+S30/S31	Arial	20	100	0.00%	0.19242	3.8484
+S32/S33	Arial	14	100	0.00	0.19242	2.6939
+S34/S35	Times New Roman	14	100	0.00%	0.26114	3.6560
+S36/S37	Cambria	14	100	0.00%	0.20891	2.9247
+S38/S39	Aptos Narrow	14	75	0.00%	0.19958	2.0954
+S40/S41	Arial	14	75	0.00%	0.19242	2.0204
+S22/S24	Aptos Narrow	14	100	0.000% (hashes)	0.19958	2.7939
+S23/S25	Calibri	12	100	#,##0.0	0.18508	2.2210
+S07 vs S00	Aptos Narrow	14	100	accounting trailing _)	0.19958	2.7939 (expected counterexample: observed ~0)
+# Font metrics: Arial angle -12.00 typo1491 win1854 typo-metrics off; Times -16.33 typo1422 win1825 off;
+# Cambria -12.40 typo1593 win1946 off; Aptos -12.00 typo1923 win2068 typo-metrics ON; Calibri -11.00 typo1536 win1950 off.

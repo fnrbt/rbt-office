@@ -1,0 +1,11 @@
+upright_sheet	italic_sheet	face	size	scale	format	predicted_reserve	observed_reserve	residual	verdict	n_strings
+S26_arial8	S27_arial8_italic	Arial	8	100	0.00%	1.5394	1.4400	-0.0994	pass	4
+S28_arial14	S29_arial14_italic	Arial	14	100	0.00%	2.6939	2.5200	-0.1739	FAIL	3
+S30_arial20	S31_arial20_italic	Arial	20	100	0.00%	3.8484	3.6000	-0.2484	FAIL	3
+S32_arial14_digit	S33_arial14_digit_italic	Arial	14	100	0.00 digit	2.6939	2.5200	-0.1739	FAIL	4
+S34_times14	S35_times14_italic	Times New Roman	14	100	0.00%	3.6560	2.4000	-1.2560	FAIL	4
+S36_cambria14	S37_cambria14_italic	Cambria	14	100	0.00%	2.9247	2.4870	-0.4377	FAIL	3
+S38_aptos14_75	S39_aptos14_italic_75	Aptos Narrow	14	75	0.00%	2.0954	2.0980	+0.0026	pass	3
+S40_arial14_75	S41_arial14_italic_75	Arial	14	75	0.00%	2.0204	1.8000	-0.2204	FAIL	3
+S25_holdout2_upright	S23_holdout2	Calibri	12	100	#,##0.0 digit	2.2210	2.2800	+0.0590	pass	3
+S42_accounting_upright	S07_italic_accounting	Aptos Narrow	14	100	accounting _)	2.7939	0.0150	-2.7789	FAIL	4
