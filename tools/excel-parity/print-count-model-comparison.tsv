@@ -1,0 +1,12 @@
+model	dataset	exact	denominator	accuracy	overflow_exact	overflow_n	full_exact	full_n	note
+current-replica	train-dense	621	786	0.7901	539	700	82	86	
+candidate-measuredW	train-dense	781	786	0.9936	695	700	86	86	
+candidate-predictedW	train-dense	769	786	0.9784	688	700	81	86	
+fixed4pt-measuredW	train-dense	625	786	0.7952	539	700	86	86	
+current-replica	coarse-245	194	245	0.7918	184	235	10	10	
+candidate-measuredW	coarse-245	244	245	0.9959	234	235	10	10	
+fixed4pt-measuredW	coarse-245	203	245	0.8286	193	235	10	10	
+countmodel-locked	holdout-388	388	388	1.0000	261	261	127	127	locked before export
+counttransitions-locked	holdout-388	384	388	0.9897	257	261	127	127	locked before export
+current-replica	holdout-verdana-194	186	194	0.9588	130	135	56	59	Verdana subset; current rule replica, Georgia metrics unavailable locally
+candidate-gdi-posthoc	holdout-388	386	388	0.9948	261	261	125	127	post-hoc measured W + real Georgia metrics; not a locked prediction

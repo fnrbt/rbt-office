@@ -1,0 +1,3 @@
+sheet	face	size_pt	italic	scale	columns	n_min	n_max	slots	a_design_pt	a_run_pt	a_minus_run	c_lo	c_hi	c_mid	c_formula	c_formula_minus_mid	transition_residual_min	transition_residual_max	boundary_slope_pt	boundary_drift_pt	full_last_hash_W	full_first_W	full_text_run	c_text_lo	c_text_hi	W_slope	W_intercept	note
+H_georgia15_it_grp	Georgia	15	1	90	194	3	8	0	8.7522	8.7522	+0.0000	7.1452	7.7291	7.4372	6.3191	-1.1181	-0.0502	+1.3951	9.0111	+0.2589	84.9840	85.6800	77.5360	7.4480	8.1440	5.0773	0.0903	a_design=a_run
+H_verdana13_up_pct	Verdana	13	0	100	194	3	8	0	10.5600	10.5678	-0.0078	4.5840	5.1820	4.8830	5.0073	+0.1243	-1.8105	+0.1095	10.1577	-0.4023	97.5620	98.4220	93.1420	4.4200	5.2800	5.6417	0.0808	ok
