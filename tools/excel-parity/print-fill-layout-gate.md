@@ -152,25 +152,28 @@ Tested as one principled rule on both faces using the no-fill controls:
   the Excel side; on engine-side quantities floor helps training (372 vs 366 exact) and hurts the holdout
   (384 vs 423). A symmetric `W − 2·lin` box is worse still. A constant repeat pad exists only per face
   (training interval [4.136, 4.236], holdout empty by 0.013), and choosing it is calibration.
-- Positive sub-finding for the next fixture: adding half the printed border strip width (thin borders
-  print as 0.6 pt filled strips, so **0.30 pt**) to `W − lin − rin − number` reproduces Excel's count
-  exactly on all 420 training and 480 holdout fill cells; the exact correction interval is **[0.24, 0.35]**
-  on both faces and contains s/2 = 0.30. That is consistent with the fill boundary being the border's
-  inner edge while the no-fill insets are measured to its centreline.
+- Cross-fixture check on that sub-finding: the training and holdout exports draw DIFFERENT border ink —
+  trail-train has a 0.96 pt filled strip plus a 0.14 pt stroked centreline, trail-holdout has 0.60 pt
+  filled strips and no stroke — yet both have the same exact correction interval **[0.24, 0.35]**
+  (adding a constant c in that interval to `W − lin − rin − number` makes the count law exact on all
+  420 training and 480 holdout fill cells). Width-proportional models are therefore falsified across the
+  pair: S/2 would be 0.48 vs 0.30, S/4 0.24 vs 0.15, T/2 0.07 vs 0. A constant device quantum of about
+  2.5 printer dots survives; whether it is a border-presence term or a text/measurement term is what the
+  `none` sheet decides. (Earlier wording that called this half a 0.6 pt strip was wrong.)
 - It is not implementable without calibration today: the engine's own no-fill insets already make its
   text box 0.342-0.420 pt wider than Excel's on training and 0.449-0.738 pt wider on the holdout, so the
-  edge law cannot be applied to engine inputs; the best single engine-side correction (0.36 pt) still
-  leaves 6/420 and 11/480 mismatches.
+  constant term cannot be applied to engine inputs either; the best single engine-side correction
+  (0.36 pt) still leaves 6/420 and 11/480 mismatches.
 
 So the runtime rule is falsified as stated; no runtime change, no new calibration, absolute gate intact.
-The discriminating fixture that reopens it: the same cells with thin, medium and thick borders (the
-printed strip width is measured from the PDF; the current thin border is 0.6 pt) plus a control in each
-row, at Arial 11/60 and Aptos Narrow 14/100. If the border-edge model holds, each count transition moves
-with half the strip-width difference and by the same amount in points across fill characters; if it is a
-fixed 2-dot quantum, transition widths do not move with border weight. Acceptance is an exact count on
-every transition-adjacent cell from border span, measured no-fill insets, measured strip width and the
-600-dpi advance, with zero per-face parameters. The locked predictions for Oracle's border sweep are
-`border-sweep-predictions.tsv` (`78c78b56...`), sent before any sweep export.
+The border sweep discriminates the surviving constant from width models: it has no/thin/medium/thick
+borders, three faces (Arial 11/60, Aptos Narrow 14/100, fresh Calibri 11/100), a control in every sheet,
+and solid cell fills so the no-border sheets still yield geometry. If the constant is border-presence,
+`none` needs no correction while all bordered styles need the same c; if it is a text/measurement term,
+`none` needs the same c. Width models predict c proportional to the measured strip/stroke and transition
+widths that move with border weight. The re-locked predictions for Oracle's actual design are
+`border-sweep-predictions-v2.tsv` (`9a98145f...`); the earlier `border-sweep-predictions.tsv`
+(`78c78b56...`) assumed only thin/medium/thick and is superseded.
 
 #### Where the 0.34-0.74 pt no-fill box gap comes from
 
