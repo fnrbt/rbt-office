@@ -8,7 +8,7 @@ sha256  a6ab371ef1ba625b9b30efd074e044b16cbc690b686c2a2e9f3bad2d7d39e10c  tests/
 sha256  5e8b75bea7ee0a8893b849715067fe4f5a95921abd6943add5d85bbefb4006fe  tools/excel-parity/print-fill-layout-predictions.tsv
 sha256  1599cca72ee598f13658d6ec244d54775376a30e5484ec37c04f3d7476ff80e5  tools/excel-parity/print-fill-layout-general-predictions.tsv
 sha256  c4a3debd23faaa015a7bc2cbfe11a4b50132dde3e193632c1cea98239ff1ade2  tools/excel-parity/print-fill-layout-results.tsv
-sha256  2a1593e3d9208872bf8aeae6742d1909788e2ef72af56fe6e979c16b0bcb6874  tools/excel-parity/print-fill-layout-gate.md
+sha256  0ea258e282555d925d5e88c125371aadcd83aab20f6432525b5a060cf162d3ea  tools/excel-parity/print-fill-layout-gate.md
 
 # Browser dist from one Fable build of the sources above:
 #   bash scripts/build-dist.sh /var/tmp/fill-engine/dist

@@ -79,8 +79,28 @@ python3 tools/excel-parity/analyze-print-numfill.py \
   tools/excel-parity/print-numfill-holdout-predictions.tsv COMPARISON.tsv WORKBOOK
 ```
 
-Final Chromium `grid.ExportPdf({what:'sheet'})` proof is the freeze gate
-`run-print-numfill-gate.sh DIST EXCEL_ROOT OUT`; it must run only after FillEngine sends the frozen
-source and dist hashes. It exports all six sheets per workbook through the real component, measures
-the browser PDFs, compares them with native operators (expect 0.0000 pt and identical counts/text),
-and writes the result tables under OUT.
+## Final freeze (f7104bb6 / a27e8eca / a6ab371e / dist b38ad676)
+
+FillEngine's strict gate and my independent run on this freeze both pass: train 1035, Georgia 630,
+Tahoma 630 ours rows; browser vs native max 0.00000 pt and 0 text/count/coord differences on all
+three. The gate requires
+nonempty equal ours-only key sets relative to the cell manifests, so it fails on a silently missing
+measurement row.
+
+Corrected paired comparison against baseline `6fe0e6e2`, same workbooks, browser PDFs only
+(`print-numfill-baseline-vs-candidate.tsv`):
+
+| workbook | expected ours | common | hash base→cand | improved/regressed | printed lost/gained | gap mean/max base | gap mean/max cand |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| train | 1035 | 1035 | 898→918 | 20/0 | 0/34 | 13.148/87.288 | 1.986/32.599 |
+| Georgia | 630 | 630 | 570→576 | 6/0 | 0/16 | 9.857/66.326 | 1.029/21.981 |
+| Tahoma | 630 | 630 | 588→588 | 0/0 | 0/10 | 12.577/85.528 | 1.962/34.178 |
+
+No measurement rows missing, no printed numeric rows lost, no newly regressed hash flags. The earlier
+sign regressions are gone. The remaining candidate max errors are suffix/inactive-fill text shapes
+that stay on the prior path; they are not caused by this freeze.
+
+Final Chromium proof command:
+`run-print-numfill-gate.sh DIST EXCEL_ROOT OUT`. It exports all six sheets per workbook through
+`grid.ExportPdf({what:'sheet'})`, measures the browser PDFs, compares only ours rows with native, and
+exits non-zero on any missing oracle key or text/count/coordinate difference.
