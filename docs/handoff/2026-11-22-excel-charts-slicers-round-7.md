@@ -1,5 +1,7 @@
 # Handoff: Excel charts and slicers, round 7 (2026-11-22)
 
+**Historical snapshot:** `origin/wip/excel-charts-slicers-round-7` is integrated. See the [current branch handoff](../excel-parity-tracker.md#spreadsheet-branch-handoff) for the active spreadsheet WIP, `origin/wip/excel-trailing-fill`.
+
 Branch `worktree-agent-a8e5c2927c8806b7e`. Goal: fix the Excel 2019 discrepancies that earlier rounds left, using the
 parity method (find the rule, test it on generated fixtures in Excel 2019 on the VM, implement it, add a test and a tracker
 row). The tracker section for this round is "Slicer text, cameras, Pareto, sunburst labels, filled maps against Excel 2019,

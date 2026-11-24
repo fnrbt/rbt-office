@@ -1,5 +1,7 @@
 # Handoff: print against Excel 2019's PDF, round 3 (2026-11-22)
 
+**Historical snapshot:** `origin/wip/excel-print-round-3` is integrated. The active print branch is `origin/wip/excel-trailing-fill`; see the [current branch handoff](../excel-parity-tracker.md#spreadsheet-branch-handoff).
+
 Branch `worktree-agent-a4770b7e47e13fe02` (fast-forwarded to master 6364de84 first). Stopped on request; no
 product code changed yet. Only the fixture generator and the print probe were changed (tools only).
 
