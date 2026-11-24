@@ -101,19 +101,33 @@ no hash change: the narrow S2 cells that Paint had hashed now print their number
 the number too), and no training cell newly hashes.
 
 Fresh held-out export (Arial 11 pt at 60 %, TrailingTruth's locked predictions): the runtime and Chromium
-PDFs were produced from this tree before the Excel PDFs existed. On those PDFs, checked against the
-engine's own N1 controls (the side-relative relations in the lock), all 729 trailing cells pass hash/text/
-sign, inside, residual and count-law (|N_pred−N| ≤ 1; 0 violations), with a maximum centre/right shift
-residual of 0.075 pt against the 0.35 pt bound. Chromium equals native on every run of that workbook
-(largest origin difference 0.0001 pt, one run). The Excel-side check still requires the locked fresh
-export, which had not been taken when this tree was frozen.
+PDFs were produced from this tree before the Excel PDFs existed, then measured against the locked export.
+All 12 locked checks pass on Excel truth and on ours (ours_failures 0 on both the training and holdout
+workbooks): hash/text/sign, inside, residual, advance, monotonicity, count law (|N_pred−N| ≤ 1) and the
+side-relative left/centre/right relations. Chromium equals native on every measurement row of both
+workbooks (identical long-table sha256; largest run-origin difference 0.0001 pt). This is a paired
+improvement, not absolute Excel parity: on the holdout, candidate-vs-Excel is hash 18 → 0, count 423 → 54,
+amount_x0 413 → 233, amount_x1 595 → 366 versus the pre-rule dist, and text 0 throughout. Paired with the
+same baseline over the lock's classes: the no-fill/default-alignment N1 cells are byte-identical (243/243
+per set), genuine overflow hash runs are unchanged (0 text differences on 267 holdout / 363 training
+overflow cells), and D2 dot-as-decimal keeps the decimal point and matches Excel's amount text on all
+174 holdout / 150 training non-hash cells. The fallback cannot drop an arbitrary trailing glyph: it only
+runs when the token is the section's last element (`suffixSection = ""`) and the whole display equals the
+formatter's prefix rendering; a non-empty suffix (quoted literal included), a surviving token char, two
+active fills, or a full display wider than the cell all keep the prior path, and the sign is taken from the
+prefix so it is never duplicated.
 
-Limitations: (1) the measured fill advance can put the engine one fill glyph ahead of Excel at a boundary
-width (count +1 above; not a sign/hash/fit error). (2) A trailing dot is not part of the .NET display
-string, so the rule reads the fill run from the formatter's number end rather than from a guessed dot; a
-non-space/non-dot trailing token is covered only by the fresh dash fixture. (3) Screen, quoted/escaped and
-inactive-section paths are untouched: the new branch runs only for printing with one active fill and an
-empty suffix section.
+Limitations: (1) the engine's content-width available is a fraction of a point wider than Excel's at a
+boundary width, so a fill count can be one high: paired strict error counts 5 (holdout) and 12 (training)
+cells where the count moves 0→1 against Excel, and the holdout count is exact on 675/729 trailing cells
+with the rest ±1 (never more). No sign, text, hash or fit change comes with it. (2) A trailing `.` is not
+part of the .NET display string, so the rule reads the fill run from the formatter's number end rather than
+from a guessed dot; a non-space/non-dot trailing token is covered by the fresh dash fixture, not by a
+separate fallback. (3) Absolutely positioned x0/x1 versus Excel is not gated here: the no-fill N1 controls
+alone already differ by >0.35 pt on roughly two thirds of the cells at these printer scales (pre-existing
+face/scale placement), which is why the lock uses side-relative relations. No per-face or per-scale
+calibration was added. (4) Screen, quoted/escaped and inactive-section paths are untouched: the branch runs
+only for printing with one active fill and an empty suffix section.
 
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel

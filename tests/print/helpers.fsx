@@ -1173,12 +1173,12 @@ do
     ok "print fill: no active fill is no layout" (runs "0.00_)" 1.0 "1.00 " 200.0 = None) ""
     // Paint: F09 prints two runs per alignment — the "$" prefix anchored left at the content edge and the
     // amount anchored right — identical in every alignment sheet; the screen keeps one collapsed run.
-    let lookWith value printing code align =
+    let lookWidth value width printing code align =
         let fmt = { defaultFormat with NumberFormat = Some code; FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some align }
         let model =
             createEmpty 3 3
             |> setCell { Row = 0; Col = 1 } { Value = Number value; Format = fmt; Comment = None }
-            |> setColumnWidth 1 150.0
+            |> setColumnWidth 1 width
             |> Pagination.withPrintSizes
         let viewport : Rbt.Spreadsheet.Layout.Viewport =
             { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
@@ -1191,8 +1191,10 @@ do
             match item with
             | Rbt.Spreadsheet.Paint.DrawText t
                 when t.Text.Contains "1,234" || t.Text.Contains "1234" || t.Text.Contains "$"
-                     || (t.Text <> "" && t.Text |> Seq.forall ((=) ' ')) -> yield t
+                     || t.Text.Contains "0.00"
+                     || (t.Text <> "" && t.Text |> Seq.forall (fun c -> c = ' ' || c = '#' || c = '.')) -> yield t
             | _ -> () ]
+    let lookWith value printing code align = lookWidth value 150.0 printing code align
     let look printing code align = lookWith 1234.5 printing code align
     let printed = [ for align in ["left"; "center"; "right"] -> look true code align ]
     let runOf (ts: Rbt.Spreadsheet.Paint.PaintText list) =
@@ -1249,6 +1251,65 @@ do
          | [only] -> only.Text.StartsWith("-1234.50", System.StringComparison.Ordinal)
          | _ -> false)
         (sprintf "%A" (suffixRuns "left"))
+    // The consumed-dot fallback is a real Paint branch (native formats `0.00*.` without the dot):
+    // one run, decimal point kept in the number, fill dots after it, cell alignment.
+    let dotPaint align = look true "0.00*." align
+    ok "print fill paint: a consumed dot suffix is one aligned run with dots after the number"
+        (match dotPaint "center" with
+         | [only] ->
+             only.Align = Rbt.Spreadsheet.Layout.AlignCenter
+             && only.Text.StartsWith("1234.50", System.StringComparison.Ordinal)
+             && only.Text.Substring 7 |> Seq.forall ((=) '.')
+         | _ -> false)
+        (sprintf "%A" ([ for a in ["left"; "center"; "right"] -> dotPaint a |> List.map (fun t -> t.Text, t.Align) ]))
+    ok "print fill paint: a consumed dot suffix keeps the decimal and a single negative sign"
+        (match lookWith -1234.5 true "0.00*." "right" with
+         | [only] ->
+             only.Text.StartsWith("-1234.50", System.StringComparison.Ordinal)
+             && not (only.Text.Contains "--")
+             && only.Text.Substring 8 |> Seq.forall ((=) '.')
+         | _ -> false)
+        (sprintf "%A" (lookWith -1234.5 true "0.00*." "right" |> List.map (fun t -> t.Text)))
+    ok "print fill paint: a zero consumed-dot suffix pads from 0.00"
+        (match lookWidth 0.0 150.0 true "0.00*." "left" with
+         | [only] -> only.Text.StartsWith("0.00", System.StringComparison.Ordinal)
+         | _ -> false)
+        (sprintf "%A" (lookWidth 0.0 150.0 true "0.00*." "left" |> List.map (fun t -> t.Text)))
+    // Genuine overflow: a narrow cell must keep Paint's hash run, not a squeezed number.
+    ok "print fill paint: a narrow suffix-empty cell keeps its hash overflow"
+        (let ts = lookWidth 1234.5 20.0 true "0.00*-" "left"
+         ts.Length > 0
+         && ts |> List.forall (fun t -> t.Text <> "" && t.Text |> Seq.forall ((=) '#'))
+         && ts |> List.forall (fun t -> not (t.Text.Contains "1234")))
+        (sprintf "%A" (lookWidth 1234.5 20.0 true "0.00*-" "left" |> List.map (fun t -> t.Text)))
+    // Screen is untouched by the suffix-empty print branch.
+    ok "print fill paint: the screen keeps the collapsed suffix-empty display"
+        (match look false "0.00*." "left" with
+         | [only] -> only.Text = "1234.50" && only.Align = Rbt.Spreadsheet.Layout.AlignLeft
+         | _ -> false)
+        (sprintf "%A" (look false "0.00*." "left" |> List.map (fun t -> t.Text, t.Align)))
+    // Fallback overreach: a consumed dot is only accepted when the token is last. A non-empty suffix
+    // (here a quoted literal) must keep the prior path, not be read as a fill run.
+    ok "print fill: a consumed dot with a non-empty suffix is not a layout"
+        (runs "0.00*.\"x\"" 1234.5 "1234.50x" 200.0 = None) ""
+    // No duplicated sign: the negative prefix already carries `-`, so the dropped-token branch does
+    // not prepend another one.
+    let dotNegative = runs "0.00*." -1234.5 "-1234.50" 200.0
+    ok "print fill: a consumed dot keeps one negative sign"
+        (match dotNegative with
+         | Some (left, right, _) ->
+             right = "" && left.StartsWith("-1234.50", System.StringComparison.Ordinal)
+             && not (left.Contains "--")
+         | None -> false)
+        (sprintf "%A" dotNegative)
+    let dotDecimal = runs "0.00*." 1234.56 "1234.56" 200.0
+    ok "print fill: a consumed dot does not consume the decimal point"
+        (match dotDecimal with
+         | Some (left, right, _) ->
+             right = "" && left.StartsWith("1234.56", System.StringComparison.Ordinal)
+             && left.Substring 7 |> Seq.forall ((=) '.')
+         | None -> false)
+        (sprintf "%A" dotDecimal)
     let screenText = [ for align in ["left"; "center"; "right"] -> look false code align ]
     let expectedScreenAlign = [Rbt.Spreadsheet.Layout.AlignLeft; Rbt.Spreadsheet.Layout.AlignCenter; Rbt.Spreadsheet.Layout.AlignRight]
     ok "print fill paint: the screen keeps one run, its alignment and the collapsed fill"
