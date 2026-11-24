@@ -1,0 +1,42 @@
+# Preregistered print accounting-fill predictions, locked before the holdout F09 numeric rows were read.
+# Author: FillEngine. Baseline commit 6fe0e6e2, plus the textpad F09 gate already recorded in
+# tools/excel-parity/print-textpad-browser-gate.md. Training PDFs (already read): /var/tmp/textpad-oracle/train-excel.
+# Holdout workbooks were exported by the text-section work and are NOT inspected for numeric F09 here:
+#   holdout georgia: H_*/F09 (Georgia 12, 75%), holdout tahoma: H_*/F09 (Tahoma 10, 100%).
+#
+# ---- Observed model from the training set (Aptos Narrow 14, 100%, column 20 chars) ----
+# Excel 2019's accounting fill `* ` does not let the cell's horizontal alignment place the number.
+# The number is right-anchored in all three sheets (T_left/T_center/T_right):
+#   number word "1,234.50" xMin 389.470, xMax 439.2418 in all three (identical to 4 decimals);
+#   "$" word xMin 339.550 (left) / 340.270 (center) / 340.150 (right), xMax = xMin + 7.11828;
+#   cell B fill edges 332.949 .. 445.871, right gap 6.629 in all three, left gap 6.601/7.321/7.201.
+# So: the whole run is right-anchored; the `_(`/`_)` pads stay on the inside of the cell edges; the
+# fill repeats `space` the largest whole number of times that fits between the "$" literal and the
+# number, and the sub-space leftover is left at the LEFT of the "$" (never after the number). The
+# alignment-dependent 0.6-0.7 pt difference in "$" x is the leftover (< one space, 2.52 pt here).
+#
+# ---- Proposed rule (print only; supported cases) ----
+# A numeric value whose active section has exactly one active `*x` fill token and only literal/pad
+# text before it: repeat x `n` times, n = 1 + floor((available - width(text with one x)) / width(x)),
+# available = cell content width less both `_x` pad advances, and draw the run right-aligned.
+# Leftover = available - width(expanded) in [0, width(x)) stays at the run's left.
+# Unsupported (kept on the prior path): no active fill, >1 active fill tokens, a digit/`@` placeholder
+# before the fill, wrapped/rotated/shrunk/across-selection cells, all-hash display, empty section.
+#
+# test  sheets  face/scale      prediction                                                                    accept
+ANCHOR_R   H_*     all           xMax(F09 num) equals xMax on the same workbook's right-alignment sheet         |delta| <= 0.15 pt
+RIGHT_GAP  H_*     all           cell_right - xMax(F09 num) is padX + adv(")")                                 |delta| <= 0.60 pt
+GAP_VS_F00 H_*     all           right gap(F00 num) - right gap(F09 num) = adv(")")                          1.5 <= delta <= 7.0 pt
+DOLLAR_L   H_*     all           xMin("$") - cell_left - padX - adv("(") is the leftover                         -0.40 <= delta <= adv(space)+0.20 pt
+LEFTOVER   H_*     all           available - width("$"+fills+number+trail pad) < adv(space)                    0 <= leftover < adv(space)+0.20 pt
+SAME_COUNT H_*     all           floor(gap($xMax,num xMin)/adv(space)) differs from another alignment's by <=1   |delta_count| <= 1
+TEXT       H_*     all           group text of the F09 numeric cell is "$ 1,234.50"                            exact
+SCREEN     --      --            screen cell text/alignment and every non-fill format unchanged                 no change
+NUM_OTHER  H_*     all           all numeric controls except F09 keep their prior word boxes                     |delta| <= 0.1 pt vs baseline
+TEXT_ROWS  H_*     all           all text rows (fourth-section F09 text included) unchanged                    |delta| <= 0.1 pt vs baseline
+#
+# Training after-values implied by the rule (Aptos Narrow 14, 100%): F09 numeric "$" xMin moves from
+# 339.098/333.311/327.523 (ours before) to ~339.8 on all alignments; number xMax stays ~439.4;
+# run no longer overflows the right edge on the left-aligned sheet (before: xMax 450.944 > 445.871).
+# Predicted training word boxes (poppler ink, ours): "$" xMin 339.5..340.3, number xMax 439.1..439.7,
+# "$" xMax - number xMin = 16..17 space advances, on each of the three alignments.
