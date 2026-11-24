@@ -166,14 +166,29 @@ Tested as one principled rule on both faces using the no-fill controls:
   (0.36 pt) still leaves 6/420 and 11/480 mismatches.
 
 So the runtime rule is falsified as stated; no runtime change, no new calibration, absolute gate intact.
-The border sweep discriminates the surviving constant from width models: it has no/thin/medium/thick
-borders, three faces (Arial 11/60, Aptos Narrow 14/100, fresh Calibri 11/100), a control in every sheet,
-and solid cell fills so the no-border sheets still yield geometry. If the constant is border-presence,
-`none` needs no correction while all bordered styles need the same c; if it is a text/measurement term,
-`none` needs the same c. Width models predict c proportional to the measured strip/stroke and transition
-widths that move with border weight. The re-locked predictions for Oracle's actual design are
-`border-sweep-predictions-v2.tsv` (`9a98145f...`); the earlier `border-sweep-predictions.tsv`
-(`78c78b56...`) assumed only thin/medium/thick and is superseded.
+The border sweep has now resolved the border question (TrailingTruth's direct sweep,
+`print-border-fill-oracle.md`: 1016 fill cells, none/thin/medium/thick, Arial 11/60, Aptos Narrow
+14/100, Calibri 11/100):
+
+- Border weight does nothing: count, amount x0/x1, composite end and residual are identical under all
+  four weights (0/432 Arial, 0/396 Aptos and Calibri differing cells; transition content width shift
+  0.000 pt; residual minimum style-invariant: Arial 1.176, Aptos 2.019, Calibri 1.654 pt).
+- Border ink does vary: Arial strips 0.60/1.20/1.68 pt (no stroke); Aptos and Calibri 0.96+0.14
+  stroke / 1.92 / 2.88 pt — so the absence of any count/geometry change is not an absence of border ink.
+- The correction interval is identical across weights for each face, and the no-border sheet carries the
+  same ~0.24-0.33 correction. Border-presence and width-proportional HALF_STRIP are falsified; NONE (0)
+  fails on every face.
+- With **Excel's measured number width**, one global constant `c ∈ [0.25, 0.32]` gives 0 count failures
+  on all 1016 fill cells (`c = 0.24` sits at the rounding edge and misses 16). With the **600-dpi
+  predicted number width** the intervals are face-dependent and do not intersect (Aptos [0.159, 0.279],
+  Arial [0.310, 0.417], Calibri [0.313, 0.403]; best 4/1016), so the remaining blocker is the predicted
+  text width/advance model, not the fill boundary.
+- That is exactly the advance stage of the decomposition below (ours +0.03 pt Aptos, +0.14 pt Arial
+  against Excel's measured width). A constant is not implementable as an engine rule until the
+  text-width/placement model is fixed; no runtime change, no fitted constant.
+
+Re-locked predictions for the actual design were `border-sweep-predictions-v2.tsv` (`9a98145f...`);
+v1 (`78c78b56...`) assumed only thin/medium/thick and is superseded.
 
 #### Where the 0.34-0.74 pt no-fill box gap comes from
 
