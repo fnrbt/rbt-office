@@ -224,7 +224,7 @@ def build(out, meta_path, split):
     with open(meta_path, 'w', encoding='utf-8', newline='\n') as f:
         f.write('\n'.join(meta) + '\n')
     print(f'wrote {out} ({len(sheet_files)} sheets, '
-          f'{sum(3 + len(c[6]) + len(c[7]) + len(c[8]) for c in cases)} test columns) and {meta_path}')
+          f'{sum(len(c[6]) + len(c[7]) + len(c[8]) for c in cases)} test columns) and {meta_path}')
 
 
 if __name__ == '__main__':

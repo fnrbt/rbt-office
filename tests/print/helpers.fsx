@@ -817,5 +817,168 @@ do
         | None -> false
     ok "print hash geometry: literal hashes are not overflow" literalFlag ""
 
+// ----- Printed fit cutoff: run text, pads and the two blind anchor decisions -----
+do
+    let codeFormat (code: string) =
+        { defaultFormat with
+            FontName = Some "Verdana"
+            FontSize = Some 13.0
+            HorizontalAlign = Some "right"
+            NumberFormat = Some code }
+    let runOf value code formatted =
+        Rbt.Spreadsheet.CellText.printFitRunFor (codeFormat code) value formatted
+    let pct = runOf (Number 12345.6789) "0.00%" "12345.68%"
+    ok "print fit run: percentage text, no pads" (pct = Some ("12345.68%", "")) (sprintf "%A" pct)
+    let grouped = runOf (Number 1234567.0) "#,##0.00" "1,234,567.00"
+    ok "print fit run: grouped decimal text, no pads" (grouped = Some ("1,234,567.00", "")) (sprintf "%A" grouped)
+    let accounting =
+        runOf (Number 1234567.0) "_(\"$\"* #,##0_);_(\"$\"* (#,##0);_(\"$\"* \"-\"_);_(@_)" " $ 1,234,567 "
+    ok "print fit run: active accounting fill keeps the prior decision"
+        (accounting = None) (sprintf "%A" accounting)
+    let padOnly = runOf (Number 0.5) "0.00_)" "0.50 "
+    ok "print fit run: a trailing pad keeps its own advance"
+        (padOnly = Some ("0.50", ")")) (sprintf "%A" padOnly)
+    ok "print fit run: General keeps the prior path"
+        (runOf (Number 1234567.0) "General" "1234567" = None) (sprintf "%A" (runOf (Number 1234567.0) "General" "1234567"))
+    ok "print fit run: dates keep the prior path"
+        (runOf (Number 45000.0) "m/d/yyyy" "3/15/2023" = None) (sprintf "%A" (runOf (Number 45000.0) "m/d/yyyy" "3/15/2023"))
+    ok "print fit run: literal hash text is not a number fit"
+        (runOf (Number 123.0) "\"#####\"" "#####" = None) (sprintf "%A" (runOf (Number 123.0) "\"#####\"" "#####"))
+    ok "print fit run: text values keep the prior path"
+        (runOf (CellValue.String "#####") "0.00" "#####" = None) ""
+    // The printer-unit decision itself (advance, pads, both directions and the hash clamp).
+    let flat _ = 5.0
+    let restored = Render.printedNumberRun flat 20.0 5.0 0 "42" "" "#####" "42"
+    ok "print fit decision: a fitting number Paint had hashed is restored"
+        (restored = ("42", false)) (sprintf "%A" restored)
+    let hashed = Render.printedNumberRun flat 20.0 5.0 0 "1123456789012" "" "1123456789012" "1123456789012"
+    ok "print fit decision: an overflowing number becomes four hashes"
+        (hashed = (System.String('#', 4), true)) (sprintf "%A" hashed)
+    let padded = Render.printedNumberRun flat 30.0 5.0 0 "$1,2" "()" "$1,2" " $ 1,2 "
+    ok "print fit decision: pads keep their advance" (padded = ("$1,2", false)) (sprintf "%A" padded)
+    let slotted = Render.printedNumberRun flat 20.0 5.0 2 "1123456789012" "" "1123456789012" "1123456789012"
+    ok "print fit decision: leading pads cost hashes"
+        (slotted = (System.String('#', 2), true)) (sprintf "%A" slotted)
+    let clamped = Render.printedNumberRun flat 2.0 5.0 0 "1" "" "1" "1"
+    ok "print fit decision: a flagged placeholder keeps one hash" (clamped = ("#", true)) (sprintf "%A" clamped)
+    // Paint carries the run and pads only for the print path's plain, single-line, unrotated numbers.
+    let fitFields (value: CellValue) (format: CellFormat) (width: float) =
+        let model =
+            createEmpty 3 3
+            |> setCell { Row = 0; Col = 1 } { Value = value; Format = format; Comment = None }
+            |> setColumnWidth 1 width
+            |> Pagination.withPrintSizes
+        let viewport : Rbt.Spreadsheet.Layout.Viewport =
+            { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
+              HeaderHeight = 0.0; RowHeaderWidth = 0.0
+              Measurer = Some (fun text _ _ _ _ -> 7.0 * float text.Length) }
+        [ for item in Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.PrintFitText <> "" ->
+                yield t.PrintFitText, t.PrintFitPads, t.PrintFitFullText, t.PrintFitItalicEligible
+            | _ -> () ]
+    let fitFieldsAt family points italic widthChars value formatCode =
+        fitFields (Number value)
+            { defaultFormat with
+                FontName = Some family
+                FontSize = Some points
+                Italic = italic
+                HorizontalAlign = Some "right"
+                NumberFormat = Some formatCode }
+            (Rbt.Spreadsheet.FontMetrics.columnWidthPx 7.0 widthChars)
+    let plainFormat =
+        { defaultFormat with
+            FontName = Some "Calibri"
+            FontSize = Some 11.0
+            HorizontalAlign = Some "right"
+            NumberFormat = Some "0.00" }
+    let plain = fitFields (Number 0.5) plainFormat 100.0
+    ok "print fit fields: plain number carries its run and full text"
+        (plain = [ "0.50", "", "0.50", false ]) (sprintf "%A" plain)
+    ok "print fit fields: General carries none"
+        (fitFields (Number 1234567.0) { plainFormat with NumberFormat = None } 100.0 = []) ""
+    ok "print fit fields: date carries none"
+        (fitFields (Number 45000.0) { plainFormat with NumberFormat = Some "m/d/yyyy" } 100.0 = []) ""
+    ok "print fit fields: literal hash text carries none"
+        (fitFields (CellValue.String "#####") plainFormat 100.0 = []) ""
+    ok "print fit fields: shrink-to-fit carries none"
+        (fitFields (Number 0.5) { plainFormat with ShrinkToFit = true } 100.0 = []) ""
+    let accountingCells =
+        fitFields (Number 1234567.0)
+            { plainFormat with NumberFormat = Some "_(\"$\"* #,##0_);_(\"$\"* (#,##0);_(\"$\"* \"-\"_);_(@_)" } 100.0
+    ok "print fit fields: active accounting fill keeps the prior decision"
+        (accountingCells = []) (sprintf "%A" accountingCells)
+    let paddedCells =
+        fitFields (Number 0.5) { plainFormat with NumberFormat = Some "0.00_)" } 100.0
+    ok "print fit fields: a non-fill pad carries its run and pad"
+        (match paddedCells with [ text, pads, _, _ ] -> text = "0.50" && pads = ")" | _ -> false)
+        (sprintf "%A" paddedCells)
+    let italicFormat =
+        { plainFormat with FontName = Some "Calibri"; Italic = true; NumberFormat = Some "0.00" }
+    let italicFields = fitFields (Number 0.5) italicFormat 100.0
+    ok "print fit fields: right-aligned italic number is reserve-eligible"
+        (match italicFields with [ _, _, _, eligible ] -> eligible | _ -> false) (sprintf "%A" italicFields)
+    let italicAccountingFields =
+        fitFields (Number 1234567.0)
+            { italicFormat with NumberFormat = Some "_(\"$\"* #,##0_);_(\"$\"* (#,##0);_(\"$\"* \"-\"_);_(@_)" } 100.0
+    ok "print fit fields: italic active-fill accounting keeps the prior decision"
+        (italicAccountingFields = []) (sprintf "%A" italicAccountingFields)
+    // The two blind-anchor transitions through the PDF consumer: Verdana 13 upright at 17.375 characters
+    // prints the full percentage where the screen-shaped rule hashed it; Georgia 15 italic at 90 % in
+    // 16.6875 characters prints 8 hashes where that rule kept the full number (docs/excel-parity-tracker.md).
+    let fontDir = System.IO.Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "artifacts", "fonts")
+    let renderedLines fontFile family italic points scale widthChars value formatCode =
+        let model =
+            createEmpty 2 1
+            |> setCell { Row = 0; Col = 0 }
+                { Value = Number value
+                  Format = { defaultFormat with
+                                FontName = Some family
+                                FontSize = Some points
+                                Italic = italic
+                                HorizontalAlign = Some "right"
+                                NumberFormat = Some formatCode }
+                  Comment = None }
+            |> setColumnWidth 0 (Rbt.Spreadsheet.FontMetrics.columnWidthPx 7.0 widthChars)
+            |> fun m -> { m with PageSetup = { m.PageSetup with Scale = scale } }
+        let face = Render.fontFace family family false italic (System.IO.File.ReadAllBytes fontFile)
+        let options : Render.RenderOptions =
+            { DefaultFontFamily = family; Fonts = [ face ]; CjkFallback = []; SheetName = "FitCutoff"; FileName = "f" }
+        let path = System.IO.Path.GetTempFileName()
+        System.IO.File.WriteAllBytes(path, Render.toBytes options model)
+        let p = System.Diagnostics.Process.Start(
+                    System.Diagnostics.ProcessStartInfo("pdftotext", sprintf "-layout \"%s\" -" path,
+                                                        RedirectStandardOutput = true))
+        let text = p.StandardOutput.ReadToEnd() in p.WaitForExit()
+        text.Split('\n') |> Array.map (fun line -> line.Trim()) |> Array.filter ((<>) "")
+    // The bundled Verdana face does not round-trip through this in-process PDF subset (all glyphs map to
+    // zero), so its anchor is asserted at the Paint level; the Georgia PDF case below exercises the
+    // rendered decision end to end.
+    let verdana = System.IO.Path.Combine(fontDir, "windows", "verdana.ttf")
+    if System.IO.File.Exists verdana then
+        let verdanaFields =
+            fitFieldsAt "Verdana" 13.0 false 17.375 12345.6789 "0.00%"
+        ok "print fit cutoff: Verdana 13 at 17.375 carries the full percentage run"
+            (match verdanaFields with [ text, _, full, _ ] -> text = "1234567.89%" && full = "1234567.89%" | _ -> false)
+            (sprintf "%A" verdanaFields)
+    let georgiaItalic = System.IO.Path.Combine(fontDir, "windows-extra", "georgiai.ttf")
+    if System.IO.File.Exists georgiaItalic then
+        let lines = renderedLines georgiaItalic "Georgia" true 15.0 90 16.6875 1234567.0 "#,##0.00"
+        ok "print fit cutoff: Georgia 15 italic at 16.6875 prints 8 hashes"
+            (lines |> Array.exists (fun line -> line = "########")) (String.concat "|" lines)
+    // Active `*` fill layouts (accounting) keep the prior print decision through the PDF: a narrow cell
+    // prints the counted hashes and a wide one the fill-expanded number - never the raw unexpanded text.
+    let calibri = System.IO.Path.Combine(fontDir, "windows", "calibri.ttf")
+    if System.IO.File.Exists calibri then
+        let accounting = "_(\"$\"* #,##0.00_);_(\"$\"* (#,##0.00);_(\"$\"* \"-\"??_);_(@_)"
+        let narrow = renderedLines calibri "Calibri" false 11.0 100 10.0 1234567.0 accounting
+        ok "print fit cutoff: narrow accounting keeps its hash run"
+            (narrow |> Array.exists (fun line -> line.Length > 0 && line |> Seq.forall ((=) '#')))
+            (String.concat "|" narrow)
+        let wide = renderedLines calibri "Calibri" false 11.0 100 22.0 1234567.0 accounting
+        ok "print fit cutoff: wide accounting prints its fill-expanded number"
+            (wide |> Array.exists (fun line -> line.Contains "1,234,567.00" && not (line.Contains "#")))
+            (String.concat "|" wide)
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

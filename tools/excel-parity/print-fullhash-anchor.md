@@ -27,8 +27,8 @@ face/format/scale absent from the engine fixtures are included.
 | Path | What |
 | --- | --- |
 | `tools/excel-parity/make-print-fullhash-anchor.py` | deterministic generator (`anchor` / `holdout`) |
-| `tests/test-documents-excel/synthetic-print-fullhash-anchor.xlsx` | 7 sheets, 365 test columns (7 wide + dense 1/32-char sweeps), row 2 `-98.41` control |
-| `tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx` | 2 sheets, 102 test columns; blind until the lock |
+| `tests/test-documents-excel/synthetic-print-fullhash-anchor.xlsx` | 7 sheets, 344 test columns (7 wide + dense 1/32-char sweeps), row 2 `-98.41` control |
+| `tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx` | 2 sheets, 96 test columns; blind until the lock |
 | `tools/excel-parity/print-fullhash-anchor.meta.tsv`, `print-fullhash-holdout.meta.tsv` | per-cell face/size/italic/scale/format/value/role/text (`row` 1 test, 2 control) |
 | `tools/excel-parity/measure-print-fullhash-anchor.py` | PDF measurement: fill → cell edges, word box → advanced run, `nHashes`, per-word span (last word for accounting numbers) |
 | `tools/excel-parity/predict-print-fullhash-anchor.py` | printer-unit candidate, `--measure` evaluates at the measured `W` |
@@ -151,9 +151,12 @@ first full 85.70). Both are reproduced by the candidate at the pre-registered `W
 | candidate at measured fill W | 354/369 (95.9 %) | 0 | 15 | 5 |
 
 Newly wrong at the pre-registered W: the 5 Georgia 90 % upright false hashes (W formula 0.04-0.15 pt low;
-0 at measured W) and the 5 extra Verdana 75 % false fulls. At the measured W the 5 Georgia italic
-90 % false fulls coincide with the baseline's own false fulls, so only the Verdana 75 % block is newly wrong. The Verdana 75 % block (10 columns) is the
-only failure not explained by width measurement.
+0 at measured W) and the 5 extra Verdana 75 % false fulls. At that W the Verdana 75 % block (10 columns) is
+the only failure not explained by the width formula: the Georgia upright and Cambria misses vanish at the
+measured fill width, and the Georgia italic 90 % transition sits 0.019 pt above the formula `c` at the
+fill width, inside the documented 0.1 pt fill-vs-layout allowance. At the measured W the 5 Georgia italic
+90 % false fulls coincide with the baseline's own false fulls, so only the Verdana 75 % block is newly
+wrong there.
 
 Counts: 187/187 printed hash counts are exact wherever the decision agrees with Excel; the only count
 mismatches (10) are the same Verdana 75 % columns that the candidate wrongly prints full. No independent
@@ -187,13 +190,14 @@ python3 tools/excel-parity/make-print-fullhash-anchor.py \
   tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx \
   tools/excel-parity/print-fullhash-holdout.meta.tsv holdout
 tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-fullhash-anchor.xlsx /var/tmp/fh/anchor
-tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx /var/tmp/fh/holdout
 python3 tools/excel-parity/measure-print-fullhash-anchor.py \
   tools/excel-parity/print-fullhash-anchor.meta.tsv /var/tmp/fh/anchor /var/tmp/fh/anchor.tsv
+# lock the holdout from its meta alone, then export it
+python3 tools/excel-parity/predict-print-fullhash-anchor.py \
+  tools/excel-parity/print-fullhash-holdout.meta.tsv /var/tmp/fh/holdout-pred.tsv
+tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx /var/tmp/fh/holdout
 python3 tools/excel-parity/measure-print-fullhash-anchor.py \
   tools/excel-parity/print-fullhash-holdout.meta.tsv /var/tmp/fh/holdout /var/tmp/fh/holdout.tsv
-python3 tools/excel-parity/predict-print-fullhash-anchor.py \
-  tools/excel-parity/print-fullhash-holdout.meta.tsv /var/tmp/fh/holdout-pred.tsv   # lock before export
 python3 tools/excel-parity/analyze-print-fullhash-anchor.py \
   tools/excel-parity/print-fullhash-anchor.meta.tsv /var/tmp/fh/anchor.tsv \
   /var/tmp/fh/anchor-pred.tsv /var/tmp/fh/anchor-analysis.tsv

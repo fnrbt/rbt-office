@@ -34,6 +34,14 @@ const FACE_FILES = [
     ['Verdana', false, true, 'verdanai.ttf'], ['Verdana', true, true, 'verdanaz.ttf'],
     ['Georgia', false, false, 'georgia.ttf'], ['Georgia', true, false, 'georgiab.ttf'],
     ['Georgia', false, true, 'georgiai.ttf'], ['Georgia', true, true, 'georgiaz.ttf'],
+    // Faces of the full-number cutoff anchors/holdout and the older overflow/accounting fixtures.
+    ['Cambria', false, false, 'cambria.ttf'], ['Cambria', true, false, 'cambriab.ttf'],
+    ['Cambria', false, true, 'cambriai.ttf'], ['Cambria', true, true, 'cambriaz.ttf'],
+    ['Trebuchet MS', false, false, 'trebuc.ttf'], ['Trebuchet MS', true, false, 'trebucbd.ttf'],
+    ['Trebuchet MS', false, true, 'trebucit.ttf'], ['Trebuchet MS', true, true, 'trebucbi.ttf'],
+    ['Aptos Narrow', false, false, 'aptosnarrow-regular.ttf'],
+    ['Aptos Narrow', true, false, 'aptosnarrow-bold.ttf'],
+    ['Aptos Narrow', false, true, 'aptosnarrow-italic.ttf'],
 ];
 const fonts = FACE_FILES.filter(([, , , file]) => fs.existsSync(path.join(fontDir, file)));
 const fontByName = new Map(fonts.map((f) => [f[3], f]));

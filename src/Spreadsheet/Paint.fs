@@ -39,6 +39,18 @@ type PaintText = {
     /// The full cell content width (before the text rectangle's 2 x padX inset) that Excel measures the
     /// printed overflow run against. Used only with `PrintOverflowHashes`; 0 means `Rect.Width`.
     PrintHashCellWidth: float
+    /// The run Excel 2019 measures for a printed number's fit (`CellText.printFitRunOf`): its formatted
+    /// text without `_x`/`*x` width markers. Empty where the printed fit cutoff does not apply (General
+    /// and date formats, text, rich runs, wrapped, rotated or shrink-to-fit cells). Print only.
+    PrintFitText: string
+    /// The `_x` pad characters whose advances that run keeps ("" when none).
+    PrintFitPads: string
+    /// The number's full formatted text (pads as spaces) to draw where the printed fit cutoff says it
+    /// fits but the screen-shaped rule had printed hashes. Empty where the cutoff does not apply.
+    PrintFitFullText: string
+    /// Whether a printed right-aligned italic number takes the full printed reserve when it fits; the
+    /// accounting fill layout does not.
+    PrintFitItalicEligible: bool
     /// Render a horizontal stroke under the text (XLSX `<u/>` font flag).
     Underline: bool
     /// Render two parallel strokes for `<u val="double"/>` instead of one.
@@ -367,6 +379,10 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     PrintOverflowHashes = false
                     PrintHashSlots = 0
                     PrintHashCellWidth = 0.0
+                    PrintFitText = ""
+                    PrintFitPads = ""
+                    PrintFitFullText = ""
+                    PrintFitItalicEligible = false
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -394,6 +410,10 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     PrintOverflowHashes = false
                     PrintHashSlots = 0
                     PrintHashCellWidth = 0.0
+                    PrintFitText = ""
+                    PrintFitPads = ""
+                    PrintFitFullText = ""
+                    PrintFitItalicEligible = false
                     Underline = false
                     UnderlineDouble = false
                     Strikethrough = false
@@ -949,7 +969,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 // the wider run (`FontMetrics.printItalicShiftPt`). Its fill/accounting number layout and the `###`
                 // overflow placeholder use their own layout and do not take it. Only eligibility is decided here;
                 // the PDF renderer measures the reserve from the face it actually draws.
-                let fillLayout, overflowHashes, hashSlots =
+                let fillLayout, overflowHashes, hashSlots, rawText =
                     match unwrapFormulaValue value with
                     | CellValue.Number n ->
                         let fillLayout =
@@ -965,8 +985,8 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                         // Excel's printed overflow keeps the active section's leading `_x` positions as hashes:
                         // the PDF recount subtracts one hash per slot (`CellText.leadingPrintHashSlots`).
                         let slots = if overflow then leadingPrintHashSlotsFor format value else 0
-                        fillLayout, overflow, slots
-                    | _ -> false, false, 0
+                        fillLayout, overflow, slots, raw
+                    | _ -> false, false, 0, ""
                 let italicEligible =
                     printing && format.Italic && format.TextRotation = 0 && align = AlignRight
                     && not fillLayout && not overflowHashes
@@ -981,6 +1001,27 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                     else [ displayText ]
                 let vAlign = look.VerticalAlign
                 let lineCount = lines.Length
+                // Excel 2019's printed fit cutoff, from the face's own advances (the PDF renderer measures it
+                // from the face it draws): the number's run (pads at their own advance) fits when it is no
+                // wider than the cell's content less c. Paint's screen-shaped rule decides first; this text
+                // lets the print path decide again where the two disagree
+                // (docs/excel-parity-tracker.md, "Print fit cutoff"). Only plain, single-line, unrotated
+                // numbers of an explicit non-date number format without an active `*` fill have it:
+                // General, dates, text, rich runs, wrapped and shrink-to-fit cells, and accounting fill
+                // layouts (whose full text is Paint's fill-expanded display) keep the prior path.
+                let printFit =
+                    if printing && lineCount = 1 && not look.Wrap && format.TextRotation = 0
+                       && not format.ShrinkToFit && displayText <> "" then
+                        printFitRunFor format value rawText
+                    else None
+                let printSlots =
+                    if overflowHashes then hashSlots
+                    elif printFit.IsSome then leadingPrintHashSlotsFor format value
+                    else 0
+                let printFitText, printFitPads, printFitFullText =
+                    match printFit with
+                    | Some (visible, pads) -> visible, pads, rawText
+                    | None -> "", "", ""
                 // Print's bottom baseline is set from the Normal font's printer metrics, not the row's height
                 // scale: 4 + roundHalfUp(n * (p + 8) / (s + 1)) dots above the grid boundary, where n is the
                 // largest 96-dpi GDI baseline level in the row (at least Normal's s), and p its 600-dpi level.
@@ -1138,6 +1179,10 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                                 PrintOverflowHashes = false
                                 PrintHashSlots = 0
                                 PrintHashCellWidth = 0.0
+                                PrintFitText = ""
+                                PrintFitPads = ""
+                                PrintFitFullText = ""
+                                PrintFitItalicEligible = false
                                 Underline = underline
                                 UnderlineDouble = underlineDouble
                                 Strikethrough = strike
@@ -1164,8 +1209,14 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             Italic = format.Italic
                             PrintItalicEligible = italicEligible
                             PrintOverflowHashes = printing && overflowHashes
-                            PrintHashSlots = hashSlots
+                            PrintHashSlots = printSlots
                             PrintHashCellWidth = baseRect.Width
+                            PrintFitText = printFitText
+                            PrintFitPads = printFitPads
+                            PrintFitFullText = printFitFullText
+                            PrintFitItalicEligible =
+                                printing && format.Italic && format.TextRotation = 0 && align = AlignRight
+                                && not fillLayout
                             Underline = format.Underline
                             UnderlineDouble = format.UnderlineDouble
                             Strikethrough = format.Strikethrough
@@ -1323,6 +1374,10 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           PrintOverflowHashes = false
           PrintHashSlots = 0
           PrintHashCellWidth = 0.0
+          PrintFitText = ""
+          PrintFitPads = ""
+          PrintFitFullText = ""
+          PrintFitItalicEligible = false
           Underline = false
           UnderlineDouble = false
           Strikethrough = false
@@ -1393,6 +1448,10 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                 PrintOverflowHashes = false
                 PrintHashSlots = 0
                 PrintHashCellWidth = 0.0
+                PrintFitText = ""
+                PrintFitPads = ""
+                PrintFitFullText = ""
+                PrintFitItalicEligible = false
                 Underline = false
                 UnderlineDouble = false
                 Strikethrough = false
@@ -1668,6 +1727,10 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             PrintOverflowHashes = false
                             PrintHashSlots = 0
                             PrintHashCellWidth = 0.0
+                            PrintFitText = ""
+                            PrintFitPads = ""
+                            PrintFitFullText = ""
+                            PrintFitItalicEligible = false
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false
@@ -1700,6 +1763,10 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             PrintOverflowHashes = false
                             PrintHashSlots = 0
                             PrintHashCellWidth = 0.0
+                            PrintFitText = ""
+                            PrintFitPads = ""
+                            PrintFitFullText = ""
+                            PrintFitItalicEligible = false
                             Underline = false
                             UnderlineDouble = false
                             Strikethrough = false

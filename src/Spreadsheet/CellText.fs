@@ -1160,6 +1160,54 @@ let private stripExcelWidthPlaceholders (code: string) : string =
             i <- i + 1
     sb.ToString()
 
+/// A format code without its `_x` width pads and `*x` fills (outside quoted literals and escaped
+/// characters): the run Excel 2019 measures when it decides whether a printed number fits. A `_x` pad
+/// adds the advance of x but no glyph; a `*x` fill adds nothing to the measured run.
+let private stripWidthMarkers (code: string) : string =
+    let sb = System.Text.StringBuilder(code.Length)
+    let mutable i = 0
+    let mutable inQuote = false
+    while i < code.Length do
+        let c = code.[i]
+        if c = '"' then
+            sb.Append(c) |> ignore
+            inQuote <- not inQuote
+            i <- i + 1
+        elif inQuote then
+            sb.Append(c) |> ignore
+            i <- i + 1
+        elif c = '\\' && i + 1 < code.Length then
+            sb.Append(c).Append(code.[i + 1]) |> ignore
+            i <- i + 2
+        elif (c = '_' || c = '*') && i + 1 < code.Length then
+            i <- i + 2
+        else
+            sb.Append(c) |> ignore
+            i <- i + 1
+    sb.ToString()
+
+/// The characters after `_` in a section's width pads, in order, outside quoted literals and escapes
+/// (`_(` and `_)` of `_("$"* #,##0_)` give "(...)": Excel leaves each one's advance in the printed fit).
+let private widthPadChars (section: string) : string =
+    let sb = System.Text.StringBuilder()
+    let mutable i = 0
+    let mutable inQuote = false
+    while i < section.Length do
+        let c = section.[i]
+        if c = '"' then
+            inQuote <- not inQuote
+            i <- i + 1
+        elif inQuote then
+            i <- i + 1
+        elif c = '\\' && i + 1 < section.Length then
+            i <- i + 2
+        elif c = '_' && i + 1 < section.Length then
+            sb.Append(section.[i + 1]) |> ignore
+            i <- i + 2
+        else
+            i <- i + 1
+    sb.ToString()
+
 /// Excel scales a number by 1000 for each comma at the END of the format
 /// (after the last digit placeholder) — `#,##0,`→thousands, `0.0,,`→millions.
 /// .NET only honours a scaling comma immediately LEFT of the decimal point, so
@@ -1877,6 +1925,46 @@ let widthPads (format: CellFormat) (value: CellValue) : string * string =
         | None when sections.Length >= 4 -> padsOf sections.[3]
         | None -> "", ""
     | _ -> "", ""
+
+/// The run Excel 2019 measures when it decides whether a printed number fits: the number's formatted
+/// text without width pads and `*` fills, and the `_x` pad characters whose advances it keeps. `formatted`
+/// is the number's text under `code` (with a space for each pad and the fill char once). Used only by the
+/// print path, whose cutoff is `width(text) + width(pads) <= cell - c` in printer units
+/// (docs/excel-parity-tracker.md, "Print fit cutoff").
+let private printFitRunOf (code: string) (formatted: string) (n: float) : string * string =
+    let stripped = stripWidthMarkers code
+    if stripped = code then formatted, ""
+    else
+        let visible =
+            try fst (formatExcelNumber stripped n)
+            with _ -> formatted
+        let pads =
+            try
+                let _, selected = formatExcelNumber code n
+                widthPadChars selected
+            with _ -> ""
+        visible, pads
+
+/// `printFitRunOf` where Excel 2019's printed fit cutoff applies: a number under an explicit number
+/// format that is neither General nor a date/time/elapsed format and that does not use an active `*`
+/// fill (accounting). A fill layout's full text is the fill-expanded display Paint draws, not the raw
+/// formatted text the cutoff restores, so those layouts keep the prior print decision (and count,
+/// alignment and text) instead of flipping between a hash run and unexpanded fill text. `formatted` is
+/// the value's text under that code. None where the cutoff does not apply, the text is empty, or it is
+/// only hashes (a literal/custom hash run keeps its text and alignment).
+let printFitRunFor (format: CellFormat) (value: CellValue) (formatted: string) : (string * string) option =
+    match format.NumberFormat, unwrapFormulaValue value with
+    | Some code, CellValue.Number n
+        when not (System.String.IsNullOrWhiteSpace code)
+             && not (code.Equals("general", System.StringComparison.OrdinalIgnoreCase))
+             && not (isDateOrTimeFormat code || hasElapsedBracket code)
+             && not (try numberFormatUsesFillForValue code n with _ -> false)
+             && formatted <> ""
+             && not (formatted |> Seq.forall (fun c -> c = '#')) ->
+        let visible, pads = printFitRunOf code formatted n
+        if visible = "" || visible |> Seq.forall (fun c -> c = '#') then None
+        else Some (visible, pads)
+    | _ -> None
 
 /// `cellDisplayTextIn` in the 1900 date system.
 let cellDisplayText

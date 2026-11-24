@@ -310,6 +310,28 @@ type private HeaderFooterSegment = {
     BaselineDeltaPt: float
 }
 
+/// Excel 2019's printed decision for a number's run, from measured printer-unit advances: the run
+/// (`fitText` at `advancePt` plus its `_x` pads at their own advance) fits when it is no wider than
+/// `contentPt`; otherwise it is `max 1 (floor(contentPt / pitchPt) - slots)` hashes, centred (`true`).
+/// A run that fits is drawn as `paintText`, unless Paint had shown hashes (all `#`) and `fullText`
+/// restores the formatted number (printed cutoffs can disagree with the screen-shaped rule either way).
+/// Public for the runtime tests; `Pdf.appendDrawTextOps` supplies the face's own advances.
+let printedNumberRun
+    (advancePt: char -> float) (contentPt: float) (pitchPt: float) (slots: int)
+    (fitText: string) (fitPads: string) (paintText: string) (fullText: string)
+    : string * bool =
+    let runPt =
+        let mutable total = 0.0
+        for c in fitText do total <- total + advancePt c
+        for c in fitPads do total <- total + advancePt c
+        total
+    if runPt <= contentPt + 1e-9 then
+        if paintText.Length > 0 && paintText |> Seq.forall (fun c -> c = '#') then fullText, false
+        else paintText, false
+    else
+        let count = max 1 (int (Math.Floor (contentPt / pitchPt + 1e-9)) - slots)
+        System.String('#', count), true
+
 let private appendDrawTextOps
     (options: RenderOptions)
     (faceByName: Map<string, PdfFont.TrueTypeFont>)
@@ -333,37 +355,40 @@ let private appendDrawTextOps
             let fontPx = t.FontSize * 96.0 / 72.0
             let fontSizePt = t.FontSize * placement.Scale
             let winAscent, winDescent = winMetrics primaryTtf
-            // Excel's true `###` overflow run is the largest whole number of GDI's printed `#` advances that fits
-            // the cell's content width. In printer dots (600 dpi) the advance is the rounded design width at
-            // round(points x scale x 600/72); the content width is the physical cell less
-            // digit advance / 2 + 0.875 pt, plus the face's full printed italic reserve for an italic run. The
-            // active section's leading `_x` positions each cost one hash (`PaintText.PrintHashSlots`).
-            // Checked on the direct-export hash-geometry sweep (243/245 exact; the two misses are 0.02-0.06 pt from
-            // a transition) and on a blind font/scale holdout whose 388 locked count predictions were all exact.
-            // Only the run length is recomputed here: overflow decision, placement and literal/custom hashes stay
-            // as Paint emitted them.
-            let t =
-                // `PrintOverflowHashes` is set by Paint only for a true placeholder, whose text is all `#`; the
-                // single-line guard keeps wrapped placeholders on their previous path. The `0.875 pt` term is
-                // empirical (fitted to the printer intercepts; the rest is the font's half digit advance), not a
-                // font metric.
-                if t.PrintOverflowHashes && t.LineCount = 1 && t.Text.Length > 0 then
-                    let unitEm ch = float (PdfFont.getTextWidth primaryTtf (string ch)) / float primaryTtf.UnitsPerEm
-                    let dots = Math.Floor (fontSizePt * 600.0 / 72.0 + 0.5)
-                    let pitchPt = max (72.0 / 600.0) (Math.Floor (unitEm '#' * dots + 0.5) * 72.0 / 600.0)
-                    let reserve =
-                        if t.Italic then
-                            Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
-                        else 0.0
-                    let fullCellWidth = if t.PrintHashCellWidth > 0.0 then t.PrintHashCellWidth else t.Rect.Width
-                    let contentPt = sz fullCellWidth - (unitEm '0' * fontSizePt / 2.0 + 0.875 + reserve)
-                    // Paint flags this only for a non-empty all-`#` display, so a true placeholder keeps at least
-                    // one hash even when the printer-unit width rounds below one (the narrow-cell control shows
-                    // Excel prints nothing only where Paint already emitted no placeholder at all).
+            // Excel's printed number fit and true `###` overflow run, from the face actually drawn, in printer
+            // dots (600 dpi): advance(c) = round(design width(c) at round(points x scale x 600/72) dots) x 72/600 pt;
+            // a run fits when its width (the `_x` pads at their own advance, `*x` fills at none) is at most the
+            // cell's content width less c = digit advance / 2 + 0.875 pt, plus the face's full printed italic
+            // reserve for an italic run. Where it does not fit, n = floor((content)/a) - leading `_x` slots.
+            // Checked on the direct-export hash-geometry sweep (243/245 exact) and on a blind font/scale holdout
+            // whose 388 locked count predictions and 388 locked full/hash decisions were all exact; training
+            // misses are 1/32-char boundary columns where the layout width is 0.10-0.15 pt under Excel's PDF fill
+            // (docs/excel-parity-tracker.md, "Print fit cutoff"). Screen paint, count centering and literal/custom
+            // hashes are unchanged.
+            let unitEm ch = float (PdfFont.getTextWidth primaryTtf (string ch)) / float primaryTtf.UnitsPerEm
+            let dots = Math.Floor (fontSizePt * 600.0 / 72.0 + 0.5)
+            let pitchPt = max (72.0 / 600.0) (Math.Floor (unitEm '#' * dots + 0.5) * 72.0 / 600.0)
+            let reserve =
+                if t.Italic then
+                    Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
+                else 0.0
+            let fullCellWidth = if t.PrintHashCellWidth > 0.0 then t.PrintHashCellWidth else t.Rect.Width
+            // The `0.875 pt` term is empirical (fitted to the printer intercepts; the rest is the font's half
+            // digit advance), not a font metric.
+            let contentPt = sz fullCellWidth - (unitEm '0' * fontSizePt / 2.0 + 0.875 + reserve)
+            // Paint's print text is the display; where it carries a fit run, decide from that. A true placeholder
+            // (`PrintOverflowHashes`, set only for a non-empty all-`#` display whose format text differs) keeps at
+            // least one hash even where the printer-unit width rounds below one.
+            let advancePt c = Math.Floor (unitEm c * dots + 0.5) * 72.0 / 600.0
+            let text, printOverflow =
+                if t.PrintFitText.Length > 0 && t.LineCount = 1 then
+                    printedNumberRun advancePt contentPt pitchPt t.PrintHashSlots
+                        t.PrintFitText t.PrintFitPads t.Text t.PrintFitFullText
+                elif t.PrintOverflowHashes && t.LineCount = 1 && t.Text.Length > 0 then
                     let count = max 1 (int (Math.Floor (contentPt / pitchPt + 1e-9)) - t.PrintHashSlots)
-                    if count = t.Text.Length then t
-                    else { t with Text = System.String('#', count) }
-                else t
+                    System.String('#', count), true
+                else t.Text, t.PrintOverflowHashes
+            let t = { t with Text = text }
             let singlePrimarySegment =
                 t.Text.Length > 0
                 && (List.isEmpty options.CjkFallback || fontCoversAllText primaryTtf t.Text)
@@ -395,11 +420,17 @@ let private appendDrawTextOps
             // A true `###` overflow placeholder is centred (whatever the cell's alignment) and takes half the
             // reserve when italic, as Excel 2019 prints it (HashGeometryOracle: R/L/C sheets agree; Aptos 14
             // italic centre is 1.38 pt left of upright, half its 2.76 pt right-alignment reserve).
+            // A full number the printed cutoff restored from Paint's hashes takes the right-alignment reserve
+            // where the cell is right-aligned italic (not the accounting fill layout).
+            let italicEligible =
+                if printOverflow then false
+                elif t.PrintFitText.Length > 0 then t.PrintFitItalicEligible
+                else t.PrintItalicEligible
             let italicShiftPt =
-                if not (t.PrintItalicEligible || (t.PrintOverflowHashes && t.Italic)) then 0.0
+                if not (italicEligible || (printOverflow && t.Italic)) then 0.0
                 else Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
             let alignedXPt =
-                if t.PrintOverflowHashes then
+                if printOverflow then
                     rectXPt + (rectWidthPt - totalWidthPt) / 2.0 - (if t.Italic then italicShiftPt / 2.0 else 0.0)
                 else
                     match t.Align with
@@ -1088,6 +1119,10 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         PrintOverflowHashes = false
         PrintHashSlots = 0
         PrintHashCellWidth = 0.0
+        PrintFitText = ""
+        PrintFitPads = ""
+        PrintFitFullText = ""
+        PrintFitItalicEligible = false
         Underline = false
         UnderlineDouble = false
         Strikethrough = false

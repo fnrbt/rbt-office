@@ -1,0 +1,7 @@
+dataset	model	decision_exact	denominator	full_exact	full_n	overflow_exact	overflow_n	count_exact	output_exact	false_hash	false_full	mismatch_columns
+holdout-388	baseline	383	388	124	127	259	261	- 		3	2	H_georgia15_it_grp!126,H_georgia15_it_grp!127,H_verdana13_up_pct!137,H_verdana13_up_pct!138,H_verdana13_up_pct!139
+holdout-388	candidate	388	388	127	127	261	261	261	388	0	0	-
+holdout-388	hypothesis	386	388	127	127	259	261	259	386	0	2	H_georgia15_it_grp!126,H_georgia15_it_grp!127
+train-dense	baseline	775	786	78	86	697	700	- 		8	3	T_aptos14_it_full!11,T_aptos14_it_full!12,T_aptos14_up_0_75_full!16,T_aptos14_up_0_75_full!17,T_aptos14_up_0_75_full!18,T_aptos14_up_full!12,T_aptos14_up_full!13,T_arial12_up_full!10,T_arial12_up_full!11,T_calibri11_up_acct!47,T_calibri11_up_acct!48
+train-dense	candidate	781	786	81	86	700	700	688	769	5	0	T_aptos14_it_full!11,T_aptos14_it_full!12,T_calibri11_it_full!13,T_calibri11_it_full!14,T_calibri11_it_full!15
+train-dense	hypothesis	783	786	86	86	697	700	695	781	0	3	T_aptos14_up_0_75_full!16,T_aptos14_up_0_75_full!17,T_aptos14_up_0_75_full!18

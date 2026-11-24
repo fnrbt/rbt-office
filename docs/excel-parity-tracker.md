@@ -1920,3 +1920,95 @@ tools/excel-parity/print-hash-geometry-predictions-round2.tsv /tmp/countmodel-me
 `dotnet fsi tests/print/helpers.fsx` (254 passed, 0 failed; includes the consumer-level regression render of
 Aptos 14 at 8.25 characters, which asserts printed `######`, plus ordinary/-98.41, full/42 and literal/`#####`
 controls through `Render.toBytes` + `pdftotext`).
+
+## Print fit cutoff: actual face metrics, 2026-11-24
+
+The full/hash decision for a printed number was the last screen-shaped step in the print path: Paint
+measured the display text against `fittedRoom` (a screen margin of `2 x ceil(digit/4) + 1` scaled by
+the zoom and an italic overhang). It now decides from the face the PDF actually draws:
+
+```
+dots = floor(points x scale x 600/72 + 0.5)                    # GDI's 600-dpi height
+a    = floor(hashEm x dots + 0.5) x 72/600                      # printed '#' advance
+c    = digitEm x points x scale / 2 + 0.875                    # shared with the count rule
+       + (italic ? FontMetrics.printItalicShiftPt(usWinAscent, upm, points, scale) : 0)
+run  = sum over the formatted text of floor(glyphEm x dots + 0.5) x 72/600
+       + the same for the active section's `_x` pad characters (a `*x` fill adds nothing)
+fits = run <= W - c, else n = max 1 (floor((W - c) / a) - leading `_x` slots)
+W    = the full cell content width (`PaintText.PrintHashCellWidth`) at the page scale
+```
+
+Implementation: `CellText.printFitRunFor` gives the measured run (the number's formatted text without
+`_x`/`*x` markers) and the pad characters; `Paint.buildCellPaintItems` carries them on the printed
+`DrawText` (`PrintFitText`, `PrintFitPads`, `PrintFitFullText`, `PrintFitItalicEligible`) only for
+plain, single-line, unrotated, non-shrunk numbers of an explicit non-General, non-date number format
+without an active `*` fill;
+`Pdf.appendDrawTextOps` takes those metrics from the chosen face (including a fallback face) and makes
+the decision. Active `*` fill layouts (accounting) are excluded: their full text is the fill-expanded
+display, not the raw formatted string a restore would draw, so they keep the prior print decision,
+count, alignment and text. A `_x` pad without a `*` fill is supported (`0.00_)` keeps its pad advance). A number Paint had hashed is restored from `PrintFitFullText` when it fits; one Paint
+had shown is replaced by the same counted, centred hash run when it does not. The count formula,
+placeholder centering, literal/custom hash text, the accounting `_x` slot rule, the screen path
+(`cellLook`/`Paint.buildPaintItems`, no `fit` passed), General's longest-form fallback, dates,
+scientific text, rich-text runs, wrapped/rotated/shrink-to-fit cells and mixed-font runs all keep
+their previous paths and values.
+
+Evidence (fresh Excel 2019 direct PDFs; `tools/excel-parity/analyze-print-fit-cutoff.py`,
+`print-fit-cutoff-comparison.tsv`; baseline is the prior screen-shaped print rule on the same layout W):
+
+| dataset (row-1 test columns) | baseline decision | baseline output | candidate decision | candidate output | hypothesis (measured W) |
+| --- | --- | --- | --- | --- | --- |
+| count holdout, 388 columns (Verdana 13 upright `0.00%`; Georgia 15 italic 90 % `#,##0.00`) | 383/388 (3 false hash, 2 false full) | — | **388/388** (127 full, 261 overflow; every count exact) | **388/388** | 386/388 (2 false full: Georgia 16.6875/16.75) |
+| count train, 786 dense columns (Aptos Narrow 14 / Calibri 11 / Arial 12, `0`, accounting, 75/100 %) | 775/786 (8 false hash, 3 false full) | — | 781/786 (700 overflow decisions, counts 688/700) | 769/786 | 783/786 (3 false full: Aptos 14 75 %, full 86/86) |
+
+The five known runtime full/hash mismatches are exactly the baseline's holdout errors: Verdana
+17.375/17.4375/17.5 were hashed (Excel full), Georgia italic 16.6875/16.75 were full (Excel 8 hashes).
+The candidate gets all five, and its counts equal the shipped recount on every overflow row
+(261/261). The hypothesis using the measured PDF width is worse on the two Georgia boundary rows, so
+the layout width stays the input (Excel's PDF fill edge is 0.10-0.15 pt wider than it).
+
+Limits. On the dense training sweep the candidate's 5 decision misses are one-sided: Aptos Narrow 14
+italic 17.5625/17.625 and Calibri 11 italic 13.9375-14.0625 print 13 hashes where Excel still prints
+the full 13-digit number, because the layout W is up to 0.15 pt under Excel's fill edge (the measured-W
+hypothesis fixes all 86 full rows there but breaks the two Georgia holdout columns). Twelve overflow
+rows are one hash off for the same width reason (the shipped count rule's known boundary rows). The
+`0.875 pt` part of `c` remains empirical, and the italic reserve is the right-alignment measurement;
+a centred or left italic full number uses the same `c` (no separate measurement). Supported scope is
+non-fill explicit number formats: an active-`*` accounting layout keeps the old decision (a discriminating
+regression asserts no fit fields for it, and the PDF consumer checks a narrow accounting cell still prints
+its hash run and a wide one its fill-expanded number, never raw unexpanded text), because the fill-expanded
+text is produced by Paint's layout, not by the cutoff. The
+blind holdout adds 4 false hashes (Cambria 16.8125-16.9062; layout W 0.027 pt low) and the anchor
+sweep adds the Verdana 13 at 75 % block above (10 false full); both are width/advance quantisation,
+not the `c` rule, and the W+0.15 lock column and measured-fill W each score 82/82 on the blind
+columns.
+Screen paint, hash sizing (`a`, `slots`, `max 1`) and centering are untouched.
+
+**Blind holdout** (pre-registered, unexported at lock time): `print-fullhash-engine-predictions.tsv`
+for `tests/test-documents-excel/synthetic-print-fullhash-holdout.xlsx` (Cambria 16 upright 80 %
+`#,##0.00` 16.5-17.75 chars; Trebuchet MS 12 italic 85 % `0.00%` 11.5-12.75 chars, 1/32 steps, plus
+22-character matched strings and literal twins). Locked candidate: 55 full / 37 hash / 4 literal;
+baseline 59 full / 33 hash. Fresh Excel direct export (FitCutoffOracle): **candidate 78/82**, baseline
+69/82 - the 4 candidate misses are Cambria widths 16.8125-16.9062, false hash because the layout W is
+0.027 pt under Excel's fill width; the W+0.15 column of the lock and the measured-fill W both score
+82/82. The discriminating Trebuchet widths 12.0938-12.1875 are confirmed Excel hashes (the baseline
+prints the full number there), so the holdout's designed contrast lands on the candidate's side.
+
+**All 369 measured dense columns** (287 anchor + 82 blind holdout; `print-fullhash-anchor.md` and the
+oracle's `*-results.tsv` / `*-analysis.tsv`): candidate at the pre-registered layout W 350/369 (9 false
+hash, 10 false full), measured-fill-W 354/369 (0 false hash, 15 false full), baseline 332/369. 7 of 8 transition anchors contain the candidate's `c`;
+the misses split into the same layout-W class (Georgia 15 upright 90 %: 5 false hash, W 0.038 pt low;
+Cambria 16 upright 80 % likewise) and one real advance residual: **Verdana 13 at 75 %** prints the
+full number where Excel hashes at 17.2188-17.5 (10 columns). The printed wide-cell run there is
+70.098 pt where the design model gives 69.000 (the `###` pitch is still the 81-dot 7.9239 against
+`a` 7.92), and with the measured 70.098 the transition is exactly
+`73.801 - 70.098 < c = 3.974 <= 74.543 - 70.098`: the cutoff is right and the number's hinted
+advance at that fractional 81.25-dot height is the residual. Our anchor lock predicts full on those
+columns too. Counts are 187/187 on the decision-correct hash columns, with no independent count error.
+
+The blind anchors before that holdout fix the same 5 runtime decisions as the 388-column count
+holdout: Verdana 17.375/17.4375/17.5 are full in Excel, Georgia italic 16.6875/16.75 are 8 hashes;
+the candidate gets all five. `print-fit-cutoff-comparison.tsv` and
+`tools/excel-parity/analyze-print-fit-cutoff.py` reproduce the baseline/candidate/measured-W tallies
+from the checked-in meta/results (holdout candidate 388/388 output, baseline 383/388; train output
+candidate 769/786, baseline 775/786 decision-level).
