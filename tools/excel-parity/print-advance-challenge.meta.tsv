@@ -1,0 +1,677 @@
+sheet	column	row	width_chars	align	face	size_pt	italic	scale	kind	role	format	value	text
+H_Tahoma16up_pct65	2	1	28	right	Tahoma	16	0	65	wide	num	0.00%	0.01	1.00%
+H_Tahoma16up_pct65	3	1	28	right	Tahoma	16	0	65	wide	num	0.00%	0.08	8.00%
+H_Tahoma16up_pct65	4	1	28	right	Tahoma	16	0	65	wide	num	0.00%	0.11	11.00%
+H_Tahoma16up_pct65	5	1	28	right	Tahoma	16	0	65	wide	num	0.00%	0.88	88.00%
+H_Tahoma16up_pct65	6	1	28	right	Tahoma	16	0	65	wide	num	0.00%	1.11	111.00%
+H_Tahoma16up_pct65	7	1	28	right	Tahoma	16	0	65	wide	num	0.00%	8.88	888.00%
+H_Tahoma16up_pct65	8	1	28	right	Tahoma	16	0	65	wide	num	0.00%	11.11	1111.00%
+H_Tahoma16up_pct65	9	1	28	right	Tahoma	16	0	65	wide	num	0.00%	88.88	8888.00%
+H_Tahoma16up_pct65	10	1	28	right	Tahoma	16	0	65	wide	num	0.00%	1111.11	111111.00%
+H_Tahoma16up_pct65	11	1	28	right	Tahoma	16	0	65	wide	num	0.00%	8888.88	888888.00%
+H_Tahoma16up_pct65	12	1	28	right	Tahoma	16	0	65	wide	num	0.00%	111111.11	11111111.00%
+H_Tahoma16up_pct65	13	1	28	right	Tahoma	16	0	65	wide	num	0.00%	888888.88	88888888.00%
+H_Tahoma16up_pct65	14	1	28	right	Tahoma	16	0	65	wide	num	0.00%	11111111.11	1111111111.00%
+H_Tahoma16up_pct65	15	1	28	right	Tahoma	16	0	65	wide	num	0.00%	88888888.88	8888888888.00%
+H_Tahoma16up_pct65	16	1	28	right	Tahoma	16	0	65	wide	num	0.00%	1111111111.11	111111111111.00%
+H_Tahoma16up_pct65	17	1	28	right	Tahoma	16	0	65	wide	num	0.00%	8888888888.88	888888888888.00%
+H_Tahoma16up_pct65	18	1	28	right	Tahoma	16	0	65	wide	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	19	1	28	right	Tahoma	16	0	65	wide	num	0.00%	11111.11	1111111.00%
+H_Tahoma16up_pct65	20	1	28	right	Tahoma	16	0	65	wide	num	0.00%	88888.88	8888888.00%
+H_Tahoma16up_pct65	21	1	28	right	Tahoma	16	0	65	wide	num	0.00%	9999.99	999999.00%
+H_Tahoma16up_pct65	22	1	28	right	Tahoma	16	0	65	wide	num	0.00%	123.4567	12345.67%
+H_Tahoma16up_pct65	23	1	28	right	Tahoma	16	0	65	wide	num	0.00%	1.2345	123.45%
+H_Tahoma16up_pct65	24	1	28	right	Tahoma	16	0	65	wide	num	0.00%	1234.5678	123456.78%
+H_Tahoma16up_pct65	25	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1234567.89%
+H_Tahoma16up_pct65	26	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111111.00%
+H_Tahoma16up_pct65	27	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		8888888.00%
+H_Tahoma16up_pct65	28	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		999999.00%
+H_Tahoma16up_pct65	29	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		12345.67%
+H_Tahoma16up_pct65	30	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		123.45%
+H_Tahoma16up_pct65	31	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		123456.78%
+H_Tahoma16up_pct65	32	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111
+H_Tahoma16up_pct65	33	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111.00%
+H_Tahoma16up_pct65	34	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		8888
+H_Tahoma16up_pct65	35	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		8888.00%
+H_Tahoma16up_pct65	36	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		11111111
+H_Tahoma16up_pct65	37	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		11111111.00%
+H_Tahoma16up_pct65	38	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		88888888
+H_Tahoma16up_pct65	39	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		88888888.00%
+H_Tahoma16up_pct65	40	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		111111111111
+H_Tahoma16up_pct65	41	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		111111111111.00%
+H_Tahoma16up_pct65	42	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		888888888888
+H_Tahoma16up_pct65	43	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		888888888888.00%
+H_Tahoma16up_pct65	44	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111111
+H_Tahoma16up_pct65	45	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		111.111
+H_Tahoma16up_pct65	46	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1,111,111
+H_Tahoma16up_pct65	47	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		-1111111
+H_Tahoma16up_pct65	48	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		(1111111)
+H_Tahoma16up_pct65	49	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111111.89%
+H_Tahoma16up_pct65	50	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111111%
+H_Tahoma16up_pct65	51	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		111%111
+H_Tahoma16up_pct65	52	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1.1.1.1.1
+H_Tahoma16up_pct65	53	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		$1111111
+H_Tahoma16up_pct65	54	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		111,111.11%
+H_Tahoma16up_pct65	55	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1111111-
+H_Tahoma16up_pct65	56	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		---1111111
+H_Tahoma16up_pct65	57	1	28	right	Tahoma	16	0	65	wide	lit	0.00%		1,1,1,1,1,1,1
+H_Tahoma16up_pct65	58	1	17.5	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	59	1	17.5312	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	60	1	17.5625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	61	1	17.5938	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	62	1	17.625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	63	1	17.6562	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	64	1	17.6875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	65	1	17.7188	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	66	1	17.75	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	67	1	17.7812	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	68	1	17.8125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	69	1	17.8438	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	70	1	17.875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	71	1	17.9062	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	72	1	17.9375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	73	1	17.9688	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	74	1	18	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	75	1	18.0312	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	76	1	18.0625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	77	1	18.0938	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	78	1	18.125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	79	1	18.1562	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	80	1	18.1875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	81	1	18.2188	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	82	1	18.25	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	83	1	18.2812	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	84	1	18.3125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	85	1	18.3438	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	86	1	18.375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	87	1	18.4062	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	88	1	18.4375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	89	1	18.4688	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	90	1	18.5	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	91	1	18.5312	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	92	1	18.5625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	93	1	18.5938	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	94	1	18.625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	95	1	18.6562	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	96	1	18.6875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	97	1	18.7188	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	98	1	18.75	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	99	1	18.7812	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	100	1	18.8125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	101	1	18.8438	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	102	1	18.875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	103	1	18.9062	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	104	1	18.9375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	105	1	18.9688	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	106	1	19	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	107	1	19.0312	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	108	1	19.0625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	109	1	19.0938	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	110	1	19.125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	111	1	19.1562	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	112	1	19.1875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	113	1	19.2188	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	114	1	19.25	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	115	1	19.2812	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	116	1	19.3125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	117	1	19.3438	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	118	1	19.375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	119	1	19.4062	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	120	1	19.4375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	121	1	19.4688	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	122	1	19.5	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	123	1	19.5312	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	124	1	19.5625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	125	1	19.5938	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	126	1	19.625	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	127	1	19.6562	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	128	1	19.6875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	129	1	19.7188	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	130	1	19.75	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	131	1	19.7812	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	132	1	19.8125	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	133	1	19.8438	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	134	1	19.875	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	135	1	19.9062	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	136	1	19.9375	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	137	1	19.9688	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	138	1	20	right	Tahoma	16	0	65	dense	num	0.00%	12345.6789	1234567.89%
+H_Tahoma16up_pct65	2	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	3	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	4	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	5	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	6	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	7	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	8	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	9	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	10	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	11	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	12	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	13	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	14	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	15	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	16	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	17	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	18	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	19	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	20	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	21	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	22	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	23	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	24	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	25	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	26	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	27	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	28	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	29	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	30	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	31	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	32	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	33	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	34	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	35	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	36	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	37	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	38	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	39	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	40	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	41	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	42	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	43	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	44	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	45	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	46	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	47	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	48	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	49	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	50	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	51	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	52	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	53	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	54	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	55	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	56	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	57	2	28	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	58	2	17.5	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	59	2	17.5312	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	60	2	17.5625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	61	2	17.5938	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	62	2	17.625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	63	2	17.6562	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	64	2	17.6875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	65	2	17.7188	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	66	2	17.75	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	67	2	17.7812	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	68	2	17.8125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	69	2	17.8438	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	70	2	17.875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	71	2	17.9062	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	72	2	17.9375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	73	2	17.9688	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	74	2	18	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	75	2	18.0312	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	76	2	18.0625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	77	2	18.0938	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	78	2	18.125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	79	2	18.1562	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	80	2	18.1875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	81	2	18.2188	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	82	2	18.25	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	83	2	18.2812	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	84	2	18.3125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	85	2	18.3438	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	86	2	18.375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	87	2	18.4062	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	88	2	18.4375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	89	2	18.4688	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	90	2	18.5	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	91	2	18.5312	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	92	2	18.5625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	93	2	18.5938	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	94	2	18.625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	95	2	18.6562	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	96	2	18.6875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	97	2	18.7188	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	98	2	18.75	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	99	2	18.7812	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	100	2	18.8125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	101	2	18.8438	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	102	2	18.875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	103	2	18.9062	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	104	2	18.9375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	105	2	18.9688	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	106	2	19	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	107	2	19.0312	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	108	2	19.0625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	109	2	19.0938	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	110	2	19.125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	111	2	19.1562	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	112	2	19.1875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	113	2	19.2188	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	114	2	19.25	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	115	2	19.2812	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	116	2	19.3125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	117	2	19.3438	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	118	2	19.375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	119	2	19.4062	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	120	2	19.4375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	121	2	19.4688	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	122	2	19.5	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	123	2	19.5312	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	124	2	19.5625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	125	2	19.5938	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	126	2	19.625	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	127	2	19.6562	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	128	2	19.6875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	129	2	19.7188	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	130	2	19.75	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	131	2	19.7812	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	132	2	19.8125	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	133	2	19.8438	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	134	2	19.875	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	135	2	19.9062	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	136	2	19.9375	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	137	2	19.9688	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Tahoma16up_pct65	138	2	20	right	Tahoma	16	0	65	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	2	1	28	right	Arial	12	0	80	wide	num	0.00%	0.01	1.00%
+H_Arial12up_pct80	3	1	28	right	Arial	12	0	80	wide	num	0.00%	0.08	8.00%
+H_Arial12up_pct80	4	1	28	right	Arial	12	0	80	wide	num	0.00%	0.11	11.00%
+H_Arial12up_pct80	5	1	28	right	Arial	12	0	80	wide	num	0.00%	0.88	88.00%
+H_Arial12up_pct80	6	1	28	right	Arial	12	0	80	wide	num	0.00%	1.11	111.00%
+H_Arial12up_pct80	7	1	28	right	Arial	12	0	80	wide	num	0.00%	8.88	888.00%
+H_Arial12up_pct80	8	1	28	right	Arial	12	0	80	wide	num	0.00%	11.11	1111.00%
+H_Arial12up_pct80	9	1	28	right	Arial	12	0	80	wide	num	0.00%	88.88	8888.00%
+H_Arial12up_pct80	10	1	28	right	Arial	12	0	80	wide	num	0.00%	1111.11	111111.00%
+H_Arial12up_pct80	11	1	28	right	Arial	12	0	80	wide	num	0.00%	8888.88	888888.00%
+H_Arial12up_pct80	12	1	28	right	Arial	12	0	80	wide	num	0.00%	111111.11	11111111.00%
+H_Arial12up_pct80	13	1	28	right	Arial	12	0	80	wide	num	0.00%	888888.88	88888888.00%
+H_Arial12up_pct80	14	1	28	right	Arial	12	0	80	wide	num	0.00%	11111111.11	1111111111.00%
+H_Arial12up_pct80	15	1	28	right	Arial	12	0	80	wide	num	0.00%	88888888.88	8888888888.00%
+H_Arial12up_pct80	16	1	28	right	Arial	12	0	80	wide	num	0.00%	1111111111.11	111111111111.00%
+H_Arial12up_pct80	17	1	28	right	Arial	12	0	80	wide	num	0.00%	8888888888.88	888888888888.00%
+H_Arial12up_pct80	18	1	28	right	Arial	12	0	80	wide	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	19	1	28	right	Arial	12	0	80	wide	num	0.00%	11111.11	1111111.00%
+H_Arial12up_pct80	20	1	28	right	Arial	12	0	80	wide	num	0.00%	88888.88	8888888.00%
+H_Arial12up_pct80	21	1	28	right	Arial	12	0	80	wide	num	0.00%	9999.99	999999.00%
+H_Arial12up_pct80	22	1	28	right	Arial	12	0	80	wide	num	0.00%	123.4567	12345.67%
+H_Arial12up_pct80	23	1	28	right	Arial	12	0	80	wide	num	0.00%	1.2345	123.45%
+H_Arial12up_pct80	24	1	28	right	Arial	12	0	80	wide	num	0.00%	1234.5678	123456.78%
+H_Arial12up_pct80	25	1	28	right	Arial	12	0	80	wide	lit	0.00%		1234567.89%
+H_Arial12up_pct80	26	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111111.00%
+H_Arial12up_pct80	27	1	28	right	Arial	12	0	80	wide	lit	0.00%		8888888.00%
+H_Arial12up_pct80	28	1	28	right	Arial	12	0	80	wide	lit	0.00%		999999.00%
+H_Arial12up_pct80	29	1	28	right	Arial	12	0	80	wide	lit	0.00%		12345.67%
+H_Arial12up_pct80	30	1	28	right	Arial	12	0	80	wide	lit	0.00%		123.45%
+H_Arial12up_pct80	31	1	28	right	Arial	12	0	80	wide	lit	0.00%		123456.78%
+H_Arial12up_pct80	32	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111
+H_Arial12up_pct80	33	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111.00%
+H_Arial12up_pct80	34	1	28	right	Arial	12	0	80	wide	lit	0.00%		8888
+H_Arial12up_pct80	35	1	28	right	Arial	12	0	80	wide	lit	0.00%		8888.00%
+H_Arial12up_pct80	36	1	28	right	Arial	12	0	80	wide	lit	0.00%		11111111
+H_Arial12up_pct80	37	1	28	right	Arial	12	0	80	wide	lit	0.00%		11111111.00%
+H_Arial12up_pct80	38	1	28	right	Arial	12	0	80	wide	lit	0.00%		88888888
+H_Arial12up_pct80	39	1	28	right	Arial	12	0	80	wide	lit	0.00%		88888888.00%
+H_Arial12up_pct80	40	1	28	right	Arial	12	0	80	wide	lit	0.00%		111111111111
+H_Arial12up_pct80	41	1	28	right	Arial	12	0	80	wide	lit	0.00%		111111111111.00%
+H_Arial12up_pct80	42	1	28	right	Arial	12	0	80	wide	lit	0.00%		888888888888
+H_Arial12up_pct80	43	1	28	right	Arial	12	0	80	wide	lit	0.00%		888888888888.00%
+H_Arial12up_pct80	44	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111111
+H_Arial12up_pct80	45	1	28	right	Arial	12	0	80	wide	lit	0.00%		111.111
+H_Arial12up_pct80	46	1	28	right	Arial	12	0	80	wide	lit	0.00%		1,111,111
+H_Arial12up_pct80	47	1	28	right	Arial	12	0	80	wide	lit	0.00%		-1111111
+H_Arial12up_pct80	48	1	28	right	Arial	12	0	80	wide	lit	0.00%		(1111111)
+H_Arial12up_pct80	49	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111111.89%
+H_Arial12up_pct80	50	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111111%
+H_Arial12up_pct80	51	1	28	right	Arial	12	0	80	wide	lit	0.00%		111%111
+H_Arial12up_pct80	52	1	28	right	Arial	12	0	80	wide	lit	0.00%		1.1.1.1.1
+H_Arial12up_pct80	53	1	28	right	Arial	12	0	80	wide	lit	0.00%		$1111111
+H_Arial12up_pct80	54	1	28	right	Arial	12	0	80	wide	lit	0.00%		111,111.11%
+H_Arial12up_pct80	55	1	28	right	Arial	12	0	80	wide	lit	0.00%		1111111-
+H_Arial12up_pct80	56	1	28	right	Arial	12	0	80	wide	lit	0.00%		---1111111
+H_Arial12up_pct80	57	1	28	right	Arial	12	0	80	wide	lit	0.00%		1,1,1,1,1,1,1
+H_Arial12up_pct80	58	1	13.5	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	59	1	13.5312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	60	1	13.5625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	61	1	13.5938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	62	1	13.625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	63	1	13.6562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	64	1	13.6875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	65	1	13.7188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	66	1	13.75	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	67	1	13.7812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	68	1	13.8125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	69	1	13.8438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	70	1	13.875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	71	1	13.9062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	72	1	13.9375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	73	1	13.9688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	74	1	14	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	75	1	14.0312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	76	1	14.0625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	77	1	14.0938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	78	1	14.125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	79	1	14.1562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	80	1	14.1875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	81	1	14.2188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	82	1	14.25	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	83	1	14.2812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	84	1	14.3125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	85	1	14.3438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	86	1	14.375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	87	1	14.4062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	88	1	14.4375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	89	1	14.4688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	90	1	14.5	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	91	1	14.5312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	92	1	14.5625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	93	1	14.5938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	94	1	14.625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	95	1	14.6562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	96	1	14.6875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	97	1	14.7188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	98	1	14.75	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	99	1	14.7812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	100	1	14.8125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	101	1	14.8438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	102	1	14.875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	103	1	14.9062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	104	1	14.9375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	105	1	14.9688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	106	1	15	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	107	1	15.0312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	108	1	15.0625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	109	1	15.0938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	110	1	15.125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	111	1	15.1562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	112	1	15.1875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	113	1	15.2188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	114	1	15.25	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	115	1	15.2812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	116	1	15.3125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	117	1	15.3438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	118	1	15.375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	119	1	15.4062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	120	1	15.4375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	121	1	15.4688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	122	1	15.5	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	123	1	15.5312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	124	1	15.5625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	125	1	15.5938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	126	1	15.625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	127	1	15.6562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	128	1	15.6875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	129	1	15.7188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	130	1	15.75	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	131	1	15.7812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	132	1	15.8125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	133	1	15.8438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	134	1	15.875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	135	1	15.9062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	136	1	15.9375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	137	1	15.9688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	138	1	16	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	139	1	16.0312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	140	1	16.0625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	141	1	16.0938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	142	1	16.125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	143	1	16.1562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	144	1	16.1875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	145	1	16.2188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	146	1	16.25	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	147	1	16.2812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	148	1	16.3125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	149	1	16.3438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	150	1	16.375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	151	1	16.4062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	152	1	16.4375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	153	1	16.4688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	154	1	16.5	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	155	1	16.5312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	156	1	16.5625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	157	1	16.5938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	158	1	16.625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	159	1	16.6562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	160	1	16.6875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	161	1	16.7188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	162	1	16.75	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	163	1	16.7812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	164	1	16.8125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	165	1	16.8438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	166	1	16.875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	167	1	16.9062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	168	1	16.9375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	169	1	16.9688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	170	1	17	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	171	1	17.0312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	172	1	17.0625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	173	1	17.0938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	174	1	17.125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	175	1	17.1562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	176	1	17.1875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	177	1	17.2188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	178	1	17.25	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	179	1	17.2812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	180	1	17.3125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	181	1	17.3438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	182	1	17.375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	183	1	17.4062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	184	1	17.4375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	185	1	17.4688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	186	1	17.5	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	187	1	17.5312	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	188	1	17.5625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	189	1	17.5938	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	190	1	17.625	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	191	1	17.6562	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	192	1	17.6875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	193	1	17.7188	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	194	1	17.75	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	195	1	17.7812	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	196	1	17.8125	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	197	1	17.8438	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	198	1	17.875	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	199	1	17.9062	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	200	1	17.9375	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	201	1	17.9688	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	202	1	18	right	Arial	12	0	80	dense	num	0.00%	12345.6789	1234567.89%
+H_Arial12up_pct80	2	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	3	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	4	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	5	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	6	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	7	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	8	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	9	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	10	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	11	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	12	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	13	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	14	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	15	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	16	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	17	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	18	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	19	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	20	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	21	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	22	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	23	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	24	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	25	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	26	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	27	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	28	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	29	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	30	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	31	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	32	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	33	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	34	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	35	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	36	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	37	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	38	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	39	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	40	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	41	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	42	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	43	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	44	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	45	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	46	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	47	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	48	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	49	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	50	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	51	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	52	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	53	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	54	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	55	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	56	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	57	2	28	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	58	2	13.5	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	59	2	13.5312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	60	2	13.5625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	61	2	13.5938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	62	2	13.625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	63	2	13.6562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	64	2	13.6875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	65	2	13.7188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	66	2	13.75	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	67	2	13.7812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	68	2	13.8125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	69	2	13.8438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	70	2	13.875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	71	2	13.9062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	72	2	13.9375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	73	2	13.9688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	74	2	14	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	75	2	14.0312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	76	2	14.0625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	77	2	14.0938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	78	2	14.125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	79	2	14.1562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	80	2	14.1875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	81	2	14.2188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	82	2	14.25	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	83	2	14.2812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	84	2	14.3125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	85	2	14.3438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	86	2	14.375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	87	2	14.4062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	88	2	14.4375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	89	2	14.4688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	90	2	14.5	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	91	2	14.5312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	92	2	14.5625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	93	2	14.5938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	94	2	14.625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	95	2	14.6562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	96	2	14.6875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	97	2	14.7188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	98	2	14.75	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	99	2	14.7812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	100	2	14.8125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	101	2	14.8438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	102	2	14.875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	103	2	14.9062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	104	2	14.9375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	105	2	14.9688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	106	2	15	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	107	2	15.0312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	108	2	15.0625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	109	2	15.0938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	110	2	15.125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	111	2	15.1562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	112	2	15.1875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	113	2	15.2188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	114	2	15.25	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	115	2	15.2812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	116	2	15.3125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	117	2	15.3438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	118	2	15.375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	119	2	15.4062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	120	2	15.4375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	121	2	15.4688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	122	2	15.5	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	123	2	15.5312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	124	2	15.5625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	125	2	15.5938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	126	2	15.625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	127	2	15.6562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	128	2	15.6875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	129	2	15.7188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	130	2	15.75	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	131	2	15.7812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	132	2	15.8125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	133	2	15.8438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	134	2	15.875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	135	2	15.9062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	136	2	15.9375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	137	2	15.9688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	138	2	16	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	139	2	16.0312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	140	2	16.0625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	141	2	16.0938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	142	2	16.125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	143	2	16.1562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	144	2	16.1875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	145	2	16.2188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	146	2	16.25	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	147	2	16.2812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	148	2	16.3125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	149	2	16.3438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	150	2	16.375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	151	2	16.4062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	152	2	16.4375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	153	2	16.4688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	154	2	16.5	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	155	2	16.5312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	156	2	16.5625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	157	2	16.5938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	158	2	16.625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	159	2	16.6562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	160	2	16.6875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	161	2	16.7188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	162	2	16.75	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	163	2	16.7812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	164	2	16.8125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	165	2	16.8438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	166	2	16.875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	167	2	16.9062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	168	2	16.9375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	169	2	16.9688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	170	2	17	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	171	2	17.0312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	172	2	17.0625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	173	2	17.0938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	174	2	17.125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	175	2	17.1562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	176	2	17.1875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	177	2	17.2188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	178	2	17.25	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	179	2	17.2812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	180	2	17.3125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	181	2	17.3438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	182	2	17.375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	183	2	17.4062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	184	2	17.4375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	185	2	17.4688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	186	2	17.5	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	187	2	17.5312	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	188	2	17.5625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	189	2	17.5938	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	190	2	17.625	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	191	2	17.6562	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	192	2	17.6875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	193	2	17.7188	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	194	2	17.75	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	195	2	17.7812	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	196	2	17.8125	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	197	2	17.8438	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	198	2	17.875	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	199	2	17.9062	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	200	2	17.9375	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	201	2	17.9688	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41
+H_Arial12up_pct80	202	2	18	right	Arial	12	0	80	control	num	0.00	-98.41	-98.41

@@ -52,6 +52,7 @@ FONT_FILES = {
     ('Verdana', False): 'artifacts/fonts/windows/verdana.ttf',
     ('Georgia', False): 'artifacts/fonts/windows-extra/georgia.ttf',
     ('Tahoma', False): 'artifacts/fonts/windows-extra/tahoma.ttf',
+    ('Arial', False): 'artifacts/fonts/windows/arial.ttf',
 }
 FMT_ID = {'0.00%': 166, '#,##0.00': 167}
 WIDE = 28.0
@@ -64,7 +65,18 @@ SHEETS = [
     ('G15up_grp90', 'Georgia', 15, False, 90, '#,##0.00', 'train'),
     ('H_V13up_pct140', 'Verdana', 13, False, 140, '0.00%', 'holdout'),
     ('H_Tahoma15up_pct90', 'Tahoma', 15, False, 90, '0.00%', 'holdout'),
+    # second challenge: nonzero hinted-vs-design-rounded delta, separate workbook
+    ('H_Tahoma16up_pct65', 'Tahoma', 16, False, 65, '0.00%', 'challenge'),
+    ('H_Arial12up_pct80', 'Arial', 12, False, 80, '0.00%', 'challenge'),
 ]
+
+# Challenge sheets sweep explicitly across both the design-rounded and hinted
+# transitions.  Tahoma 16 @ 65 %: cutoffs 67.794 / 68.874 pt; Arial 12 @ 80 %:
+# 62.225 / 63.305 pt.  The wider Arial window also covers the requested 15.5-18.0.
+EXPLICIT_DENSE = {
+    'H_Tahoma16up_pct65': [(12345.6789, 17.5, 20.0)],
+    'H_Arial12up_pct80': [(12345.6789, 13.5, 18.0)],
+}
 
 # Per-sheet wide strings.  ('num', value) uses the sheet format; ('lit', text).
 def wide_columns(fmt, face):
@@ -104,6 +116,22 @@ def dense_columns(fmt):
     if fmt == '0.00%':
         return [('num', 12345.6789), ('num', 11111111.11)]
     return [('num', 1234567), ('num', 1111111.11)]
+
+
+def dense_widths_for(name, fmt, face, size, scale):
+    if name in EXPLICIT_DENSE:
+        out = []
+        for v, start, stop in EXPLICIT_DENSE[name]:
+            n = int(round((stop - start) / STEP))
+            for i in range(n + 1):
+                out.append((v, round(start + i * STEP, 4)))
+        return out
+    out = []
+    for _role, v in dense_columns(fmt):
+        text = fmt_text(v, fmt)
+        for w in dense_widths(text, face, size, scale, exact_height=True):
+            out.append((v, w))
+    return out
 
 
 def fmt_text(v, fmt):
@@ -217,10 +245,8 @@ def build(out, meta_path, split):
                 cols.append((WIDE, 'wide', 'num', str(v), fmt_text(v, fmt)))
             else:
                 cols.append((WIDE, 'wide', 'lit', '', v))
-        for role, v in dense_columns(fmt):
-            text = fmt_text(v, fmt)
-            for w in dense_widths(text, face, size, scale / 100.0, exact_height=True):
-                cols.append((w, 'dense', role, str(v), text))
+        for v, w in dense_widths_for(name, fmt, face, size, scale / 100.0):
+            cols.append((w, 'dense', 'num', str(v), fmt_text(v, fmt)))
         col_xml = ''.join(f'<col min="{2 + j}" max="{2 + j}" width="{w}" customWidth="1"/>'
                           for j, (w, *_rest) in enumerate(cols))
         style_of, control_of = [], []
@@ -269,8 +295,7 @@ def build(out, meta_path, split):
         if sp != split:
             continue
         n = len(wide_columns(fmt, face))
-        for _, v in dense_columns(fmt):
-            n += len(dense_widths(fmt_text(v, fmt), face, size, scale / 100.0, exact_height=True))
+        n += len(dense_widths_for(name, fmt, face, size, scale / 100.0))
         max_cols = max(max_cols, n)
     max_cols = max(max_cols, 2)
     for i in range(max_cols):
@@ -323,6 +348,6 @@ def build(out, meta_path, split):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) != 4 or sys.argv[3] not in ('train', 'holdout'):
+    if len(sys.argv) != 4 or sys.argv[3] not in ('train', 'holdout', 'challenge'):
         raise SystemExit(__doc__)
     build(sys.argv[1], sys.argv[2], sys.argv[3])

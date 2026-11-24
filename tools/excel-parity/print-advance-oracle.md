@@ -142,9 +142,10 @@ engine's 24 are the Verdana-75 slice (19) plus five Georgia/100 % width-model
 misses; exact-height's 36 are its six train misses (five Georgia false-full, one
 Verdana-100 false-hash) plus 30 holdout false-fulls.  The exact-height arithmetic candidate is therefore not a
 general replacement: it fits the 75 % slice by crossing a glyph-rounding boundary
-that happens to coincide there.  The honest next discriminator is the engine's
-hinted-advance path at ppem = 81 on the 75 % training columns; this holdout's
-ppem 152/113 have no hinting delta and cannot decide it.
+that happens to coincide there.  The next discriminator is the hinted-advance
+path at ppem 81; the original holdout's ppem 152/113 have no hinting delta and
+cannot decide it.  Section 7 adds that discriminator on independent
+faces/ppem.
 
 
 ## 6. Candidate vs baseline scoreboard
@@ -165,9 +166,55 @@ Verdana 100 false-hash 1 (col 74, model W quantisation).  Exact-height trades
 those for 30 holdout false-fulls and does not change the V100/Georgia width
 classes.
 
-Recommendation: keep the integer-height baseline.  The 75 % Verdana slice needs
-hinted per-glyph advances at ppem = 81 (the engine's `cand_*` path), not the
-exact-height arithmetic; the latter fits 75 % only because its digit boundary
-happens to agree there and is demonstrably wrong at ppem 152 and 113.  This
-experiment supplies the locked blind evidence for that decision but does not
-edit production.
+Recommendation: keep the integer-height baseline.  Section 7's independent
+challenge refutes FreeType-v35 hinted advances at print ppem (ppem 87 and 80)
+on faces where the font/driver genuinely has a nonzero hint delta; exact-height
+is also refuted at ppem 152/113.  The Verdana-75 slice therefore remains an
+unresolved special case, not a licence for either replacement.  This experiment
+supplies the locked blind evidence; it does not edit production.
+
+
+## 7. Second blind challenge: design-rounded vs FreeType-v35 hinted
+
+The first holdout's ppem 152/113 have zero hinted delta, so it cannot separate
+the shipping design-rounded model from the hinted candidate.  A separate small
+workbook was selected **from font/driver data only**
+(`scan-print-hint-delta.py`, FreeType v35 through libfreetype; validated against
+`GdiAdvances.fs`: Arial `!` at ppem 15 is hinted 5 vs design-rounded 4).
+
+| sheet | face / size / scale | ppem | hinted delta | sweep |
+| --- | --- | --- | --- | --- |
+| H_Tahoma16up_pct65 | Tahoma 16 upright 65 % | 87 | all digits, `$`: +1 dot | 17.5000-20.0000 |
+| H_Arial12up_pct80 | Arial 12 upright 80 % | 80 | all digits, `$`, `#`: +1 dot | 13.5000-18.0000 |
+
+Fixtures/locks: `synthetic-print-advance-challenge.xlsx` (sha
+`4c9bacf0…f78f24`), `print-advance-challenge.meta.tsv` (sha
+`49bc629e…ac83095`); our lock and the engine's lock were both written before
+the export (engine lock mtime 05:34:23Z, PDFs 05:35), agree on all 338 row-1
+cells, and the PDFs embed `Tahoma` / `ArialMT` (pdffonts; no fallback).
+
+Result on 226 tight cells:
+
+| sheet | cells | Excel full | baseline full | hinted full | baseline wrong | hinted wrong |
+| --- | --- | --- | --- | --- | --- | --- |
+| Tahoma 16 @ 65 % | 81 | 48 | 48 | 39 | **0** | 9 (false hash) |
+| Arial 12 @ 80 % | 145 | 135 | 135 | 126 | **0** | 9 (false hash) |
+| **total** | **226** | **183** | **183** | **165** | **0** | **18** |
+
+The hinted lock also misses 5 hash counts on Arial (its `a` is 5.40 pt vs the
+baseline/Excel 5.28 pt); the baseline misses none.  Wide advances and slopes
+follow the baseline, not the hinted candidate:
+
+| sheet | string | measured | baseline | hinted |
+| --- | --- | --- | --- | --- |
+| Tahoma 65 | `1234567.89%` | 64.06336 | 64.08000 | 65.16000 |
+| Arial 80 | `1234567.89%` | 58.66560 | 58.68000 | 59.76000 |
+| Tahoma 65 | per-digit slope | 5.63902 | 5.64000 | 5.76000 |
+| Arial 80 | per-digit slope | 5.27864 | 5.28000 | 5.40000 |
+
+**Conclusion:** Excel's print layout follows the design-rounded baseline on both
+independent faces.  FreeType-v35 hinting at print ppem is not Excel's print
+model; the hinted candidate is refuted rather than supported.  The original
+ppem-152/113 sheets remain the negative control (candidate == baseline, 0
+wrong); the Verdana-75 anomaly is neither exact-height nor v35 hinting and must
+not be generalised from this challenge.
