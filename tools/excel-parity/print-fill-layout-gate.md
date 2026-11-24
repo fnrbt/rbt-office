@@ -136,6 +136,65 @@ dist confirms it: on FillOracle's 1035-cell training workbook, only `S2_space_af
 `W_C1`/`W_C2`/`W_A1`/`W_A2`/`W_I3`, quoted `Q1`, escaped `E1`, inactive `I1` and both no-fill controls are
 identical in text, hash, count and every measured coordinate.
 
+### Repeat-width / over-fill investigation (falsified for a no-calibration runtime rule)
+
+The paired gate's worst new error is one extra fill on a right-aligned cell: 4.120 pt on training
+`T3_right` row 11 width 10.5, F8 zero (Excel 1 dash, ours 2; one dash advance is 4.296) and 1.510 pt on
+the holdout D2 negative. Filed against the pre-rule dist the same cells were within 0.25-0.49 pt, so this
+is a real over-fill, not a placement regression elsewhere.
+
+Tested as one principled rule on both faces using the no-fill controls:
+- Advance is not the cause (measured vs 600-dpi model: space 2.626/1.802 vs 2.640/1.800, dot 3.594-3.650
+  vs 3.600, dash 4.296/2.158 vs 4.320/2.160).
+- `N = floor((W − lin − rin − number)/adv)` with `lin`/`rin` from the same-width N1 left/right controls is
+  never high, and low on 45/420 (training) and 66/480 (holdout): the fill region is wider than the no-fill
+  text box. Quantizing the slack and advance to 600-dpi dots (floor/round/ceil) is identical or worse on
+  the Excel side; on engine-side quantities floor helps training (372 vs 366 exact) and hurts the holdout
+  (384 vs 423). A symmetric `W − 2·lin` box is worse still. A constant repeat pad exists only per face
+  (training interval [4.136, 4.236], holdout empty by 0.013), and choosing it is calibration.
+- Positive sub-finding for the next fixture: adding half the printed border strip width (thin borders
+  print as 0.6 pt filled strips, so **0.30 pt**) to `W − lin − rin − number` reproduces Excel's count
+  exactly on all 420 training and 480 holdout fill cells; the exact correction interval is **[0.24, 0.35]**
+  on both faces and contains s/2 = 0.30. That is consistent with the fill boundary being the border's
+  inner edge while the no-fill insets are measured to its centreline.
+- It is not implementable without calibration today: the engine's own no-fill insets already make its
+  text box 0.342-0.420 pt wider than Excel's on training and 0.449-0.738 pt wider on the holdout, so the
+  edge law cannot be applied to engine inputs; the best single engine-side correction (0.36 pt) still
+  leaves 6/420 and 11/480 mismatches.
+
+So the runtime rule is falsified as stated; no runtime change, no new calibration, absolute gate intact.
+The discriminating fixture that reopens it: the same cells with thin, medium and thick borders (the
+printed strip width is measured from the PDF; the current thin border is 0.6 pt) plus a control in each
+row, at Arial 11/60 and Aptos Narrow 14/100. If the border-edge model holds, each count transition moves
+with half the strip-width difference and by the same amount in points across fill characters; if it is a
+fixed 2-dot quantum, transition widths do not move with border weight. Acceptance is an exact count on
+every transition-adjacent cell from border span, measured no-fill insets, measured strip width and the
+600-dpi advance, with zero per-face parameters. The locked predictions for Oracle's border sweep are
+`border-sweep-predictions.tsv` (`78c78b56...`), sent before any sweep export.
+
+#### Where the 0.34-0.74 pt no-fill box gap comes from
+
+Cross-sheet decomposition of `slack = W − lin − rin − number` on all fill cells with an amount (left inset
+from the left-aligned N1 control, right inset from the right-aligned one):
+
+| face | border ΔW | advance −Δw | left inset −Δlin | right inset −Δrin | gap before s/2 | gap after s/2 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Aptos Narrow 14/100 | −0.007 | +0.028 | +0.780 | −0.192 | +0.610 | +0.370 (0.342-0.390) |
+| Arial 11/60 | −0.024 | +0.135 | +0.290 | +0.363 | +0.764 | +0.524 (0.420-0.600) |
+
+The cell border span contributes nothing net. The number glyph advance is small (ours 0.03-0.14 pt
+narrower). The placement insets dominate. The engine's inset is one symmetric pad fixed by the workbook
+Normal font (Calibri-11 47-dot digit) and the print scale: 1.920 pt at 100 %, 1.440 at 75 %, 1.152 at
+60 %, the same for every cell font. Excel's insets follow the cell font/size and are asymmetric: at
+100 % Aptos Narrow 14 has left 2.700 / right 1.78 and Tahoma 10 has 2.340 / 1.47; Georgia 12 at 75 % has
+1.920; Arial 11 at 60 % has 1.44-1.47 / 1.49-1.63. The exact cell-font -> inset law (including the
+0.87-0.92 pt left-right asymmetry on Aptos/Tahoma) is underdetermined; the next observable is a direct
+export grid of plain `0.00`/`1234.50`/`-1234.50`, left and right aligned at fixed column width, over cell
+fonts {Aptos Narrow, Arial, Tahoma, Georgia, Calibri} x sizes {9,10,11,12,14} x scales {60,75,100} with
+the Normal font held fixed, measuring border span, number advance, left inset and right inset in printer
+dots. Acceptance: one zero-parameter rule predicts all four within one 600-dpi dot. Evidence:
+`/var/tmp/fill-engine/trail-proof/no-fill-box-decomposition.txt` (`d03d8d80...`).
+
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel
 itself moves `$` 0.45-1.39 pt right on centre/right sheets, inside one fill advance; that residual is
