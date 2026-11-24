@@ -28,6 +28,12 @@ are reported here as results, not predictions.
    Paint's screen-shaped rule had produced hashes; when it does not, the display stays Paint's hashes and
    the PDF's counted hash run (genuine numeric overflow). The earlier F09 gate's hash counts are unchanged
    (the narrow accounting test still prints its counted hashes).
+   The split checks that the fill character really sits where the rendered prefix ends. A negative value
+   under a single-section code is formatted with a leading `-` (`* #,##0.00` -> `- 1,234.50`); that sign is
+   carried as part of the left-anchored prefix, so the fixed width includes the sign and the number is never
+   printed without it. A sign where the fill character belongs makes the section fall back to the prior path.
+   A fill token with nothing after it (`0.00* `) also keeps the prior single aligned run: Excel places that
+   number exactly as its no-fill twin and only appends the fill chars, so expanding it would move the number.
 3. **PDF** — `Pdf.appendDrawTextOps` draws each run from the embedded face at `FontSize × scale`; the left
    run at `rectX`, the right run at `rectRight − width`. Fill layouts carry no print-fit run and no italic
    reserve (both checks exclude them), so the hash recount and the italic reserve are untouched. Poppler
@@ -59,12 +65,16 @@ Excel truth: `/var/tmp/textpad-oracle/{train-excel,holdout-*-excel,escapes-excel
 | holdout Tahoma | Tahoma 10, 100 % | 8.334 / 5.461 / 10.013 | **0.170 / 1.150 / 1.390** | 0 | 0 | 0.711 | 0.591 |
 | numeric escapes | Aptos Narrow 14, 100 % | – (no F09) | – | – | 0 | 0.681 | 0.614 |
 
-Provisional numfill training signal (FillOracle's public `synthetic-print-numfill.xlsx`, its Excel PDFs and
-`measure-print-numfill.py`; the fixture/tools were being edited concurrently, so this is a direction check,
-not a frozen gate): 813 matching cells. Hash agreement 180 match / 105 mismatch (141 mismatches before the
-fit override, 108 before the intercept); amount gap within 1 pt 595 cells (was 565); fill-count equal 479
-(was 455). Residuals are single-step fit-boundary cells in both directions, with our fixed run 0.15 pt
-above FillOracle's measured advance for "1,234.50"; that calibration belongs to the numfill face.
+Numfill baseline→candidate on the frozen native runner (FillOracle's corpus and measurement; identical
+workbooks, baseline `6fe0e6e2`):
+- train 1035 cells: Excel hashes 183/183 reproduced (baseline 183/183); Excel numbers hashed by the engine
+  fall 137 -> 117 (20 fixed, 0 newly hashed); 153/153 negative two-number cells keep their sign; amount gap
+  mean 13.148 -> 1.550 pt, max 87.288 -> 32.599; 0 cells newly over 1 pt, 88 newly within 1 pt.
+- Georgia holdout 630: 45/45 Excel hashes reproduced, 0 sign mismatches; gap mean 9.857 -> 0.575, max
+  66.326 -> 6.161 (FillOracle's browser/native comparison; strict Chromium check below).
+- Tahoma holdout 630: no Excel hash cells, 0 sign mismatches; gap mean 12.577 -> 1.166, max 85.528 -> 19.287.
+Remaining max errors are suffix-fill and inactive-section text shapes, which stay on the prior path; the
+fit window uses FillOracle's calibrated intercept.
 
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel
@@ -73,7 +83,8 @@ open and is what the numfill width sweep (FillOracle) should settle.
 
 Chromium `ExportPdf({what:'sheet'})` from the frozen dist equals native on every measured word box:
 training 222 rows, Georgia 150, Tahoma 150, escapes 132 — max word-box delta **0.00000 pt**, 0 text
-differences; no page errors.
+differences; no page errors. The numfill gate (`run-print-numfill-gate.sh`) on the same dist passes
+strictly: train 1035, Georgia 630, Tahoma 630 ours rows, 0 text/count/coord differences, same 0.00000 pt.
 
 ## Evidence for the general shape (FillOracle training, adopted)
 
@@ -97,5 +108,5 @@ PLAYWRIGHT=tools/browser-runner/node_modules/playwright/index.mjs \
   node tools/xlsx-browser/browser-textpad-proof.mjs --dist /var/tmp/fill-engine/dist \
   --fixture tests/test-documents-excel/synthetic-print-textpad.xlsx --out OUT --fonts artifacts/fonts/windows-extra --label synthetic-print-textpad
 bash scripts/build-dist.sh /var/tmp/fill-engine/dist
-dotnet fsi tests/print/helpers.fsx      # 322 passed, 0 failed
+dotnet fsi tests/print/helpers.fsx      # 324 passed, 0 failed
 ```

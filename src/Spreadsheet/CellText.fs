@@ -1553,16 +1553,33 @@ let printFillLayoutRuns
             match prefixRendered with
             | None -> None
             | Some prefix ->
-                let suffix = formatted.Substring(prefix.Length + 1)
-                let fillWidth = measure (string fillChar)
-                if fillWidth <= 0.0 then
-                    None
-                else
-                    let prefixWidth, suffixWidth = measure prefix, measure suffix
-                    let fixedWidth = prefixWidth + suffixWidth
-                    let count =
-                        max 0 (int (System.Math.Floor((available - fixedWidth) / fillWidth + 1e-9)))
-                    Some (prefix + System.String(fillChar, count), suffix, fixedWidth)
+                // The fill char must be where the rendered prefix ends. A negative value under a
+                // single-section code carries a leading `-` before the literal prefix
+                // (`* #,##0.00` -> `- 1,234.50`): that sign belongs to the left-anchored prefix.
+                let prefixText =
+                    if formatted.StartsWith(prefix, System.StringComparison.Ordinal)
+                       && formatted.Length > prefix.Length && formatted.[prefix.Length] = fillChar then
+                        Some prefix
+                    elif prefix = "" && formatted.StartsWith("-", System.StringComparison.Ordinal)
+                         && formatted.Length > 2 && formatted.[1] = fillChar then
+                        Some "-"
+                    elif formatted.StartsWith("-" + prefix, System.StringComparison.Ordinal)
+                         && formatted.Length > prefix.Length + 1
+                         && formatted.[prefix.Length + 1] = fillChar then
+                        Some ("-" + prefix)
+                    else None
+                match prefixText with
+                | None -> None
+                | Some prefix ->
+                    let suffix = formatted.Substring(prefix.Length + 1)
+                    let fillWidth = measure (string fillChar)
+                    if fillWidth <= 0.0 then
+                        None
+                    else
+                        let fixedWidth = measure prefix + measure suffix
+                        let count =
+                            max 0 (int (System.Math.Floor((available - fixedWidth) / fillWidth + 1e-9)))
+                        Some (prefix + System.String(fillChar, count), suffix, fixedWidth)
 
 let private expandAccountingFill
     (measure: (string -> float) option)

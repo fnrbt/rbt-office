@@ -973,7 +973,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                     match numericValue, measure, padExtras, format.NumberFormat with
                     | Some n, Some m, Some (leadExtra, trailExtra), Some code when fillLayoutForPrint ->
                         match (try CellText.printFillLayoutRuns code n rawNumericText m fillAvailable with _ -> None) with
-                        | Some (left, right, fixedWidth) ->
+                        | Some (left, right, fixedWidth) when right <> "" ->
                             // Excel's printed fill fit uses the whole cell width less the print-fit
                             // intercept (`Print fit cutoff`: half a digit + 0.875 pt at the page scale),
                             // with the `_x` pads at their own advances and no fill chars. The helper's
@@ -982,6 +982,12 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             if fixedWidth + leadExtra + trailExtra + cutoff <= baseRect.Width + 1e-9 then
                                 Some (left, right)
                             else None
+                        // A fill token with nothing after it (`0.00* `) keeps the prior single run: Excel
+                        // places that number exactly as its no-fill twin and only appends the fill chars
+                        // (measured: `0.00* ` amount x equals `0.00` on the left sheet, and centre/right
+                        // follow the aligned text including one fill char). The two-run layout needs a
+                        // suffix to anchor right; without evidence for a non-space suffix it is left out.
+                        | Some _ -> None
                         | None -> None
                     | _ -> None
                 let padLeft, padRight =

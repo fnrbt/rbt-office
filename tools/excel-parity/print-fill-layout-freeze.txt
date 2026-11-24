@@ -2,29 +2,33 @@
 # Baseline HEAD 6fe0e6e2; working tree also carries Main's checkpoints (HEAD 9c885762 at freeze).
 # No further edits after the dist build below.
 
-sha256  bbc5c8cd2a81ba8d9a2bc9dfec72d6ef13db7992a134937bd2cde65b015b3807  src/Spreadsheet/CellText.fs
-sha256  3236b3aa80d491ccf7cfdf4ffe87f1f797c48a021595f7a7c928a0f8d4b7e4b9  src/Spreadsheet/Paint.fs
-sha256  7b9fb42411c4ce05378191d10f9fa3cacc0cc24d7c978b5af976b0ccedc4b5d8  tests/print/helpers.fsx
+sha256  f7104bb6f033410de864391c660521c3cce1654b5d90106baa190bd5380e9ab1  src/Spreadsheet/CellText.fs
+sha256  a27e8eca9912ebf8c371ba2c76a262920a478ecb0ce56babcb69dac1bde1734f  src/Spreadsheet/Paint.fs
+sha256  a6ab371ef1ba625b9b30efd074e044b16cbc690b686c2a2e9f3bad2d7d39e10c  tests/print/helpers.fsx
 sha256  5e8b75bea7ee0a8893b849715067fe4f5a95921abd6943add5d85bbefb4006fe  tools/excel-parity/print-fill-layout-predictions.tsv
 sha256  1599cca72ee598f13658d6ec244d54775376a30e5484ec37c04f3d7476ff80e5  tools/excel-parity/print-fill-layout-general-predictions.tsv
 sha256  c4a3debd23faaa015a7bc2cbfe11a4b50132dde3e193632c1cea98239ff1ade2  tools/excel-parity/print-fill-layout-results.tsv
-sha256  bf6b59309d72bb790703b426149e6b83cd103d93756271813c5a425fdc1637be  tools/excel-parity/print-fill-layout-gate.md
+sha256  2a1593e3d9208872bf8aeae6742d1909788e2ef72af56fe6e979c16b0bcb6874  tools/excel-parity/print-fill-layout-gate.md
 
 # Browser dist from one Fable build of the sources above:
 #   bash scripts/build-dist.sh /var/tmp/fill-engine/dist
 # Manifest hash (sha256 of the sorted `sha256sum` lines of every file, paths relative):
 #   (cd /var/tmp/fill-engine/dist && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
 dist  /var/tmp/fill-engine/dist
-dist_manifest_sha256  466bcd9230704b2085c87e5ae0915d432f6d9a55802e600a1a0f05913fa373b7
-dist_build_log  /var/tmp/fill-engine/build-dist4.log   (exit 0, no page/module errors)
+dist_manifest_sha256  b38ad676e1b6819c9b2b38fb06bab2418f968a73f5a22b193bb07d076afb975c
+dist_build_log  /var/tmp/fill-engine/build-dist5.log   (exit 0, no page/module errors)
 
 # Verification at this freeze
-print_tests  dotnet fsi tests/print/helpers.fsx  ->  322 passed, 0 failed
+print_tests  dotnet fsi tests/print/helpers.fsx  ->  324 passed, 0 failed
 textpad_native  train 222 / Georgia 150 / Tahoma 150 / escapes 132 rows, only the 3 F09 numeric "ours"
                 rows per workbook differ from the frozen textpad gate (0 rows differ in escapes)
 textpad_chromium  browser vs native max word-box delta 0.00000 pt, 0 text differences, all four sets
-numfill_training  (FillOracle's corpus, provisional) 813 cells: hashes 180 match/105 mismatch,
-                amount gap <=1 pt 595, fill counts equal 479
+numfill_gate  tools/excel-parity/run-print-numfill-gate.sh on this dist + /var/tmp/numfill-oracle ->
+                GATE PASS: train 1035, Georgia 630, Tahoma 630 ours rows; browser vs native max
+                0.00000 pt, 0 text/count/coord differences on every workbook
+numfill_native  train: 183/183 Excel hashes reproduced, 0 print-on-overflow; engine-hashed numbers
+                137 -> 117 (20 fixed, 0 newly hashed); 153/153 negative two-number cells keep their sign;
+                Georgia 45/45 Excel hashes, 0 sign mismatches; Tahoma 0 Excel hashes, 0 sign mismatches
 
 # Native PDFs and comparison tables for this freeze:
 #   /var/tmp/fill-engine/{train-after,holdout-georgia,holdout-tahoma,escapes}/ours-{1,2,3}.pdf

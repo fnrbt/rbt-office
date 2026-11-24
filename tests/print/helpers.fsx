@@ -1121,6 +1121,17 @@ do
          | Some (left, right, _) -> right = "1,234.50" && left |> Seq.forall ((=) ' ') && left.Length = (200 - 72) / 4
          | None -> false)
         (sprintf "%A" prefixEmpty)
+    // A prefix-empty negative under a single-section code keeps the formatter's sign as the left
+    // prefix: `* #,##0.00` -> "- 1,234.50" (the sign is not mistaken for the fill char).
+    let signPrefix = runs "* #,##0.00" -1234.5 "- 1,234.50" 200.0
+    ok "print fill: a leading sign stays on the left of a prefix-empty fill"
+        (match signPrefix with
+         | Some (left, right, fixedWidth) ->
+             left = "-" + System.String(' ', (200 - (9 + 72)) / 4) && right = "1,234.50" && fixedWidth = 81.0
+         | None -> false)
+        (sprintf "%A" signPrefix)
+    ok "print fill: a sign where the fill char belongs is not a layout"
+        (runs "* #,##0.00" -1234.5 "-1,234.50" 200.0 = None) ""
     // A suffix-empty section: the number and the repeated fill chars are one left-anchored run.
     let suffixEmpty = runs "0.00*-" 1234.5 "1234.50-" 200.0
     ok "print fill: a suffix-empty fill appends its chars to the left run"
@@ -1195,10 +1206,12 @@ do
          | [left; right] -> left.Text |> Seq.forall ((=) ' ') && right.Text = "1,234.50"
          | _ -> false)
         (sprintf "%A" (prefixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
+    // A fill token with nothing after it keeps the prior single run: Excel prints that number exactly as
+    // its no-fill twin (fills appended after it), so expanding it would move the number.
     let suffixEmptyPaint = look true "0.00*-" "right"
-    ok "print fill paint: a suffix-empty layout is one left-anchored run"
+    ok "print fill paint: a suffix-empty layout keeps the prior single aligned run"
         (match suffixEmptyPaint with
-         | [left] -> left.Align = Rbt.Spreadsheet.Layout.AlignLeft && left.Text.StartsWith "1234.50-"
+         | [only] -> only.Align = Rbt.Spreadsheet.Layout.AlignRight && only.Text = "1234.50-"
          | _ -> false)
         (sprintf "%A" (suffixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
     let screenText = [ for align in ["left"; "center"; "right"] -> look false code align ]
