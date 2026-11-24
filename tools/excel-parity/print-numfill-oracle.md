@@ -18,6 +18,13 @@ boxes, so whitespace fills do not bias the amount or currency-sign position.
 | operator measurement | `tools/excel-parity/measure-print-numfill.py` |
 | prediction checks | `tools/excel-parity/analyze-print-numfill.py` |
 | freeze gate | `tools/excel-parity/run-print-numfill-gate.sh` |
+| trailing fixture generator sets | `--set trail-train`, `--set trail-holdout` in the same generator |
+| trailing training workbook (Aptos Narrow 14, 100 %) | `tests/test-documents-excel/synthetic-print-numfill-trail.xlsx` |
+| trailing holdout (Arial 11, 60 %; fresh font and scale) | `tests/test-documents-excel/synthetic-print-numfill-trail-holdout.xlsx` |
+| trailing manifests | `tools/excel-parity/print-numfill-trail{,-holdout}-cells.tsv` |
+| trailing locked predictions | `tools/excel-parity/print-numfill-trail-holdout-predictions.tsv` (sha256 `fdeeaf00...`) |
+| trailing model / checks | `tools/excel-parity/analyze-print-numfill-trail.py` |
+| trailing freeze gate | `tools/excel-parity/run-print-numfill-trail-gate.sh` |
 
 Short formats: `#,##0.00`, `0.00`, `* #,##0.00`, `*.#,##0.00`, `0.00* `, `0.00*.`,
 `"*"#,##0.00`, `\*#,##0.00`, `0.00;[Red]* -0.00;0.00`, `0.00*.;0.00`. Wide formats:
@@ -81,6 +88,11 @@ python3 tools/excel-parity/analyze-print-numfill.py \
 
 ## Final freeze (f7104bb6 / a27e8eca / a6ab371e / dist b38ad676)
 
+This freeze is the frozen previous release: origin/master `bf132a48`, dist manifest `b38ad676`,
+preserved at `/var/tmp/fill-engine/dist`. That dist is the baseline for every later round. The table
+below was produced against an older snapshot (`6fe0e6e2`) and is kept as history; do not use
+`6fe0e6e2` as the baseline again.
+
 FillEngine's strict gate and my independent run on this freeze both pass: train 1035, Georgia 630,
 Tahoma 630 ours rows; browser vs native max 0.00000 pt and 0 text/count/coord differences on all
 three. The gate requires
@@ -104,3 +116,131 @@ Final Chromium proof command:
 `run-print-numfill-gate.sh DIST EXCEL_ROOT OUT`. It exports all six sheets per workbook through
 `grid.ExportPdf({what:'sheet'})`, measures the browser PDFs, compares only ours rows with native, and
 exits non-zero on any missing oracle key or text/count/coordinate difference.
+
+## Trailing suffix-empty fills (`0.00* `, `0.00*.`, `0.00*-;0.00`)
+
+A second, denser oracle isolates the fill token when it ends the active section. Four formats
+`0.00` (control), `0.00* `, `0.00*.`, `0.00*-;0.00`; values +1234.5/-1234.5/0; left/centre/right;
+widths 5.5..12.0 in 0.25-char steps split into four band sheets per alignment (12 sheets per
+workbook), so every count transition from 0 upward for zero and from the hash boundary for positive
+and negative is bracketed. The F8 negative section is `0.00`; a multi-section format prints the
+negative section on the absolute value, so F8 negative is `1234.50` with no minus and no fill (its
+fit/hash control is the positive control, not the negative one).
+
+Training is Aptos Narrow 14 at 100 % (972 measured cells). Holdout is Arial 11 at 60 %: a fresh face
+and a fresh print scale. Its predictions were locked before export
+(`print-numfill-trail-holdout-predictions.tsv`, sha256 `fdeeaf000c51c7693044f6482a25e6a072329acc4cefb4a71a008b8e90e3770b`).
+
+Measured model (Excel truth, both faces):
+
+- `N = max(0, floor((cell_width - pad - w(number)) / w(fill)))` with one `pad` per face/scale:
+  Aptos 14/100 % pad in `[4.22, 4.32]` pt (mid 4.27), Arial 11/60 % pad exactly 2.64 pt; the law is
+  exact for all 140/160 left-aligned fill cells. `w` is the 600-dpi printer advance
+  (`round(glyphEm*round(size*scale*600/72))*72/600`). `pad` is smaller than the sum of the text
+  insets (train 4.27 vs 4.479, holdout 2.64 vs ~2.96); it is not derivable from them.
+- `number + N*fill` is one run placed by the cell's own alignment: left keeps the control's amount
+  x0/x1 (max delta 0.000 pt); centre shifts x0 by `N*w/2` (residual -0.025..+0.098 pt); right by
+  `N*w` (-0.050..+0.212). Count 0 is the control cell exactly (<= 0.011 pt), with no fill glyph.
+- The fill run is maximal but leaves 0.8-3.0 pt before the border. Count is monotone in width: step
+  <= 1 per 0.25 char for space/dash, <= 2 for dot.
+- Trailing fill never changes overflow: hash equals the matched control at every width/alignment.
+- Holdout advance check: space/dot 1.802-1.835 pt (model 1.800), dash 2.158-2.198 (model 2.160).
+
+All 12 locked checks pass on the fresh holdout Excel truth with 0 failures (edges, centre/right
+shift, text, count-0 identity, inside-cell, residual, advance, hash equivalence, monotonicity, sign,
+and the content-width law with same-PDF insets to |N_pred-N| <= 1).
+
+Measurement correction (tooling): `measure-print-numfill.py` now counts fill glyphs in emitted text
+order. Excel's first trailing fill glyph starts about 0.07 pt before the number's `/Widths` advance
+end (ink/advance boxes overlap), so an x-threshold count silently dropped it: 8 emitted spaces were
+counted as 7, 6 dots as 5. The corrected count adds one wherever a fill glyph exists, on Excel and
+ours alike. New trailing columns `composite_x1` and `fill_adv` are appended; old comparison TSVs are
+not rewritten.
+
+Baseline for the trailing round is the frozen previous release (`bf132a48`, dist manifest `b38ad676`,
+kept at `/var/tmp/fill-engine/dist`). On the new workbooks it is browser==native exactly, but against
+Excel it still caps `0.00* ` at one space and emits no dots for `0.00*.`:
+holdout ours-vs-Excel hash 18, count 423, amount_x0 413, amount_x1 595; count mismatches by
+format/alignment S2 50, D2 54, F8 37 (each of left/centre/right); train hash 51, count 327,
+amount_x0 481, amount_x1 481. Candidate numbers from the trailing gate replace these when the
+candidate freeze lands.
+
+Gate: `run-print-numfill-trail-gate.sh CANDIDATE_DIST EXCEL_ROOT OUT [BASELINE_DIST]
+[CANDIDATE_NATIVE_DIR] [BASELINE_NATIVE_DIR]`. It keeps two verdicts separate:
+
+- `ABSOLUTE_0.35`: candidate ours vs Excel absolute amount x0/x1 within 0.35 pt on every cell. This
+  stays a reported FAIL when the pre-existing face/scale glyph-model offset puts no-fill controls
+  outside 0.35 pt; it is not the promotion gate, and the failure list is written to
+  `<stem>-absolute-failures.tsv`.
+- `PAIRED_RELEASE`: the scoped change gate. Required: complete ours-only keys against the manifest
+  for candidate and baseline, browser==native (text/hash/count/coordinates), N1 and F8-negative
+  no-fill controls unchanged from baseline, no sign/text/hash regression (baseline correct ->
+  candidate wrong), all preregistered relative checks passing on candidate browser and native, and
+  every newly worsened count/geometry cell written with its magnitude to
+  `<stem>-paired-regressions.tsv`. Material geometry regressions (a cell newly outside 0.35 pt) fail
+  the paired gate; +/-1 count regressions are reported for explanation rather than hidden in an
+  aggregate.
+
+Expected baseline here is the frozen previous release `/var/tmp/fill-engine/dist` (`bf132a48`, dist
+manifest `b38ad676`); the candidate owns a distinct dist and native runner. Do not rebuild the older
+`6fe0e6e2` snapshot. Commands:
+
+```
+python3 tools/excel-parity/make-print-numfill-fixture.py --set trail-train \
+  --out tests/test-documents-excel/synthetic-print-numfill-trail.xlsx \
+  --cells tools/excel-parity/print-numfill-trail-cells.tsv
+tools/excel-parity/excel-print-pages.sh tests/test-documents-excel/synthetic-print-numfill-trail.xlsx \
+  /var/tmp/numfill-oracle/trail-train
+python3 tools/excel-parity/measure-print-numfill.py tools/excel-parity/print-numfill-trail-cells.tsv \
+  /var/tmp/numfill-oracle/trail-train /var/tmp/numfill-oracle/trail-train/synthetic-print-numfill-trail.tsv \
+  OURS_DIR /var/tmp/numfill-oracle/trail-train-comparison.tsv
+python3 tools/excel-parity/analyze-print-numfill-trail.py train \
+  /var/tmp/numfill-oracle/trail-train-comparison.tsv /var/tmp/numfill-oracle/trail \
+  --face 'Aptos Narrow' --size 14 --scale 100
+python3 tools/excel-parity/analyze-print-numfill-trail.py check \
+  tools/excel-parity/print-numfill-trail-holdout-predictions.tsv \
+  /var/tmp/numfill-oracle/trail-holdout-comparison.tsv synthetic-print-numfill-trail-holdout \
+  --face Arial --size 11 --scale 60
+```
+
+## Trailing candidate paired result (candidate dist-suffix-empty; baseline b38ad676)
+
+Candidate: `/var/tmp/fill-engine/dist-suffix-empty` (CellText.js `985a3020…`, Paint.js `9be221cc…`)
+and native runner `/var/tmp/fill-engine/native-suffix/Release/net10.0`. Baseline: the frozen previous
+release `/var/tmp/fill-engine/dist` with the repo Debug native runner. Both releases print browser ==
+native exactly (0 text/count/hash/coordinate differences on both workbooks), and every ours key set
+equals the manifest. All 12 preregistered relative checks pass on both, browser and native.
+
+The strict absolute verdict stays FAIL, as it must for this pre-existing face/scale glyph-model
+offset; the failed cell list is in `<stem>-absolute-failures.tsv`:
+
+| set | absolute 0.35 (control x0/x1, trailing x0/x1, count) | count fixed / regressed | count-error direction | geometry newly outside 0.35 | worst new error |
+| --- | --- | --- | --- | --- | --- |
+| train | 100 / 100 / 354 / 347 / 60 | 333 / 9 | 60 × +1 | 3 (all right) | x0 4.100 pt (baseline 0.186) |
+| holdout | 92 / 116 / 233 / 366 / 54 | 417 / 6 | 24 × +1, 30 × −1 | 6 (2 count-driven, 4 geometry-only) | x1 1.510 pt (baseline 0.323) |
+
+Paired release verdict: controls (N1 and F8-negative no-fill) are byte-identical candidate vs
+baseline; sign/text/hash regressions are 0; no number is lost; `ours-vs-Excel` hash is 0 on both sets
+(baseline: train 51, holdout 18). Counts improve 333 and 417 cells. The regressions are one extra
+trailing glyph at the 0→1 boundary, always where Excel emits 0 and the candidate emits 1 (train:
+D2 zero 5.75, D2 neg 10.25, F8 pos 10.5; holdout: D2 neg 9.0, F8 pos 8.5). Because centre/right place
+`number + N*fill` as one aligned block, that one wrong glyph shifts the number by half/one fill
+advance, taking those cells outside 0.35 pt: train right D2 zero 5.75 x0 0.249→3.394, right D2 neg
+10.25 x0 0.206→3.438, right F8 pos 10.5 x0 0.186→4.100; holdout centre D2 neg 9.0 x0 0.332→1.248,
+right D2 neg 9.0 x1 0.323→1.510. Four further holdout cells (D2 pos 8.5/8.75 and D2 neg 9.25/9.5,
+centre x1) cross 0.35 by 0.22–0.26 pt with unchanged count/text/hash. The training face is uniformly
+over by one (60/60), the fresh face has 24 over and 30 under: the engine's reserved content width is a
+boundary-level approximation, and per-face/scale tuning is out of bounds, so these stay documented
+residuals rather than a calibration. The paired gate therefore exits FAIL on the newly-outside-0.35
+condition (3 train cells, 6 holdout cells); everything else in the paired gate passes. Promotion
+needs an explicit decision on those boundary cells, not a relaxed 0.35 absolute rule.
+
+Per-cell detail: `<stem>-paired-regressions.tsv` (baseline-vs-candidate count and x0/x1 error deltas),
+`<stem>-absolute-failures.tsv`, `<stem>-candidate-{browser,native}-check.tsv`. Run:
+
+```
+tools/excel-parity/run-print-numfill-trail-gate.sh /var/tmp/fill-engine/dist-suffix-empty \
+  /var/tmp/numfill-oracle OUT /var/tmp/fill-engine/dist \
+  /var/tmp/fill-engine/native-suffix/Release/net10.0 \
+  tools/spreadsheet-pdf-runner/bin/Debug/net10.0
+```

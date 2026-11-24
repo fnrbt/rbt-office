@@ -111,7 +111,10 @@ amount_x0 413 → 233, amount_x1 595 → 366 versus the pre-rule dist, and text 
 same baseline over the lock's classes: the no-fill/default-alignment N1 cells are byte-identical (243/243
 per set), genuine overflow hash runs are unchanged (0 text differences on 267 holdout / 363 training
 overflow cells), and D2 dot-as-decimal keeps the decimal point and matches Excel's amount text on all
-174 holdout / 150 training non-hash cells. The fallback cannot drop an arbitrary trailing glyph: it only
+174 holdout / 150 training non-hash cells. Where candidate and baseline counts both equal Excel's, no
+cell's x0/x1 error worsens by more than 0.10 pt (0 of 531 holdout and 0 of 459 training cells); the
+count distance to Excel improves on 417 vs 6 (holdout) and 333 vs 9 (training) cells. The fallback cannot
+drop an arbitrary trailing glyph: it only
 runs when the token is the section's last element (`suffixSection = ""`) and the whole display equals the
 formatter's prefix rendering; a non-empty suffix (quoted literal included), a surviving token char, two
 active fills, or a full display wider than the cell all keep the prior path, and the sign is taken from the
@@ -127,7 +130,11 @@ separate fallback. (3) Absolutely positioned x0/x1 versus Excel is not gated her
 alone already differ by >0.35 pt on roughly two thirds of the cells at these printer scales (pre-existing
 face/scale placement), which is why the lock uses side-relative relations. No per-face or per-scale
 calibration was added. (4) Screen, quoted/escaped and inactive-section paths are untouched: the branch runs
-only for printing with one active fill and an empty suffix section.
+only for printing with one active fill and an empty suffix section. A whole-corpus diff against the pre-rule
+dist confirms it: on FillOracle's 1035-cell training workbook, only `S2_space_after`, `D2_dot_after` and
+`I2_fill_pos_only` (the suffix-empty classes) change; leading-fill `S1`/`D1`, currency and accounting
+`W_C1`/`W_C2`/`W_A1`/`W_A2`/`W_I3`, quoted `Q1`, escaped `E1`, inactive `I1` and both no-fill controls are
+identical in text, hash, count and every measured coordinate.
 
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel
