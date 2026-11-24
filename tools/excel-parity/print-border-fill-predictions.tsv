@@ -1,0 +1,64 @@
+# Border-weight vs trailing-fill boundary: competing predictions, locked before any Excel export.
+# Owner: TrailingTruth (fixture/measurement). No runtime edits. No per-face parameters.
+#
+# Design (tools/excel-parity/make-print-border-fill-fixture.py):
+#   12 sheets B{none,thin,medium,thick}_{left,center,right} per workbook, identical column widths in
+#   every sheet; widths 8.5..11.25 in 0.25-char steps; formats N1 `0.00`, S2 `0.00* `, D2 `0.00*.`,
+#   F8 `0.00*-;0.00`; values +1234.5/-1234.5/0. Left/centre/right; every test cell has a solid fill
+#   and (except the `none` sheets) a square gray border of the given weight.
+#   workbooks + sha256:
+#     Arial 11 / 60 %   tests/test-documents-excel/synthetic-print-border-fill-arial.xlsx
+#                       523e141a03d0685471a09b72bfb8e84d720e8782c2eb6dfb3fc384ebd0284fbe
+#     Aptos Narrow 14 / 100 %
+#                       tests/test-documents-excel/synthetic-print-border-fill-aptos.xlsx
+#                       bec05706a11e13c7c9f83408585b0178701a7b163d40492cbe5598de01e5c511
+#     Calibri 11 / 100 % tests/test-documents-excel/synthetic-print-border-fill-calibri.xlsx
+#                       797af2bfd40d88cf2044383ecb593f9dff6e8973bdb9450239c3448434e360be
+#   manifests print-border-fill-{arial,aptos,calibri}-cells.tsv (identical content
+#   c7d40fd22c847a6d348f3fb12ffac22fd638281d99f7626bfab0df633eb44f1f).
+#
+# Measurement (measure-print-border-fill.py): direct Excel 2019 PDF operators only. Cell boundary
+#   coordinates are the vertical stroked-path centerlines; for every boundary the tool also records
+#   the physical border strip (narrow tall fill rectangle) and the stroked width. `none` sheets take
+#   boundaries from the tall solid cell-fill rectangles. Amount/fill from Tm/TJ; fill glyphs counted
+#   in emitted text order.
+#
+# Shared notation (per cell, left-aligned fill cells only for counts):
+#   W  = right_center - left_center (same sheet; invariant across weights by construction)
+#   L  = N1 amount_x0 - cell_left on the same sheet (left control, same width/value)
+#   R  = N1 cell_right - amount_x1 on the same sheet (right control, same width/value)
+#   w  = sum of 600-dpi rounded font advances of the formatted number
+#   a  = 600-dpi rounded font advance of the active fill glyph
+#   s  = physical printed strip width of the cell's right border (0 on `none`)
+#   count = floor((W - L - R + delta - w) / a)
+#
+# Models (exactly one is expected to survive; no fitted per-face or per-format values):
+#   M_HALF    delta = s / 2      (fill repeats to the border inner edge; scales with border weight)
+#   M_FIXED   delta = 0.24       (2 device dots at 600 dpi, border-independent)
+#   M_NONE    delta = 0          (fill uses the no-fill text content width)
+#
+# Discriminating predictions, locked before export:
+#   B1  no-fill insets do not move with border weight: |L(style)-L(none)| <= 0.05 and same for R,
+#       for every face/style/width/value/alignment.
+#   B2  formatted amount x0/x1 do not move with border weight: |delta| <= 0.35 pt at the same
+#       face/width/value/alignment, and text/sign/hash are unchanged.
+#   B3  per (face, style) the set of left-aligned fill cases defines a feasible delta interval
+#       [lo,hi] from the observed counts and the measured W,L,R,w,a. Report it as observed.
+#   B4  M_HALF survives only if count is exact on every non-hash fill case, all faces and all four
+#       weights, and the feasible-interval midpoint minus s/2 has |.| <= 0.12 pt for each style.
+#   B5  M_FIXED survives only if count is exact everywhere and every feasible interval contains
+#       0.24. It is falsified if any count-transition column width moves by > 0.12 pt between two
+#       border weights (because 0.24 is border-independent).
+#   B6  M_NONE survives only if count is exact everywhere and every feasible interval contains 0.
+#   B7  the minimum of (cell_right - composite_x1) over fill cells shifts between weights by
+#       (s_other - s_thin)/2 under M_HALF, by 0 under M_FIXED/M_NONE (tolerance 0.12 pt).
+#   B8  every case reports its own error sign (over/under) and coordinate deltas; no averages-only
+#       acceptance. Any surviving model must have 0 over and 0 under on every face/style.
+#
+# Measurement rows: face, style, align, width, value, format, count, pred_HALF, pred_FIXED,
+# pred_NONE, err_HALF, err_FIXED, err_NONE, x0, x1, composite_x1, residual, s_left, s_right,
+# stroke_left, stroke_right, W, L, R, w, a.
+model	delta	acceptance
+M_HALF	s/2	exact count on every case, all faces/styles, and interval midpoint matches s/2 within 0.12 pt
+M_FIXED	0.24	exact count on every case and all feasible intervals contain 0.24; falsified if any transition width moves >0.12 pt with border weight
+M_NONE	0	exact count on every case and all feasible intervals contain 0
