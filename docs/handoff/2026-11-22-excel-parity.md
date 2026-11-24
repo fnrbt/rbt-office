@@ -1,5 +1,7 @@
 # Handoff: Excel 2019 parity work (2026-11-22)
 
+**Superseded snapshot.** Both branches below are now integrated. Resume on `origin/wip/excel-trailing-fill`; the [current branch handoff](../excel-parity-tracker.md#spreadsheet-branch-handoff) distinguishes shipped work from WIP.
+
 State when the work stopped. Master is at the dashboards round (1580bef4, pushed). Every gate passes there except the Word
 browser check `table-insert-xml`, which was already failing. Two rounds are unmerged, each with its own handoff on its
 branch (both pushed to origin):

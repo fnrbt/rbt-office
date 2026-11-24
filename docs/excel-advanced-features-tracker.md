@@ -8,6 +8,8 @@ is the functional counterpart to `docs/excel-parity-tracker.md`, which tracks
 **render fidelity** (does our pixels match Excel's). A feature can be "present"
 here while still owing a parity pass there, and vice-versa.
 
+Print handoff (2026-11-24): `origin/wip/excel-trailing-fill` is an unshipped PDF layout change, not a formula or calculation change. See the [spreadsheet branch handoff](excel-parity-tracker.md#spreadsheet-branch-handoff) for the shipped baseline, integrated branches, Excel evidence and next experiment.
+
 ## How features get verified (e2e, X11, look at screenshots)
 
 The native interactive editor is the system under test:

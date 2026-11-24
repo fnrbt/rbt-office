@@ -1,10 +1,30 @@
 # Excel Parity Tracker
 
-Last updated: 2026-11-23 UTC.
+Last updated: 2026-11-24 UTC.
 
 This tracker is for deciding what to fix next and recording which parity
 surfaces have actually been checked. It complements
 `docs/excel-parity-fixes.html`, which is the visual history of fixed issues.
+
+## Spreadsheet branch handoff
+
+**Resume on `origin/wip/excel-trailing-fill`** (runtime `95d58286`, complete measurement evidence `3406ca9b`). The last shipped spreadsheet runtime on `origin/master` is `bf132a48` (numeric accounting fill). The trailing-fill candidate is **not shipped**: versus that baseline it corrects 750 repeat counts but regresses 15 by one glyph. Core, native and browser checks passed; the paired Excel PDF comparison is the reason to hold promotion.
+
+**Next experiment:** print plain positive, negative and zero numbers without fill, holding column width and workbook Normal font fixed. Measure number width and left/right insets independently across cell fonts, sizes and print scales; lock predictions on withheld combinations before changing the exporter. Rerun the paired trailing-fill gate before promotion. Border weight is ruled out across 1,080 fill cases; do not tune a border or per-font constant. On the WIP branch see `tools/excel-parity/print-border-fill-oracle.md` and `tools/excel-parity/print-fill-layout-gate.md`.
+
+Published branch tips below are already ancestors of the shipped runtime; they are checkpoints, not additional merge requests. All refs are on `origin`.
+
+| Integrated branch | Tip |
+|---|---|
+| `wip/excel-charts-slicers-round-7` | `326cc38a` |
+| `wip/excel-print-round-3` | `af3a9fbf` |
+| `wip/excel-full-number-fit` | `afe6665d` |
+| `wip/excel-printed-overflow-count` | `e3d55f93` |
+| `wip/excel-printed-overflow-placement` | `c9fe8034` |
+| `wip/excel-reduced-scale-advances` | `af0270fb` |
+| `wip/excel-print-column-geometry` | `124340c0` |
+| `wip/excel-print-text-section` | `6fe0e6e2` |
+| `wip/excel-numeric-accounting-fill` | `bf132a48` |
 
 ## Current Checks
 
