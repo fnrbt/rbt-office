@@ -1,0 +1,3 @@
+sheet	face	size_pt	italic	scale	format	dense_columns	excel_full	excel_hash	candidate_wrong	cand_false_hash	cand_false_full	baseline_wrong	base_false_hash	base_false_full	newly_wrong	measuredW_wrong	locked_mismatch	count_exact	count_checked	c_lo_pt	c_hi_pt	trans_lo_pt	trans_hi_pt	trans_ok	wide_text	runWidth_pt	lastWordWidth_pt	model_text_pt	advance_bias_pt	rightGap_pt
+H_Cambria16up_grp80	Cambria	16	0	80	#,##0.00	41	31	10	4	4	0	4	4	0	0	0	0	10	10	4.3450	10.9210	3.9850	4.5590	yes	9,876,543.21	71.6600	71.6600	71.6400	0.0200	2.3780
+H_Trebuchet12it_pct85	Trebuchet MS	12	1	85	0.00%	41	18	23	0	0	0	9	0	9	0	0	0	23	23	4.3440	6.2630	5.3040	5.8820	yes	123456.78%	52.9280	52.9280	53.0400	-0.1120	4.0920

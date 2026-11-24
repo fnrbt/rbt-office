@@ -1,0 +1,97 @@
+sheet	column	kind	width_chars	face	size_pt	italic	scale	format	text	excel_text	n_excel	excel_decision	cand_decision	cand_n	cand_margin_pt	cellWidth_pt	runWidth_pt	lastWordWidth_pt	model_text_pt	model_c_pt	model_a_pt	rightGap_pt	ours_decision	ours_n	measuredW_decision	measuredW_margin_pt	locked_file_mismatch	diagnostics
+H_Cambria16up_grp80	2	wide	22	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	23.2053	99.3590	71.6600	71.6600	71.6400	4.4188	7.9200	2.3780	full	0	full	23.3002	no	ok
+H_Cambria16up_grp80	3	wide	22	Cambria	16	0	80	#,##0.00	1,111,111.11	1,111,111.11	0	full	full	0	23.2053	99.3830	71.6600	71.6600	71.6400	4.4188	7.9200	2.3740	full	0	full	23.3242	no	ok
+H_Cambria16up_grp80	4	wide	22	Cambria	16	0	80	#,##0.00	8,888,888.88	8,888,888.88	0	full	full	0	23.2053	99.3830	71.6600	71.6600	71.6400	4.4188	7.9200	2.4040	full	0	full	23.3242	no	ok
+H_Cambria16up_grp80	5	wide	22	Cambria	16	0	80	#,##0.00	111,111.11	111,111.11	0	full	full	0	32.9253	99.3630	61.9790	61.9790	61.9200	4.4188	7.9200	2.3430	full	0	full	33.0242	no	ok
+H_Cambria16up_grp80	6	wide	22	Cambria	16	0	80	#,##0.00	888,888.88	888,888.88	0	full	full	0	32.9253	99.3830	61.9790	61.9790	61.9200	4.4188	7.9200	2.3650	full	0	full	33.0442	no	ok
+H_Cambria16up_grp80	7	wide	22	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	23.2053	99.3590	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	23.3002	no	ok
+H_Cambria16up_grp80	8	wide	22	Cambria	16	0	80	#,##0.00	1,111,111.11	1,111,111.11	0	full	full	0	23.2053	99.3830	71.6600	71.6600	71.6400	4.4188	7.9200	2.4040	full	0	full	23.3242	no	ok
+H_Cambria16up_grp80	9	dense	16.5	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-1.9467	74.2810	63.3880	63.3880	71.6400	4.4188	7.9200	5.0130	hash	8	hash	-1.7777	no	ok
+H_Cambria16up_grp80	10	dense	16.5312	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-1.2747	74.9060	63.3880	63.3880	71.6400	4.4188	7.9200	5.3980	hash	8	hash	-1.1527	no	ok
+H_Cambria16up_grp80	11	dense	16.5625	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-1.2747	74.8830	63.3880	63.3880	71.6400	4.4188	7.9200	5.3730	hash	8	hash	-1.1758	no	ok
+H_Cambria16up_grp80	12	dense	16.5938	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-1.2747	74.9020	63.3880	63.3880	71.6400	4.4188	7.9200	5.3950	hash	8	hash	-1.1568	no	ok
+H_Cambria16up_grp80	13	dense	16.625	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-1.2747	74.8790	63.3880	63.3880	71.6400	4.4188	7.9200	5.3720	hash	8	hash	-1.1797	no	ok
+H_Cambria16up_grp80	14	dense	16.6562	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-0.6028	75.6020	63.3880	63.3880	71.6400	4.4188	7.9200	5.7330	hash	8	hash	-0.4567	no	ok
+H_Cambria16up_grp80	15	dense	16.6875	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-0.6028	75.6250	63.3880	63.3880	71.6400	4.4188	7.9200	5.7270	hash	8	hash	-0.4338	no	ok
+H_Cambria16up_grp80	16	dense	16.7188	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-0.6028	75.5980	63.3880	63.3880	71.6400	4.4188	7.9200	5.7310	hash	8	hash	-0.4608	no	ok
+H_Cambria16up_grp80	17	dense	16.75	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-0.6028	75.6210	63.3880	63.3880	71.6400	4.4188	7.9200	5.7550	hash	8	hash	-0.4378	no	ok
+H_Cambria16up_grp80	18	dense	16.7812	Cambria	16	0	80	#,##0.00	9,876,543.21	########	8	hash	hash	8	-0.6028	75.5980	63.3880	63.3880	71.6400	4.4188	7.9200	5.7310	hash	8	hash	-0.4608	no	ok
+H_Cambria16up_grp80	19	dense	16.8125	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	hash	9	-0.0267	76.2230	71.6600	71.6600	71.6400	4.4188	7.9200	2.4040	hash	9	full	0.1642	no	ok
+H_Cambria16up_grp80	20	dense	16.8438	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	hash	9	-0.0267	76.1990	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	hash	9	full	0.1402	no	ok
+H_Cambria16up_grp80	21	dense	16.875	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	hash	9	-0.0267	76.1990	71.6600	71.6600	71.6400	4.4188	7.9200	2.3780	hash	9	full	0.1402	no	ok
+H_Cambria16up_grp80	22	dense	16.9062	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	hash	9	-0.0267	76.2230	71.6600	71.6600	71.6400	4.4188	7.9200	2.4040	hash	9	full	0.1642	no	ok
+H_Cambria16up_grp80	23	dense	16.9375	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	0.6452	76.8010	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	0.7422	no	ok
+H_Cambria16up_grp80	24	dense	16.9688	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	0.6452	76.8240	71.6600	71.6600	71.6400	4.4188	7.9200	2.4030	full	0	full	0.7652	no	ok
+H_Cambria16up_grp80	25	dense	17	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	0.6452	76.8010	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	0.7422	no	ok
+H_Cambria16up_grp80	26	dense	17.0312	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	0.6452	76.8240	71.6600	71.6600	71.6400	4.4188	7.9200	2.4050	full	0	full	0.7652	no	ok
+H_Cambria16up_grp80	27	dense	17.0625	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	0.6452	76.8010	71.6600	71.6600	71.6400	4.4188	7.9200	2.3810	full	0	full	0.7422	no	ok
+H_Cambria16up_grp80	28	dense	17.0938	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.3173	77.5430	71.6600	71.6600	71.6400	4.4188	7.9200	2.4030	full	0	full	1.4843	no	ok
+H_Cambria16up_grp80	29	dense	17.125	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.3173	77.5200	71.6600	71.6600	71.6400	4.4188	7.9200	2.3790	full	0	full	1.4612	no	ok
+H_Cambria16up_grp80	30	dense	17.1562	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.3173	77.5470	71.6600	71.6600	71.6400	4.4188	7.9200	2.4050	full	0	full	1.4882	no	ok
+H_Cambria16up_grp80	31	dense	17.1875	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.3173	77.5200	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	1.4612	no	ok
+H_Cambria16up_grp80	32	dense	17.2188	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.8932	78.1210	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	2.0622	no	ok
+H_Cambria16up_grp80	33	dense	17.25	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.8932	78.1450	71.6600	71.6600	71.6400	4.4188	7.9200	2.4030	full	0	full	2.0862	no	ok
+H_Cambria16up_grp80	34	dense	17.2812	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.8932	78.1210	71.6600	71.6600	71.6400	4.4188	7.9200	2.3810	full	0	full	2.0622	no	ok
+H_Cambria16up_grp80	35	dense	17.3125	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.8932	78.1450	71.6600	71.6600	71.6400	4.4188	7.9200	2.4060	full	0	full	2.0862	no	ok
+H_Cambria16up_grp80	36	dense	17.3438	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	1.8932	78.1210	71.6600	71.6600	71.6400	4.4188	7.9200	2.3820	full	0	full	2.0622	no	ok
+H_Cambria16up_grp80	37	dense	17.375	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	2.5653	78.7420	71.6600	71.6600	71.6400	4.4188	7.9200	2.4030	full	0	full	2.6833	no	ok
+H_Cambria16up_grp80	38	dense	17.4062	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	2.5653	78.7190	71.6600	71.6600	71.6400	4.4188	7.9200	2.3780	full	0	full	2.6602	no	ok
+H_Cambria16up_grp80	39	dense	17.4375	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	2.5653	78.7420	71.6600	71.6600	71.6400	4.4188	7.9200	2.4030	full	0	full	2.6833	no	ok
+H_Cambria16up_grp80	40	dense	17.4688	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	2.5653	78.7230	71.6600	71.6600	71.6400	4.4188	7.9200	2.3810	full	0	full	2.6642	no	ok
+H_Cambria16up_grp80	41	dense	17.5	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	2.5653	78.7190	71.6600	71.6600	71.6400	4.4188	7.9200	2.3790	full	0	full	2.6602	no	ok
+H_Cambria16up_grp80	42	dense	17.5312	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.2373	79.4610	71.6600	71.6600	71.6400	4.4188	7.9200	2.3720	full	0	full	3.4022	no	ok
+H_Cambria16up_grp80	43	dense	17.5625	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.2373	79.4410	71.6600	71.6600	71.6400	4.4188	7.9200	2.3810	full	0	full	3.3822	no	ok
+H_Cambria16up_grp80	44	dense	17.5938	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.2373	79.4610	71.6600	71.6600	71.6400	4.4188	7.9200	2.4020	full	0	full	3.4022	no	ok
+H_Cambria16up_grp80	45	dense	17.625	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.2373	79.4380	71.6600	71.6600	71.6400	4.4188	7.9200	2.3790	full	0	full	3.3792	no	ok
+H_Cambria16up_grp80	46	dense	17.6562	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.9093	80.0620	71.6600	71.6600	71.6400	4.4188	7.9200	2.4040	full	0	full	4.0032	no	ok
+H_Cambria16up_grp80	47	dense	17.6875	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.9093	80.0390	71.6600	71.6600	71.6400	4.4188	7.9200	2.3800	full	0	full	3.9802	no	ok
+H_Cambria16up_grp80	48	dense	17.7188	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.9093	80.0660	71.6600	71.6600	71.6400	4.4188	7.9200	2.4050	full	0	full	4.0072	no	ok
+H_Cambria16up_grp80	49	dense	17.75	Cambria	16	0	80	#,##0.00	9,876,543.21	9,876,543.21	0	full	full	0	3.9093	80.0390	71.6600	71.6600	71.6400	4.4188	7.9200	2.3790	full	0	full	3.9802	no	ok
+H_Trebuchet12it_pct85	2	wide	22	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	46.9585	105.6210	52.9280	52.9280	53.0400	5.4695	5.4000	4.0920	full	0	full	47.1115	no	ok
+H_Trebuchet12it_pct85	3	wide	22	Trebuchet MS	12	1	85	0.00%	111111.00%	111111.00%	0	full	full	0	46.9585	105.5980	52.9280	52.9280	53.0400	5.4695	5.4000	4.0700	full	0	full	47.0885	no	ok
+H_Trebuchet12it_pct85	4	wide	22	Trebuchet MS	12	1	85	0.00%	888888.00%	888888.00%	0	full	full	0	46.9585	105.6170	52.9280	52.9280	53.0400	5.4695	5.4000	4.0900	full	0	full	47.1075	no	ok
+H_Trebuchet12it_pct85	5	wide	22	Trebuchet MS	12	1	85	0.00%	11111.00%	11111.00%	0	full	full	0	52.3585	105.5980	47.5420	47.5420	47.6400	5.4695	5.4000	4.0570	full	0	full	52.4885	no	ok
+H_Trebuchet12it_pct85	6	wide	22	Trebuchet MS	12	1	85	0.00%	88888.00%	88888.00%	0	full	full	0	52.3585	105.6170	47.5420	47.5420	47.6400	5.4695	5.4000	4.0470	full	0	full	52.5075	no	ok
+H_Trebuchet12it_pct85	7	wide	22	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	46.9585	105.6170	52.9280	52.9280	53.0400	5.4695	5.4000	4.0910	full	0	full	47.1075	no	ok
+H_Trebuchet12it_pct85	8	wide	22	Trebuchet MS	12	1	85	0.00%	111111.00%	111111.00%	0	full	full	0	46.9585	105.5980	52.9280	52.9280	53.0400	5.4695	5.4000	4.0710	full	0	full	47.0885	no	ok
+H_Trebuchet12it_pct85	9	dense	11.5	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-3.7355	54.8630	48.5450	48.5450	53.0400	5.4695	5.4000	3.8000	hash	9	hash	-3.6465	no	ok
+H_Trebuchet12it_pct85	10	dense	11.5312	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-3.0215	55.5590	48.5450	48.5450	53.0400	5.4695	5.4000	4.1360	hash	9	hash	-2.9505	no	ok
+H_Trebuchet12it_pct85	11	dense	11.5625	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-3.0215	55.5620	48.5450	48.5450	53.0400	5.4695	5.4000	4.1370	hash	9	hash	-2.9475	no	ok
+H_Trebuchet12it_pct85	12	dense	11.5938	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-3.0215	55.5820	48.5450	48.5450	53.0400	5.4695	5.4000	4.1580	hash	9	hash	-2.9275	no	ok
+H_Trebuchet12it_pct85	13	dense	11.625	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-3.0215	55.5590	48.5450	48.5450	53.0400	5.4695	5.4000	4.1350	hash	9	hash	-2.9505	no	ok
+H_Trebuchet12it_pct85	14	dense	11.6562	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-2.3075	56.2810	48.5450	48.5450	53.0400	5.4695	5.4000	4.4960	hash	9	hash	-2.2285	no	ok
+H_Trebuchet12it_pct85	15	dense	11.6875	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-2.3075	56.3050	48.5450	48.5450	53.0400	5.4695	5.4000	4.5190	hash	9	hash	-2.2045	no	ok
+H_Trebuchet12it_pct85	16	dense	11.7188	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-2.3075	56.2810	48.5450	48.5450	53.0400	5.4695	5.4000	4.4970	hash	9	hash	-2.2285	no	ok
+H_Trebuchet12it_pct85	17	dense	11.75	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-2.3075	56.2770	48.5450	48.5450	53.0400	5.4695	5.4000	4.4930	hash	9	hash	-2.2325	no	ok
+H_Trebuchet12it_pct85	18	dense	11.7812	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-2.3075	56.3050	48.5450	48.5450	53.0400	5.4695	5.4000	4.5210	hash	9	hash	-2.2045	no	ok
+H_Trebuchet12it_pct85	19	dense	11.8125	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-1.6955	56.8790	48.5450	48.5450	53.0400	5.4695	5.4000	4.7350	hash	9	hash	-1.6305	no	ok
+H_Trebuchet12it_pct85	20	dense	11.8438	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-1.6955	56.8830	48.5450	48.5450	53.0400	5.4695	5.4000	4.7370	hash	9	hash	-1.6265	no	ok
+H_Trebuchet12it_pct85	21	dense	11.875	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-1.6955	56.9020	48.5450	48.5450	53.0400	5.4695	5.4000	4.7580	hash	9	hash	-1.6075	no	ok
+H_Trebuchet12it_pct85	22	dense	11.9062	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-1.6955	56.8790	48.5450	48.5450	53.0400	5.4695	5.4000	4.7340	hash	9	hash	-1.6305	no	ok
+H_Trebuchet12it_pct85	23	dense	11.9375	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.9815	57.5980	48.5450	48.5450	53.0400	5.4695	5.4000	5.0940	full	0	hash	-0.9115	no	ok
+H_Trebuchet12it_pct85	24	dense	11.9688	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.9815	57.6210	48.5450	48.5450	53.0400	5.4695	5.4000	5.1180	full	0	hash	-0.8885	no	ok
+H_Trebuchet12it_pct85	25	dense	12	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.9815	57.5980	48.5450	48.5450	53.0400	5.4695	5.4000	5.0950	full	0	hash	-0.9115	no	ok
+H_Trebuchet12it_pct85	26	dense	12.0312	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.9815	57.6020	48.5450	48.5450	53.0400	5.4695	5.4000	5.0950	full	0	hash	-0.9075	no	ok
+H_Trebuchet12it_pct85	27	dense	12.0625	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.9815	57.6250	48.5450	48.5450	53.0400	5.4695	5.4000	5.1190	full	0	hash	-0.8845	no	ok
+H_Trebuchet12it_pct85	28	dense	12.0938	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.2675	58.3200	48.5450	48.5450	53.0400	5.4695	5.4000	5.4560	full	0	hash	-0.1895	no	ok
+H_Trebuchet12it_pct85	29	dense	12.125	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.2675	58.3200	48.5450	48.5450	53.0400	5.4695	5.4000	5.4550	full	0	hash	-0.1895	no	ok
+H_Trebuchet12it_pct85	30	dense	12.1562	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.2675	58.3440	48.5450	48.5450	53.0400	5.4695	5.4000	5.4800	full	0	hash	-0.1655	no	ok
+H_Trebuchet12it_pct85	31	dense	12.1875	Trebuchet MS	12	1	85	0.00%	123456.78%	#########	9	hash	hash	9	-0.2675	58.3200	48.5450	48.5450	53.0400	5.4695	5.4000	5.4550	full	0	hash	-0.1895	no	ok
+H_Trebuchet12it_pct85	32	dense	12.2188	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	0.3445	58.9220	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	0.4125	no	ok
+H_Trebuchet12it_pct85	33	dense	12.25	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	0.3445	58.9450	52.9280	52.9280	53.0400	5.4695	5.4000	4.0980	full	0	full	0.4355	no	ok
+H_Trebuchet12it_pct85	34	dense	12.2812	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	0.3445	58.9220	52.9280	52.9280	53.0400	5.4695	5.4000	4.0720	full	0	full	0.4125	no	ok
+H_Trebuchet12it_pct85	35	dense	12.3125	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	0.3445	58.9220	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	0.4125	no	ok
+H_Trebuchet12it_pct85	36	dense	12.3438	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	0.3445	58.9450	52.9280	52.9280	53.0400	5.4695	5.4000	4.0970	full	0	full	0.4355	no	ok
+H_Trebuchet12it_pct85	37	dense	12.375	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.0585	59.6410	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	1.1315	no	ok
+H_Trebuchet12it_pct85	38	dense	12.4062	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.0585	59.6410	52.9280	52.9280	53.0400	5.4695	5.4000	4.0720	full	0	full	1.1315	no	ok
+H_Trebuchet12it_pct85	39	dense	12.4375	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.0585	59.6640	52.9280	52.9280	53.0400	5.4695	5.4000	4.0950	full	0	full	1.1545	no	ok
+H_Trebuchet12it_pct85	40	dense	12.4688	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.0585	59.6410	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	1.1315	no	ok
+H_Trebuchet12it_pct85	41	dense	12.5	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.0585	59.6410	52.9280	52.9280	53.0400	5.4695	5.4000	4.0720	full	0	full	1.1315	no	ok
+H_Trebuchet12it_pct85	42	dense	12.5312	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.7725	60.3830	52.9280	52.9280	53.0400	5.4695	5.4000	4.0960	full	0	full	1.8735	no	ok
+H_Trebuchet12it_pct85	43	dense	12.5625	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.7725	60.3590	52.9280	52.9280	53.0400	5.4695	5.4000	4.0710	full	0	full	1.8495	no	ok
+H_Trebuchet12it_pct85	44	dense	12.5938	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.7725	60.3590	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	1.8495	no	ok
+H_Trebuchet12it_pct85	45	dense	12.625	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	1.7725	60.3830	52.9280	52.9280	53.0400	5.4695	5.4000	4.0950	full	0	full	1.8735	no	ok
+H_Trebuchet12it_pct85	46	dense	12.6562	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	2.4865	61.0820	52.9280	52.9280	53.0400	5.4695	5.4000	4.0730	full	0	full	2.5725	no	ok
+H_Trebuchet12it_pct85	47	dense	12.6875	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	2.4865	61.0780	52.9280	52.9280	53.0400	5.4695	5.4000	4.0700	full	0	full	2.5685	no	ok
+H_Trebuchet12it_pct85	48	dense	12.7188	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	2.4865	61.1020	52.9280	52.9280	53.0400	5.4695	5.4000	4.0950	full	0	full	2.5925	no	ok
+H_Trebuchet12it_pct85	49	dense	12.75	Trebuchet MS	12	1	85	0.00%	123456.78%	123456.78%	0	full	full	0	2.4865	61.0780	52.9280	52.9280	53.0400	5.4695	5.4000	4.0720	full	0	full	2.5685	no	ok

@@ -1,0 +1,8 @@
+sheet	face	size_pt	italic	scale	format	dense_columns	excel_full	excel_hash	candidate_wrong	cand_false_hash	cand_false_full	baseline_wrong	base_false_hash	base_false_full	newly_wrong	measuredW_wrong	locked_mismatch	count_exact	count_checked	c_lo_pt	c_hi_pt	trans_lo_pt	trans_hi_pt	trans_ok	wide_text	runWidth_pt	lastWordWidth_pt	model_text_pt	advance_bias_pt	rightGap_pt
+A_G15it_grp	Georgia	15	1	90	#,##0.00	41	15	26	0	0	0	5	0	5	0	5	0	26	26	6.1440	11.2790	7.4640	8.1600	yes	1,234,567.00	77.5360	77.5360	77.5200	0.0160	5.1650
+A_G15it_pct	Georgia	15	1	100	0.00%	41	5	36	0	0	0	5	5	0	0	0	0	36	36	8.0650	8.7600	8.1860	9.0020	yes	1234567.89%	89.3400	89.3400	89.4000	-0.0600	5.8390
+A_G15up_grp	Georgia	15	0	90	#,##0.00	41	26	15	5	5	0	0	0	0	5	0	0	15	15	3.2620	9.8380	4.4620	5.1570	yes	1,234,567.00	77.6580	77.6580	77.6400	0.0180	2.7630
+A_V13it_pct	Verdana	13	1	100	0.00%	41	7	34	0	0	0	4	4	0	0	0	0	34	34	5.0620	9.9610	6.9820	7.6770	yes	1234567.89%	93.1420	93.1420	93.1200	0.0220	5.2770
+A_V13up_acct	Verdana	13	0	100	_("$"* #,##0_);_("$"* (#,##0);_("$"* "-"_);_(@_)	49	49	0	0	0	0	0	0	0	0	0	0	0	0						$1,234,567	102.9020	67.2620	67.3200	-0.0580	8.7170
+A_V13up_pct	Verdana	13	0	100	0.00%	33	13	20	0	0	0	5	5	0	0	0	0	20	20	2.5460	9.9610	4.4660	5.2820	yes	1234567.89%	93.1420	93.1420	93.1200	0.0220	2.7570
+A_V13up_pct75	Verdana	13	0	75	0.00%	41	8	33	10	0	10	5	0	5	5	10	0	23	33	2.5440	6.2610	4.8240	5.5200	yes	1234567.89%	70.0980	70.0980	69.0000	1.0980	2.1400
