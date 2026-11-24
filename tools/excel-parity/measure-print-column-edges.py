@@ -38,11 +38,38 @@ def pdf_streams(path):
         try:
             dec = zlib.decompress(data[start:end])
         except zlib.error:
-            continue
+            dec = data[start:end]
         if b' re' in dec or b'BT' in dec:
             out.append(dec.decode('latin1'))
     return out
 
+
+def pdf_page_contents(path):
+    """Page content streams in page order, following each page's /Contents reference."""
+    data = open(path, 'rb').read()
+    objs = {}
+    pages = []
+    for m in re.finditer(rb'(\d+)\s+0\s+obj\b(.*?)endobj', data, re.S):
+        num, body = int(m.group(1)), m.group(2)
+        sm = re.search(rb'stream\r?\n(.*)endstream', body, re.S)
+        stream = None
+        if sm:
+            raw = sm.group(1)
+            try:
+                stream = zlib.decompress(raw)
+            except zlib.error:
+                stream = raw
+        objs[num] = (body, stream)
+        if re.search(rb'/Type\s*/Page\b', body):
+            cm = re.search(rb'/Contents\s+(\d+)\s+0\s+R', body)
+            if cm:
+                pages.append((num, int(cm.group(1))))
+    out = []
+    for _, ref in sorted(pages):
+        stream = objs.get(ref, (None, None))[1]
+        if stream is not None:
+            out.append(stream.decode('latin1'))
+    return out
 
 def pdf_pages(path):
     text = subprocess.run(['pdfinfo', path], capture_output=True, text=True).stdout
@@ -154,7 +181,9 @@ def main():
     for sheet, cols in by_sheet.items():
         pdf = os.path.join(excel_dir, pdf_of[sheet])
         pages = pdf_pages(pdf)
-        page_streams = [s for s in pdf_streams(pdf) if '/Artifact BMC' in s or s.lstrip().startswith('q')]
+        page_streams = pdf_page_contents(pdf)
+        if len(page_streams) < pages:
+            page_streams = [s for s in pdf_streams(pdf) if '/Artifact BMC' in s or s.lstrip().startswith('q')]
         for page in range(1, pages + 1):
             fills, strokes = parse_content(page_streams[page - 1])
             words = page_words(pdf, page)
