@@ -7695,7 +7695,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
                     made
                 else unbox<Expr array> known
     let nargs = argsArray.Length
-    let argExpr i = argsArray.[i]
+    // An argument a call does not have is #VALUE! (Excel refuses to enter such a formula; one in a file
+    // must not throw, and in the browser an index past the end would be `undefined`).
+    let argExpr i = if i < nargs then argsArray.[i] else ErrorLit Err.value
     let argRaw i = eval (argExpr i) ctx
     let argNum i = coerceNumber (argRaw i)
     let argText i = coerceText (argRaw i)
