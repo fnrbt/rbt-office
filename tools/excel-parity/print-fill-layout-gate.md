@@ -73,8 +73,13 @@ workbooks, baseline `6fe0e6e2`):
 - Georgia holdout 630: 45/45 Excel hashes reproduced, 0 sign mismatches; gap mean 9.857 -> 0.575, max
   66.326 -> 6.161 (FillOracle's browser/native comparison; strict Chromium check below).
 - Tahoma holdout 630: no Excel hash cells, 0 sign mismatches; gap mean 12.577 -> 1.166, max 85.528 -> 19.287.
-Remaining max errors are suffix-fill and inactive-section text shapes, which stay on the prior path; the
-fit window uses FillOracle's calibrated intercept.
+FillOracle's independent strict gate on the same freeze also passes (ours-only nonempty key sets checked
+against the cell manifests, so a missing row fails): train 1035 / Georgia 630 / Tahoma 630 ours rows,
+browser-vs-native 0.00000 pt, 0 diffs. Its corrected paired table
+(`print-numfill-baseline-vs-candidate.tsv`) records 898 -> 918 hash rows train (20 improved / 0 regressed),
+570 -> 576 Georgia (6/0), 588 -> 588 Tahoma (0/0), with zero missing rows, zero lost printed rows and zero
+new hash regressions. Remaining max errors are suffix-fill and inactive-section text shapes, which stay on
+the prior path; the fit window uses FillOracle's calibrated intercept.
 
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel
