@@ -1,0 +1,669 @@
+sheet	column	row	width_chars	align	face	size_pt	italic	scale	kind	role	format	value	text
+V13up_pct75	2	1	28	right	Verdana	13	0	75	wide	num	0.00%	0.01	1.00%
+V13up_pct75	3	1	28	right	Verdana	13	0	75	wide	num	0.00%	0.08	8.00%
+V13up_pct75	4	1	28	right	Verdana	13	0	75	wide	num	0.00%	0.11	11.00%
+V13up_pct75	5	1	28	right	Verdana	13	0	75	wide	num	0.00%	0.88	88.00%
+V13up_pct75	6	1	28	right	Verdana	13	0	75	wide	num	0.00%	1.11	111.00%
+V13up_pct75	7	1	28	right	Verdana	13	0	75	wide	num	0.00%	8.88	888.00%
+V13up_pct75	8	1	28	right	Verdana	13	0	75	wide	num	0.00%	11.11	1111.00%
+V13up_pct75	9	1	28	right	Verdana	13	0	75	wide	num	0.00%	88.88	8888.00%
+V13up_pct75	10	1	28	right	Verdana	13	0	75	wide	num	0.00%	1111.11	111111.00%
+V13up_pct75	11	1	28	right	Verdana	13	0	75	wide	num	0.00%	8888.88	888888.00%
+V13up_pct75	12	1	28	right	Verdana	13	0	75	wide	num	0.00%	111111.11	11111111.00%
+V13up_pct75	13	1	28	right	Verdana	13	0	75	wide	num	0.00%	888888.88	88888888.00%
+V13up_pct75	14	1	28	right	Verdana	13	0	75	wide	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	15	1	28	right	Verdana	13	0	75	wide	num	0.00%	88888888.88	8888888888.00%
+V13up_pct75	16	1	28	right	Verdana	13	0	75	wide	num	0.00%	1111111111.11	111111111111.00%
+V13up_pct75	17	1	28	right	Verdana	13	0	75	wide	num	0.00%	8888888888.88	888888888888.00%
+V13up_pct75	18	1	28	right	Verdana	13	0	75	wide	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	19	1	28	right	Verdana	13	0	75	wide	num	0.00%	11111.11	1111111.00%
+V13up_pct75	20	1	28	right	Verdana	13	0	75	wide	num	0.00%	88888.88	8888888.00%
+V13up_pct75	21	1	28	right	Verdana	13	0	75	wide	num	0.00%	9999.99	999999.00%
+V13up_pct75	22	1	28	right	Verdana	13	0	75	wide	num	0.00%	123.4567	12345.67%
+V13up_pct75	23	1	28	right	Verdana	13	0	75	wide	num	0.00%	1.2345	123.45%
+V13up_pct75	24	1	28	right	Verdana	13	0	75	wide	num	0.00%	1234.5678	123456.78%
+V13up_pct75	25	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1234567.89%
+V13up_pct75	26	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111111.00%
+V13up_pct75	27	1	28	right	Verdana	13	0	75	wide	lit	0.00%		8888888.00%
+V13up_pct75	28	1	28	right	Verdana	13	0	75	wide	lit	0.00%		999999.00%
+V13up_pct75	29	1	28	right	Verdana	13	0	75	wide	lit	0.00%		12345.67%
+V13up_pct75	30	1	28	right	Verdana	13	0	75	wide	lit	0.00%		123.45%
+V13up_pct75	31	1	28	right	Verdana	13	0	75	wide	lit	0.00%		123456.78%
+V13up_pct75	32	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111
+V13up_pct75	33	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111.00%
+V13up_pct75	34	1	28	right	Verdana	13	0	75	wide	lit	0.00%		8888
+V13up_pct75	35	1	28	right	Verdana	13	0	75	wide	lit	0.00%		8888.00%
+V13up_pct75	36	1	28	right	Verdana	13	0	75	wide	lit	0.00%		11111111
+V13up_pct75	37	1	28	right	Verdana	13	0	75	wide	lit	0.00%		11111111.00%
+V13up_pct75	38	1	28	right	Verdana	13	0	75	wide	lit	0.00%		88888888
+V13up_pct75	39	1	28	right	Verdana	13	0	75	wide	lit	0.00%		88888888.00%
+V13up_pct75	40	1	28	right	Verdana	13	0	75	wide	lit	0.00%		111111111111
+V13up_pct75	41	1	28	right	Verdana	13	0	75	wide	lit	0.00%		111111111111.00%
+V13up_pct75	42	1	28	right	Verdana	13	0	75	wide	lit	0.00%		888888888888
+V13up_pct75	43	1	28	right	Verdana	13	0	75	wide	lit	0.00%		888888888888.00%
+V13up_pct75	44	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111111
+V13up_pct75	45	1	28	right	Verdana	13	0	75	wide	lit	0.00%		111.111
+V13up_pct75	46	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1,111,111
+V13up_pct75	47	1	28	right	Verdana	13	0	75	wide	lit	0.00%		-1111111
+V13up_pct75	48	1	28	right	Verdana	13	0	75	wide	lit	0.00%		(1111111)
+V13up_pct75	49	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111111.89%
+V13up_pct75	50	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111111%
+V13up_pct75	51	1	28	right	Verdana	13	0	75	wide	lit	0.00%		111%111
+V13up_pct75	52	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1.1.1.1.1
+V13up_pct75	53	1	28	right	Verdana	13	0	75	wide	lit	0.00%		$1111111
+V13up_pct75	54	1	28	right	Verdana	13	0	75	wide	lit	0.00%		111,111.11%
+V13up_pct75	55	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1111111-
+V13up_pct75	56	1	28	right	Verdana	13	0	75	wide	lit	0.00%		---1111111
+V13up_pct75	57	1	28	right	Verdana	13	0	75	wide	lit	0.00%		1,1,1,1,1,1,1
+V13up_pct75	58	1	17.0011	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	59	1	17.0324	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	60	1	17.0636	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	61	1	17.0949	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	62	1	17.1261	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	63	1	17.1574	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	64	1	17.1886	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	65	1	17.2199	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	66	1	17.2511	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	67	1	17.2824	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	68	1	17.3136	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	69	1	17.3449	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	70	1	17.3761	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	71	1	17.4074	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	72	1	17.4386	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	73	1	17.4699	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	74	1	17.5011	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	75	1	17.5324	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	76	1	17.5636	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	77	1	17.5949	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	78	1	17.6261	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	79	1	17.6574	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	80	1	17.6886	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	81	1	17.7199	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	82	1	17.7511	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	83	1	17.7824	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	84	1	17.8136	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	85	1	17.8449	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	86	1	17.8761	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	87	1	17.9074	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	88	1	17.9386	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	89	1	17.9699	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	90	1	18.0011	right	Verdana	13	0	75	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct75	91	1	21.4297	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	92	1	21.4609	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	93	1	21.4922	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	94	1	21.5234	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	95	1	21.5547	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	96	1	21.5859	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	97	1	21.6172	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	98	1	21.6484	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	99	1	21.6797	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	100	1	21.7109	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	101	1	21.7422	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	102	1	21.7734	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	103	1	21.8047	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	104	1	21.8359	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	105	1	21.8672	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	106	1	21.8984	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	107	1	21.9297	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	108	1	21.9609	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	109	1	21.9922	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	110	1	22.0234	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	111	1	22.0547	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	112	1	22.0859	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	113	1	22.1172	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	114	1	22.1484	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	115	1	22.1797	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	116	1	22.2109	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	117	1	22.2422	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	118	1	22.2734	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	119	1	22.3047	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	120	1	22.3359	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	121	1	22.3672	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	122	1	22.3984	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	123	1	22.4297	right	Verdana	13	0	75	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct75	2	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	3	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	4	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	5	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	6	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	7	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	8	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	9	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	10	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	11	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	12	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	13	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	14	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	15	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	16	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	17	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	18	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	19	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	20	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	21	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	22	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	23	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	24	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	25	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	26	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	27	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	28	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	29	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	30	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	31	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	32	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	33	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	34	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	35	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	36	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	37	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	38	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	39	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	40	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	41	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	42	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	43	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	44	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	45	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	46	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	47	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	48	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	49	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	50	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	51	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	52	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	53	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	54	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	55	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	56	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	57	2	28	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	58	2	17.0011	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	59	2	17.0324	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	60	2	17.0636	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	61	2	17.0949	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	62	2	17.1261	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	63	2	17.1574	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	64	2	17.1886	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	65	2	17.2199	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	66	2	17.2511	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	67	2	17.2824	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	68	2	17.3136	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	69	2	17.3449	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	70	2	17.3761	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	71	2	17.4074	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	72	2	17.4386	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	73	2	17.4699	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	74	2	17.5011	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	75	2	17.5324	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	76	2	17.5636	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	77	2	17.5949	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	78	2	17.6261	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	79	2	17.6574	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	80	2	17.6886	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	81	2	17.7199	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	82	2	17.7511	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	83	2	17.7824	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	84	2	17.8136	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	85	2	17.8449	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	86	2	17.8761	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	87	2	17.9074	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	88	2	17.9386	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	89	2	17.9699	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	90	2	18.0011	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	91	2	21.4297	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	92	2	21.4609	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	93	2	21.4922	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	94	2	21.5234	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	95	2	21.5547	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	96	2	21.5859	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	97	2	21.6172	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	98	2	21.6484	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	99	2	21.6797	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	100	2	21.7109	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	101	2	21.7422	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	102	2	21.7734	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	103	2	21.8047	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	104	2	21.8359	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	105	2	21.8672	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	106	2	21.8984	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	107	2	21.9297	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	108	2	21.9609	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	109	2	21.9922	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	110	2	22.0234	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	111	2	22.0547	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	112	2	22.0859	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	113	2	22.1172	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	114	2	22.1484	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	115	2	22.1797	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	116	2	22.2109	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	117	2	22.2422	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	118	2	22.2734	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	119	2	22.3047	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	120	2	22.3359	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	121	2	22.3672	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	122	2	22.3984	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct75	123	2	22.4297	right	Verdana	13	0	75	control	num	0.00	-98.41	-98.41
+V13up_pct100	2	1	28	right	Verdana	13	0	100	wide	num	0.00%	0.01	1.00%
+V13up_pct100	3	1	28	right	Verdana	13	0	100	wide	num	0.00%	0.08	8.00%
+V13up_pct100	4	1	28	right	Verdana	13	0	100	wide	num	0.00%	0.11	11.00%
+V13up_pct100	5	1	28	right	Verdana	13	0	100	wide	num	0.00%	0.88	88.00%
+V13up_pct100	6	1	28	right	Verdana	13	0	100	wide	num	0.00%	1.11	111.00%
+V13up_pct100	7	1	28	right	Verdana	13	0	100	wide	num	0.00%	8.88	888.00%
+V13up_pct100	8	1	28	right	Verdana	13	0	100	wide	num	0.00%	11.11	1111.00%
+V13up_pct100	9	1	28	right	Verdana	13	0	100	wide	num	0.00%	88.88	8888.00%
+V13up_pct100	10	1	28	right	Verdana	13	0	100	wide	num	0.00%	1111.11	111111.00%
+V13up_pct100	11	1	28	right	Verdana	13	0	100	wide	num	0.00%	8888.88	888888.00%
+V13up_pct100	12	1	28	right	Verdana	13	0	100	wide	num	0.00%	111111.11	11111111.00%
+V13up_pct100	13	1	28	right	Verdana	13	0	100	wide	num	0.00%	888888.88	88888888.00%
+V13up_pct100	14	1	28	right	Verdana	13	0	100	wide	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	15	1	28	right	Verdana	13	0	100	wide	num	0.00%	88888888.88	8888888888.00%
+V13up_pct100	16	1	28	right	Verdana	13	0	100	wide	num	0.00%	1111111111.11	111111111111.00%
+V13up_pct100	17	1	28	right	Verdana	13	0	100	wide	num	0.00%	8888888888.88	888888888888.00%
+V13up_pct100	18	1	28	right	Verdana	13	0	100	wide	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	19	1	28	right	Verdana	13	0	100	wide	num	0.00%	11111.11	1111111.00%
+V13up_pct100	20	1	28	right	Verdana	13	0	100	wide	num	0.00%	88888.88	8888888.00%
+V13up_pct100	21	1	28	right	Verdana	13	0	100	wide	num	0.00%	9999.99	999999.00%
+V13up_pct100	22	1	28	right	Verdana	13	0	100	wide	num	0.00%	123.4567	12345.67%
+V13up_pct100	23	1	28	right	Verdana	13	0	100	wide	num	0.00%	1.2345	123.45%
+V13up_pct100	24	1	28	right	Verdana	13	0	100	wide	num	0.00%	1234.5678	123456.78%
+V13up_pct100	25	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1234567.89%
+V13up_pct100	26	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111111.00%
+V13up_pct100	27	1	28	right	Verdana	13	0	100	wide	lit	0.00%		8888888.00%
+V13up_pct100	28	1	28	right	Verdana	13	0	100	wide	lit	0.00%		999999.00%
+V13up_pct100	29	1	28	right	Verdana	13	0	100	wide	lit	0.00%		12345.67%
+V13up_pct100	30	1	28	right	Verdana	13	0	100	wide	lit	0.00%		123.45%
+V13up_pct100	31	1	28	right	Verdana	13	0	100	wide	lit	0.00%		123456.78%
+V13up_pct100	32	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111
+V13up_pct100	33	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111.00%
+V13up_pct100	34	1	28	right	Verdana	13	0	100	wide	lit	0.00%		8888
+V13up_pct100	35	1	28	right	Verdana	13	0	100	wide	lit	0.00%		8888.00%
+V13up_pct100	36	1	28	right	Verdana	13	0	100	wide	lit	0.00%		11111111
+V13up_pct100	37	1	28	right	Verdana	13	0	100	wide	lit	0.00%		11111111.00%
+V13up_pct100	38	1	28	right	Verdana	13	0	100	wide	lit	0.00%		88888888
+V13up_pct100	39	1	28	right	Verdana	13	0	100	wide	lit	0.00%		88888888.00%
+V13up_pct100	40	1	28	right	Verdana	13	0	100	wide	lit	0.00%		111111111111
+V13up_pct100	41	1	28	right	Verdana	13	0	100	wide	lit	0.00%		111111111111.00%
+V13up_pct100	42	1	28	right	Verdana	13	0	100	wide	lit	0.00%		888888888888
+V13up_pct100	43	1	28	right	Verdana	13	0	100	wide	lit	0.00%		888888888888.00%
+V13up_pct100	44	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111111
+V13up_pct100	45	1	28	right	Verdana	13	0	100	wide	lit	0.00%		111.111
+V13up_pct100	46	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1,111,111
+V13up_pct100	47	1	28	right	Verdana	13	0	100	wide	lit	0.00%		-1111111
+V13up_pct100	48	1	28	right	Verdana	13	0	100	wide	lit	0.00%		(1111111)
+V13up_pct100	49	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111111.89%
+V13up_pct100	50	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111111%
+V13up_pct100	51	1	28	right	Verdana	13	0	100	wide	lit	0.00%		111%111
+V13up_pct100	52	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1.1.1.1.1
+V13up_pct100	53	1	28	right	Verdana	13	0	100	wide	lit	0.00%		$1111111
+V13up_pct100	54	1	28	right	Verdana	13	0	100	wide	lit	0.00%		111,111.11%
+V13up_pct100	55	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1111111-
+V13up_pct100	56	1	28	right	Verdana	13	0	100	wide	lit	0.00%		---1111111
+V13up_pct100	57	1	28	right	Verdana	13	0	100	wide	lit	0.00%		1,1,1,1,1,1,1
+V13up_pct100	58	1	16.8583	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	59	1	16.8895	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	60	1	16.9208	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	61	1	16.952	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	62	1	16.9833	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	63	1	17.0145	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	64	1	17.0458	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	65	1	17.077	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	66	1	17.1083	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	67	1	17.1395	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	68	1	17.1708	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	69	1	17.202	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	70	1	17.2333	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	71	1	17.2645	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	72	1	17.2958	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	73	1	17.327	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	74	1	17.3583	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	75	1	17.3895	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	76	1	17.4208	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	77	1	17.452	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	78	1	17.4833	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	79	1	17.5145	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	80	1	17.5458	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	81	1	17.577	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	82	1	17.6083	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	83	1	17.6395	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	84	1	17.6708	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	85	1	17.702	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	86	1	17.7333	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	87	1	17.7645	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	88	1	17.7958	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	89	1	17.827	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	90	1	17.8583	right	Verdana	13	0	100	dense	num	0.00%	12345.6789	1234567.89%
+V13up_pct100	91	1	21.2868	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	92	1	21.3181	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	93	1	21.3493	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	94	1	21.3806	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	95	1	21.4118	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	96	1	21.4431	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	97	1	21.4743	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	98	1	21.5056	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	99	1	21.5368	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	100	1	21.5681	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	101	1	21.5993	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	102	1	21.6306	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	103	1	21.6618	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	104	1	21.6931	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	105	1	21.7243	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	106	1	21.7556	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	107	1	21.7868	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	108	1	21.8181	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	109	1	21.8493	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	110	1	21.8806	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	111	1	21.9118	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	112	1	21.9431	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	113	1	21.9743	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	114	1	22.0056	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	115	1	22.0368	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	116	1	22.0681	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	117	1	22.0993	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	118	1	22.1306	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	119	1	22.1618	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	120	1	22.1931	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	121	1	22.2243	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	122	1	22.2556	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	123	1	22.2868	right	Verdana	13	0	100	dense	num	0.00%	11111111.11	1111111111.00%
+V13up_pct100	2	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	3	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	4	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	5	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	6	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	7	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	8	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	9	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	10	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	11	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	12	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	13	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	14	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	15	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	16	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	17	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	18	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	19	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	20	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	21	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	22	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	23	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	24	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	25	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	26	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	27	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	28	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	29	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	30	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	31	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	32	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	33	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	34	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	35	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	36	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	37	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	38	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	39	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	40	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	41	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	42	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	43	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	44	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	45	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	46	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	47	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	48	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	49	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	50	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	51	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	52	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	53	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	54	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	55	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	56	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	57	2	28	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	58	2	16.8583	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	59	2	16.8895	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	60	2	16.9208	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	61	2	16.952	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	62	2	16.9833	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	63	2	17.0145	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	64	2	17.0458	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	65	2	17.077	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	66	2	17.1083	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	67	2	17.1395	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	68	2	17.1708	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	69	2	17.202	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	70	2	17.2333	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	71	2	17.2645	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	72	2	17.2958	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	73	2	17.327	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	74	2	17.3583	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	75	2	17.3895	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	76	2	17.4208	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	77	2	17.452	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	78	2	17.4833	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	79	2	17.5145	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	80	2	17.5458	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	81	2	17.577	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	82	2	17.6083	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	83	2	17.6395	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	84	2	17.6708	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	85	2	17.702	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	86	2	17.7333	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	87	2	17.7645	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	88	2	17.7958	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	89	2	17.827	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	90	2	17.8583	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	91	2	21.2868	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	92	2	21.3181	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	93	2	21.3493	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	94	2	21.3806	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	95	2	21.4118	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	96	2	21.4431	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	97	2	21.4743	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	98	2	21.5056	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	99	2	21.5368	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	100	2	21.5681	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	101	2	21.5993	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	102	2	21.6306	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	103	2	21.6618	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	104	2	21.6931	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	105	2	21.7243	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	106	2	21.7556	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	107	2	21.7868	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	108	2	21.8181	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	109	2	21.8493	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	110	2	21.8806	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	111	2	21.9118	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	112	2	21.9431	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	113	2	21.9743	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	114	2	22.0056	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	115	2	22.0368	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	116	2	22.0681	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	117	2	22.0993	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	118	2	22.1306	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	119	2	22.1618	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	120	2	22.1931	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	121	2	22.2243	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	122	2	22.2556	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+V13up_pct100	123	2	22.2868	right	Verdana	13	0	100	control	num	0.00	-98.41	-98.41
+G15up_grp90	2	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	3	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	4	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	8888888.88	8,888,888.88
+G15up_grp90	5	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	111111.11	111,111.11
+G15up_grp90	6	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	888888.88	888,888.88
+G15up_grp90	7	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	11111.11	11,111.11
+G15up_grp90	8	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	88888.88	88,888.88
+G15up_grp90	9	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	1111.11	1,111.11
+G15up_grp90	10	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	8888.88	8,888.88
+G15up_grp90	11	1	28	right	Georgia	15	0	90	wide	num	#,##0.00	-1234567	-1,234,567.00
+G15up_grp90	12	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1,234,567.00
+G15up_grp90	13	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1,111,111.11
+G15up_grp90	14	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		8,888,888.88
+G15up_grp90	15	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		111,111.11
+G15up_grp90	16	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		888,888.88
+G15up_grp90	17	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		11,111.11
+G15up_grp90	18	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		88,888.88
+G15up_grp90	19	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1,234,567
+G15up_grp90	20	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1234567
+G15up_grp90	21	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		-1,234,567
+G15up_grp90	22	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		(1,234,567)
+G15up_grp90	23	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		$1,234,567
+G15up_grp90	24	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1,234,567%
+G15up_grp90	25	1	28	right	Georgia	15	0	90	wide	lit	#,##0.00		1,2,3,4,5,6,7
+G15up_grp90	26	1	15.7154	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	27	1	15.7467	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	28	1	15.7779	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	29	1	15.8092	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	30	1	15.8404	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	31	1	15.8717	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	32	1	15.9029	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	33	1	15.9342	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	34	1	15.9654	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	35	1	15.9967	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	36	1	16.0279	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	37	1	16.0592	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	38	1	16.0904	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	39	1	16.1217	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	40	1	16.1529	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	41	1	16.1842	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	42	1	16.2154	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	43	1	16.2467	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	44	1	16.2779	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	45	1	16.3092	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	46	1	16.3404	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	47	1	16.3717	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	48	1	16.4029	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	49	1	16.4342	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	50	1	16.4654	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	51	1	16.4967	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	52	1	16.5279	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	53	1	16.5592	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	54	1	16.5904	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	55	1	16.6217	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	56	1	16.6529	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	57	1	16.6842	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	58	1	16.7154	right	Georgia	15	0	90	dense	num	#,##0.00	1234567	1,234,567.00
+G15up_grp90	59	1	12.8583	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	60	1	12.8895	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	61	1	12.9208	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	62	1	12.952	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	63	1	12.9833	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	64	1	13.0145	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	65	1	13.0458	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	66	1	13.077	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	67	1	13.1083	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	68	1	13.1395	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	69	1	13.1708	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	70	1	13.202	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	71	1	13.2333	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	72	1	13.2645	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	73	1	13.2958	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	74	1	13.327	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	75	1	13.3583	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	76	1	13.3895	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	77	1	13.4208	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	78	1	13.452	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	79	1	13.4833	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	80	1	13.5145	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	81	1	13.5458	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	82	1	13.577	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	83	1	13.6083	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	84	1	13.6395	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	85	1	13.6708	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	86	1	13.702	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	87	1	13.7333	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	88	1	13.7645	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	89	1	13.7958	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	90	1	13.827	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	91	1	13.8583	right	Georgia	15	0	90	dense	num	#,##0.00	1111111.11	1,111,111.11
+G15up_grp90	2	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	3	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	4	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	5	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	6	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	7	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	8	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	9	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	10	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	11	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	12	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	13	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	14	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	15	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	16	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	17	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	18	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	19	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	20	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	21	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	22	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	23	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	24	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	25	2	28	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	26	2	15.7154	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	27	2	15.7467	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	28	2	15.7779	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	29	2	15.8092	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	30	2	15.8404	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	31	2	15.8717	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	32	2	15.9029	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	33	2	15.9342	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	34	2	15.9654	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	35	2	15.9967	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	36	2	16.0279	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	37	2	16.0592	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	38	2	16.0904	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	39	2	16.1217	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	40	2	16.1529	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	41	2	16.1842	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	42	2	16.2154	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	43	2	16.2467	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	44	2	16.2779	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	45	2	16.3092	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	46	2	16.3404	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	47	2	16.3717	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	48	2	16.4029	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	49	2	16.4342	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	50	2	16.4654	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	51	2	16.4967	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	52	2	16.5279	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	53	2	16.5592	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	54	2	16.5904	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	55	2	16.6217	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	56	2	16.6529	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	57	2	16.6842	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	58	2	16.7154	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	59	2	12.8583	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	60	2	12.8895	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	61	2	12.9208	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	62	2	12.952	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	63	2	12.9833	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	64	2	13.0145	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	65	2	13.0458	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	66	2	13.077	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	67	2	13.1083	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	68	2	13.1395	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	69	2	13.1708	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	70	2	13.202	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	71	2	13.2333	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	72	2	13.2645	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	73	2	13.2958	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	74	2	13.327	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	75	2	13.3583	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	76	2	13.3895	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	77	2	13.4208	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	78	2	13.452	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	79	2	13.4833	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	80	2	13.5145	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	81	2	13.5458	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	82	2	13.577	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	83	2	13.6083	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	84	2	13.6395	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	85	2	13.6708	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	86	2	13.702	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	87	2	13.7333	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	88	2	13.7645	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	89	2	13.7958	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	90	2	13.827	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41
+G15up_grp90	91	2	13.8583	right	Georgia	15	0	90	control	num	0.00	-98.41	-98.41

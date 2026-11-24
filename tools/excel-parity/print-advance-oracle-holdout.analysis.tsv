@@ -1,0 +1,45 @@
+## advance agreement
+rows=488  max|pdfAdv-bbox|=0.000000 pt  over0.001=0
+
+## advance = slope * digits + intercept (repeated 1s, format 0.00%)
+sheet	digit_count	measured_adv	engine_adv	exactheight_adv	measured_slope	measured_intercept	engine_slope	engine_intercept	exact_slope	exact_intercept	max_residual
+H_V13up_pct140	1,2,3,4,6,7,8,10,12	a=11.64667 b=49.43262	engine a=11.64000 b=49.56000	exact a=11.52000 b=49.20000	measured_resid=0.0778 engine_resid=0.0000 exact_resid=0.0000
+H_V13up_pct140	1	61.12224	61.20000	60.72000							+0.0778/-0.4022
+H_V13up_pct140	2	72.72288	72.84000	72.24000							+0.1171/-0.4829
+H_V13up_pct140	3	84.37824	84.48000	83.76000							+0.1018/-0.6182
+H_V13up_pct140	4	95.97888	96.12000	95.28000							+0.1411/-0.6989
+H_V13up_pct140	6	119.23488	119.40000	118.32000							+0.1651/-0.9149
+H_V13up_pct140	7	130.99240	131.04000	129.84000							+0.0476/-1.1524
+H_V13up_pct140	8	142.63244	142.68000	141.36000							+0.0476/-1.2724
+H_V13up_pct140	10	165.91252	165.96000	164.40000							+0.0475/-1.5125
+H_V13up_pct140	12	189.19260	189.24000	187.44000							+0.0474/-1.7526
+H_Tahoma15up_pct90	1,2,3,4,6,7,8,10,12	a=7.44583 b=32.14077	engine a=7.44000 b=32.16000	exact a=7.32000 b=31.92000	measured_resid=0.0390 engine_resid=0.0000 exact_resid=0.0000
+H_Tahoma15up_pct90	1	39.59520	39.60000	39.24000							+0.0048/-0.3552
+H_Tahoma15up_pct90	2	47.05320	47.04000	46.56000							-0.0132/-0.4932
+H_Tahoma15up_pct90	3	54.45696	54.48000	53.88000							+0.0230/-0.5770
+H_Tahoma15up_pct90	4	61.91496	61.92000	61.20000							+0.0050/-0.7150
+H_Tahoma15up_pct90	6	76.77672	76.80000	75.84000							+0.0233/-0.9367
+H_Tahoma15up_pct90	7	84.28484	84.24000	83.16000							-0.0448/-1.1248
+H_Tahoma15up_pct90	8	91.72480	91.68000	90.48000							-0.0448/-1.2448
+H_Tahoma15up_pct90	10	106.60472	106.56000	105.12000							-0.0447/-1.4847
+H_Tahoma15up_pct90	12	121.48464	121.44000	119.76000							-0.0446/-1.7246
+
+## implied per-digit advance by PDF operator strategy
+sheet	tc	digit_advance	strings
+
+## physical column width minus W(width_chars) model
+sheet	kind	n	mean	min	max	p95
+H_Tahoma15up_pct90	wide	56	+0.0885	+0.0712	+0.0947	+0.0947
+H_Tahoma15up_pct90	dense	66	+0.1101	-0.6122	+0.1911	+0.1872
+H_V13up_pct140	wide	56	+0.1010	+0.0917	+0.1190	+0.1190
+H_V13up_pct140	dense	66	+0.1118	-1.0100	+0.1910	+0.1886
+
+## tight-cell cutoffs (W from the PDF fill rectangle)
+sheet	text	cols	last_hash_W	first_full_W	c_bracket(measuredW,measuredAdv)	c_bracket(modelW,engineAdv)	model_c	inside_measured	inside_modelW	engine_wrong	exact_wrong	engine_misses	exact_misses
+H_Tahoma15up_pct90	1111111111.00%	33	111.0195	111.8398	(4.4148, 5.2351]	(4.3560, 5.1120]	4.5598	yes	yes	0	10		107,108,109,110,111,112,113,114,115,116
+H_Tahoma15up_pct90	1234567.89%	33	88.5625	89.3047	(4.2777, 5.0199]	(4.2120, 4.9680]	4.5598	yes	yes	0	5		74,75,76,77,78
+H_V13up_pct140	1111111111.00%	33	172.6992	173.9023	(6.7867, 7.9898]	(6.5760, 7.7520]	6.6603	no	yes	0	10		107,108,109,110,111,112,113,114,115,116
+H_V13up_pct140	1234567.89%	33	137.7773	138.8594	(6.7849, 7.8670]	(6.5520, 7.7280]	6.6603	no	yes	0	5		74,75,76,77,78
+
+## literal punctuation advances (wide cells)
+sheet	text	measured	engine	exact	delta_exact
