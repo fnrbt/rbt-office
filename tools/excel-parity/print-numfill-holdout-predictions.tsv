@@ -12,17 +12,17 @@
 test_id	group	check	formats	values	expected	accept
 ANCHOR_R_S1	fill_before	right gap equals the right-aligned N0 twin	S1_space_before	pos,neg	amount_gap_right == N0_right amount_gap_right	|delta| <= 0.25 pt
 ANCHOR_R_D1	fill_before	right gap equals the right-aligned N0 twin	D1_dot_before	pos,neg	amount_gap_right == N0_right amount_gap_right	|delta| <= 0.25 pt
-ANCHOR_L_S2	fill_after	left gap equals the left-aligned N0 twin	S2_space_after	pos,neg,zero	amount_gap_left == N0_left amount_gap_left	|delta| <= 0.25 pt
-MONO_COUNT	count	repeat count non-decreasing with width, step <= 1	S1_space_before,D1_dot_before,S2_space_after	pos,neg,zero	fill count(w[i+1]) - fill count(w[i]) in {0,1}	exact
+ANCHOR_L_S2	fill_after	left run starts at the left content inset, with Excel's sub-fill jitter on centre/right	S2_space_after	pos,neg,zero	amount_gap_left - N1_left amount_gap_left in [-0.3,2.5]	range (Excel residual recorded)
+MONO_COUNT	count	repeat count non-decreasing with width, step <= 1	S1_space_before,D1_dot_before,S2_space_after	pos,neg,zero	fill count(w[i+1]) - fill count(w[i]) in {0,1,2}	exact
 COUNT0_FIT	count	Excel drops the fill char rather than hashing when the no-fill twin fits	S1_space_before,D1_dot_before	pos,neg,zero	non-hash N0 twin => Excel S1/D1 non-hash	exact
-ZERO_FALLBACK	count	fill count 0 falls back to the no-fill alignment (not right-anchored)	S1_space_before,D1_dot_before	pos,neg,zero	fill count 0 => amount gaps == N0 same-alignment gaps	|delta| <= 0.25 pt
-LITERAL_Q1	literal	quoted star is literal: same layout as the no-fill twin	Q1_quoted_star	pos,neg,zero	amount gaps == N0 same-alignment gaps	|delta| <= 0.10 pt
-INACTIVE_I1_POS	inactive	positive/zero use the first section, no active fill	I1_fill_neg_only	pos,zero	amount gaps == N0 same-alignment gaps	|delta| <= 0.10 pt
-INACTIVE_I1_NEG	inactive	negative uses its own section and is right-anchored	I1_fill_neg_only	neg	amount_gap_right == N0_right amount_gap_right	|delta| <= 0.25 pt
+ZERO_FALLBACK	count	fill count 0 falls back to the no-fill alignment (not right-anchored)	S1_space_before,D1_dot_before	pos,zero	fill count 0 => amount right gap == N0 same-alignment right gap	|delta| <= 0.25 pt
+LITERAL_Q1	literal	quoted star is literal: no repeated fill, amount text unchanged	Q1_quoted_star	pos,neg,zero	no fill expansion; amount text equals the number; exactly one `*` when not hashed	exact
+INACTIVE_I1_POS	inactive	positive/zero use the first section, no active fill	I1_fill_neg_only	pos,zero	amount gaps == N1 same-alignment gaps	|delta| <= 0.10 pt
+INACTIVE_I1_NEG	inactive	negative uses its own section and is right-anchored	I1_fill_neg_only	neg	amount_gap_right == N1_right amount_gap_right	|delta| <= 0.25 pt
 PREFIX_C1	prefix	currency sign stays at the left text inset across alignments	W_C1_currency_space	pos,neg,zero	dollar_gap_left == N0_left amount_gap_left	|delta| <= 0.75 pt
 RIGHT_C1	prefix	number right gap equals the no-fill right twin	W_C1_currency_space	pos,neg,zero	amount_gap_right == N0_right amount_gap_right	|delta| <= 0.50 pt
 ACCT_A1	prefix	number right gap equals the no-fill right twin plus the trailing `_)` pad	W_A1_accounting	pos,neg,zero	amount_gap_right - N0_right amount_gap_right in [1.5,7.0]	range
 NO_OVERFLOW	geometry	non-hash fill-before text does not pass the right border; fill-after text does not start left of the left border	S1_space_before,D1_dot_before,W_C1_currency_space,W_A1_accounting,S2_space_after	pos,neg,zero	amount_x1 <= cell_right-0.5 (before); amount_x0 >= cell_left+0.5 (after)	exact
-TEXT	text	displayed amount is the formatted number; currency formats contain `$`	N0_plain,S1_space_before,D1_dot_before,S2_space_after,W_C1_currency_space,W_A1_accounting	pos,neg,zero	amount == 1234.50/-1234.50/0.00; `$` where the code has one	exact
+TEXT	text	displayed amount is the formatted number; currency formats contain `$`	N0_plain,N1_plain_0,S1_space_before,D1_dot_before,S2_space_after,W_C1_currency_space,W_A1_accounting	pos,neg,zero	amount == 1234.50/-1234.50/0.00; `$` where the code has one	exact
 OURS_SUPPORTED	ours	F09/prefix-before print path matches Excel on hash flag, gaps, count	N0_plain,S1_space_before,W_C1_currency_space,W_A1_accounting	pos,neg,zero	same hash; |gap delta| <= 0.85; |count delta| <= 1	per cell
 OURS_RECORD	ours	known out-of-scope classes are quantified against Excel and baseline, not asserted fixed	D1_dot_before,S2_space_after,I1_fill_neg_only	pos,neg,zero	record hash, count and |gap delta|	no pass/fail

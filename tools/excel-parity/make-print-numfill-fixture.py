@@ -30,6 +30,7 @@ CT = 'application/vnd.openxmlformats-officedocument.spreadsheetml'
 # (name, format code). A leading `S_`/`D_` is a short-group format; `W_` a wide-group format.
 SHORT_FORMATS = [
     ('N0_plain', '#,##0.00'),
+    ('N1_plain_0', '0.00'),
     ('S1_space_before', '* #,##0.00'),
     ('D1_dot_before', '*.#,##0.00'),
     ('S2_space_after', '0.00* '),
@@ -38,7 +39,6 @@ SHORT_FORMATS = [
     ('E1_escaped_star', r'\*#,##0.00'),
     ('I1_fill_neg_only', '0.00;[Red]* -0.00;0.00'),
     ('I2_fill_pos_only', '0.00*.;0.00'),
-    ('M1_fill_pos_alt', '* #,##0.00;0.00'),
 ]
 WIDE_FORMATS = [
     ('W_C1_currency_space', '$* #,##0.00'),
@@ -47,7 +47,7 @@ WIDE_FORMATS = [
     ('W_A2_accounting_dot', '_($*.#,##0.00_);_($* \\(#,##0.00\\);_($* "-"??_);_(@_)'),
     ('W_I3_currency_neg_only', '$0.00;[Red]$* -0.00;0.00'),
 ]
-HOLDOUT_SHORT = ['N0_plain', 'S1_space_before', 'D1_dot_before', 'S2_space_after',
+HOLDOUT_SHORT = ['N0_plain', 'N1_plain_0', 'S1_space_before', 'D1_dot_before', 'S2_space_after',
                  'Q1_quoted_star', 'I1_fill_neg_only']
 HOLDOUT_WIDE = ['W_C1_currency_space', 'W_A1_accounting']
 SHORT_WIDTHS = ['9.25', '9.5', '9.75', '10', '10.25', '10.5', '10.75', '11']
