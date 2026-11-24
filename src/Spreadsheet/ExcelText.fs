@@ -184,6 +184,39 @@ let printDigitWidth (family: string) (points: float) : float =
         | _ -> ()
     if widest > 0 then float widest else FontMetrics.maxDigitWidth (Some family) (points * 6.25)
 
+/// The 600-dpi pixel size Excel 2019 prints a font of `points` at on a page of `scale` (1.0 = 100 %).
+let printPx (points: float) (scale: float) : int = int (System.Math.Floor (points * scale * 600.0 / 72.0 + 0.5))
+
+/// The width of `text` in dots of 600 dpi as Excel 2019 prints it in a family / style at `points` on a page of `scale`:
+/// the sum of the characters' hinted GDI advances at `printPx points scale`. Excel right-aligns and centres printed
+/// cell text by this width (tools/excel-parity/print-inset-oracle.md). None where the tables do not know a character.
+let printWidthDots (family: string) (bold: bool) (italic: bool) (points: float) (scale: float) (text: string) : float option =
+    let family = let f = family.Trim() in if f.EndsWith " MT" then f.Substring(0, f.Length - 3) else f
+    let px = printPx points scale
+    let mutable total = 0
+    let mutable known = px > 0
+    for ch in text do
+        if known then
+            match advance family bold italic px false (int ch) with
+            | ValueSome w -> total <- total + w
+            | ValueNone -> known <- false
+    if known then Some (float total) else None
+
+/// How far Excel 2019 prints a cell's text from each side of the cell, in dots of 600 dpi: ceil(d / 4) + 4, d the
+/// widest digit of the CELL's font at the size it prints at (`printPx`), whatever the Normal font - 16 for Calibri 11
+/// at 100 %, 11 at 60 %, 19 for Aptos Narrow 14, 22 for Georgia 14 (tools/excel-parity/print-inset-oracle.md: 2,736
+/// left/right cells over six faces, sizes 9-14 and 60/75/100 %, a withheld set and a Georgia 12 Normal font, all to
+/// the dot). None where the tables do not know the face.
+let printCellPadDots (family: string) (bold: bool) (italic: bool) (points: float) (scale: float) : float option =
+    let family = let f = family.Trim() in if f.EndsWith " MT" then f.Substring(0, f.Length - 3) else f
+    let px = printPx points scale
+    let mutable widest = 0
+    for code in int '0' .. int '9' do
+        match advance family bold italic px false code with
+        | ValueSome w when w > widest -> widest <- w
+        | _ -> ()
+    if widest > 0 then Some (System.Math.Ceiling (float widest / 4.0) + 4.0) else None
+
 /// The row of a Normal font (family, points) as Excel 2019 prints it, in dots of 600 dpi: a row of the font's
 /// default height in its PDF (make-print-pages-fixture.py "heights" and "rowunit-*": 32 fonts and sizes).
 let private printedRows : (string * float * float) list =

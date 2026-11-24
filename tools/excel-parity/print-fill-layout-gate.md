@@ -195,6 +195,8 @@ Frozen report/evidence: `print-border-fill-oracle.md` (`180faee5...`), `measure-
 `border-sweep-predictions-v2.tsv` (`9a98145f...`); v1 (`78c78b56...`) assumed only thin/medium/thick
 and is superseded.
 
+Resolved by `print-inset-oracle.md`. The pad is the cell font's `ceil(d/4)+4` dots, not the Normal font's; widths are hinted GDI advances; Excel's fill rectangles are one dot wider than the column. With those, `count = floor((cw - 2P + 2 - w)/a)` is exact on all 4,140 fill cells. The engine now uses it, and the paired gate has 0 count errors.
+
 #### Where the 0.34-0.74 pt no-fill box gap comes from
 
 Cross-sheet decomposition of `slack = W − lin − rin − number` on all fill cells with an amount (left inset

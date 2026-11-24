@@ -429,14 +429,25 @@ let private appendDrawTextOps
             let italicShiftPt =
                 if not (italicEligible || (printOverflow && t.Italic)) then 0.0
                 else Rbt.Spreadsheet.FontMetrics.printItalicShiftPt winAscent (float primaryTtf.UnitsPerEm) t.FontSize placement.Scale
+            // Excel 2019 right-aligns and centres a cell's printed text by its hinted 600-dpi width (GDI's
+            // advances at the printed pixel size), and centres it 4 dots right of the middle
+            // (tools/excel-parity/print-inset-oracle.md: 912 centred and 912 right-aligned cells to the dot).
+            // The glyphs are still drawn at the face's own advances; only the run's origin moves.
+            let gdiWidthPt =
+                if t.PrintGdiAlign && not printOverflow && singlePrimarySegment then
+                    Rbt.Spreadsheet.ExcelText.printWidthDots primaryFace.Family t.Bold t.Italic t.FontSize placement.Scale t.Text
+                    |> Option.map (fun d -> d * 72.0 / 600.0)
+                else None
+            let alignWidthPt = defaultArg gdiWidthPt totalWidthPt
+            let centreShiftPt = if gdiWidthPt.IsSome then 4.0 * 72.0 / 600.0 else 0.0
             let alignedXPt =
                 if printOverflow then
                     rectXPt + (rectWidthPt - totalWidthPt) / 2.0 - (if t.Italic then italicShiftPt / 2.0 else 0.0)
                 else
                     match t.Align with
                     | AlignLeft -> rectXPt
-                    | AlignCenter -> rectXPt + (rectWidthPt - totalWidthPt) / 2.0
-                    | AlignRight -> rectXPt + rectWidthPt - totalWidthPt - italicShiftPt
+                    | AlignCenter -> rectXPt + (rectWidthPt - alignWidthPt) / 2.0 + centreShiftPt
+                    | AlignRight -> rectXPt + rectWidthPt - alignWidthPt - italicShiftPt
             let ascent = winAscent * scaleY
             let descent = winDescent * scaleY
             let lineHeight = ascent + descent
@@ -501,12 +512,11 @@ let private appendDrawTextOps
                     xPt (ax0 + shiftX), yPdf (ay0 + shiftY)
             ops.Add PdfDraw.BeginText
             ops.Add(PdfDraw.SetFillColor textColor)
-            let emitTextSegment faceName ttf s cumWidthPt =
+            let emitTextSegment faceName (ttf: PdfFont.TrueTypeFont) (s: string) cumWidthPt =
                 let remap =
                     match faceRemap.TryFind faceName with
                     | Some found -> found
                     | None -> Map.empty
-                let hex = toCodedHex ttf remap s
                 ops.Add(PdfDraw.SetFont (faceName, fontSizePt))
                 // Position this segment's anchor in PDF coords.
                 // Without rotation: anchor + (cumWidth, 0).
@@ -514,7 +524,33 @@ let private appendDrawTextOps
                 let xAt = anchorXPt + cosT * cumWidthPt
                 let yAt = anchorYPt + sinT * cumWidthPt
                 ops.Add(PdfDraw.TextMatrix (cosT, sinT, -sinT, cosT, xAt, yAt))
-                ops.Add(PdfDraw.ShowTextHex hex)
+                // Cell text aligned by its hinted width is also set at its hinted advances, one TJ whose
+                // adjustments put each glyph where GDI's printer advance does, as Excel 2019's PDF sets it.
+                let hintedAdvancesPt =
+                    if gdiWidthPt.IsSome && not useRotation && s.Length > 1 then
+                        let advances =
+                            s |> Seq.map (fun ch ->
+                                Rbt.Spreadsheet.ExcelText.printWidthDots primaryFace.Family t.Bold t.Italic t.FontSize placement.Scale (string ch))
+                            |> Seq.toArray
+                        if advances |> Array.forall Option.isSome then Some (advances |> Array.map (fun d -> d.Value * 72.0 / 600.0))
+                        else None
+                    else None
+                match hintedAdvancesPt with
+                | Some hinted ->
+                    let pairs =
+                        s |> Seq.mapi (fun i ch ->
+                            let code =
+                                if not (Map.isEmpty remap) then defaultArg (Map.tryFind (int ch) remap) 0
+                                else defaultArg (ttf.Cmap.TryFind (int ch)) 0
+                            let kern =
+                                if i = s.Length - 1 then 0
+                                else
+                                    let designPt = float (PdfFont.getTextWidth ttf (string ch)) / float ttf.UnitsPerEm * fontSizePt
+                                    int (Math.Round ((designPt - hinted.[i]) / fontSizePt * 1000.0))
+                            code, kern)
+                        |> Seq.toArray
+                    ops.Add(PdfDraw.ShowTextHexWithKern pairs)
+                | None -> ops.Add(PdfDraw.ShowTextHex (toCodedHex ttf remap s))
             let mutable cumWidthPt = 0.0
             if singlePrimarySegment then
                 emitTextSegment primaryFace.FaceName primaryTtf t.Text 0.0
@@ -1135,6 +1171,7 @@ let private headingText (text: string) (rect: Rect) (align: TextAlign) (fontSize
         PrintOverflowHashes = false
         PrintHashSlots = 0
         PrintHashCellWidth = 0.0
+        PrintGdiAlign = false
         PrintFitText = ""
         PrintFitPads = ""
         PrintFitFullText = ""
