@@ -166,12 +166,12 @@ Verdana 100 false-hash 1 (col 74, model W quantisation).  Exact-height trades
 those for 30 holdout false-fulls and does not change the V100/Georgia width
 classes.
 
-Recommendation: keep the integer-height baseline.  Section 7's independent
-challenge refutes FreeType-v35 hinted advances at print ppem (ppem 87 and 80)
-on faces where the font/driver genuinely has a nonzero hint delta; exact-height
-is also refuted at ppem 152/113.  The Verdana-75 slice therefore remains an
-unresolved special case, not a licence for either replacement.  This experiment
-supplies the locked blind evidence; it does not edit production.
+Recommendation: keep the current integer-height behaviour only as the shipping
+baseline; do not replace it with exact-height or FreeType-v35.  Section 7's GDI
+probe identifies the real target: GDI advances at ppem (Verdana 81 digit 52
+explains the 75 % slice; Tahoma 87 / Arial 80 return the design-rounded 47/44).
+The challenge workbook supplies the locked blind evidence for that decision; no
+production source was edited.
 
 
 ## 7. Second blind challenge: design-rounded vs FreeType-v35 hinted
@@ -212,9 +212,41 @@ follow the baseline, not the hinted candidate:
 | Tahoma 65 | per-digit slope | 5.63902 | 5.64000 | 5.76000 |
 | Arial 80 | per-digit slope | 5.27864 | 5.28000 | 5.40000 |
 
-**Conclusion:** Excel's print layout follows the design-rounded baseline on both
-independent faces.  FreeType-v35 hinting at print ppem is not Excel's print
-model; the hinted candidate is refuted rather than supported.  The original
-ppem-152/113 sheets remain the negative control (candidate == baseline, 0
-wrong); the Verdana-75 anomaly is neither exact-height nor v35 hinting and must
-not be generalised from this challenge.
+**Conclusion (FreeType):** Excel's print layout follows the design-rounded
+baseline on both independent faces, so the FreeType-v35 hinted candidate is
+refuted.  The original ppem-152/113 sheets remain the negative control
+(candidate == baseline, 0 wrong).
+
+### GDI follow-up: the actual printer advance
+
+The falsifiable next test was Windows GDI itself: `GetTextExtentPoint32W` on a
+memory DC with `LOGFONT.lfHeight = -ppem` (Selected face read back with
+`GetTextFaceW`).  `probe-gdi-advances.ps1` (run on the winvm) writes
+`print-advance-gdi-advances.tsv`; the probe measures "1" x n, "8" x n and the
+mixed strings, and each row is a direct GDI extent.
+
+| face | ppem | GDI digit | design-rounded | FreeType v35 | Excel/PDF |
+| --- | --- | --- | --- | --- | --- |
+| Verdana 13 | 81 | **52** | 51 | 52 | 52 (75 % anomaly) |
+| Verdana 13 | 108 | 69 | 69 | 69 | 69 |
+| Verdana 13 | 109 | 69 | 69 | 69 | 69 |
+| Verdana 13 | 120 | 76 | 76 | 76 | 76 |
+| Tahoma 16 | 87 | 47 | 47 | 48 | 47 |
+| Arial 12 | 80 | 44 | 44 | 45 | 44 |
+| Georgia 15 | 113 upright | 49 | 49 | 49 | 49 |
+| Georgia 15 | 113 italic | 49 | 49 | 49 | 49 |
+
+GDI reproduces every observed Excel value, including the Verdana-75 `+1`, and
+its `1234567.89%` extents are 584 / 534 / 489 px at Verdana 81 / Tahoma 87 /
+Arial 80 — the hinted run at Verdana 81 (70.08 pt) and the design-rounded run at
+Tahoma/Arial (64.08 / 58.68 pt).  FreeType v35 diverges from GDI above 36 px for
+Tahoma 87 and Arial 80, and coincides at Verdana 81 and Georgia 113.  The print
+layout engine is therefore GDI (or a GDI-identical advance source), not
+FreeType and not a closed-form formula.
+
+This refines the recommendation: the shipping design-rounded rule is only
+accidentally right where GDI equals design-rounded (Tahoma 87, Arial 80,
+Verdana 108/109/120, Georgia 113); it is wrong at Verdana 81, where GDI is 52.
+A correct production change needs a GDI advance source/table at ppem, not
+exact-height arithmetic and not FreeType v35.  No production sources were
+edited.

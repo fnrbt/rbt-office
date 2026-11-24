@@ -302,14 +302,16 @@ def main():
                     continue
                 r = inside[idx]
                 base, adv, n = advance_of(r, widths)
-                match = [w for w in words if abs(w[0] - r['x']) < 0.05]
+                text = r['text'].decode('latin1')
+                cands = [w for w in words if abs(w[0] - r['x']) < 0.05]
+                # two rows can start at the same x; prefer the word whose text is the run
+                match = [w for w in cands if w[4] == text] or cands
                 if match:
                     w0, y0, x1, y1, wtext = match[0]
                     bw = x1 - w0
                 else:
                     w0 = x1 = bw = None
                     wtext = ''
-                text = r['text'].decode('latin1')
                 n_hash = text.count('#')
                 diags = []
                 if r['text'].decode('latin1') != wtext and text.strip('#') != '':

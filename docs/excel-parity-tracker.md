@@ -2002,9 +2002,11 @@ Cambria 16 upright 80 % likewise) and one real advance residual: **Verdana 13 at
 full number where Excel hashes at 17.2188-17.5 (10 columns). The printed wide-cell run there is
 70.098 pt where the design model gives 69.000 (the `###` pitch is still the 81-dot 7.9239 against
 `a` 7.92), and with the measured 70.098 the transition is exactly
-`73.801 - 70.098 < c = 3.974 <= 74.543 - 70.098`: the cutoff is right and the number's hinted
-advance at that fractional 81.25-dot height is the residual. Our anchor lock predicts full on those
-columns too. Counts are 187/187 on the decision-correct hash columns, with no independent count error.
+`73.801 - 70.098 < c = 3.974 <= 74.543 - 70.098`: the cutoff is right and the number's advance at
+that height is the residual: GDI's hinted advance at the realised 81-dot height is 52 dots per
+digit where the design-rounded model uses 51 (measured directly, "Printed advance is GDI's hinted
+advance" below). Our anchor lock predicts full on those columns too. Counts are 187/187 on the
+decision-correct hash columns, with no independent count error.
 
 The blind anchors before that holdout fix the same 5 runtime decisions as the 388-column count
 holdout: Verdana 17.375/17.4375/17.5 are full in Excel, Georgia italic 16.6875/16.75 are 8 hashes;
@@ -2012,3 +2014,57 @@ the candidate gets all five. `print-fit-cutoff-comparison.tsv` and
 `tools/excel-parity/analyze-print-fit-cutoff.py` reproduce the baseline/candidate/measured-W tallies
 from the checked-in meta/results (holdout candidate 388/388 output, baseline 383/388; train output
 candidate 769/786, baseline 775/786 decision-level).
+
+**Final Chromium gate** (`tools/excel-parity/print-fit-browser-gate.md` / `.tsv`, FitCutoffOracle): one
+dist build from the frozen `ee6d6ea8`/`e9bec9d3`/`8f04d59a` sources (hashes unchanged before/after),
+real Chromium PDFs from Fable `Spreadsheet.ExportPdf` against the fresh Excel measurements and the
+`e3d55f93` frozen baseline dist. New anchor 329/344 vs baseline 320/344 (19 gains, 10 regressions);
+blind holdout 92/96 vs 83/96 (9 gains, 0 regressions; the 4 Cambria false hashes are common to both);
+388-column count holdout 388/388 decisions and 261/261 counts (5 gains, 0 regressions);
+hash-geometry 289/289 decisions and 277/279 counts in both; accounting identical to baseline (the
+prior path is preserved: 2 decision / 3 count pre-existing misses). Final Chromium row-1 equals the
+final native runner on the anchor and blind workbooks with 0 differences. The 10 anchor regressions are
+the two documented quantisation classes: Verdana 13 at 75 % columns 31-35, widths 17.2188-17.3438
+(hash→full; 36-40 wrong in both, the 70.098-vs-69.000 advance residual) and Georgia 15 upright 90 %
+columns 24-28, widths 16.2188-16.3438 (full→hash, layout W 0.04-0.15 pt low).
+
+## Printed advance is GDI's hinted advance, not FreeType's, 2026-11-24
+
+The Verdana 13 at 75 % residual above is the printer face's hinted advance. It is now measured
+directly on Windows through a printer DC at 600 dpi: `CreateFontW` with height `-ppem`, then
+`GetCharWidth32W` and `GetTextExtentPoint32W` (the P/Invoke block of
+`tools/excel-parity/gdi-print-italic-metrics.ps1`, reused in a scratch copy and run in the desktop
+session; output `/var/tmp/adv/gdi/gdi-advance.tsv`). The selected face is recorded by
+`GetTextFaceW` (Verdana, Tahoma, Arial, Georgia, no fallback). An independent probe on the same VM
+(`tools/excel-parity/probe-gdi-advances.ps1`, data `tools/excel-parity/print-advance-gdi-advances.tsv`,
+sha256 1f53e00d…7b14c) returns the same advances and extents.
+
+| face / ppem (source) | 0-9 | '.' | '%' | '#' | extent `1234567.89%` (pt) | Excel wide run |
+| --- | --- | --- | --- | --- | --- | --- |
+| Verdana 81 (13 pt 75 %) | **52** | 29 | 87 | 66 | 584 (70.08) | 70.098 / 70.156 encoded |
+| Verdana 79 / 80 / 82 / 83 | 50 / 51 / 52 / 53 | 29 / 29 / 30 / 30 | 85 / 86 / 88 / 89 | 65 / 65 / 67 / 68 | 564 / 574 / 586 / 596 | - |
+| Verdana 108 (13 pt 100 %) | 69 | 39 | 116 | 88 | 776 (93.12) | 93.142 |
+| Verdana 152 (13 pt 140 %) | 97 | 55 | 164 | 124 | 1092 (131.04) | 131.04 |
+| Tahoma 87 (16 pt 65 %) | **47** | 26 | 85 | 63 | 534 (64.08) | 64.063 |
+| Tahoma 113 (15 pt 90 %) | 62 | 34 | 110 | 82 | 702 (84.24) | 84.24 |
+| Arial 80 (12 pt 80 %) | **44** | 22 | 71 | 44 | 489 (58.68) | 58.666 |
+| Georgia 113 upright / italic | 69; '1' 49 | 30 | 92 | 73 | 672 / 671 | 77.64 (`1,234,567.00`: 647 dots) |
+
+GDI, not FreeType v35, is the print engine: FreeType v35 predicts digit 48 for Tahoma 87 and 45 for
+Arial 80, while Excel and GDI both use 47 and 44. The pre-registered blind challenge (Tahoma 16 at
+65 % ppem 87, Arial 12 at 80 % ppem 80; 226 row-1 dense cells) is 226/226 decisions and 0 count
+misses under the shipping design-rounded rule, and 18 decision + 5 count misses under the
+FreeType-v35 hinted rule (`/var/tmp/adv-oracle/print-advance-challenge-*`). The earlier ppem 152/113
+holdout has no GDI/FreeType delta and tests only height quantisation (integer height 0 cutoff
+misses, unrounded height 15). Hence the Verdana residual is a real GDI hinted advance at ppem 81,
+and the adjacent-ppem differential (50/51/52/53 at 79/80/81/82) shows the +1 is a font hint jump,
+not an off-by-one in the fit rule.
+
+No runtime change: the same `Pdf.fs` compiles native and Fable, `Rbt.OpenType.Core` has no hinting
+interpreter or `hdmx` reader, and `GdiAdvances` covers only 11-36 px. The fit cutoff stays as
+shipped; Verdana 13 at 75 % columns 31-40 remain a known GDI-advance residual until hinted print
+advances are available to both native and Fable. The cross-rule tallies (anchor 276, blind holdout
+92, count holdout 388, count train 619, independent oracle train 198) and the full evidence report
+are at `/var/tmp/adv/print-advance-model-report.md`. The falsifiable next step is a GDI advance
+source/table at print ppem for the engine (GDI, not FreeType); no second Tc/TJ probe is needed,
+because GDI returns 52 at ppem 81.
