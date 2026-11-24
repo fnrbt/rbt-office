@@ -538,6 +538,17 @@ let printColumnWidthPx (mdw: float) (printDigit: float) (width: float) : float =
         let digit = if printDigit > 0.0 then printDigit else mdw * 47.0 / 7.0
         System.Math.Floor (width * digit / mdw + 0.5) / 6.25
 
+/// The page-local pixels a column of `widthPx` (a `printColumnWidthPx` size, in whole 600-dpi dots at 100 %)
+/// has on a page printed at `scale`: Excel applies the page scale first and snaps the result to a whole
+/// printer dot. A 765-dot column at 90 % prints 689 dots (82.68 pt), not 688.5 (82.62 pt); a 806-dot
+/// column at 75 % prints 605 (72.60), not 604.5 (72.54). The rendered geometry then lands on the same
+/// dots `dotted` uses for its page-break budget.
+let printColumnWidthPxAtScale (scale: float) (widthPx: float) : float =
+    if not (scale > 0.0) || widthPx <= 0.0 then widthPx
+    else
+        let dots = System.Math.Floor (widthPx * 6.25 * scale + 0.5)
+        dots / (6.25 * scale)
+
 /// The height a row of `px` pixels on the screen prints at, in pixels: Excel 2019's PDF sets it at `scale` dots of
 /// 600 dpi a pixel (`ExcelText.printRowScale`: 6.05 for a Normal font of Calibri 11), cut down to whole dots - a row
 /// of 20 px (15 pt) prints at 121 dots (14.52 pt), one of 546 px (409.5 pt) at 3303. (A height of a fraction of a

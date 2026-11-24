@@ -851,6 +851,22 @@ let private withPrintColumnWidths maxPrintCol (model: SpreadsheetModel) : Spread
             model.ColumnWidths |> Map.map (fun _ width -> printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth width)
     { model with ColumnWidths = widths; DefaultColumnWidth = printColumnWidthPx model.MaxDigitWidth model.PrintDigitWidth model.DefaultColumnWidth }
 
+/// Excel scales a printed column at 600 dpi and snaps the *scaled* width to whole dots: a
+/// 114 px column is 765 dots at 100 %, and at 90 % prints 689 dots (82.68 pt), not 765 x 0.9
+/// dots (82.62 pt). `withPrintColumnWidths` leaves each width in 100 % dots; this converts
+/// those to the page-local pixels whose scaled size is the snapped dot width, so the PDF
+/// geometry and the pagination's own `dotted` page budget use the same columns.
+let private withPrintColumnWidthsAtScale (scale: float) maxPrintCol (model: SpreadsheetModel) : SpreadsheetModel =
+    if not (scale > 0.0) || abs (scale - 1.0) < 1e-12 then model
+    else
+        let snap width = Pagination.printColumnWidthPxAtScale scale width
+        let widths =
+            match maxPrintCol with
+            | Some maxCol when maxCol >= 0 && maxCol <= directPrintDimensionRemapLimit ->
+                remapPrintDimensionDirect maxCol snap model.ColumnWidths
+            | _ -> model.ColumnWidths |> Map.map (fun _ width -> snap width)
+        { model with ColumnWidths = widths; DefaultColumnWidth = snap model.DefaultColumnWidth }
+
 /// The rows at the heights they print at (`Pagination.printRowHeightPx`).
 let private withPrintRowHeights maxPrintRow (model: SpreadsheetModel) : SpreadsheetModel =
     let heights =
@@ -1544,6 +1560,10 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
                     | _ -> ()
     let recordPaintTextGids (t: PaintText) =
         recordTextGids t.Bold t.Italic t.FontName t.Text
+        // The print fit path can replace Paint's hashes with the full number after glyph collection
+        // (`appendDrawTextOps`), so its digits must be in the subset too.
+        if t.PrintFitFullText.Length > 0 && t.PrintFitFullText <> t.Text then
+            recordTextGids t.Bold t.Italic t.FontName t.PrintFitFullText
     let rec recordPaintItemGids item =
         match item with
         | DrawText t -> recordPaintTextGids t
@@ -1568,6 +1588,11 @@ let toBytesOfSheets (options: RenderOptions) (sheets: PdfSheet list) : byte[] =
             |> withPrintRowHeights maxPrintRow
         // Compute pagination from PageSetup. Empty workbook → one blank page.
         let pagination = Pagination.paginate model
+        // Excel lays each printed column out at the page's scale and snaps it to whole 600-dpi
+        // dots. Pagination's page budget already uses those scaled dots (`dotted`), so re-express
+        // the widths at the chosen scale: the drawn edges then agree with Excel and the page
+        // breaks are unchanged (both read the same dot totals).
+        let model = model |> withPrintColumnWidthsAtScale pagination.Scale maxPrintCol
         let ps = model.PageSetup
         // (A landscape page is the wider way round, however the setup holds the paper's size.)
         let pageWidthPt, pageHeightPt = Pagination.orientedPageSize ps

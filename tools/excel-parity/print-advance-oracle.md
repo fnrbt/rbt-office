@@ -98,6 +98,15 @@ The model `W` is low for every face by ~0.09-0.14 pt (the Georgia 90 % `16.2188-
 width-model residual, independent of the Verdana advance slope; computing the same
 cutoff at the measured `W` makes the engine correct on both Georgia strings.
 
+**Correction, 2026-11-24.** The measured value above is the solid-fill rectangle,
+which Excel inflates for coverage (border-edge fixture: fill is +0.114..0.124 pt
+wider than the true cell, adjacent fills overlap by that amount and adjacent thin
+borders meet exactly).  The true cell width is the border centreline and is
+82.68 pt at these columns, not 82.62 or the fill's ~82.80; it comes from snapping
+the *page-scaled* 600-dpi dot width.  The runtime now does that in
+`Pagination.printColumnWidthPxAtScale`; see `docs/excel-parity-tracker.md`,
+"Printed column width snaps at the page-scaled 600-dpi dot".
+
 ## 5. Holdout
 
 Reserved before export: unseen scale **Verdana 13 upright 140 %** and unseen face

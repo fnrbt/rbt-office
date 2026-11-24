@@ -593,6 +593,16 @@ do
     // Arial 10 (46) at 79; 12 px of Calibri 12 (8, 51) at 77 (76.5 up); a row of 20 px of Calibri 11 at 121 dots, of 546 px at 3303.
     let dots (px: float) = System.Math.Round (px * 6.25, 6)
     ok "print sizes: columns" (dots (Pagination.printColumnWidthPx 7.0 47.0 64.0) = 430.0 && dots (Pagination.printColumnWidthPx 7.0 46.0 12.0) = 79.0 && dots (Pagination.printColumnWidthPx 8.0 51.0 12.0) = 77.0) ""
+    // The page scale is applied before the 600-dpi snap: a 765-dot column at 90 % prints 689 dots
+    // (82.68 pt), not 688.5; an 806-dot column at 75 % prints 605. Page breaks already budget these
+    // snapped dots, so this keeps the drawn edges and the page breaks on the same grid.
+    let pageDots (px: float) (scale: float) = System.Math.Round (px * 6.25 * scale, 6)
+    ok "print sizes: columns snap at the page scale"
+        (pageDots (Pagination.printColumnWidthPxAtScale 1.0 122.4) 1.0 = 765.0
+         && pageDots (Pagination.printColumnWidthPxAtScale 0.9 122.4) 0.9 = 689.0
+         && pageDots (Pagination.printColumnWidthPxAtScale 0.75 (806.0 / 6.25)) 0.75 = 605.0
+         && Pagination.printColumnWidthPxAtScale 0.0 122.4 = 122.4
+         && Pagination.printColumnWidthPxAtScale 0.9 0.0 = 0.0) ""
     ok "print sizes: the widest digit in print" ([ "Calibri", 11.0; "Arial", 10.0; "Calibri", 12.0; "Arial", 12.0; "Arial MT", 12.0 ] |> List.map (fun (f, p) -> Rbt.Spreadsheet.ExcelText.printDigitWidth f p) = [ 47.0; 46.0; 51.0; 56.0; 56.0 ]) ""
     // A row of 20 pt shows at 26 px and prints as 26.67 px would: 161 dots of Calibri 11.
     ok "print sizes: a row's points" (dots (Pagination.printRowHeightPx 6.05 (Pagination.exactRowPx 20.0 26.0)) = 161.0 && Pagination.exactRowPx 20.0 27.0 = 27.0) ""
@@ -966,6 +976,19 @@ do
         let lines = renderedLines georgiaItalic "Georgia" true 15.0 90 16.6875 1234567.0 "#,##0.00"
         ok "print fit cutoff: Georgia 15 italic at 16.6875 prints 8 hashes"
             (lines |> Array.exists (fun line -> line = "########")) (String.concat "|" lines)
+    // The printed column snaps at the scaled 600-dpi pitch: Georgia 15 upright at 90 % in 16.2188
+    // characters is 82.68 pt (not the 82.62 pt of 765 dots x 0.9), so it prints the full number;
+    // one step lower (16.1875, 81.96 pt) still prints hashes. The independent border-edge fixture
+    // measures 82.68-82.71 pt for these columns (docs/excel-parity-tracker.md).
+    let georgia = System.IO.Path.Combine(fontDir, "windows-extra", "georgia.ttf")
+    if System.IO.File.Exists georgia then
+        let wide = renderedLines georgia "Georgia" false 15.0 90 16.2188 1234567.0 "#,##0.00"
+        ok "print fit cutoff: Georgia 15 upright at 16.2188 prints the full number"
+            (wide |> Array.exists (fun line -> line.Contains "1,234,567.00" && not (line.Contains "#")))
+            (String.concat "|" wide)
+        let narrow = renderedLines georgia "Georgia" false 15.0 90 16.1875 1234567.0 "#,##0.00"
+        ok "print fit cutoff: Georgia 15 upright at 16.1875 prints 8 hashes"
+            (narrow |> Array.exists (fun line -> line = "########")) (String.concat "|" narrow)
     // Active `*` fill layouts (accounting) keep the prior print decision through the PDF: a narrow cell
     // prints the counted hashes and a wide one the fill-expanded number - never the raw unexpanded text.
     let calibri = System.IO.Path.Combine(fontDir, "windows", "calibri.ttf")
