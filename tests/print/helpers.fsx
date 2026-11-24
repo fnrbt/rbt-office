@@ -779,7 +779,9 @@ do
     let padOnly = eligible (Number 0.5) { italic with NumberFormat = Some "0.00_)" } 100.0
     ok "print italic: trailing _) alone stays eligible" (padOnly.Length = 1 && italicEligibleOf padOnly.Head) (sprintf "%A" padOnly)
     let accounting = eligible (Number -0.5) { italic with NumberFormat = Some "_($* #,##0.00_);_($* \\(#,##0.00\\);_($* \"-\"??_);_(@_)" } 100.0
-    ok "print italic: numeric accounting is not eligible" (accounting.Length = 1 && not (italicEligibleOf accounting.Head)) (sprintf "%A" accounting)
+    ok "print italic: numeric accounting is not eligible"
+        (accounting.Length >= 1 && accounting |> List.forall (fun (_, flag, _) -> not flag))
+        (sprintf "%A" accounting)
     let literalHashes = eligible (String "#######") { italic with NumberFormat = Some "\"#######\"" } 100.0
     ok "print italic: literal/formatted hashes stay eligible" (literalHashes.Length = 1 && italicEligibleOf literalHashes.Head) (sprintf "%A" literalHashes)
     let overflowHashes = eligible (Number -0.9841) { italic with NumberFormat = Some "0.000%" } 20.0
@@ -1075,6 +1077,137 @@ do
     let numeric = drawn true "0;0;0;@_)" "right" (CellValue.Number 1234.5) |> List.exactlyOne
     let numericPlain = drawn true "0;0;0;0" "right" (CellValue.Number 1234.5) |> List.exactlyOne
     ok "print text paint: a numeric control keeps its number section" (numeric.Text = numericPlain.Text && abs (numeric.Rect.Width - numericPlain.Rect.Width) < 1e-9) (sprintf "%A / %A" numericPlain numeric)
+
+// ----- printed active `*` fill layout: prefix/fill/suffix runs, count=0 and overflow -----
+do
+    let code = "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)"
+    let m (s: string) = s |> Seq.sumBy (fun c -> if c = ' ' then 4.0 else 9.0)
+    let runs code n text available = Rbt.Spreadsheet.CellText.printFillLayoutRuns code n text m available
+    let expand n text available = runs code n text available
+    // The prefix (" $") and suffix ("1,234.50 ") are separate runs; the fill char repeats between them
+    // for 27 total spaces at 200 units (89 fixed + 108 fill = 197, 3 left over).
+    let positive = expand 1234.5 " $ 1,234.50 " 200.0
+    ok "print fill: prefix and suffix runs with the whole fill count"
+        (match positive with
+         | Some (left, right, _) ->
+             left = " $" + System.String(' ', 27) && right = "1,234.50 "
+             && 200.0 - (m left + m right) = 3.0
+         | None -> false)
+        (sprintf "%A" positive)
+    let exact = expand 1234.5 " $ 1,234.50 " 105.0
+    ok "print fill: an exact multiple leaves no leftover"
+        (match exact with
+         | Some (left, right, _) -> left = " $" + System.String(' ', 4) && right = "1,234.50 " && m left + m right = 105.0
+         | None -> false)
+        (sprintf "%A" exact)
+    let below = expand 1234.5 " $ 1,234.50 " 104.9
+    ok "print fill: a fraction short of the next fill uses one less"
+        (match below with Some (left, right, _) -> m left + m right = 101.0 | None -> false) (sprintf "%A" below)
+    // Count 0: 90 units fit the 89-unit no-fill text but not one fill char of 4 (Excel prints none).
+    let dropped = expand 1234.5 " $ 1,234.50 " 90.0
+    ok "print fill: a tight cell prints no fill char"
+        (match dropped with Some (left, right, _) -> left = " $" && right = "1,234.50 " | None -> false)
+        (sprintf "%A" dropped)
+    // Wider than the fixed run: Paint's `m left + m right <= available` check rejects it, so a genuine
+    // numeric overflow keeps the hash run and the PDF's counted hashes instead of a squeezed number.
+    let tooTight = expand 1234.5 " $ 1,234.50 " 85.0
+    ok "print fill: a fixed run wider than the content is genuine overflow"
+        (match tooTight with Some (left, right, _) -> m left + m right = 89.0 && m left + m right > 85.0 | None -> false)
+        (sprintf "%A" tooTight)
+    // A prefix-empty section: an invisible fill run plus the right-anchored number.
+    let prefixEmpty = runs "* #,##0.00" 1234.5 " 1,234.50" 200.0
+    ok "print fill: a prefix-empty fill keeps the number in the right run"
+        (match prefixEmpty with
+         | Some (left, right, _) -> right = "1,234.50" && left |> Seq.forall ((=) ' ') && left.Length = (200 - 72) / 4
+         | None -> false)
+        (sprintf "%A" prefixEmpty)
+    // A suffix-empty section: the number and the repeated fill chars are one left-anchored run.
+    let suffixEmpty = runs "0.00*-" 1234.5 "1234.50-" 200.0
+    ok "print fill: a suffix-empty fill appends its chars to the left run"
+        (match suffixEmpty with
+         | Some (left, right, _) -> right = "" && left = "1234.50" + System.String('-', (200 - 63) / 9)
+         | None -> false)
+        (sprintf "%A" suffixEmpty)
+    let negative = expand -1234.5 " $ (1,234.50)" 200.0
+    ok "print fill: the negative section fills between its own prefix and suffix"
+        (match negative with
+         | Some (left, right, _) -> left.StartsWith(" $ ") && right = "(1,234.50)" && 200.0 - (m left + m right) < 4.0
+         | None -> false)
+        (sprintf "%A" negative)
+    // Unsupported: two active fills, a quoted-only asterisk, an all-hash display.
+    ok "print fill: two active fills are unsupported"
+        (runs "\"$\"* * #,##0.00" 1.0 "$  1.00" 200.0 = None) ""
+    ok "print fill: a quoted asterisk is not a fill"
+        (runs "0.00\"* \"" 1.0 "1.00* " 200.0 = None) ""
+    ok "print fill: an all-hash display keeps its hashes" (expand 1234.5 "#####" 200.0 = None) ""
+    ok "print fill: no active fill is no layout" (runs "0.00_)" 1.0 "1.00 " 200.0 = None) ""
+    // Paint: F09 prints two runs per alignment — the "$" prefix anchored left at the content edge and the
+    // amount anchored right — identical in every alignment sheet; the screen keeps one collapsed run.
+    let look printing code align =
+        let fmt = { defaultFormat with NumberFormat = Some code; FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some align }
+        let model =
+            createEmpty 3 3
+            |> setCell { Row = 0; Col = 1 } { Value = Number 1234.5; Format = fmt; Comment = None }
+            |> setColumnWidth 1 150.0
+            |> Pagination.withPrintSizes
+        let viewport : Rbt.Spreadsheet.Layout.Viewport =
+            { ScrollX = 0.0; ScrollY = 0.0; Width = 500.0; Height = 100.0
+              HeaderHeight = 0.0; RowHeaderWidth = 0.0
+              Measurer = Some (fun text _ _ _ _ -> m text) }
+        let items =
+            if printing then Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport
+            else Rbt.Spreadsheet.Paint.buildPaintItems model viewport
+        [ for item in items do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t
+                when t.Text.Contains "1,234" || t.Text.Contains "1234" || t.Text.Contains "$"
+                     || (t.Text <> "" && t.Text |> Seq.forall ((=) ' ')) -> yield t
+            | _ -> () ]
+    let printed = [ for align in ["left"; "center"; "right"] -> look true code align ]
+    let runOf (ts: Rbt.Spreadsheet.Paint.PaintText list) =
+        match ts with
+        | [left; right] -> Some (left, right)
+        | _ -> None
+    ok "print fill paint: each alignment prints a left prefix and a right suffix run"
+        (printed |> List.forall (fun ts ->
+            match runOf ts with
+            | Some (left, right) ->
+                left.Align = Rbt.Spreadsheet.Layout.AlignLeft
+                && left.Text.StartsWith " $"
+                && right.Align = Rbt.Spreadsheet.Layout.AlignRight
+                && right.Text = "1,234.50 "
+            | None -> false))
+        (sprintf "%A" (printed |> List.map (List.map (fun t -> t.Text, t.Align))))
+    ok "print fill paint: prefix and suffix anchors do not move with the cell alignment"
+        (match printed |> List.map runOf with
+         | [Some (l1, r1); Some (l2, r2); Some (l3, r3)] ->
+             l1.Text = l2.Text && l2.Text = l3.Text
+             && l1.Rect.X = l2.Rect.X && l2.Rect.X = l3.Rect.X
+             && r1.Text = r2.Text && r2.Text = r3.Text
+             && abs (r1.Rect.X - r2.Rect.X) < 1e-9 && abs (r2.Rect.X - r3.Rect.X) < 1e-9
+             && abs ((l1.Rect.X + l1.Rect.Width) - (r1.Rect.X + r1.Rect.Width)) < 1e-9
+         | _ -> false)
+        (sprintf "%A" (printed |> List.map (List.map (fun t -> t.Rect.X, t.Rect.Width))))
+    // Prefix-empty and suffix-empty through Paint: exactly the evidenced runs.
+    let prefixEmptyPaint = look true "* #,##0.00" "right"
+    ok "print fill paint: a prefix-empty layout keeps only the right number run"
+        (match prefixEmptyPaint with
+         | [left; right] -> left.Text |> Seq.forall ((=) ' ') && right.Text = "1,234.50"
+         | _ -> false)
+        (sprintf "%A" (prefixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
+    let suffixEmptyPaint = look true "0.00*-" "right"
+    ok "print fill paint: a suffix-empty layout is one left-anchored run"
+        (match suffixEmptyPaint with
+         | [left] -> left.Align = Rbt.Spreadsheet.Layout.AlignLeft && left.Text.StartsWith "1234.50-"
+         | _ -> false)
+        (sprintf "%A" (suffixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
+    let screenText = [ for align in ["left"; "center"; "right"] -> look false code align ]
+    let expectedScreenAlign = [Rbt.Spreadsheet.Layout.AlignLeft; Rbt.Spreadsheet.Layout.AlignCenter; Rbt.Spreadsheet.Layout.AlignRight]
+    ok "print fill paint: the screen keeps one run, its alignment and the collapsed fill"
+        (List.zip screenText expectedScreenAlign
+         |> List.forall (fun (ts: Rbt.Spreadsheet.Paint.PaintText list, expected) ->
+             ts.Length = 1 && ts.Head.Text = " $ 1,234.50 " && ts.Head.Align = expected))
+        (sprintf "%A" (screenText |> List.map (List.map (fun t -> t.Text, t.Align))))
 
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

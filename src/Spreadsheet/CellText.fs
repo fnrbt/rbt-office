@@ -387,6 +387,69 @@ let private isConditionTagAt (text: string) (start: int) (length: int) =
         hasValidFraction <- i > fractionStart
     i = stop && hasIntegerDigits && hasValidFraction
 
+/// Split a format section at its one active `*x` fill token: the raw section before the token and the
+/// fill character. Quoted and escaped asterisks and inactive/colour brackets are not tokens, a second
+/// active token or no numeric placeholder in the section gives None (`* ` alone is not a number layout).
+let private fillTokenSplit (section: string) : (string * char) option =
+    let mutable i = 0
+    let mutable fill = ValueNone
+    let mutable valid = true
+    while valid && i < section.Length && fill.IsNone do
+        let c = section.[i]
+        if c = '"' then
+            let mutable j = i + 1
+            while j < section.Length && section.[j] <> '"' do
+                j <- j + 1
+            i <- if j < section.Length then j + 1 else j
+        elif c = '\\' && i + 1 < section.Length then
+            i <- i + 2
+        elif c = '[' then
+            let close = section.IndexOf(']', i + 1)
+            if close > i && ((colorTagValueAt section (i + 1) (close - i - 1)).IsSome
+                             || isConditionTagAt section (i + 1) (close - i - 1)) then
+                i <- close + 1
+            else
+                valid <- false
+        elif c = '_' && i + 1 < section.Length then
+            i <- i + 2
+        elif c = '*' && i + 1 < section.Length then
+            fill <- ValueSome section.[i + 1]
+            i <- i + 2
+        else
+            i <- i + 1
+    if not valid then
+        None
+    else
+        match fill with
+        | ValueNone -> None
+        | ValueSome fillChar ->
+            let mutable j = i
+            let mutable quoted = false
+            let mutable moreFill = false
+            let mutable number = false
+            while j < section.Length do
+                let c = section.[j]
+                if c = '"' then quoted <- not quoted
+                elif quoted then ()
+                elif c = '\\' then j <- j + 1
+                elif c = '*' then moreFill <- true
+                elif c = '[' then
+                    let close = section.IndexOf(']', j + 1)
+                    if close > j then j <- close
+                elif c = '0' || c = '#' || c = '?' then number <- true
+                j <- j + 1
+            // A number placeholder before the fill token also counts (`0.00*-`).
+            let mutable k = 0
+            let mutable quotedBefore = false
+            while k < i - 2 do
+                let c = section.[k]
+                if c = '"' then quotedBefore <- not quotedBefore
+                elif not quotedBefore && c = '\\' then k <- k + 1
+                elif not quotedBefore && (c = '0' || c = '#' || c = '?') then number <- true
+                k <- k + 1
+            if moreFill || not number then None
+            else Some (section.Substring(0, i - 2), fillChar)
+
 let private removeColorAndConditionTags (text: string) =
     if text.IndexOf('[') < 0 then
         text
@@ -1452,6 +1515,55 @@ let private formatExcelNumber (code: string) (n: float) : string * string =
 /// marker. The fill characters are alignment padding, not overflow content:
 /// Excel first decides whether the number fits, then repeats the fill so the
 /// currency marker stays near the left edge and the number stays rightward.
+/// Excel 2019's printed layout for a number under one active `*x` fill token: the text before the token
+/// is a run anchored left, the text after it a run anchored right, and the fill character repeats between
+/// them for the largest whole count that fits `available` (the printed content width with both `_x` pad
+/// advances reserved). A count of 0 drops the fill char (Excel prints none when one does not fit); the
+/// sub-character leftover stays between the fill run and the right-anchored suffix. `formatted` is the
+/// value's text under `code` with its one fill char. Returns the two runs and the fixed advance (prefix +
+/// suffix with the pads as their drawn spaces, no fill chars), which the printer's fit cutoff measures.
+/// None where the section has no single active fill, a second fill, no numeric placeholder, or the display
+/// is an all-hash overflow; the caller then keeps its prior text and alignment.
+let printFillLayoutRuns
+    (code: string) (n: float) (formatted: string) (measure: string -> float) (available: float)
+    : (string * string * float) option =
+    if System.String.IsNullOrEmpty formatted || available <= 0.0 then
+        None
+    elif formatted |> Seq.forall (fun c -> c = '#') then
+        None
+    else
+        let section = try selectedSectionForValue code n with _ -> code
+        match fillTokenSplit section with
+        | None -> None
+        | Some (prefixSection, fillChar) ->
+            let startsWithMinus = formatted.StartsWith("-", System.StringComparison.Ordinal)
+            let candidates = if startsWithMinus then [ n; abs n ] else [ abs n; n ]
+            let prefixRendered =
+                if prefixSection = "" then Some ""
+                else
+                    candidates
+                    |> List.tryPick (fun v ->
+                        try
+                            let s = fst (formatExcelNumber prefixSection v)
+                            if formatted.StartsWith(s, System.StringComparison.Ordinal)
+                               && formatted.Length > s.Length && formatted.[s.Length] = fillChar then
+                                Some s
+                            else None
+                        with _ -> None)
+            match prefixRendered with
+            | None -> None
+            | Some prefix ->
+                let suffix = formatted.Substring(prefix.Length + 1)
+                let fillWidth = measure (string fillChar)
+                if fillWidth <= 0.0 then
+                    None
+                else
+                    let prefixWidth, suffixWidth = measure prefix, measure suffix
+                    let fixedWidth = prefixWidth + suffixWidth
+                    let count =
+                        max 0 (int (System.Math.Floor((available - fixedWidth) / fillWidth + 1e-9)))
+                    Some (prefix + System.String(fillChar, count), suffix, fixedWidth)
+
 let private expandAccountingFill
     (measure: (string -> float) option)
     (cellWidth: float)

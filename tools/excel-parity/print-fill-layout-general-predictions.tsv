@@ -1,0 +1,41 @@
+# Preregistered general active-`*` layout predictions, locked before the numfill holdout export.
+# Author: FillEngine, after FillOracle's training evidence (fill can precede or follow the number; count can
+# be 0; quoted/escaped/inactive stars are literal). These extend/replace the F09-specific rule in
+# print-fill-layout-predictions.tsv; that file's locked F09 relations were already checked against the
+# already-exported textpad holdout and remain the record of that earlier round.
+#
+# RULE (one mechanism, print only, single active `*x` token per active section):
+#   split the section at the token -> prefix section, fill char, suffix section.
+#   prefix text = the prefix section formatted with the value (pads as spaces, literals unwrapped);
+#   suffix text = the rest of the displayed text after the token's one fill char.
+#   count      = max 0 floor((available - width(prefix) - width(suffix)) / width(fill)).
+#   available  = printed content width with both `_x` pad advances reserved.
+#   drawing    = prefix + fillChar*count anchored LEFT at the content edge; suffix anchored RIGHT;
+#                the sub-fill leftover stays between the fill run and the suffix (invisible for space fills,
+#                a right-edge gap when the suffix is empty).
+#   count 0 drops the fill char. Fit uses the printer's window on the fixed run (prefix+suffix, fill
+#   excluded): fixed + adv("0")/2 + 0.875 pt <= cell width at the page scale (the same intercept as the
+#   non-fill "Print fit cutoff"). If it fits, the number prints even where Paint's screen-shaped rule had
+#   produced hashes; if not, the hash run and the PDF hash recount stand (genuine numeric overflow). No active fill, >1
+#   active fill, no numeric placeholder, wrap/rotation/shrink/across-selection, and rich runs keep the prior path.
+#
+# test          sheets        relation                                                                     accept
+PFX_LEFT      all           prefix run xMin = cell left + padX + adv(`_x` chars), independent of alignment  |delta| <= 0.45 pt
+SFX_RIGHT     all           suffix run xMax = cell right - padX - adv(`_x` chars), independent of alignment |delta| <= 0.45 pt
+COUNT_FIT     all           width(prefix)+count*width(fill)+width(suffix) <= available; leftover < one fill  0 <= leftover < width(fill)+0.20 pt
+FIT_WINDOW    all           prints iff fixed + adv("0")/2 + 0.875 <= cell width (600-dpi advances)          |delta at a width step| <= 0.25 pt in fixed+cutoff
+COUNT_ZERO    tight widths  where one fill does not fit but the number does: printed text has no fill char  exact (no ' '/'.'/'*' run)
+OVERFLOW      narrow cells  fixed run wider than the content: hash run and PDF count stand                  hashes only, count per PDF recount
+HASH_OVERRIDE tight cells   screen-hashed display whose fixed run fits: number prints, no hashes           number word present, no '#' run
+PREFIX_EMPTY  `* #,##0.00`  fill chars invisible; the number is the right run, at the no-fill right edge   |delta| <= 0.45 pt vs no-fill twin
+SUFFIX_EMPTY  `0.00*-`      number+fill chars are one LEFT run; fill chars run rightward from the number   prefix at F00 left, run extends right
+NOFILL        matched twin  `0.00`, quoted/escaped/inactive `*`: byte-identical text/boxes to baseline     |delta| = 0
+SCREEN        --            screen text, alignment, hash runs unchanged from baseline                        |delta| = 0, same items
+ORDER         all           prefix/fill run emitted before the suffix run; no overlap (left run xMax <= suffix run xMin + one fill)
+#
+# F09 observation after the earlier round (already-observed textpad holdout, recorded for completeness;
+# not a blind prediction): the prefix-left/suffix-right model puts "$" at the left inset (training 339.10
+# vs Excel 339.55, holdout Georgia 267.31 vs 267.77, Tahoma 338.64 vs 338.71) and the amount at the
+# right edge (within 0.31 pt of Excel). Excel's own "$" moves 0.6-1.4 pt right on the centre/right sheets
+# within one fill advance of this position; that residual is left open and is what the numfill width sweep
+# should settle.

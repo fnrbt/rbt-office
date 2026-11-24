@@ -1,0 +1,32 @@
+# Numeric-fill print layout: frozen sources, evidence and browser dist (FillEngine)
+# Baseline HEAD 6fe0e6e2; working tree also carries Main's checkpoints (HEAD 9c885762 at freeze).
+# No further edits after the dist build below.
+
+sha256  bbc5c8cd2a81ba8d9a2bc9dfec72d6ef13db7992a134937bd2cde65b015b3807  src/Spreadsheet/CellText.fs
+sha256  3236b3aa80d491ccf7cfdf4ffe87f1f797c48a021595f7a7c928a0f8d4b7e4b9  src/Spreadsheet/Paint.fs
+sha256  7b9fb42411c4ce05378191d10f9fa3cacc0cc24d7c978b5af976b0ccedc4b5d8  tests/print/helpers.fsx
+sha256  5e8b75bea7ee0a8893b849715067fe4f5a95921abd6943add5d85bbefb4006fe  tools/excel-parity/print-fill-layout-predictions.tsv
+sha256  1599cca72ee598f13658d6ec244d54775376a30e5484ec37c04f3d7476ff80e5  tools/excel-parity/print-fill-layout-general-predictions.tsv
+sha256  c4a3debd23faaa015a7bc2cbfe11a4b50132dde3e193632c1cea98239ff1ade2  tools/excel-parity/print-fill-layout-results.tsv
+sha256  bf6b59309d72bb790703b426149e6b83cd103d93756271813c5a425fdc1637be  tools/excel-parity/print-fill-layout-gate.md
+
+# Browser dist from one Fable build of the sources above:
+#   bash scripts/build-dist.sh /var/tmp/fill-engine/dist
+# Manifest hash (sha256 of the sorted `sha256sum` lines of every file, paths relative):
+#   (cd /var/tmp/fill-engine/dist && find . -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum)
+dist  /var/tmp/fill-engine/dist
+dist_manifest_sha256  466bcd9230704b2085c87e5ae0915d432f6d9a55802e600a1a0f05913fa373b7
+dist_build_log  /var/tmp/fill-engine/build-dist4.log   (exit 0, no page/module errors)
+
+# Verification at this freeze
+print_tests  dotnet fsi tests/print/helpers.fsx  ->  322 passed, 0 failed
+textpad_native  train 222 / Georgia 150 / Tahoma 150 / escapes 132 rows, only the 3 F09 numeric "ours"
+                rows per workbook differ from the frozen textpad gate (0 rows differ in escapes)
+textpad_chromium  browser vs native max word-box delta 0.00000 pt, 0 text differences, all four sets
+numfill_training  (FillOracle's corpus, provisional) 813 cells: hashes 180 match/105 mismatch,
+                amount gap <=1 pt 595, fill counts equal 479
+
+# Native PDFs and comparison tables for this freeze:
+#   /var/tmp/fill-engine/{train-after,holdout-georgia,holdout-tahoma,escapes}/ours-{1,2,3}.pdf
+#   /var/tmp/fill-engine/{train-after,holdout-georgia,holdout-tahoma,escapes,*-browser}.tsv
+#   /var/tmp/fill-engine/numfill/ours-{1..6}.pdf + numfill-train.tsv

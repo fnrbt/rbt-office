@@ -1,0 +1,23 @@
+# Numeric accounting fill (F09) after the general active-`*` layout rule. Native PDFs from
+# tools/spreadsheet-pdf-runner built at this tree, measured with measure-print-textpad.py against the
+# fresh direct Excel 2019 PDFs in /var/tmp/textpad-oracle/{train-excel,holdout-*-excel,escapes-excel}.
+# Before = frozen textpad native tables in /var/tmp/textpad-gate/out/*-native-comparison.tsv.
+# Metric: group word box of the numeric cell (min xMin of "$"/number to max xMax) vs the cell fill edges.
+set	sheet	excel_symbol_xMin	excel_amount_xMax	ours_symbol_xMin	ours_amount_xMax	symbol_delta	amount_delta	group_delta	group_delta_before	text
+train	T_left	339.550	439.242	339.098	439.385	0.452	0.143	0.452	11.702	$ 1,234.50
+train	T_center	340.270	439.242	339.098	439.385	1.172	0.143	1.172	6.959	$ 1,234.50
+train	T_right	340.150	439.242	339.098	439.385	1.052	0.143	1.052	12.627	$ 1,234.50
+holdout-georgia	H_G_left	267.770	341.816	267.309	342.123	0.461	0.307	0.461	10.552	$ 1,234.50
+holdout-georgia	H_G_center	268.250	341.816	267.309	342.123	0.941	0.307	0.941	6.088	$ 1,234.50
+holdout-georgia	H_G_right	267.770	341.816	267.309	342.123	0.461	0.307	0.461	10.756	$ 1,234.50
+holdout-tahoma	H_T_left	338.710	440.016	338.640	439.846	0.070	0.170	0.170	8.334	$ 1,234.50
+holdout-tahoma	H_T_center	339.790	440.016	338.640	439.846	1.150	0.170	1.150	5.461	$ 1,234.50
+holdout-tahoma	H_T_right	340.030	440.016	338.640	439.846	1.390	0.170	1.390	10.013	$ 1,234.50
+# Regression scope: only the three F09 numeric "ours" rows per workbook changed (train, each holdout);
+# 0 rows changed in the numeric escapes set; all F09 text rows (fourth section) and every other numeric
+# and text row are identical to before (0.000). Non-F09 numeric max vs Excel 0.603/0.573/0.711/0.681;
+# text max 0.645/0.598/0.591/0.614 (unchanged from the textpad gate).
+# The prefix "$" is now at the left content edge for every alignment (uniform), the amount at the right
+# edge (uniform). Excel's "$" itself moves 0.45-1.39 pt right on centre/right sheets, inside one fill
+# advance (2.52/2.16/3.12 pt); the amount is within 0.31 pt everywhere. Before, the amount overflowed the
+# right edge by up to 11.7 pt on the left sheet and centred/wrongly-anchored runs missed by 5-12.6 pt.

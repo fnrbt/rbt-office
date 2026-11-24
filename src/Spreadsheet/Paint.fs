@@ -930,28 +930,70 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                         let r = cellRect model viewport cell.Address.Row look.AcrossTo
                         { cell.Rect with Width = (r.X + r.Width) - cell.Rect.X }
                     else cell.Rect
+                let numericValue, rawNumericText =
+                    match unwrapFormulaValue value, format.NumberFormat with
+                    | CellValue.Number n, Some code ->
+                        Some n, (try formatNumberWithCodeIn model.Date1904 code n with _ -> "")
+                    | _ -> None, ""
+                let displayHashes = displayText <> "" && displayText |> Seq.forall (fun c -> c = '#')
+                // Excel 2019 prints an active `*x` fill layout as a left-anchored prefix run, the repeated
+                // fill character, and a right-anchored suffix run (`CellText.printFillLayoutRuns`). Only
+                // plain, single-line, unrotated numbers take it; every other case keeps its prior path.
+                let fillLayoutForPrint =
+                    printing && not look.Wrap && format.TextRotation = 0 && not format.ShrinkToFit
+                    && look.AcrossTo <= cell.Address.Col && look.Icon.IsNone
+                    && (match numericValue, format.NumberFormat with
+                        | Some n, Some code -> try numberFormatUsesFillForValue code n with _ -> false
+                        | _ -> false)
                 // (A format's `_x` at the text's start / end is drawn as a space and leaves the width of x in Excel's
                 // PDF - `"$"#,##0_)` stands a ")" in from the right: the side the text is aligned to is set in by
                 // the difference, `CellText.widthPads`.)
-                let padLeft, padRight =
+                // (A printed text value uses the fourth section's pads; the screen and the numeric print
+                // path keep `widthPads` as before.)
+                let printedText =
+                    printing
+                    && (match unwrapFormulaValue value with CellValue.String _ -> true | _ -> false)
+                let padExtras =
                     match measure with
-                    | Some m when not (displayText |> Seq.forall (fun c -> c = '#')) ->
-                        // (A printed text value uses the fourth section's pads; the screen and the
-                        // numeric print path keep `widthPads` as before.)
-                        let printedText =
-                            printing
-                            && (match unwrapFormulaValue value with CellValue.String _ -> true | _ -> false)
+                    | Some m when not displayHashes || fillLayoutForPrint ->
                         let lead, trail =
                             if printedText then textWidthPads format value
                             else widthPads format value
                         let extra (pads: string) = pads |> Seq.sumBy (fun c -> m (string c) - m " ")
-                        let leadExtra = if lead <> "" then extra lead else 0.0
-                        let trailExtra = if trail <> "" then extra trail else 0.0
-                        match look.Align with
-                        | AlignLeft -> leadExtra, 0.0
-                        | AlignRight -> 0.0, trailExtra
-                        | AlignCenter when printedText -> leadExtra, trailExtra
-                        | AlignCenter -> 0.0, 0.0
+                        Some ((if lead <> "" then extra lead else 0.0),
+                              (if trail <> "" then extra trail else 0.0))
+                    | _ -> None
+                // The fill layout gets the whole printed content width: both `_x` pad advances reserved.
+                // Excel fits a fill cell on its prefix and suffix, without the fill chars, so a display
+                // Paint hashed for a tight cell prints the number when that run fits (count can then be 0).
+                let fillAvailable =
+                    baseRect.Width - 2.0 * padX - iconGutter - leftIndent - rightIndent
+                    - (match padExtras with Some (leadExtra, trailExtra) -> leadExtra + trailExtra | None -> 0.0)
+                let fillRuns =
+                    match numericValue, measure, padExtras, format.NumberFormat with
+                    | Some n, Some m, Some (leadExtra, trailExtra), Some code when fillLayoutForPrint ->
+                        match (try CellText.printFillLayoutRuns code n rawNumericText m fillAvailable with _ -> None) with
+                        | Some (left, right, fixedWidth) ->
+                            // Excel's printed fill fit uses the whole cell width less the print-fit
+                            // intercept (`Print fit cutoff`: half a digit + 0.875 pt at the page scale),
+                            // with the `_x` pads at their own advances and no fill chars. The helper's
+                            // fixed width has the pads as spaces, hence the two extras.
+                            let cutoff = m "0" / 2.0 + 0.875 / (0.75 * printScale)
+                            if fixedWidth + leadExtra + trailExtra + cutoff <= baseRect.Width + 1e-9 then
+                                Some (left, right)
+                            else None
+                        | None -> None
+                    | _ -> None
+                let padLeft, padRight =
+                    match padExtras with
+                    | Some (leadExtra, trailExtra) when not displayHashes || fillRuns.IsSome ->
+                        if fillRuns.IsSome then leadExtra, trailExtra
+                        else
+                            match look.Align with
+                            | AlignLeft -> leadExtra, 0.0
+                            | AlignRight -> 0.0, trailExtra
+                            | AlignCenter when printedText -> leadExtra, trailExtra
+                            | AlignCenter -> 0.0, 0.0
                     | _ -> 0.0, 0.0
                 let textRect =
                     { baseRect with
@@ -988,17 +1030,10 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 // the PDF renderer measures the reserve from the face it actually draws.
                 let fillLayout, overflowHashes, hashSlots, rawText =
                     match unwrapFormulaValue value with
-                    | CellValue.Number n ->
-                        let fillLayout =
-                            match format.NumberFormat with
-                            | Some code -> try numberFormatUsesFillForValue code n with _ -> false
-                            | None -> false
-                        let raw =
-                            match format.NumberFormat with
-                            | Some code -> try formatNumberWithCodeIn model.Date1904 code n with _ -> ""
-                            | None -> ""
-                        let overflow =
-                            displayText <> "" && displayText |> Seq.forall (fun c -> c = '#') && raw <> displayText
+                    | CellValue.Number _ ->
+                        let fillLayout = fillLayoutForPrint
+                        let raw = rawNumericText
+                        let overflow = displayHashes && raw <> displayText
                         // Excel's printed overflow keeps the active section's leading `_x` positions as hashes:
                         // the PDF recount subtracts one hash per slot (`CellText.leadingPrintHashSlots`).
                         let slots = if overflow then leadingPrintHashSlotsFor format value else 0
@@ -1070,7 +1105,8 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 let textClip =
                     // (Wrapped lines are cut at the cell's edges: the lines past a row's bottom are not printed -
                     // Excel's PDF of make-print-text-fixture.py's 300-pt rows.)
-                    if format.WrapText && format.TextRotation = 0 then Some baseRect
+                    if fillRuns.IsSome then None
+                    elif format.WrapText && format.TextRotation = 0 then Some baseRect
                     elif format.WrapText || format.TextRotation <> 0 || horizForIndent = "centercontinuous" || horizForIndent = "fill" then None
                     else
                         let width =
@@ -1213,6 +1249,41 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                                 Clip = textClip
                             }
                             cursor <- cursor + width
+                | _ when fillRuns.IsSome && lineCount = 1 ->
+                    // A fill layout: the text before the fill token and its repeated fill character are
+                    // anchored left, the text after it anchored right (`CellText.printFillLayoutRuns`).
+                    let left, right = fillRuns.Value
+                    let runItem (text: string) (runAlign: Rbt.Spreadsheet.Layout.TextAlign) =
+                        DrawText {
+                            Text = text
+                            Rect = textRect
+                            Color = color
+                            FontSize = fontPt
+                            FontName = format.FontName
+                            Bold = format.Bold
+                            Italic = format.Italic
+                            PrintItalicEligible = false
+                            PrintOverflowHashes = false
+                            PrintHashSlots = printSlots
+                            PrintHashCellWidth = baseRect.Width
+                            PrintFitText = ""
+                            PrintFitPads = ""
+                            PrintFitFullText = ""
+                            PrintFitItalicEligible = false
+                            Underline = format.Underline
+                            UnderlineDouble = format.UnderlineDouble
+                            Strikethrough = format.Strikethrough
+                            Align = runAlign
+                            VerticalAlign = vAlign
+                            LineIndex = 0
+                            LineCount = 1
+                            BaselineShift = 0.0
+                            Baseline = lineBaseline 0
+                            Rotation = format.TextRotation
+                            Clip = textClip
+                        }
+                    if left <> "" then yield zone, runItem left AlignLeft
+                    if right <> "" then yield zone, runItem right AlignRight
                 | _ ->
                     // Plain (or wrapped) cell text — one DrawText per line.
                     for i, line in List.indexed lines do
