@@ -1,0 +1,35 @@
+# Holdout predictions locked before the two workbooks' fresh direct Excel exports (2026-11-24T06:47Z).
+# Workbooks: tests/test-documents-excel/synthetic-print-textpad-holdout-georgia.xlsx (Georgia 12, print scale 75%, three alignment
+# sheets H_G_left/center/right) and tests/test-documents-excel/synthetic-print-textpad-holdout-tahoma.xlsx (Tahoma 10, 100%).
+# Locked workbook hashes: georgia 680f01021fee2cbda316521fb548ffc275345aa4049740c9a86544c870c692b3,
+# tahoma fb0acf8d2a279d2d4131a5448c9a882e6a3f0fa93bda5eca68bf5ea2e19e9488 (written before either export).
+# Metric: Poppler pdftotext -bbox word box of the displayed text, against the adjacent solid-fill cell edge
+# (yellow B = text, blue C = numeric control) from pdftocairo SVG, never raster ink.
+# adv(P) = the held-out face's printed advance of pad character P; padX = Excel's 4+ceil(d/4)-dot text inset.
+# All numeric relations are to the same PDF's F00 row in the same alignment, so they are independent of
+# page geometry and of any absolute page offset.
+test   sheets        face/scale          relation                                                              accept
+REL_F02_R  H_*_right   all              right gap(F02 @_)) - right gap(F00 @) = adv())                         1.0 <= delta <= 7.0 and delta > 0
+REL_F03_R  H_*_right   all              right gap(F03 @_W) - right gap(F00) = adv(W)                           2.0 <= delta <= 12.0 and delta >= REL_F02_R + 1.0
+REL_F04_L  H_*_left    all              xMin(F04 _(@) - xMin(F00) = adv(()                                     1.0 <= delta <= 7.0
+PAREN_EQ   H_*/right/left all           adv(()) == adv()) within one face/scale                                 abs(REL_F04_L - REL_F02_R) <= 0.05
+REL_F05_LR H_*_left/right all           F05 = F04 left xMin and F02 right gap; F05 center xMin/xMax = F00         abs(delta) <= 0.05 each
+CENTER_HALF H_*_center all              xMin(F02)-xMin(F00) = -adv())/2; xMin(F03)-xMin(F00) = -adv(W)/2;         abs(delta + REL_F02_R/2) <= 0.05;
+                                        xMin(F04)-xMin(F00) = +adv(()/2; F05 = F00                                 abs(delta + REL_F03_R/2) <= 0.05;
+                                                                                                                   abs(delta - REL_F04_L/2) <= 0.05
+F06_TEXT   H_*         all              visible text starts "(" (repeat pad then literal "("); left xMin(F06)-         text prefix "("; left delta > REL_F02_R
+                                        xMin(F00) = adv("_")
+F07_TEXT   H_*         all              visible text "_Ab1"; no pad: geometry equals F00 in every alignment        text equal; abs(delta xMin/gap) <= 0.05
+F08_TEXT   H_*         all              visible text "_Ab1"; no pad: geometry equals F00 in every alignment        text equal; abs(delta xMin/gap) <= 0.05
+F09_EQ_F05 H_*         all              accounting text section _(@_) has F05 geometry in every alignment        abs(delta) <= 0.05
+F10_TEXT   H_*         all              visible text "Pre Ab1"; no pad: left xMin == F00 left; right xMax ==       text equal; abs(delta) <= 0.05
+                                        F00 right; centre = centre of "Pre Ab1", not of "Ab1"
+NUM_UNCH   H_*         all              numeric controls F02-F08,F10 equal the F00 numeric control (no text         abs(delta xMin/xMax) <= 0.05
+                                        section on numbers); F09 accounting keeps its fill layout
+C01_C02_C05 H_*        all              two- or three-section formats with @ (C01 0;@, C02 0;0;@, C05 0;0;)      text "Ab1"; abs(delta) <= 0.05
+                                        do NOT use a text section: visible text and geometry equal F00
+C03_C04_HIDE H_*       all              a four-section format with empty fourth (C03 0;0;0;, C04 ;;;) hides         no text word in B
+                                        text in print
+OLD_ENGINE  H_*        all              before the fix: F02/F05/F09 right shift = adv())-adv(" "); F04 left      report old vs new; old/new must
+                                        shift = adv(()-adv(" "); F07/F08/F10 print raw "Ab1"; centre pads no shift;     equal prepatch PDF for numeric rows
+                                        C03/C04 text visible "Ab1"

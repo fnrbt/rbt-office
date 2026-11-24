@@ -1,0 +1,11 @@
+# Final Chromium gate for the printed text-pad change, run 2026-11-24 after the source freeze.
+# Sources: CellText.fs 7bf6858c..., Paint.fs d1414458..., XlsxReader.fs ce94d44a..., tests/print/helpers.fsx 9bc25657..., tests/office-formats/xlsx-reader.fsx 10cd3c4a..., docs/excel-parity-tracker.md 52560827... .
+# Dist: /var/tmp/textpad-dist (one Fable build from the frozen tree). Native: tools/spreadsheet-pdf-runner from the same tree.
+# Harness: node tools/xlsx-browser/browser-textpad-proof.mjs (real Chromium, grid.ExportPdf {what:"sheet"}), measured with tools/excel-parity/measure-print-textpad.py against fresh direct Excel 2019 PDFs.
+# Browser and native PDFs are identical to 0.00000 pt in every text and numeric word box; this table therefore also describes the native path.
+set	text_rows	text_max_abs_pt	text_mean_abs_pt	text_failures	numeric_rows_excl_F09	numeric_max_abs_pt	numeric_mean_abs_pt	F09_numeric_rows	F09_max_abs_pt	browser_vs_native_max_pt	text_differences	result
+training Aptos Narrow 14 100%	54	0.645	0.523	0	54	0.603	0.425	3	12.627	0.00000	0	pass
+holdout Georgia 12 75%	36	0.598	0.453	0	36	0.573	0.501	3	10.756	0.00000	0	pass
+holdout Tahoma 10 100%	36	0.591	0.232	0	36	0.711	0.361	3	10.013	0.00000	0	pass
+numeric escape controls Aptos Narrow 14 100%	33	0.614	0.507	0	33	0.681	0.414	0	-	0.00000	0	pass
+# Note: the only numeric misses are F09 standard accounting fill-layout cells (the "$" word and the number share a run whose fill expansion differs from Excel). They are identical before/after the change and identical Chromium/native, are outside this change's text-section scope, and were excluded by the preregistered numeric prediction as "F09 keeps its fill layout". All other numeric controls are within the ordinary 0.6-0.7 pt page/font delta.

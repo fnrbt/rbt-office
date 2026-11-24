@@ -295,7 +295,12 @@ let cellLookFitted (fit: NumberFit option) (model: SpreadsheetModel) (row: int) 
         let text =
             match value with
             | CellValue.Empty -> ""
-            | CellValue.String text -> text
+            | CellValue.String text ->
+                // (Excel's PDF sets text by the fourth format section (or a one-section `@` code);
+                // the screen keeps the stored text as before.)
+                match fit, format.NumberFormat with
+                | Some f, Some code when f.Print -> textUnderFormat code text
+                | _ -> text
             | _ ->
                 let measureText =
                     match measure with
@@ -931,10 +936,22 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 let padLeft, padRight =
                     match measure with
                     | Some m when not (displayText |> Seq.forall (fun c -> c = '#')) ->
-                        let lead, trail = widthPads format value
+                        // (A printed text value uses the fourth section's pads; the screen and the
+                        // numeric print path keep `widthPads` as before.)
+                        let printedText =
+                            printing
+                            && (match unwrapFormulaValue value with CellValue.String _ -> true | _ -> false)
+                        let lead, trail =
+                            if printedText then textWidthPads format value
+                            else widthPads format value
                         let extra (pads: string) = pads |> Seq.sumBy (fun c -> m (string c) - m " ")
-                        (if look.Align = AlignLeft && lead <> "" then extra lead else 0.0),
-                        (if look.Align = AlignRight && trail <> "" then extra trail else 0.0)
+                        let leadExtra = if lead <> "" then extra lead else 0.0
+                        let trailExtra = if trail <> "" then extra trail else 0.0
+                        match look.Align with
+                        | AlignLeft -> leadExtra, 0.0
+                        | AlignRight -> 0.0, trailExtra
+                        | AlignCenter when printedText -> leadExtra, trailExtra
+                        | AlignCenter -> 0.0, 0.0
                     | _ -> 0.0, 0.0
                 let textRect =
                     { baseRect with

@@ -725,6 +725,23 @@ for label, pad in bothPaths do
     let wb = loadOne pad "<workbookPr/>" "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>1</v></c><c r=\"B1\" s=\"2\"><v>2</v></c></row></sheetData>" [ "xl/styles.xml", flagStyles ]
     let flags index = wb.Styles.[index] |> fun style -> style.Bold, style.Italic, style.Underline, style.Strikethrough
     ok (sprintf "font-flags-off-%s" label) (flags 1 = (false, false, false, false) && flags 2 = (true, true, true, true)) (sprintf "%A %A" (flags 1) (flags 2))
+// A `\X` escape that is a format token (`\_`, `\@`, `\;`, `\*`) is kept: removing the
+// backslash would turn a literal into a width pad or text placeholder. Escapes of plain
+// literals (`\-`, `\ `) are still stripped, as Excel COM reports them.
+let escapeStyles =
+    sprintf "%s" (sprintf "<styleSheet xmlns=\"%s\"><numFmts count=\"2\">" ssNs
+                  + "<numFmt numFmtId=\"164\" formatCode=\"0;[Red]-0;0;\\_@\"/>"
+                  + "<numFmt numFmtId=\"165\" formatCode=\"yyyy\\-mm\\-dd\\ hh:mm:ss\"/></numFmts>"
+                  + "<fonts count=\"1\"><font/></fonts><fills count=\"1\"><fill/></fills><borders count=\"1\"><border/></borders>"
+                  + "<cellXfs count=\"3\"><xf numFmtId=\"0\"/><xf numFmtId=\"164\" applyNumberFormat=\"1\"/>"
+                  + "<xf numFmtId=\"165\" applyNumberFormat=\"1\"/></cellXfs></styleSheet>")
+for label, pad in bothPaths do
+    let wb = loadOne pad "" "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>1</v></c><c r=\"B1\" s=\"2\"><v>42000</v></c></row></sheetData>" [ "xl/styles.xml", escapeStyles ]
+    ok (sprintf "number-format-keeps-token-escapes-%s" label)
+       (wb.Styles.[1].NumberFormat = Some "0;[Red]-0;0;\\_@"
+        && wb.Styles.[2].NumberFormat = Some "yyyy-mm-dd hh:mm:ss")
+       (sprintf "%A / %A" wb.Styles.[1].NumberFormat wb.Styles.[2].NumberFormat)
+
 let dateBody = "<sheetData><row r=\"1\"><c r=\"A1\" s=\"1\"><v>42000</v></c><c r=\"B1\"><v>42000</v></c><c r=\"C1\" s=\"2\"><v>42000</v></c><c r=\"D1\" s=\"1\"><f>A1+1</f><v>42001</v></c></row></sheetData>"
 for label, pad in bothPaths do
     let wb1904 = loadOne pad "<workbookPr date1904=\"1\"/>" dateBody [ "xl/styles.xml", dateStyles ]

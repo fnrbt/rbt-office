@@ -1,0 +1,85 @@
+sheet	index	row	kind	format_name	format	value
+H_T_left	1	1	text	F00_plain_at	@	Ab1
+H_T_left	1	1	num	F00_plain_at	@	1234.5
+H_T_left	1	2	text	F02_four_at_pad_r	0;[Red]-0;0;@_)	Ab1
+H_T_left	1	2	num	F02_four_at_pad_r	0;[Red]-0;0;@_)	1234.5
+H_T_left	1	3	text	F03_four_at_pad_W	0;[Red]-0;0;@_W	Ab1
+H_T_left	1	3	num	F03_four_at_pad_W	0;[Red]-0;0;@_W	1234.5
+H_T_left	1	4	text	F04_four_lead_pad	0;[Red]-0;0;_(@	Ab1
+H_T_left	1	4	num	F04_four_lead_pad	0;[Red]-0;0;_(@	1234.5
+H_T_left	1	5	text	F05_four_both_pad	0;[Red]-0;0;_(@_)	Ab1
+H_T_left	1	5	num	F05_four_both_pad	0;[Red]-0;0;_(@_)	1234.5
+H_T_left	1	6	text	F06_four_repeat_pad	0;[Red]-0;0;__(@__	Ab1
+H_T_left	1	6	num	F06_four_repeat_pad	0;[Red]-0;0;__(@__	1234.5
+H_T_left	1	7	text	F07_quoted_underscore	0;[Red]-0;0;"_"@	Ab1
+H_T_left	1	7	num	F07_quoted_underscore	0;[Red]-0;0;"_"@	1234.5
+H_T_left	1	8	text	F08_escaped_underscore	0;[Red]-0;0;\_@	Ab1
+H_T_left	1	8	num	F08_escaped_underscore	0;[Red]-0;0;\_@	1234.5
+H_T_left	1	9	text	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	Ab1
+H_T_left	1	9	num	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	1234.5
+H_T_left	1	10	text	F10_literal_prefix	0;[Red]-0;0;"Pre "@	Ab1
+H_T_left	1	10	num	F10_literal_prefix	0;[Red]-0;0;"Pre "@	1234.5
+H_T_left	1	11	text	C01_two_sections_at	0;@	Ab1
+H_T_left	1	11	num	C01_two_sections_at	0;@	1234.5
+H_T_left	1	12	text	C02_three_sections_at	0;0;@	Ab1
+H_T_left	1	12	num	C02_three_sections_at	0;0;@	1234.5
+H_T_left	1	13	text	C03_four_empty	0;0;0;	Ab1
+H_T_left	1	13	num	C03_four_empty	0;0;0;	1234.5
+H_T_left	1	14	text	C04_all_empty	;;;	Ab1
+H_T_left	1	14	num	C04_all_empty	;;;	1234.5
+H_T_center	2	1	text	F00_plain_at	@	Ab1
+H_T_center	2	1	num	F00_plain_at	@	1234.5
+H_T_center	2	2	text	F02_four_at_pad_r	0;[Red]-0;0;@_)	Ab1
+H_T_center	2	2	num	F02_four_at_pad_r	0;[Red]-0;0;@_)	1234.5
+H_T_center	2	3	text	F03_four_at_pad_W	0;[Red]-0;0;@_W	Ab1
+H_T_center	2	3	num	F03_four_at_pad_W	0;[Red]-0;0;@_W	1234.5
+H_T_center	2	4	text	F04_four_lead_pad	0;[Red]-0;0;_(@	Ab1
+H_T_center	2	4	num	F04_four_lead_pad	0;[Red]-0;0;_(@	1234.5
+H_T_center	2	5	text	F05_four_both_pad	0;[Red]-0;0;_(@_)	Ab1
+H_T_center	2	5	num	F05_four_both_pad	0;[Red]-0;0;_(@_)	1234.5
+H_T_center	2	6	text	F06_four_repeat_pad	0;[Red]-0;0;__(@__	Ab1
+H_T_center	2	6	num	F06_four_repeat_pad	0;[Red]-0;0;__(@__	1234.5
+H_T_center	2	7	text	F07_quoted_underscore	0;[Red]-0;0;"_"@	Ab1
+H_T_center	2	7	num	F07_quoted_underscore	0;[Red]-0;0;"_"@	1234.5
+H_T_center	2	8	text	F08_escaped_underscore	0;[Red]-0;0;\_@	Ab1
+H_T_center	2	8	num	F08_escaped_underscore	0;[Red]-0;0;\_@	1234.5
+H_T_center	2	9	text	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	Ab1
+H_T_center	2	9	num	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	1234.5
+H_T_center	2	10	text	F10_literal_prefix	0;[Red]-0;0;"Pre "@	Ab1
+H_T_center	2	10	num	F10_literal_prefix	0;[Red]-0;0;"Pre "@	1234.5
+H_T_center	2	11	text	C01_two_sections_at	0;@	Ab1
+H_T_center	2	11	num	C01_two_sections_at	0;@	1234.5
+H_T_center	2	12	text	C02_three_sections_at	0;0;@	Ab1
+H_T_center	2	12	num	C02_three_sections_at	0;0;@	1234.5
+H_T_center	2	13	text	C03_four_empty	0;0;0;	Ab1
+H_T_center	2	13	num	C03_four_empty	0;0;0;	1234.5
+H_T_center	2	14	text	C04_all_empty	;;;	Ab1
+H_T_center	2	14	num	C04_all_empty	;;;	1234.5
+H_T_right	3	1	text	F00_plain_at	@	Ab1
+H_T_right	3	1	num	F00_plain_at	@	1234.5
+H_T_right	3	2	text	F02_four_at_pad_r	0;[Red]-0;0;@_)	Ab1
+H_T_right	3	2	num	F02_four_at_pad_r	0;[Red]-0;0;@_)	1234.5
+H_T_right	3	3	text	F03_four_at_pad_W	0;[Red]-0;0;@_W	Ab1
+H_T_right	3	3	num	F03_four_at_pad_W	0;[Red]-0;0;@_W	1234.5
+H_T_right	3	4	text	F04_four_lead_pad	0;[Red]-0;0;_(@	Ab1
+H_T_right	3	4	num	F04_four_lead_pad	0;[Red]-0;0;_(@	1234.5
+H_T_right	3	5	text	F05_four_both_pad	0;[Red]-0;0;_(@_)	Ab1
+H_T_right	3	5	num	F05_four_both_pad	0;[Red]-0;0;_(@_)	1234.5
+H_T_right	3	6	text	F06_four_repeat_pad	0;[Red]-0;0;__(@__	Ab1
+H_T_right	3	6	num	F06_four_repeat_pad	0;[Red]-0;0;__(@__	1234.5
+H_T_right	3	7	text	F07_quoted_underscore	0;[Red]-0;0;"_"@	Ab1
+H_T_right	3	7	num	F07_quoted_underscore	0;[Red]-0;0;"_"@	1234.5
+H_T_right	3	8	text	F08_escaped_underscore	0;[Red]-0;0;\_@	Ab1
+H_T_right	3	8	num	F08_escaped_underscore	0;[Red]-0;0;\_@	1234.5
+H_T_right	3	9	text	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	Ab1
+H_T_right	3	9	num	F09_accounting	_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)	1234.5
+H_T_right	3	10	text	F10_literal_prefix	0;[Red]-0;0;"Pre "@	Ab1
+H_T_right	3	10	num	F10_literal_prefix	0;[Red]-0;0;"Pre "@	1234.5
+H_T_right	3	11	text	C01_two_sections_at	0;@	Ab1
+H_T_right	3	11	num	C01_two_sections_at	0;@	1234.5
+H_T_right	3	12	text	C02_three_sections_at	0;0;@	Ab1
+H_T_right	3	12	num	C02_three_sections_at	0;0;@	1234.5
+H_T_right	3	13	text	C03_four_empty	0;0;0;	Ab1
+H_T_right	3	13	num	C03_four_empty	0;0;0;	1234.5
+H_T_right	3	14	text	C04_all_empty	;;;	Ab1
+H_T_right	3	14	num	C04_all_empty	;;;	1234.5

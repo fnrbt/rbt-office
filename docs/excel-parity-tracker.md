@@ -2138,3 +2138,63 @@ src/Spreadsheet.Pdf/Rbt.Spreadsheet.Pdf.fsproj --no-restore`.
 Limit: this closes the width source for explicit column widths at any page scale (manual and
 fit-to-page; pagination selects the scale from the same dot budget). A fill rectangle still must
 not be used as a cell edge on any other fixture.
+
+## Printed text follows a custom number format's fourth section, 2026-11-24
+
+Excel 2019's direct PDF applies a custom number format's **fourth section** to text values, as the
+grid does: `@` is the text, literals before/after it print, an empty fourth section (`0;0;0;`,
+`;;;`) hides the text, and `_x` pads reserve the width of `x` (a space in the run plus the pad
+character's advance less a space's). A one-section code with an active `@` is the same; two- and
+three-section codes leave text as stored. Quotes and escapes are literal: `"_"@` and `\_@` both
+print `_Ab1`. Alignment moves with the pads: leading `_(` indents left/centre, trailing `_)`
+narrows the right/centre run, and a centre run shifts by half the difference of the two pad
+advances. Numbers still use their own sign/condition/zero section; the fourth section never applies
+to them.
+
+Before this round `Paint.cellLookFitted` returned a text value raw (only `CellText.cellDisplayText`
+called `textUnderFormat`), so every literal and pad above was absent from the PDF. On the direct
+Excel fixture (`/var/tmp/textpad-oracle/synthetic-print-textpad.xlsx`, Aptos Narrow 14, 100 %,
+text in B and numeric controls in C, three alignment sheets) the old engine printed `Ab1` where
+Excel printed `_Ab1`/`Pre Ab1`/`(Ab1`, and stood it 3.05-3.07 pt off for `@_)`/`_( @`; the old
+`@_)` right gap was 3.617 pt against Excel's 6.684, and the new gap is 6.235 (the sheet's ordinary
+0.43-0.45 pt page/font delta remains). `_(@` left xMin moved from 201.120 to 226.298 against Excel's
+226.730. Centre pads likewise match. The holdouts, locked before their exports
+(`synthetic-print-textpad-holdout-tahoma.xlsx` 10 pt 100 % and `-georgia.xlsx` 12 pt 75 %), pass all
+relative predictions; the largest text delta is 0.598 pt, and every numeric control is byte-for-byte
+identical before/after.
+
+Escaped literals also exposed an import bug. `XlsxReader.stripBackslashEscapes` removed every
+`\X`, so a stored `\_@` became `_@` and the renderer read the underscore as a width pad (and `\@`
+as a placeholder). The import now keeps the backslash where the escaped character is a format
+token (`_ * @ ; " \`, and the numeric tokens `0 # ? . , % [ ]`); ordinary escapes (`\-`, `\ `, and
+the date/punctuation escapes) are still removed as Excel COM reports them. The numeric formatter
+also learned the same distinction: `stripExcelWidthPlaceholders` copies escaped pairs, and the
+`@` test/replacement is active-only. So `\_0.00` prints `_1234.50`, `\@0.00` `@1234.50`,
+`0.00\@` `1234.50@`, and `\_#,##0.00_)` `_1,234.50` — all previously wrong (dropped or
+misread), now matching Excel's direct exports (`synthetic-print-textpad-escapes.xlsx`). Date
+formats with `\-` still render as before.
+
+Runtime change: `CellText.textUnderFormat` is public and escape/quote-correct; `CellText.textWidthPads`
+returns the fourth-section pads; `Paint.cellLookFitted` uses `textUnderFormat` only when
+`NumberFit.Print` is set (screen paint keeps the stored text); the print pad adjustment uses
+`textWidthPads` for printed text and applies both pads to centred text. `widthPads`, Pagination,
+numeric fits, overflow hashes, screen geometry and page counts are unchanged.
+
+Verification: `dotnet fsi tests/print/helpers.fsx` -> **305 passed, 0 failed** (fourth-section
+selection/hide, quotes/escapes, pad geometry on left/right/centre, numeric escaped literals, and a
+numeric control that ignores the fourth section); `dotnet fsi tests/office-formats/xlsx-reader.fsx`
+-> **72 passed, 0 failed** (token escapes kept, `\-`/`\ ` still stripped). Native PDFs measured
+against fresh direct Excel exports (Poppler word box to the printed fill edge) in
+`/var/tmp/textpad-oracle/{comparison,after-proto-comparison,holdout-*-after,escapes-after2}.tsv`;
+the Oracle's independent Chromium check follows the source freeze.
+
+The Oracle's Chromium gate then rendered the frozen Fable dist (`/var/tmp/textpad-dist`) through
+the real `grid.ExportPdf({what:'sheet'})` and compared it with the fresh direct Excel 2019 PDFs:
+browser and native word boxes are identical to 0.00000 pt for every text and numeric cell, with
+**0 text differences**. Text rows/max |delta|/failures: training Aptos Narrow 14 100 % 54/0.645/0,
+Georgia 12 75 % 36/0.598/0, Tahoma 10 100 % 36/0.591/0, escaped numeric Aptos 14 33/0.614/0 (the
+worst rows are the ordinary page/font delta, not pads). The only numeric misses, three per set, are
+the pre-existing standard-accounting fill placement (F09: Excel's `$` and number use its fill
+expansion), identical before/after and browser/native, and outside this text-section change.
+Evidence: `tools/excel-parity/print-textpad-chromium-gate.tsv`,
+`tools/xlsx-browser/browser-textpad-proof.mjs`, `/var/tmp/textpad-gate/out`.

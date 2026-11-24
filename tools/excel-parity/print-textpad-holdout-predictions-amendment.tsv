@@ -1,0 +1,12 @@
+# Amendment written after the locked holdout exports, before the candidate (fixed engine) was measured.
+# The locked file print-textpad-holdout-predictions.tsv is unchanged.
+# 1) Original NUM_UNCH said numeric controls F02-F08/F10 equal the F00 numeric control. That relation is
+#    invalid: those numeric cells have their own active sections (e.g. 1235 under 0;[Red]-0;0;@, not
+#    1234.5 under @), so their xMin correctly differs from F00's. The valid preregistered test is the one
+#    the product claim needs: each numeric cell is byte-identical to the pre-fix engine (old == new) and
+#    still matches Excel within the ordinary ~0.7 pt page/font delta. The empty-fourth C03 numeric row is
+#    likewise its own control.
+# 2) CENTER_HALF was written as xMin deltas; the analyzer evaluates the half-advance relation from those
+#    xMin deltas (F02 negative, F04 opposite, F03 more negative than F02, F05 zero), not from a right gap.
+# No product code changed between the lock and these checks; the candidate is TextPadEngine's print-only
+# fourth-section path, measured after it built src/Spreadsheet and the PDF runner from source.

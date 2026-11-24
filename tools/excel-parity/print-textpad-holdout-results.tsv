@@ -1,0 +1,141 @@
+workbook	sheet	test	excel_value	ours_value	expected	excel_ok	ours_ok
+georgia	H_G_center	CENTER_F02_LEFT	-1.680	-1.715	negative half advance	yes	yes
+georgia	H_G_center	CENTER_F03_WIDER	-4.320	-4.415	more negative than F02	yes	yes
+georgia	H_G_center	CENTER_F04_RIGHT	1.680	1.714	positive half advance	yes	yes
+georgia	H_G_center	CENTER_F05_ZERO	0.000	-0.002	0	yes	yes
+georgia	H_G_center	F02_TEXT	226.403	225.883	Ab1	yes	yes
+georgia	H_G_center	F03_TEXT	223.763	223.183	Ab1	yes	yes
+georgia	H_G_center	F04_TEXT	229.763	229.312	Ab1	yes	yes
+georgia	H_G_center	F05_TEXT	228.083	227.596	Ab1	yes	yes
+georgia	H_G_center	F06_TEXT_F06	211.490	210.978	(Ab1	yes	yes
+georgia	H_G_center	F07_TEXT_F07	210.290	209.773	_Ab1	yes	yes
+georgia	H_G_center	F08_TEXT_F08	210.290	209.773	_Ab1	yes	yes
+georgia	H_G_center	F09_EQ_F05_F09	213.170	212.665	Ab1	yes	yes
+georgia	H_G_center	F10_TEXT_F10	205.370	204.819	Pre Ab1	yes	yes
+georgia	H_G_center	C01_C02_C05_C01	213.170	212.667	Ab1	yes	yes
+georgia	H_G_center	C01_C02_C05_C02	213.170	212.667	Ab1	yes	yes
+georgia	H_G_center	C03_C04_HIDE_C03			hidden	yes	yes
+georgia	H_G_center	C03_C04_HIDE_C04			hidden	yes	yes
+georgia	H_G_center	NUM_UNCH_F02	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F03	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F04	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F05	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F06	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F07	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F08	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_center	NUM_UNCH_F10	295.432	295.432	old == new; both match Excel	yes	yes
+georgia	H_G_left	REL_F04_L	3.360	3.429	0 < d <= 7.0	yes	yes
+georgia	H_G_left	F02_TEXT	194.693	194.211	Ab1	yes	yes
+georgia	H_G_left	F03_TEXT	194.693	194.211	Ab1	yes	yes
+georgia	H_G_left	F04_TEXT	198.053	197.640	Ab1	yes	yes
+georgia	H_G_left	F05_TEXT	198.053	197.640	Ab1	yes	yes
+georgia	H_G_left	F06_TEXT_F06	185.540	185.049	(Ab1	yes	yes
+georgia	H_G_left	F07_TEXT_F07	179.780	179.280	_Ab1	yes	yes
+georgia	H_G_left	F08_TEXT_F08	179.780	179.280	_Ab1	yes	yes
+georgia	H_G_left	F09_EQ_F05_F09	183.140	182.709	Ab1	yes	yes
+georgia	H_G_left	F10_TEXT_F10	179.780	179.280	Pre Ab1	yes	yes
+georgia	H_G_left	C01_C02_C05_C01	179.780	179.280	Ab1	yes	yes
+georgia	H_G_left	C01_C02_C05_C02	179.780	179.280	Ab1	yes	yes
+georgia	H_G_left	C03_C04_HIDE_C03			hidden	yes	yes
+georgia	H_G_left	C03_C04_HIDE_C04			hidden	yes	yes
+georgia	H_G_left	NUM_UNCH_F02	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F03	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F04	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F05	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F06	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F07	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F08	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_left	NUM_UNCH_F10	263.880	263.880	old == new; both match Excel	yes	yes
+georgia	H_G_right	REL_F02_R	3.360	3.431	0 < d <= 7.0	yes	yes
+georgia	H_G_right	REL_F03_R	8.760	8.831	d >= REL_F02_R + 1.0	yes	yes
+georgia	H_G_right	F02_TEXT	257.243	257.554	Ab1	yes	yes
+georgia	H_G_right	F03_TEXT	251.843	252.154	Ab1	yes	yes
+georgia	H_G_right	F04_TEXT	260.603	260.983	Ab1	yes	yes
+georgia	H_G_right	F05_TEXT	257.243	257.552	Ab1	yes	yes
+georgia	H_G_right	F06_TEXT_F06	236.570	236.906	(Ab1	yes	yes
+georgia	H_G_right	F07_TEXT_F07	239.930	240.267	_Ab1	yes	yes
+georgia	H_G_right	F08_TEXT_F08	239.930	240.267	_Ab1	yes	yes
+georgia	H_G_right	F09_EQ_F05_F09	242.330	242.621	Ab1	yes	yes
+georgia	H_G_right	F10_TEXT_F10	229.970	230.357	Pre Ab1	yes	yes
+georgia	H_G_right	C01_C02_C05_C01	245.690	246.054	Ab1	yes	yes
+georgia	H_G_right	C01_C02_C05_C02	245.690	246.054	Ab1	yes	yes
+georgia	H_G_right	C03_C04_HIDE_C03			hidden	yes	yes
+georgia	H_G_right	C03_C04_HIDE_C04			hidden	yes	yes
+georgia	H_G_right	NUM_UNCH_F02	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F03	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F04	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F05	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F06	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F07	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F08	326.985	326.985	old == new; both match Excel	yes	yes
+georgia	H_G_right	NUM_UNCH_F10	326.985	326.985	old == new; both match Excel	yes	yes
+tahoma	H_T_center	CENTER_F02_LEFT	-1.920	-1.923	negative half advance	yes	yes
+tahoma	H_T_center	CENTER_F03_WIDER	-4.440	-4.503	more negative than F02	yes	yes
+tahoma	H_T_center	CENTER_F04_RIGHT	1.920	1.917	positive half advance	yes	yes
+tahoma	H_T_center	CENTER_F05_ZERO	0.000	-0.005	0	yes	yes
+tahoma	H_T_center	F02_TEXT	283.522	283.026	Ab1	yes	yes
+tahoma	H_T_center	F03_TEXT	281.002	280.446	Ab1	yes	yes
+tahoma	H_T_center	F04_TEXT	287.362	286.866	Ab1	yes	yes
+tahoma	H_T_center	F05_TEXT	285.442	284.944	Ab1	yes	yes
+tahoma	H_T_center	F06_TEXT_F06	266.570	266.070	(Ab1	yes	yes
+tahoma	H_T_center	F07_TEXT_F07	265.850	265.259	_Ab1	yes	yes
+tahoma	H_T_center	F08_TEXT_F08	265.850	265.259	_Ab1	yes	yes
+tahoma	H_T_center	F09_EQ_F05_F09	268.490	267.984	Ab1	yes	yes
+tahoma	H_T_center	F10_TEXT_F10	259.730	259.236	Pre Ab1	yes	yes
+tahoma	H_T_center	C01_C02_C05_C01	268.490	267.989	Ab1	yes	yes
+tahoma	H_T_center	C01_C02_C05_C02	268.490	267.989	Ab1	yes	yes
+tahoma	H_T_center	C03_C04_HIDE_C03			hidden	yes	yes
+tahoma	H_T_center	C03_C04_HIDE_C04			hidden	yes	yes
+tahoma	H_T_center	NUM_UNCH_F02	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F03	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F04	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F05	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F06	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F07	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F08	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_center	NUM_UNCH_F10	378.362	378.362	old == new; both match Excel	yes	yes
+tahoma	H_T_left	REL_F04_L	3.840	3.840	0 < d <= 7.0	yes	yes
+tahoma	H_T_left	F02_TEXT	239.002	238.960	Ab1	yes	yes
+tahoma	H_T_left	F03_TEXT	239.002	238.960	Ab1	yes	yes
+tahoma	H_T_left	F04_TEXT	242.842	242.800	Ab1	yes	yes
+tahoma	H_T_left	F05_TEXT	242.842	242.800	Ab1	yes	yes
+tahoma	H_T_left	F06_TEXT_F06	227.450	227.400	(Ab1	yes	yes
+tahoma	H_T_left	F07_TEXT_F07	222.050	222.000	_Ab1	yes	yes
+tahoma	H_T_left	F08_TEXT_F08	222.050	222.000	_Ab1	yes	yes
+tahoma	H_T_left	F09_EQ_F05_F09	225.890	225.840	Ab1	yes	yes
+tahoma	H_T_left	F10_TEXT_F10	222.050	222.000	Pre Ab1	yes	yes
+tahoma	H_T_left	C01_C02_C05_C01	222.050	222.000	Ab1	yes	yes
+tahoma	H_T_left	C01_C02_C05_C02	222.050	222.000	Ab1	yes	yes
+tahoma	H_T_left	C03_C04_HIDE_C03			hidden	yes	yes
+tahoma	H_T_left	C03_C04_HIDE_C04			hidden	yes	yes
+tahoma	H_T_left	NUM_UNCH_F02	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F03	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F04	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F05	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F06	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F07	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F08	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_left	NUM_UNCH_F10	334.800	334.800	old == new; both match Excel	yes	yes
+tahoma	H_T_right	REL_F02_R	3.840	3.845	0 < d <= 7.0	yes	yes
+tahoma	H_T_right	REL_F03_R	9.000	9.005	d >= REL_F02_R + 1.0	yes	yes
+tahoma	H_T_right	F02_TEXT	327.202	327.093	Ab1	yes	yes
+tahoma	H_T_right	F03_TEXT	322.042	321.933	Ab1	yes	yes
+tahoma	H_T_right	F04_TEXT	331.042	330.933	Ab1	yes	yes
+tahoma	H_T_right	F05_TEXT	327.202	327.088	Ab1	yes	yes
+tahoma	H_T_right	F06_TEXT_F06	304.850	304.740	(Ab1	yes	yes
+tahoma	H_T_right	F07_TEXT_F07	308.690	308.519	_Ab1	yes	yes
+tahoma	H_T_right	F08_TEXT_F08	308.690	308.519	_Ab1	yes	yes
+tahoma	H_T_right	F09_EQ_F05_F09	310.250	310.128	Ab1	yes	yes
+tahoma	H_T_right	F10_TEXT_F10	296.570	296.473	Pre Ab1	yes	yes
+tahoma	H_T_right	C01_C02_C05_C01	314.090	313.978	Ab1	yes	yes
+tahoma	H_T_right	C01_C02_C05_C02	314.090	313.978	Ab1	yes	yes
+tahoma	H_T_right	C03_C04_HIDE_C03			hidden	yes	yes
+tahoma	H_T_right	C03_C04_HIDE_C04			hidden	yes	yes
+tahoma	H_T_right	NUM_UNCH_F02	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F03	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F04	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F05	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F06	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F07	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F08	421.924	421.924	old == new; both match Excel	yes	yes
+tahoma	H_T_right	NUM_UNCH_F10	421.924	421.924	old == new; both match Excel	yes	yes

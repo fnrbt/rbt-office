@@ -4236,14 +4236,19 @@ module Xlsx =
             DiagonalDown = flag "diagonalDown"
         }
 
-    /// Strip OOXML `\X` literal-char escapes from a format string. The XML
-    /// stores `yyyy\-mm\-dd\ hh:mm:ss` to mean "yyyy-mm-dd hh:mm:ss" with
-    /// the dashes/space as literals (so the `-` doesn't trip the negative-
-    /// subformat parser). Excel COM's `cell.NumberFormat` strips the
-    /// backslashes when reporting the format. Mirrors that — also keeps
-    /// `\\` as a single literal backslash, leaves quoted "..." strings
-    /// intact (the contents are already literal).
+    /// Strip OOXML `\X` literal-char escapes from a format string, except where the escape is
+    /// semantically load-bearing: `_`, `*`, `@`, `;`, `"`, `\` and the numeric tokens
+    /// `0 # ? . , % [ ]` are format tokens, and removing their backslash changes what Excel shows
+    /// (`\_@` would become a width pad; `\@` a text placeholder). Excel's direct PDF treats those
+    /// as literals, so they are kept. The remaining escapes (`\-`, `\ `, `\:`, `\/`, escaped
+    /// parentheses) are literal either way and are removed, matching Excel COM's
+    /// `cell.NumberFormat` (e.g. `yyyy\-mm\-dd\ hh:mm:ss` → `yyyy-mm-dd hh:mm:ss`). Quoted "..."
+    /// strings are left intact.
     let private stripBackslashEscapes (code: string) : string =
+        let isSemantic (c: char) =
+            c = '_' || c = '*' || c = '@' || c = ';' || c = '"' || c = '\\'
+            || c = '0' || c = '#' || c = '?' || c = '.' || c = ',' || c = '%'
+            || c = '[' || c = ']'
         let sb = System.Text.StringBuilder(code.Length)
         let mutable i = 0
         let mutable inQuote = false
@@ -4258,7 +4263,8 @@ module Xlsx =
                 inQuote <- true
                 i <- i + 1
             elif ch = '\\' && i + 1 < code.Length then
-                sb.Append code.[i + 1] |> ignore
+                if isSemantic code.[i + 1] then sb.Append(ch).Append(code.[i + 1]) |> ignore
+                else sb.Append code.[i + 1] |> ignore
                 i <- i + 2
             else
                 sb.Append ch |> ignore

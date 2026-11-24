@@ -1003,5 +1003,78 @@ do
             (wide |> Array.exists (fun line -> line.Contains "1,234,567.00" && not (line.Contains "#")))
             (String.concat "|" wide)
 
+// ----- printed text under a custom number format's fourth section -----
+do
+    let text = Rbt.Spreadsheet.CellText.textUnderFormat
+    // Excel formats a text value only by a four-section format's fourth section, or by a one-section
+    // code with an active `@`. Two or three sections leave it as stored; a quoted/escaped `@` is literal.
+    ok "print text section: the fourth section formats text" (text "0;[Red]-0;0;@_)" "Ab1" = "Ab1 ") (text "0;[Red]-0;0;@_)" "Ab1")
+    ok "print text section: an empty fourth section hides text" (text "0;0;0;" "Ab1" = "" && text ";;;" "Ab1" = "") ""
+    ok "print text section: two or three sections leave text as stored" (text "0;@_)" "Ab1" = "Ab1" && text "0;0;@_)" "Ab1" = "Ab1") ""
+    ok "print text section: a one-section @ replaces the text" (text "@" "Ab1" = "Ab1" && text "\"x\"@" "Ab1" = "xAb1") ""
+    ok "print text section: a quoted or escaped @ is literal" (text "\"@\"" "Ab1" = "Ab1" && text "\\@" "Ab1" = "Ab1") ""
+    ok "print text section: quoted and escaped underscores are literal" (text "0;0;0;\"_\"@" "Ab1" = "_Ab1" && text "0;0;0;\\_@" "Ab1" = "_Ab1") ""
+    ok "print text section: literals before @ print" (text "0;0;0;\"Pre \"@" "Ab1" = "Pre Ab1") (text "0;0;0;\"Pre \"@" "Ab1")
+    ok "print text section: the accounting fourth pads the text" (text "_(\"$\"* #,##0.00_);_(\"$\"* \\(#,##0.00\\);_(\"$\"* \"-\"??_);_(@_)" "Ab1" = " Ab1 ") ""
+    // Numeric cells under escaped literal formats keep the literal and do not read the escape as
+    // a pad/placeholder/fill token (synthetic-print-textpad-escapes, E01-E10).
+    let num = Rbt.Spreadsheet.CellText.formatNumberWithCode
+    ok "print text section: escaped underscore is a literal in a number"
+        (num "\\_0.00" 1234.5 = "_1234.50" && num "0.00\\_" 1234.5 = "1234.50_" && num "\\_#,##0.00_)" 1234.5 = "_1,234.50 ") ""
+    ok "print text section: escaped @ is not a text placeholder"
+        (num "\\@0.00" 1234.5 = "@1234.50" && num "0.00\\@" 1234.5 = "1234.50@") (sprintf "%A / %A" (num "\\@0.00" 1234.5) (num "0.00\\@" 1234.5))
+    ok "print text section: escaped minus, backslash and space stay literal"
+        (num "0.00\\-" 1234.5 = "1234.50-" && num "0.00\\\\" 1234.5 = "1234.50\\" && num "0.00\\ " 1234.5 = "1234.50 ") ""
+    let fmt code align = { defaultFormat with NumberFormat = Some code; FontName = Some "Aptos Narrow"; FontSize = Some 14.0; HorizontalAlign = Some align }
+    let pads code = Rbt.Spreadsheet.CellText.textWidthPads (fmt code "right") (CellValue.String "Ab1")
+    ok "print text pads: trailing and leading pads" (pads "0;0;0;@_)" = ("", ")") && pads "0;0;0;_(@" = ("(", "") && pads "0;0;0;_(@_)" = ("(", ")")) ""
+    ok "print text pads: repeated pads and no pad section" (pads "0;0;0;__(@__" = ("_", "_") && pads "0;@_)" = ("", "") && pads "0;0;@_)" = ("", "")) ""
+    ok "print text pads: quotes and escapes are not pads" (pads "0;0;0;\"_\"@" = ("", "") && pads "0;0;0;\\_@" = ("", "")) ""
+    let viewport : Rbt.Spreadsheet.Layout.Viewport =
+        { ScrollX = 0.0; ScrollY = 0.0; Width = 600.0; Height = 200.0; HeaderHeight = 0.0; RowHeaderWidth = 0.0
+          Measurer = Some (fun s _ _ _ _ -> if s = " " then 4.0 else 9.0 * float s.Length) }
+    let drawn (printing: bool) code align (value: CellValue) =
+        let model =
+            createEmpty 4 4
+            |> setCell { Row = 0; Col = 1 } { Value = value; Format = fmt code align; Comment = None }
+            |> setColumnWidth 1 100.0
+            |> Pagination.withPrintSizes
+        let items =
+            if printing then Rbt.Spreadsheet.Paint.buildPrintPaintItems (0.0, 0.0, 1.0) model viewport
+            else Rbt.Spreadsheet.Paint.buildPaintItems model viewport
+        [ for item in items do
+            match item with
+            | Rbt.Spreadsheet.Paint.DrawText t when t.FontSize = 14.0 && t.Text <> "" -> yield t
+            | _ -> () ]
+    let plain = drawn true "0;0;0;@_" "right" (CellValue.String "Ab1") |> List.exactlyOne
+    let screenPadded = drawn false "0;0;0;@_)" "right" (CellValue.String "Ab1") |> List.exactlyOne
+    let printedPadded = drawn true "0;0;0;@_)" "right" (CellValue.String "Ab1") |> List.exactlyOne
+    // The screen keeps the stored text; the print path adds the hidden pad (a space plus the pad's
+    // advance less a space's) and right-aligns it.
+    ok "print text paint: screen keeps the stored text" (screenPadded.Text = "Ab1") screenPadded.Text
+    ok "print text paint: printed text carries the fourth-section pad" (printedPadded.Text = "Ab1 ") printedPadded.Text
+    ok "print text paint: a right pad narrows the printed run"
+        (abs (printedPadded.Rect.X - plain.Rect.X) < 1e-9 && abs (plain.Rect.Width - printedPadded.Rect.Width - 5.0) < 1e-9)
+        (sprintf "%A / %A" plain.Rect printedPadded.Rect)
+    let printedLead = drawn true "0;0;0;_(@" "left" (CellValue.String "Ab1") |> List.exactlyOne
+    let plainLead = drawn true "0;0;0;@_" "left" (CellValue.String "Ab1") |> List.exactlyOne
+    ok "print text paint: a leading pad indents printed text"
+        (printedLead.Text = " Ab1" && abs (printedLead.Rect.X - (plainLead.Rect.X + 5.0)) < 1e-9)
+        (sprintf "%A / %A" plainLead.Rect printedLead.Rect)
+    let printedCenter = drawn true "0;0;0;_(@_)" "center" (CellValue.String "Ab1") |> List.exactlyOne
+    let plainCenter = drawn true "0;0;0;@_" "center" (CellValue.String "Ab1") |> List.exactlyOne
+    ok "print text paint: both pads narrow and indent a centred run"
+        (abs (printedCenter.Rect.X - (plainCenter.Rect.X + 5.0)) < 1e-9
+         && abs (plainCenter.Rect.Width - printedCenter.Rect.Width - 10.0) < 1e-9)
+        (sprintf "%A / %A" plainCenter.Rect printedCenter.Rect)
+    let printedPrefix = drawn true "0;0;0;\"Pre \"@" "left" (CellValue.String "Ab1") |> List.exactlyOne
+    ok "print text paint: printed literals appear" (printedPrefix.Text = "Pre Ab1") printedPrefix.Text
+    let hidden = drawn true "0;0;0;" "left" (CellValue.String "Ab1")
+    ok "print text paint: an empty fourth section prints nothing" (List.isEmpty hidden) ""
+    // Numeric controls are not text: the fourth section never applies to a number.
+    let numeric = drawn true "0;0;0;@_)" "right" (CellValue.Number 1234.5) |> List.exactlyOne
+    let numericPlain = drawn true "0;0;0;0" "right" (CellValue.Number 1234.5) |> List.exactlyOne
+    ok "print text paint: a numeric control keeps its number section" (numeric.Text = numericPlain.Text && abs (numeric.Rect.Width - numericPlain.Rect.Width) < 1e-9) (sprintf "%A / %A" numericPlain numeric)
+
 printfn "Print-helper tests: %d passed, %d failed" pass fail
 if fail > 0 then exit 1

@@ -53,6 +53,54 @@ let private firstSection (code: string) =
         | first :: _ -> first
         | [] -> code
 
+/// Whether `code` contains an active `@` (not inside a quoted literal or escaped).
+let private hasTextPlaceholder (code: string) : bool =
+    let mutable i = 0
+    let mutable quoted = false
+    let mutable found = false
+    while i < code.Length && not found do
+        let c = code.[i]
+        if quoted then
+            if c = '"' then quoted <- false
+            i <- i + 1
+        elif c = '"' then
+            quoted <- true
+            i <- i + 1
+        elif c = '\\' && i + 1 < code.Length then
+            i <- i + 2
+        elif c = '@' then
+            found <- true
+        else
+            i <- i + 1
+    found
+
+/// Replace only the active `@` placeholders of a format section with `value`; quoted and escaped
+/// characters are copied as they are (the literals are unwrapped by `unwrapTextPlaceholderLiterals`).
+let private replaceActiveTextPlaceholder (code: string) (value: string) : string =
+    let sb = System.Text.StringBuilder(code.Length + value.Length)
+    let mutable i = 0
+    let mutable quoted = false
+    while i < code.Length do
+        let c = code.[i]
+        if quoted then
+            if c = '"' then quoted <- false
+            sb.Append(c) |> ignore
+            i <- i + 1
+        elif c = '"' then
+            quoted <- true
+            sb.Append(c) |> ignore
+            i <- i + 1
+        elif c = '\\' && i + 1 < code.Length then
+            sb.Append(c).Append(code.[i + 1]) |> ignore
+            i <- i + 2
+        elif c = '@' then
+            sb.Append(value) |> ignore
+            i <- i + 1
+        else
+            sb.Append(c) |> ignore
+            i <- i + 1
+    sb.ToString()
+
 /// A leading comparison tag like `[>=100]` or `[<0]` on a format section.
 /// May sit before or after a colour tag (`[<0][Red]`, `[Red][>100]`). The
 /// `[op N]` shape doesn't collide with `[h]`, `[$…]`, or `[Red]`, so matching
@@ -1142,6 +1190,11 @@ let private stripExcelWidthPlaceholders (code: string) : string =
         elif inQuote then
             sb.Append(c) |> ignore
             i <- i + 1
+        elif c = '\\' && i + 1 < code.Length then
+            // (An escaped character is literal: `\_` is an underscore, not a width pad;
+            // `\@` not a text placeholder; `\*` not a fill.)
+            sb.Append(c).Append(code.[i + 1]) |> ignore
+            i <- i + 2
         elif (c = '_' || c = '*') && i + 1 < code.Length then
             // `_X` reserves the width of one X glyph (Excel uses this
             // for column-aligning open/close parens in accounting
@@ -1334,7 +1387,7 @@ let private numberFormatSectionInfo section =
         ScaleDivisor = scaleDivisor
         IsSimple = isSimple
         Cleaned = cleaned
-        ContainsTextPlaceholder = pos.Contains "@"
+        ContainsTextPlaceholder = hasTextPlaceholder pos
         HasCondition = (sectionCondition pos).IsSome
     }
 
@@ -1387,7 +1440,7 @@ let private formatExcelNumber (code: string) (n: float) : string * string =
     if sectionInfo.ContainsTextPlaceholder then
         // `@` text placeholder on a number → its General text, with quoted
         // literals / escapes unwrapped and colour tags dropped.
-        let s = pos.Replace("@", generalString inv n)
+        let s = replaceActiveTextPlaceholder pos (generalString inv n)
         unwrapTextPlaceholderLiterals s, selectedSection
     else
         let formatted =
@@ -1741,20 +1794,110 @@ let formatNumberWithCodeIn (date1904: bool) (code: string) (n: float) : string =
 /// `formatNumberWithCodeIn` in the 1900 date system.
 let formatNumberWithCode (code: string) (n: float) : string = formatNumberWithCodeIn false code n
 
+/// The format section Excel uses for a text value: the fourth, if the code has four sections; else the
+/// code itself only when it has one section with an active `@` (two or three sections leave text as it is).
+let private textSection (code: string) : string option =
+    let sections = splitSections code
+    if sections.Length >= 4 then Some sections.[3]
+    elif sections.Length = 1 && hasTextPlaceholder code then Some code
+    else None
+
 /// A text under a number format, as Excel shows it: by the format's fourth section (empty, as in
 /// `;;;`, hides it; `@` stands for the text, `"Note: "@` adds to it; `_(@_)` pads it), or by a
-/// format of one section that has `@`; else as it is.
-let private textUnderFormat (code: string) (text: string) : string =
-    let sections = splitSections code
-    let section =
-        if sections.Length >= 4 then Some sections.[3]
-        elif sections.Length = 1 && code.IndexOf '@' >= 0 then Some code
-        else None
-    match section with
+/// format of one section that has `@`; else as it is. Quoted and escaped characters are literal
+/// (`"_"@` and `\_@` both prefix an underscore), and only an active `@` is replaced.
+let textUnderFormat (code: string) (text: string) : string =
+    match textSection code with
     | None -> text
     | Some section ->
-        // (The literals unwrapped before the text goes in: a text's own quotes stay.)
-        (unwrapTextPlaceholderLiterals ((stripExcelWidthPlaceholders section).Replace("@", "\u0001"))).Replace("\u0001", text)
+        let sb = System.Text.StringBuilder()
+        let mutable i = 0
+        let mutable quoted = false
+        while i < section.Length do
+            let c = section.[i]
+            if quoted then
+                if c = '"' then quoted <- false else sb.Append(c) |> ignore
+                i <- i + 1
+            elif c = '"' then
+                quoted <- true
+                i <- i + 1
+            elif c = '\\' && i + 1 < section.Length then
+                // (An escaped character is literal: `\_` is an underscore, not a width pad.)
+                sb.Append(section.[i + 1]) |> ignore
+                i <- i + 2
+            elif c = '_' && i + 1 < section.Length then
+                // (A width pad draws nothing; the space carries one space's advance, and
+                // `textWidthPads` adds the rest of the named character's advance.)
+                sb.Append(' ') |> ignore
+                i <- i + 2
+            elif c = '*' && i + 1 < section.Length then
+                // (A fill draws its character once here; the print path's accounting layout expands it.)
+                sb.Append(section.[i + 1]) |> ignore
+                i <- i + 2
+            elif c = '[' then
+                let close = section.IndexOf(']', i + 1)
+                if close > i && (colorTagValueAt section (i + 1) (close - i - 1)).IsSome then
+                    i <- close + 1
+                else
+                    sb.Append(c) |> ignore
+                    i <- i + 1
+            elif c = '@' then
+                sb.Append(text) |> ignore
+                i <- i + 1
+            else
+                sb.Append(c) |> ignore
+                i <- i + 1
+        sb.ToString()
+
+/// The `_x` characters at the start and end of a text's active format section (the fourth for a
+/// four-section code, else a single section with an active `@`), outside quotes and escapes.
+let private textPadsOf (section: string) : string * string =
+    let mutable i = 0
+    while i < section.Length && section.[i] = '[' && section.IndexOf(']', i + 1) > i do
+        i <- section.IndexOf(']', i + 1) + 1
+    let lead = System.Text.StringBuilder()
+    let trail = System.Text.StringBuilder()
+    let mutable inLead = true
+    let mutable quoted = false
+    while i < section.Length do
+        let c = section.[i]
+        if quoted then
+            if c = '"' then quoted <- false
+            inLead <- false
+            trail.Clear() |> ignore
+            i <- i + 1
+        elif c = '"' then
+            quoted <- true
+            inLead <- false
+            trail.Clear() |> ignore
+            i <- i + 1
+        elif c = '\\' && i + 1 < section.Length then
+            inLead <- false
+            trail.Clear() |> ignore
+            i <- i + 2
+        elif c = '_' && i + 1 < section.Length then
+            if inLead then lead.Append(section.[i + 1]) |> ignore
+            else trail.Append(section.[i + 1]) |> ignore
+            i <- i + 2
+        elif c = '*' && i + 1 < section.Length then
+            inLead <- false
+            trail.Clear() |> ignore
+            i <- i + 2
+        else
+            inLead <- false
+            trail.Clear() |> ignore
+            i <- i + 1
+    lead.ToString(), trail.ToString()
+
+/// The `_x` pads of a text value's active format section; ("", "") where the text is unformatted
+/// (no text section, or a section with no active pads).
+let textWidthPads (format: CellFormat) (value: CellValue) : string * string =
+    match format.NumberFormat, unwrapFormulaValue value with
+    | Some code, CellValue.String _ ->
+        match textSection code with
+        | Some section -> textPadsOf section
+        | None -> "", ""
+    | _ -> "", ""
 
 /// A leading `_x` before a printed number retains one hash position when
 /// the value overflows. A trailing `_x` does not change the hash count.
@@ -1843,8 +1986,8 @@ let cellDisplayTextFitted
         | None -> generalNumberDisplay cellWidth fontPt n
     | String s ->
         match format.NumberFormat with
-        | Some code when code.IndexOf ';' >= 0 || code.IndexOf '@' >= 0 -> textUnderFormat code s
-        | _ -> s
+        | Some code -> textUnderFormat code s
+        | None -> s
     | Boolean b -> if b then "TRUE" else "FALSE"
     | Error e -> sprintf "#%s" e
     | Formula _ -> ""
