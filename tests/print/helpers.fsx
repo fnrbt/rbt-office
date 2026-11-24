@@ -1139,6 +1139,25 @@ do
          | Some (left, right, _) -> right = "" && left = "1234.50" + System.String('-', (200 - 63) / 9)
          | None -> false)
         (sprintf "%A" suffixEmpty)
+    // NET drops a trailing `.` fill, so the display has no token char. The run still starts at the
+    // formatted number's end (no guessed dot), and count 0 prints the number alone.
+    let dotAfter = runs "0.00*." 1234.5 "1234.50" 200.0
+    ok "print fill: a consumed trailing dot fill starts at the number end"
+        (match dotAfter with
+         | Some (left, right, _) ->
+             right = "" && left = "1234.50" + System.String('.', (200 - 63) / 9)
+         | None -> false)
+        (sprintf "%A" dotAfter)
+    let dotAfterZero = runs "0.00*." 0.0 "0.00" 200.0
+    ok "print fill: a consumed trailing dot fills zero at the number end"
+        (match dotAfterZero with
+         | Some (left, right, _) -> right = "" && left = "0.00" + System.String('.', (200 - 36) / 9)
+         | None -> false)
+        (sprintf "%A" dotAfterZero)
+    let dotAfterTight = runs "0.00*." 1234.5 "1234.50" 60.0
+    ok "print fill: a tight consumed dot layout drops the fill"
+        (match dotAfterTight with Some (left, right, _) -> left = "1234.50" && right = "" | None -> false)
+        (sprintf "%A" dotAfterTight)
     let negative = expand -1234.5 " $ (1,234.50)" 200.0
     ok "print fill: the negative section fills between its own prefix and suffix"
         (match negative with
@@ -1154,11 +1173,11 @@ do
     ok "print fill: no active fill is no layout" (runs "0.00_)" 1.0 "1.00 " 200.0 = None) ""
     // Paint: F09 prints two runs per alignment — the "$" prefix anchored left at the content edge and the
     // amount anchored right — identical in every alignment sheet; the screen keeps one collapsed run.
-    let look printing code align =
+    let lookWith value printing code align =
         let fmt = { defaultFormat with NumberFormat = Some code; FontName = Some "Calibri"; FontSize = Some 11.0; HorizontalAlign = Some align }
         let model =
             createEmpty 3 3
-            |> setCell { Row = 0; Col = 1 } { Value = Number 1234.5; Format = fmt; Comment = None }
+            |> setCell { Row = 0; Col = 1 } { Value = Number value; Format = fmt; Comment = None }
             |> setColumnWidth 1 150.0
             |> Pagination.withPrintSizes
         let viewport : Rbt.Spreadsheet.Layout.Viewport =
@@ -1174,6 +1193,7 @@ do
                 when t.Text.Contains "1,234" || t.Text.Contains "1234" || t.Text.Contains "$"
                      || (t.Text <> "" && t.Text |> Seq.forall ((=) ' ')) -> yield t
             | _ -> () ]
+    let look printing code align = lookWith 1234.5 printing code align
     let printed = [ for align in ["left"; "center"; "right"] -> look true code align ]
     let runOf (ts: Rbt.Spreadsheet.Paint.PaintText list) =
         match ts with
@@ -1206,14 +1226,29 @@ do
          | [left; right] -> left.Text |> Seq.forall ((=) ' ') && right.Text = "1,234.50"
          | _ -> false)
         (sprintf "%A" (prefixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
-    // A fill token with nothing after it keeps the prior single run: Excel prints that number exactly as
-    // its no-fill twin (fills appended after it), so expanding it would move the number.
-    let suffixEmptyPaint = look true "0.00*-" "right"
-    ok "print fill paint: a suffix-empty layout keeps the prior single aligned run"
-        (match suffixEmptyPaint with
-         | [only] -> only.Align = Rbt.Spreadsheet.Layout.AlignRight && only.Text = "1234.50-"
+    // A suffix-empty section (`0.00*-`): Excel pads the number rightward with the fill characters and
+    // then places the whole padded string with the cell's own alignment. One run, so count 0 is exactly
+    // the no-fill twin and centre/right shift the number left by the fill advance(s).
+    let suffixRuns align =
+        look true "0.00*-" align
+        |> List.map (fun t -> t.Text, t.Align)
+    let suffixLeft, suffixCenter, suffixRight = suffixRuns "left", suffixRuns "center", suffixRuns "right"
+    ok "print fill paint: a suffix-empty layout is one run aligned with the cell"
+        (match suffixLeft, suffixCenter, suffixRight with
+         | [(l, la)], [(c, ca)], [(r, ra)] ->
+             la = Rbt.Spreadsheet.Layout.AlignLeft
+             && ca = Rbt.Spreadsheet.Layout.AlignCenter
+             && ra = Rbt.Spreadsheet.Layout.AlignRight
+             && l = c && c = r
+             && l.StartsWith("1234.50", System.StringComparison.Ordinal)
+             && l.Substring 7 |> Seq.forall ((=) '-')
          | _ -> false)
-        (sprintf "%A" (suffixEmptyPaint |> List.map (fun t -> t.Text, t.Align)))
+        (sprintf "%A" (suffixLeft, suffixCenter, suffixRight))
+    ok "print fill paint: a suffix-empty negative keeps its sign inside the padded run"
+        (match lookWith -1234.5 true "0.00*-" "left" with
+         | [only] -> only.Text.StartsWith("-1234.50", System.StringComparison.Ordinal)
+         | _ -> false)
+        (sprintf "%A" (suffixRuns "left"))
     let screenText = [ for align in ["left"; "center"; "right"] -> look false code align ]
     let expectedScreenAlign = [Rbt.Spreadsheet.Layout.AlignLeft; Rbt.Spreadsheet.Layout.AlignCenter; Rbt.Spreadsheet.Layout.AlignRight]
     ok "print fill paint: the screen keeps one run, its alignment and the collapsed fill"

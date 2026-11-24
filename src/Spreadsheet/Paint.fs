@@ -973,7 +973,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                     match numericValue, measure, padExtras, format.NumberFormat with
                     | Some n, Some m, Some (leadExtra, trailExtra), Some code when fillLayoutForPrint ->
                         match (try CellText.printFillLayoutRuns code n rawNumericText m fillAvailable with _ -> None) with
-                        | Some (left, right, fixedWidth) when right <> "" ->
+                        | Some (left, right, fixedWidth) ->
                             // Excel's printed fill fit uses the whole cell width less the print-fit
                             // intercept (`Print fit cutoff`: half a digit + 0.875 pt at the page scale),
                             // with the `_x` pads at their own advances and no fill chars. The helper's
@@ -982,12 +982,6 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             if fixedWidth + leadExtra + trailExtra + cutoff <= baseRect.Width + 1e-9 then
                                 Some (left, right)
                             else None
-                        // A fill token with nothing after it (`0.00* `) keeps the prior single run: Excel
-                        // places that number exactly as its no-fill twin and only appends the fill chars
-                        // (measured: `0.00* ` amount x equals `0.00` on the left sheet, and centre/right
-                        // follow the aligned text including one fill char). The two-run layout needs a
-                        // suffix to anchor right; without evidence for a non-space suffix it is left out.
-                        | Some _ -> None
                         | None -> None
                     | _ -> None
                 let padLeft, padRight =
@@ -1288,8 +1282,16 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             Rotation = format.TextRotation
                             Clip = textClip
                         }
-                    if left <> "" then yield zone, runItem left AlignLeft
-                    if right <> "" then yield zone, runItem right AlignRight
+                    if right = "" then
+                        // A suffix-empty section (`0.00* `, `0.00*.`, `0.00*-`): Excel pads the number
+                        // with the fill characters and then places that whole padded string with the
+                        // cell's own alignment. The count is the same left-anchored padding count, so
+                        // count 0 is byte-equal to the no-fill twin and centre/right shift the number
+                        // left by half/whole fill advances respectively. One run, the cell's alignment.
+                        if left <> "" then yield zone, runItem left align
+                    else
+                        if left <> "" then yield zone, runItem left AlignLeft
+                        if right <> "" then yield zone, runItem right AlignRight
                 | _ ->
                     // Plain (or wrapped) cell text — one DrawText per line.
                     for i, line in List.indexed lines do

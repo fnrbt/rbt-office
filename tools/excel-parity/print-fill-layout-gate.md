@@ -32,8 +32,14 @@ are reported here as results, not predictions.
    under a single-section code is formatted with a leading `-` (`* #,##0.00` -> `- 1,234.50`); that sign is
    carried as part of the left-anchored prefix, so the fixed width includes the sign and the number is never
    printed without it. A sign where the fill character belongs makes the section fall back to the prior path.
-   A fill token with nothing after it (`0.00* `) also keeps the prior single aligned run: Excel places that
-   number exactly as its no-fill twin and only appends the fill chars, so expanding it would move the number.
+   A fill token with nothing after it (`0.00* `, `0.00*.`, `0.00*-`) has no right-hand suffix: Paint emits
+   **one run** — number + repeated fill char — placed with the cell's own alignment, not left-anchored.
+   Excel pads the number with the fill characters using the same left-anchored count and then centres or
+   right-aligns the whole padded string, so count 0 is byte-equal to the no-fill twin and the number moves
+   left by half/whole fill advances on centre/right. A trailing `.` fill is consumed by .NET (`0.00*.`
+   renders `1,234.50`): when the token is last and the display is exactly the prefix rendering, the fill
+   run starts at the formatter's number end; no dot is inserted into the number string. The fit window
+   still uses the number-only fixed run (fill characters excluded).
 3. **PDF** — `Pdf.appendDrawTextOps` draws each run from the embedded face at `FontSize × scale`; the left
    run at `rectX`, the right run at `rectRight − width`. Fill layouts carry no print-fit run and no italic
    reserve (both checks exclude them), so the hash recount and the italic reserve are untouched. Poppler
@@ -78,8 +84,36 @@ against the cell manifests, so a missing row fails): train 1035 / Georgia 630 / 
 browser-vs-native 0.00000 pt, 0 diffs. Its corrected paired table
 (`print-numfill-baseline-vs-candidate.tsv`) records 898 -> 918 hash rows train (20 improved / 0 regressed),
 570 -> 576 Georgia (6/0), 588 -> 588 Tahoma (0/0), with zero missing rows, zero lost printed rows and zero
-new hash regressions. Remaining max errors are suffix-fill and inactive-section text shapes, which stay on
-the prior path; the fit window uses FillOracle's calibrated intercept.
+new hash regressions. The fit window uses FillOracle's calibrated intercept. The suffix-empty layouts that
+previously stayed on the prior path are now the single aligned run described above (see the trailing-fill
+result below); inactive-section text shapes are unchanged and remain on the prior path.
+
+### Trailing fills (`0.00* `, `0.00*.`, `0.00*-`): suffix-empty run
+
+Training Excel truth (Aptos Narrow 14, 100 %, direct Excel 2019; S2 `0.00* ` and D2 `0.00*.` against the
+matched N1 `0.00`, 144 cells over three alignments, three values and eight widths): 0 hash mismatches and
+0 amount-text mismatches. Emitted text-order fill counts are exact on 117/144 cells and one high on 15
+(never low, never more than one) — the engine's content-width available is a fraction of a point wider at
+exactly the width steps where one more fill still fits, so counts move one half-step early. Allowing the
+count difference, the suffix-specific amount position matches Excel within 0.13 pt (median 0.011, 42
+count-equal cells compared after removing the engine's general N1-control offset). The trailing rule adds
+no hash change: the narrow S2 cells that Paint had hashed now print their number at count 0 (Excel prints
+the number too), and no training cell newly hashes.
+
+Fresh held-out export (Arial 11 pt at 60 %, TrailingTruth's locked predictions): the runtime and Chromium
+PDFs were produced from this tree before the Excel PDFs existed. On those PDFs, checked against the
+engine's own N1 controls (the side-relative relations in the lock), all 729 trailing cells pass hash/text/
+sign, inside, residual and count-law (|N_pred−N| ≤ 1; 0 violations), with a maximum centre/right shift
+residual of 0.075 pt against the 0.35 pt bound. Chromium equals native on every run of that workbook
+(largest origin difference 0.0001 pt, one run). The Excel-side check still requires the locked fresh
+export, which had not been taken when this tree was frozen.
+
+Limitations: (1) the measured fill advance can put the engine one fill glyph ahead of Excel at a boundary
+width (count +1 above; not a sign/hash/fit error). (2) A trailing dot is not part of the .NET display
+string, so the rule reads the fill run from the formatter's number end rather than from a guessed dot; a
+non-space/non-dot trailing token is covered only by the fresh dash fixture. (3) Screen, quoted/escaped and
+inactive-section paths are untouched: the new branch runs only for printing with one active fill and an
+empty suffix section.
 
 Per-cell symbol/amount boxes: `print-fill-layout-results.tsv`. The amount is right-anchored in every
 alignment in both Excel and ours (ours uniform, spread 0.000); the `$` prefix is left-anchored in ours. Excel

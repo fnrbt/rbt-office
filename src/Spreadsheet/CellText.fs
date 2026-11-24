@@ -387,10 +387,11 @@ let private isConditionTagAt (text: string) (start: int) (length: int) =
         hasValidFraction <- i > fractionStart
     i = stop && hasIntegerDigits && hasValidFraction
 
-/// Split a format section at its one active `*x` fill token: the raw section before the token and the
-/// fill character. Quoted and escaped asterisks and inactive/colour brackets are not tokens, a second
-/// active token or no numeric placeholder in the section gives None (`* ` alone is not a number layout).
-let private fillTokenSplit (section: string) : (string * char) option =
+/// Split a format section at its one active `*x` fill token: the raw section before the token, the
+/// fill character, and the raw section after it. Quoted and escaped asterisks and inactive/colour
+/// brackets are not tokens, a second active token or no numeric placeholder in the section gives None
+/// (`* ` alone is not a number layout).
+let private fillTokenSplit (section: string) : (string * char * string) option =
     let mutable i = 0
     let mutable fill = ValueNone
     let mutable valid = true
@@ -448,7 +449,7 @@ let private fillTokenSplit (section: string) : (string * char) option =
                 elif not quotedBefore && (c = '0' || c = '#' || c = '?') then number <- true
                 k <- k + 1
             if moreFill || not number then None
-            else Some (section.Substring(0, i - 2), fillChar)
+            else Some (section.Substring(0, i - 2), fillChar, section.Substring(i))
 
 let private removeColorAndConditionTags (text: string) =
     if text.IndexOf('[') < 0 then
@@ -1520,8 +1521,10 @@ let private formatExcelNumber (code: string) (n: float) : string * string =
 /// them for the largest whole count that fits `available` (the printed content width with both `_x` pad
 /// advances reserved). A count of 0 drops the fill char (Excel prints none when one does not fit); the
 /// sub-character leftover stays between the fill run and the right-anchored suffix. `formatted` is the
-/// value's text under `code` with its one fill char. Returns the two runs and the fixed advance (prefix +
-/// suffix with the pads as their drawn spaces, no fill chars), which the printer's fit cutoff measures.
+/// value's text under `code` with its one fill char (a trailing fill that .NET consumes, as in
+/// `0.00*.` -> `1,234.50`, is read as a suffix-empty layout with the fill run at the number's end).
+/// Returns the two runs and the fixed advance (prefix + suffix with the pads as their drawn spaces, no
+/// fill chars), which the printer's fit cutoff measures.
 /// None where the section has no single active fill, a second fill, no numeric placeholder, or the display
 /// is an all-hash overflow; the caller then keeps its prior text and alignment.
 let printFillLayoutRuns
@@ -1535,7 +1538,12 @@ let printFillLayoutRuns
         let section = try selectedSectionForValue code n with _ -> code
         match fillTokenSplit section with
         | None -> None
-        | Some (prefixSection, fillChar) ->
+        | Some (prefixSection, fillChar, suffixSection) ->
+            // A trailing fill token may not survive the formatter: `0.00*.` renders `1234.50`, with
+            // the token's one dot dropped by .NET. Only when the token is last and the whole display is
+            // the prefix rendering do we read the fill run as starting at the number's end; that keeps
+            // the number boundaries the formatter produced (no guess at where a dot would be inserted).
+            let droppedTrailingFill = suffixSection = ""
             let startsWithMinus = formatted.StartsWith("-", System.StringComparison.Ordinal)
             let candidates = if startsWithMinus then [ n; abs n ] else [ abs n; n ]
             let prefixRendered =
@@ -1547,6 +1555,8 @@ let printFillLayoutRuns
                             let s = fst (formatExcelNumber prefixSection v)
                             if formatted.StartsWith(s, System.StringComparison.Ordinal)
                                && formatted.Length > s.Length && formatted.[s.Length] = fillChar then
+                                Some s
+                            elif droppedTrailingFill && formatted = s then
                                 Some s
                             else None
                         with _ -> None)
@@ -1560,6 +1570,8 @@ let printFillLayoutRuns
                     if formatted.StartsWith(prefix, System.StringComparison.Ordinal)
                        && formatted.Length > prefix.Length && formatted.[prefix.Length] = fillChar then
                         Some prefix
+                    elif droppedTrailingFill && formatted = prefix then
+                        Some prefix
                     elif prefix = "" && formatted.StartsWith("-", System.StringComparison.Ordinal)
                          && formatted.Length > 2 && formatted.[1] = fillChar then
                         Some "-"
@@ -1567,11 +1579,15 @@ let printFillLayoutRuns
                          && formatted.Length > prefix.Length + 1
                          && formatted.[prefix.Length + 1] = fillChar then
                         Some ("-" + prefix)
+                    elif droppedTrailingFill && formatted = "-" + prefix then
+                        Some ("-" + prefix)
                     else None
                 match prefixText with
                 | None -> None
                 | Some prefix ->
-                    let suffix = formatted.Substring(prefix.Length + 1)
+                    let hasTokenChar =
+                        formatted.Length > prefix.Length && formatted.[prefix.Length] = fillChar
+                    let suffix = if hasTokenChar then formatted.Substring(prefix.Length + 1) else ""
                     let fillWidth = measure (string fillChar)
                     if fillWidth <= 0.0 then
                         None
