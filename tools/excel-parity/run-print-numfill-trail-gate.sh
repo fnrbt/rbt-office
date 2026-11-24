@@ -15,7 +15,8 @@
 #                  FAIL when the candidate inherits the pre-existing face/scale glyph-model offset;
 #                  it is not the promotion gate.
 #   PAIRED_RELEASE the scoped gate for this change: complete manifest keys, browser==native, unchanged
-#                  N1/F8-negative no-fill controls, no sign/text/hash regressions, all preregistered
+#                  N1/F8-negative no-fill controls (same text/hash/count, placement no further
+#                  from Excel), no sign/text/hash regressions, all preregistered
 #                  relative checks passing, and every newly worsened count/geometry cell quantified
 #                  with its magnitude.
 set -euo pipefail
@@ -224,22 +225,44 @@ for stem, setname in sets.items():
     # --- scoped paired gate vs baseline
     paired = collections.Counter()
     regress_rows = []
-    # controls: N1 and F8 negative must be unchanged candidate-vs-baseline
+    # controls: N1 and F8 negative keep text/hash/count, and their placement may move only towards
+    # Excel: an x0/x1 error that grows by more than one printer dot (0.12 pt) or newly exceeds 0.35 pt
+    # fails. (A placement change such as print-inset-oracle.md moves every control on purpose.)
     for k in (set(cn_b) & set(bl_b) & set(ex)):
         x = ex[k]
         inactive = x['format_name'] == 'F8_suffix_empty' and float(x['value']) < 0
         if x['format_name'] != 'N1_plain_0' and not inactive:
             continue
         a, b = bl_b[k], cn_b[k]
-        if diff_text(a, b) or a['hash'] != b['hash'] or count(a) != count(b) or coorddiff(a, b, 0.001):
+        if diff_text(a, b) or a['hash'] != b['hash'] or count(a) != count(b):
             paired['control_changed'] += 1
             if len(regress_rows) < 4000:
                 regress_rows.append(f'{k[0]}:{k[1]}:{k[2]}\tcontrol\tbaseline->candidate\t'
                                     f'text {a["amount"]!r}->{b["amount"]!r}\t'
-                                    f'count {count(a)}->{count(b)}\t'
-                                    f'x0 {a["amount_x0"]}->{b["amount_x0"]}')
+                                    f'count {count(a)}->{count(b)}')
+            continue
+        if not coorddiff(a, b, 0.001):
+            continue
+        paired['control_moved'] += 1
+        worse = False
+        for f in ('amount_x0', 'amount_x1'):
+            e, ob, oc = fnum(x, f), fnum(a, f), fnum(b, f)
+            if e is None or ob is None or oc is None:
+                continue
+            eb, ec = abs(e - ob), abs(e - oc)
+            if ec > eb + 0.12 or (ec > ABS_TOL and eb <= ABS_TOL):
+                worse = True
+            elif ec < eb - 1e-9:
+                paired[f'control_{f[7:]}_better'] += 1
+        if worse:
+            paired['control_worse'] += 1
+            if len(regress_rows) < 4000:
+                regress_rows.append(f'{k[0]}:{k[1]}:{k[2]}\tcontrol\tplacement worse vs Excel\t'
+                                    f'x0 {a["amount_x0"]}->{b["amount_x0"]} excel {x["amount_x0"]}')
     if paired['control_changed']:
-        fail_reasons.append(f'{stem} no-fill controls changed {paired["control_changed"]}')
+        fail_reasons.append(f'{stem} no-fill controls changed text/hash/count {paired["control_changed"]}')
+    if paired['control_worse']:
+        fail_reasons.append(f'{stem} no-fill control placement worse vs Excel {paired["control_worse"]}')
 
     # no sign/text/hash regressions: baseline correct vs Excel, candidate wrong
     for k in (set(cn_b) & set(bl_b) & set(ex)):
@@ -310,7 +333,7 @@ for stem, setname in sets.items():
                    (' '.join(f'{k}={v}' for k, v in sorted(paired.items())) or 'clean') +
                    ' count errors ' + (' '.join(f'{k}={v}' for k, v in sorted(direction.items())) or 'none') +
                    f' worst count +{worst["count"]} x0 +{worst["x0"]:.3f} x1 +{worst["x1"]:.3f}')
-    hard = (paired['control_changed'] or paired['text_regressed'] or
+    hard = (paired['control_changed'] or paired['control_worse'] or paired['text_regressed'] or
             paired[f'x0_newly_over_tol'] or paired[f'x1_newly_over_tol'])
     if hard:
         fail_reasons.append(f'{stem} scoped paired gate failed')

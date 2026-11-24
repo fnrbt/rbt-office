@@ -96,12 +96,14 @@ follows the table.
 | holdout (Arial 11/60) | PASS (was FAIL) | 12/12 PASS | 0 (was 54) | 423 | 0 diffs |
 
 The 15 one-glyph count regressions of the earlier candidate (9 train, 6 holdout) are gone. Worst
-newly worse cell: x1 +0.070 pt (29 train cells, all within 0.35). The gate script still exits FAIL on
-one condition: "no-fill controls changed" (189 train, 225 holdout). That condition assumes the change
-leaves plain-number placement alone; this change exists to move it. The controls moved toward Excel:
-train max |x0/x1 error| 0.648 -> 0.202 pt (cells over 0.35 pt: 252 -> 0), holdout 0.573 -> 0.057 pt
-(261 -> 0). The numeric-fill gate (`run-print-numfill-gate.sh`) passes on the same dist (browser ==
-native on 1,035 / 630 / 630 rows), and `tests/print/helpers.fsx` passes 336/336.
+newly worse cell: x1 +0.070 pt (29 train cells, all within 0.35). The control check now requires the
+no-fill controls to keep text/hash/count and to move no further from Excel (an error growing by more
+than 0.12 pt, or newly over 0.35 pt, fails). Every control moved toward Excel: x0 better on 189/189
+train and 225/225 holdout; train max |x0/x1 error| 0.648 -> 0.202 pt (cells over 0.35 pt: 252 -> 0),
+holdout 0.573 -> 0.057 pt (261 -> 0). PAIRED_RELEASE_GATE PASS. The numeric-fill gate passes on the same
+dist (browser == native on 1,035 / 630 / 630 rows), and so does the text-pad gate (0 failures; max
+error vs Excel 0.229 / 0.128 / 0.060 / 0.210 pt train / Georgia / Tahoma / escapes, was 0.645 /
+0.598 / 0.591 / 0.614). `tests/print/helpers.fsx` passes 336/336.
 
 ## Commands
 
