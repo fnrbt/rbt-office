@@ -52,10 +52,33 @@ every face:
 | Calibri 11 / 100 % | Excel amount width | [0.240, 0.330] |
 
 With Excel's measured number width, one global constant `c in [0.25, 0.32]` gives **0 count failures
-on all 1016 fill cells** (3 faces x 4 weights); `c = 0.24` is the sharp lower edge and misses 16 cells
-only by boundary rounding. With the predicted number width no single constant works (best 4/1016 at
-0.32-0.36, 32/1016 at 0.24-0.26): the face-dependent predicted text width, not the fill boundary, is
-the blocker.
+on all 1080 fill cells** (3 faces x 4 weights x 90 fill cells per face); `c = 0.24` is the sharp lower
+edge and misses 20 cells only by boundary rounding. With the predicted number width no single constant
+works (best 8/1080 at 0.32-0.36, 40/1080 at 0.24-0.26): the face-dependent predicted text width, not
+the fill boundary, is the blocker.
+
+Key sets are complete: 1728 measured cells per face (12 sheets x 12 rows x 12 widths). At 100 % the
+last width column paginates horizontally; the measurement carries page-0 row labels to later pages by
+their identical row y positions, so no cell is silently dropped.
+
+Completeness is mandatory, not advisory: after extraction `measure-print-border-fill.py` compares the
+written `(sheet, row, width)` counters with the manifest and exits 1 on any missing, extra or duplicate
+key, printing the counts and up to ten examples. `verify-print-border-fill-keys.py` reuses the same
+gate on a stored measured TSV. Exercised on 2026-11-24:
+
+```
+full extraction (each face) -> keys expected 1728 measured 1728 missing 0 extra 0 duplicate 0 PASS, rc=0
+throwaway, 11.25 column rows dropped (paginated page) -> expected 1728 / measured 1584 / missing 144, FAIL rc=1
+throwaway manifest expecting width 99 -> extraction FAIL missing 144, rc=1
+throwaway duplicated row -> duplicate 1, FAIL rc=1
+```
+
+Verification command:
+
+```
+python3 tools/excel-parity/verify-print-border-fill-keys.py \
+  tools/excel-parity/print-border-fill-<face>-cells.tsv /var/tmp/numfill-oracle/border-<face>-measured.tsv
+```
 
 ## Verdicts
 
