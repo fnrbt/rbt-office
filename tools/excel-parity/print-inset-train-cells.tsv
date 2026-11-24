@@ -1,0 +1,289 @@
+sheet	index	row	label	scale	align	face	size	kind	value	widths
+P60_left	1	2	r002	60	left	Aptos Narrow	9	pos	1234.5	14,18
+P60_left	1	3	r003	60	left	Aptos Narrow	9	neg	-1234.5	14,18
+P60_left	1	4	r004	60	left	Aptos Narrow	9	zero	0	14,18
+P60_left	1	5	r005	60	left	Aptos Narrow	9	text	1234.50	14,18
+P60_left	1	6	r006	60	left	Aptos Narrow	11	pos	1234.5	14,18
+P60_left	1	7	r007	60	left	Aptos Narrow	11	neg	-1234.5	14,18
+P60_left	1	8	r008	60	left	Aptos Narrow	11	zero	0	14,18
+P60_left	1	9	r009	60	left	Aptos Narrow	11	text	1234.50	14,18
+P60_left	1	10	r010	60	left	Aptos Narrow	14	pos	1234.5	14,18
+P60_left	1	11	r011	60	left	Aptos Narrow	14	neg	-1234.5	14,18
+P60_left	1	12	r012	60	left	Aptos Narrow	14	zero	0	14,18
+P60_left	1	13	r013	60	left	Aptos Narrow	14	text	1234.50	14,18
+P60_left	1	14	r014	60	left	Arial	9	pos	1234.5	14,18
+P60_left	1	15	r015	60	left	Arial	9	neg	-1234.5	14,18
+P60_left	1	16	r016	60	left	Arial	9	zero	0	14,18
+P60_left	1	17	r017	60	left	Arial	9	text	1234.50	14,18
+P60_left	1	18	r018	60	left	Arial	11	pos	1234.5	14,18
+P60_left	1	19	r019	60	left	Arial	11	neg	-1234.5	14,18
+P60_left	1	20	r020	60	left	Arial	11	zero	0	14,18
+P60_left	1	21	r021	60	left	Arial	11	text	1234.50	14,18
+P60_left	1	22	r022	60	left	Arial	14	pos	1234.5	14,18
+P60_left	1	23	r023	60	left	Arial	14	neg	-1234.5	14,18
+P60_left	1	24	r024	60	left	Arial	14	zero	0	14,18
+P60_left	1	25	r025	60	left	Arial	14	text	1234.50	14,18
+P60_left	1	26	r026	60	left	Calibri	9	pos	1234.5	14,18
+P60_left	1	27	r027	60	left	Calibri	9	neg	-1234.5	14,18
+P60_left	1	28	r028	60	left	Calibri	9	zero	0	14,18
+P60_left	1	29	r029	60	left	Calibri	9	text	1234.50	14,18
+P60_left	1	30	r030	60	left	Calibri	11	pos	1234.5	14,18
+P60_left	1	31	r031	60	left	Calibri	11	neg	-1234.5	14,18
+P60_left	1	32	r032	60	left	Calibri	11	zero	0	14,18
+P60_left	1	33	r033	60	left	Calibri	11	text	1234.50	14,18
+P60_left	1	34	r034	60	left	Calibri	14	pos	1234.5	14,18
+P60_left	1	35	r035	60	left	Calibri	14	neg	-1234.5	14,18
+P60_left	1	36	r036	60	left	Calibri	14	zero	0	14,18
+P60_left	1	37	r037	60	left	Calibri	14	text	1234.50	14,18
+P60_left	1	38	r038	60	left	Georgia	9	pos	1234.5	14,18
+P60_left	1	39	r039	60	left	Georgia	9	neg	-1234.5	14,18
+P60_left	1	40	r040	60	left	Georgia	9	zero	0	14,18
+P60_left	1	41	r041	60	left	Georgia	9	text	1234.50	14,18
+P60_left	1	42	r042	60	left	Georgia	11	pos	1234.5	14,18
+P60_left	1	43	r043	60	left	Georgia	11	neg	-1234.5	14,18
+P60_left	1	44	r044	60	left	Georgia	11	zero	0	14,18
+P60_left	1	45	r045	60	left	Georgia	11	text	1234.50	14,18
+P60_left	1	46	r046	60	left	Georgia	14	pos	1234.5	14,18
+P60_left	1	47	r047	60	left	Georgia	14	neg	-1234.5	14,18
+P60_left	1	48	r048	60	left	Georgia	14	zero	0	14,18
+P60_left	1	49	r049	60	left	Georgia	14	text	1234.50	14,18
+P60_center	2	2	r002	60	center	Aptos Narrow	9	pos	1234.5	14,18
+P60_center	2	3	r003	60	center	Aptos Narrow	9	neg	-1234.5	14,18
+P60_center	2	4	r004	60	center	Aptos Narrow	9	zero	0	14,18
+P60_center	2	5	r005	60	center	Aptos Narrow	9	text	1234.50	14,18
+P60_center	2	6	r006	60	center	Aptos Narrow	11	pos	1234.5	14,18
+P60_center	2	7	r007	60	center	Aptos Narrow	11	neg	-1234.5	14,18
+P60_center	2	8	r008	60	center	Aptos Narrow	11	zero	0	14,18
+P60_center	2	9	r009	60	center	Aptos Narrow	11	text	1234.50	14,18
+P60_center	2	10	r010	60	center	Aptos Narrow	14	pos	1234.5	14,18
+P60_center	2	11	r011	60	center	Aptos Narrow	14	neg	-1234.5	14,18
+P60_center	2	12	r012	60	center	Aptos Narrow	14	zero	0	14,18
+P60_center	2	13	r013	60	center	Aptos Narrow	14	text	1234.50	14,18
+P60_center	2	14	r014	60	center	Arial	9	pos	1234.5	14,18
+P60_center	2	15	r015	60	center	Arial	9	neg	-1234.5	14,18
+P60_center	2	16	r016	60	center	Arial	9	zero	0	14,18
+P60_center	2	17	r017	60	center	Arial	9	text	1234.50	14,18
+P60_center	2	18	r018	60	center	Arial	11	pos	1234.5	14,18
+P60_center	2	19	r019	60	center	Arial	11	neg	-1234.5	14,18
+P60_center	2	20	r020	60	center	Arial	11	zero	0	14,18
+P60_center	2	21	r021	60	center	Arial	11	text	1234.50	14,18
+P60_center	2	22	r022	60	center	Arial	14	pos	1234.5	14,18
+P60_center	2	23	r023	60	center	Arial	14	neg	-1234.5	14,18
+P60_center	2	24	r024	60	center	Arial	14	zero	0	14,18
+P60_center	2	25	r025	60	center	Arial	14	text	1234.50	14,18
+P60_center	2	26	r026	60	center	Calibri	9	pos	1234.5	14,18
+P60_center	2	27	r027	60	center	Calibri	9	neg	-1234.5	14,18
+P60_center	2	28	r028	60	center	Calibri	9	zero	0	14,18
+P60_center	2	29	r029	60	center	Calibri	9	text	1234.50	14,18
+P60_center	2	30	r030	60	center	Calibri	11	pos	1234.5	14,18
+P60_center	2	31	r031	60	center	Calibri	11	neg	-1234.5	14,18
+P60_center	2	32	r032	60	center	Calibri	11	zero	0	14,18
+P60_center	2	33	r033	60	center	Calibri	11	text	1234.50	14,18
+P60_center	2	34	r034	60	center	Calibri	14	pos	1234.5	14,18
+P60_center	2	35	r035	60	center	Calibri	14	neg	-1234.5	14,18
+P60_center	2	36	r036	60	center	Calibri	14	zero	0	14,18
+P60_center	2	37	r037	60	center	Calibri	14	text	1234.50	14,18
+P60_center	2	38	r038	60	center	Georgia	9	pos	1234.5	14,18
+P60_center	2	39	r039	60	center	Georgia	9	neg	-1234.5	14,18
+P60_center	2	40	r040	60	center	Georgia	9	zero	0	14,18
+P60_center	2	41	r041	60	center	Georgia	9	text	1234.50	14,18
+P60_center	2	42	r042	60	center	Georgia	11	pos	1234.5	14,18
+P60_center	2	43	r043	60	center	Georgia	11	neg	-1234.5	14,18
+P60_center	2	44	r044	60	center	Georgia	11	zero	0	14,18
+P60_center	2	45	r045	60	center	Georgia	11	text	1234.50	14,18
+P60_center	2	46	r046	60	center	Georgia	14	pos	1234.5	14,18
+P60_center	2	47	r047	60	center	Georgia	14	neg	-1234.5	14,18
+P60_center	2	48	r048	60	center	Georgia	14	zero	0	14,18
+P60_center	2	49	r049	60	center	Georgia	14	text	1234.50	14,18
+P60_right	3	2	r002	60	right	Aptos Narrow	9	pos	1234.5	14,18
+P60_right	3	3	r003	60	right	Aptos Narrow	9	neg	-1234.5	14,18
+P60_right	3	4	r004	60	right	Aptos Narrow	9	zero	0	14,18
+P60_right	3	5	r005	60	right	Aptos Narrow	9	text	1234.50	14,18
+P60_right	3	6	r006	60	right	Aptos Narrow	11	pos	1234.5	14,18
+P60_right	3	7	r007	60	right	Aptos Narrow	11	neg	-1234.5	14,18
+P60_right	3	8	r008	60	right	Aptos Narrow	11	zero	0	14,18
+P60_right	3	9	r009	60	right	Aptos Narrow	11	text	1234.50	14,18
+P60_right	3	10	r010	60	right	Aptos Narrow	14	pos	1234.5	14,18
+P60_right	3	11	r011	60	right	Aptos Narrow	14	neg	-1234.5	14,18
+P60_right	3	12	r012	60	right	Aptos Narrow	14	zero	0	14,18
+P60_right	3	13	r013	60	right	Aptos Narrow	14	text	1234.50	14,18
+P60_right	3	14	r014	60	right	Arial	9	pos	1234.5	14,18
+P60_right	3	15	r015	60	right	Arial	9	neg	-1234.5	14,18
+P60_right	3	16	r016	60	right	Arial	9	zero	0	14,18
+P60_right	3	17	r017	60	right	Arial	9	text	1234.50	14,18
+P60_right	3	18	r018	60	right	Arial	11	pos	1234.5	14,18
+P60_right	3	19	r019	60	right	Arial	11	neg	-1234.5	14,18
+P60_right	3	20	r020	60	right	Arial	11	zero	0	14,18
+P60_right	3	21	r021	60	right	Arial	11	text	1234.50	14,18
+P60_right	3	22	r022	60	right	Arial	14	pos	1234.5	14,18
+P60_right	3	23	r023	60	right	Arial	14	neg	-1234.5	14,18
+P60_right	3	24	r024	60	right	Arial	14	zero	0	14,18
+P60_right	3	25	r025	60	right	Arial	14	text	1234.50	14,18
+P60_right	3	26	r026	60	right	Calibri	9	pos	1234.5	14,18
+P60_right	3	27	r027	60	right	Calibri	9	neg	-1234.5	14,18
+P60_right	3	28	r028	60	right	Calibri	9	zero	0	14,18
+P60_right	3	29	r029	60	right	Calibri	9	text	1234.50	14,18
+P60_right	3	30	r030	60	right	Calibri	11	pos	1234.5	14,18
+P60_right	3	31	r031	60	right	Calibri	11	neg	-1234.5	14,18
+P60_right	3	32	r032	60	right	Calibri	11	zero	0	14,18
+P60_right	3	33	r033	60	right	Calibri	11	text	1234.50	14,18
+P60_right	3	34	r034	60	right	Calibri	14	pos	1234.5	14,18
+P60_right	3	35	r035	60	right	Calibri	14	neg	-1234.5	14,18
+P60_right	3	36	r036	60	right	Calibri	14	zero	0	14,18
+P60_right	3	37	r037	60	right	Calibri	14	text	1234.50	14,18
+P60_right	3	38	r038	60	right	Georgia	9	pos	1234.5	14,18
+P60_right	3	39	r039	60	right	Georgia	9	neg	-1234.5	14,18
+P60_right	3	40	r040	60	right	Georgia	9	zero	0	14,18
+P60_right	3	41	r041	60	right	Georgia	9	text	1234.50	14,18
+P60_right	3	42	r042	60	right	Georgia	11	pos	1234.5	14,18
+P60_right	3	43	r043	60	right	Georgia	11	neg	-1234.5	14,18
+P60_right	3	44	r044	60	right	Georgia	11	zero	0	14,18
+P60_right	3	45	r045	60	right	Georgia	11	text	1234.50	14,18
+P60_right	3	46	r046	60	right	Georgia	14	pos	1234.5	14,18
+P60_right	3	47	r047	60	right	Georgia	14	neg	-1234.5	14,18
+P60_right	3	48	r048	60	right	Georgia	14	zero	0	14,18
+P60_right	3	49	r049	60	right	Georgia	14	text	1234.50	14,18
+P100_left	4	2	r002	100	left	Aptos Narrow	9	pos	1234.5	14,18
+P100_left	4	3	r003	100	left	Aptos Narrow	9	neg	-1234.5	14,18
+P100_left	4	4	r004	100	left	Aptos Narrow	9	zero	0	14,18
+P100_left	4	5	r005	100	left	Aptos Narrow	9	text	1234.50	14,18
+P100_left	4	6	r006	100	left	Aptos Narrow	11	pos	1234.5	14,18
+P100_left	4	7	r007	100	left	Aptos Narrow	11	neg	-1234.5	14,18
+P100_left	4	8	r008	100	left	Aptos Narrow	11	zero	0	14,18
+P100_left	4	9	r009	100	left	Aptos Narrow	11	text	1234.50	14,18
+P100_left	4	10	r010	100	left	Aptos Narrow	14	pos	1234.5	14,18
+P100_left	4	11	r011	100	left	Aptos Narrow	14	neg	-1234.5	14,18
+P100_left	4	12	r012	100	left	Aptos Narrow	14	zero	0	14,18
+P100_left	4	13	r013	100	left	Aptos Narrow	14	text	1234.50	14,18
+P100_left	4	14	r014	100	left	Arial	9	pos	1234.5	14,18
+P100_left	4	15	r015	100	left	Arial	9	neg	-1234.5	14,18
+P100_left	4	16	r016	100	left	Arial	9	zero	0	14,18
+P100_left	4	17	r017	100	left	Arial	9	text	1234.50	14,18
+P100_left	4	18	r018	100	left	Arial	11	pos	1234.5	14,18
+P100_left	4	19	r019	100	left	Arial	11	neg	-1234.5	14,18
+P100_left	4	20	r020	100	left	Arial	11	zero	0	14,18
+P100_left	4	21	r021	100	left	Arial	11	text	1234.50	14,18
+P100_left	4	22	r022	100	left	Arial	14	pos	1234.5	14,18
+P100_left	4	23	r023	100	left	Arial	14	neg	-1234.5	14,18
+P100_left	4	24	r024	100	left	Arial	14	zero	0	14,18
+P100_left	4	25	r025	100	left	Arial	14	text	1234.50	14,18
+P100_left	4	26	r026	100	left	Calibri	9	pos	1234.5	14,18
+P100_left	4	27	r027	100	left	Calibri	9	neg	-1234.5	14,18
+P100_left	4	28	r028	100	left	Calibri	9	zero	0	14,18
+P100_left	4	29	r029	100	left	Calibri	9	text	1234.50	14,18
+P100_left	4	30	r030	100	left	Calibri	11	pos	1234.5	14,18
+P100_left	4	31	r031	100	left	Calibri	11	neg	-1234.5	14,18
+P100_left	4	32	r032	100	left	Calibri	11	zero	0	14,18
+P100_left	4	33	r033	100	left	Calibri	11	text	1234.50	14,18
+P100_left	4	34	r034	100	left	Calibri	14	pos	1234.5	14,18
+P100_left	4	35	r035	100	left	Calibri	14	neg	-1234.5	14,18
+P100_left	4	36	r036	100	left	Calibri	14	zero	0	14,18
+P100_left	4	37	r037	100	left	Calibri	14	text	1234.50	14,18
+P100_left	4	38	r038	100	left	Georgia	9	pos	1234.5	14,18
+P100_left	4	39	r039	100	left	Georgia	9	neg	-1234.5	14,18
+P100_left	4	40	r040	100	left	Georgia	9	zero	0	14,18
+P100_left	4	41	r041	100	left	Georgia	9	text	1234.50	14,18
+P100_left	4	42	r042	100	left	Georgia	11	pos	1234.5	14,18
+P100_left	4	43	r043	100	left	Georgia	11	neg	-1234.5	14,18
+P100_left	4	44	r044	100	left	Georgia	11	zero	0	14,18
+P100_left	4	45	r045	100	left	Georgia	11	text	1234.50	14,18
+P100_left	4	46	r046	100	left	Georgia	14	pos	1234.5	14,18
+P100_left	4	47	r047	100	left	Georgia	14	neg	-1234.5	14,18
+P100_left	4	48	r048	100	left	Georgia	14	zero	0	14,18
+P100_left	4	49	r049	100	left	Georgia	14	text	1234.50	14,18
+P100_center	5	2	r002	100	center	Aptos Narrow	9	pos	1234.5	14,18
+P100_center	5	3	r003	100	center	Aptos Narrow	9	neg	-1234.5	14,18
+P100_center	5	4	r004	100	center	Aptos Narrow	9	zero	0	14,18
+P100_center	5	5	r005	100	center	Aptos Narrow	9	text	1234.50	14,18
+P100_center	5	6	r006	100	center	Aptos Narrow	11	pos	1234.5	14,18
+P100_center	5	7	r007	100	center	Aptos Narrow	11	neg	-1234.5	14,18
+P100_center	5	8	r008	100	center	Aptos Narrow	11	zero	0	14,18
+P100_center	5	9	r009	100	center	Aptos Narrow	11	text	1234.50	14,18
+P100_center	5	10	r010	100	center	Aptos Narrow	14	pos	1234.5	14,18
+P100_center	5	11	r011	100	center	Aptos Narrow	14	neg	-1234.5	14,18
+P100_center	5	12	r012	100	center	Aptos Narrow	14	zero	0	14,18
+P100_center	5	13	r013	100	center	Aptos Narrow	14	text	1234.50	14,18
+P100_center	5	14	r014	100	center	Arial	9	pos	1234.5	14,18
+P100_center	5	15	r015	100	center	Arial	9	neg	-1234.5	14,18
+P100_center	5	16	r016	100	center	Arial	9	zero	0	14,18
+P100_center	5	17	r017	100	center	Arial	9	text	1234.50	14,18
+P100_center	5	18	r018	100	center	Arial	11	pos	1234.5	14,18
+P100_center	5	19	r019	100	center	Arial	11	neg	-1234.5	14,18
+P100_center	5	20	r020	100	center	Arial	11	zero	0	14,18
+P100_center	5	21	r021	100	center	Arial	11	text	1234.50	14,18
+P100_center	5	22	r022	100	center	Arial	14	pos	1234.5	14,18
+P100_center	5	23	r023	100	center	Arial	14	neg	-1234.5	14,18
+P100_center	5	24	r024	100	center	Arial	14	zero	0	14,18
+P100_center	5	25	r025	100	center	Arial	14	text	1234.50	14,18
+P100_center	5	26	r026	100	center	Calibri	9	pos	1234.5	14,18
+P100_center	5	27	r027	100	center	Calibri	9	neg	-1234.5	14,18
+P100_center	5	28	r028	100	center	Calibri	9	zero	0	14,18
+P100_center	5	29	r029	100	center	Calibri	9	text	1234.50	14,18
+P100_center	5	30	r030	100	center	Calibri	11	pos	1234.5	14,18
+P100_center	5	31	r031	100	center	Calibri	11	neg	-1234.5	14,18
+P100_center	5	32	r032	100	center	Calibri	11	zero	0	14,18
+P100_center	5	33	r033	100	center	Calibri	11	text	1234.50	14,18
+P100_center	5	34	r034	100	center	Calibri	14	pos	1234.5	14,18
+P100_center	5	35	r035	100	center	Calibri	14	neg	-1234.5	14,18
+P100_center	5	36	r036	100	center	Calibri	14	zero	0	14,18
+P100_center	5	37	r037	100	center	Calibri	14	text	1234.50	14,18
+P100_center	5	38	r038	100	center	Georgia	9	pos	1234.5	14,18
+P100_center	5	39	r039	100	center	Georgia	9	neg	-1234.5	14,18
+P100_center	5	40	r040	100	center	Georgia	9	zero	0	14,18
+P100_center	5	41	r041	100	center	Georgia	9	text	1234.50	14,18
+P100_center	5	42	r042	100	center	Georgia	11	pos	1234.5	14,18
+P100_center	5	43	r043	100	center	Georgia	11	neg	-1234.5	14,18
+P100_center	5	44	r044	100	center	Georgia	11	zero	0	14,18
+P100_center	5	45	r045	100	center	Georgia	11	text	1234.50	14,18
+P100_center	5	46	r046	100	center	Georgia	14	pos	1234.5	14,18
+P100_center	5	47	r047	100	center	Georgia	14	neg	-1234.5	14,18
+P100_center	5	48	r048	100	center	Georgia	14	zero	0	14,18
+P100_center	5	49	r049	100	center	Georgia	14	text	1234.50	14,18
+P100_right	6	2	r002	100	right	Aptos Narrow	9	pos	1234.5	14,18
+P100_right	6	3	r003	100	right	Aptos Narrow	9	neg	-1234.5	14,18
+P100_right	6	4	r004	100	right	Aptos Narrow	9	zero	0	14,18
+P100_right	6	5	r005	100	right	Aptos Narrow	9	text	1234.50	14,18
+P100_right	6	6	r006	100	right	Aptos Narrow	11	pos	1234.5	14,18
+P100_right	6	7	r007	100	right	Aptos Narrow	11	neg	-1234.5	14,18
+P100_right	6	8	r008	100	right	Aptos Narrow	11	zero	0	14,18
+P100_right	6	9	r009	100	right	Aptos Narrow	11	text	1234.50	14,18
+P100_right	6	10	r010	100	right	Aptos Narrow	14	pos	1234.5	14,18
+P100_right	6	11	r011	100	right	Aptos Narrow	14	neg	-1234.5	14,18
+P100_right	6	12	r012	100	right	Aptos Narrow	14	zero	0	14,18
+P100_right	6	13	r013	100	right	Aptos Narrow	14	text	1234.50	14,18
+P100_right	6	14	r014	100	right	Arial	9	pos	1234.5	14,18
+P100_right	6	15	r015	100	right	Arial	9	neg	-1234.5	14,18
+P100_right	6	16	r016	100	right	Arial	9	zero	0	14,18
+P100_right	6	17	r017	100	right	Arial	9	text	1234.50	14,18
+P100_right	6	18	r018	100	right	Arial	11	pos	1234.5	14,18
+P100_right	6	19	r019	100	right	Arial	11	neg	-1234.5	14,18
+P100_right	6	20	r020	100	right	Arial	11	zero	0	14,18
+P100_right	6	21	r021	100	right	Arial	11	text	1234.50	14,18
+P100_right	6	22	r022	100	right	Arial	14	pos	1234.5	14,18
+P100_right	6	23	r023	100	right	Arial	14	neg	-1234.5	14,18
+P100_right	6	24	r024	100	right	Arial	14	zero	0	14,18
+P100_right	6	25	r025	100	right	Arial	14	text	1234.50	14,18
+P100_right	6	26	r026	100	right	Calibri	9	pos	1234.5	14,18
+P100_right	6	27	r027	100	right	Calibri	9	neg	-1234.5	14,18
+P100_right	6	28	r028	100	right	Calibri	9	zero	0	14,18
+P100_right	6	29	r029	100	right	Calibri	9	text	1234.50	14,18
+P100_right	6	30	r030	100	right	Calibri	11	pos	1234.5	14,18
+P100_right	6	31	r031	100	right	Calibri	11	neg	-1234.5	14,18
+P100_right	6	32	r032	100	right	Calibri	11	zero	0	14,18
+P100_right	6	33	r033	100	right	Calibri	11	text	1234.50	14,18
+P100_right	6	34	r034	100	right	Calibri	14	pos	1234.5	14,18
+P100_right	6	35	r035	100	right	Calibri	14	neg	-1234.5	14,18
+P100_right	6	36	r036	100	right	Calibri	14	zero	0	14,18
+P100_right	6	37	r037	100	right	Calibri	14	text	1234.50	14,18
+P100_right	6	38	r038	100	right	Georgia	9	pos	1234.5	14,18
+P100_right	6	39	r039	100	right	Georgia	9	neg	-1234.5	14,18
+P100_right	6	40	r040	100	right	Georgia	9	zero	0	14,18
+P100_right	6	41	r041	100	right	Georgia	9	text	1234.50	14,18
+P100_right	6	42	r042	100	right	Georgia	11	pos	1234.5	14,18
+P100_right	6	43	r043	100	right	Georgia	11	neg	-1234.5	14,18
+P100_right	6	44	r044	100	right	Georgia	11	zero	0	14,18
+P100_right	6	45	r045	100	right	Georgia	11	text	1234.50	14,18
+P100_right	6	46	r046	100	right	Georgia	14	pos	1234.5	14,18
+P100_right	6	47	r047	100	right	Georgia	14	neg	-1234.5	14,18
+P100_right	6	48	r048	100	right	Georgia	14	zero	0	14,18
+P100_right	6	49	r049	100	right	Georgia	14	text	1234.50	14,18
