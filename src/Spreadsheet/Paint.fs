@@ -39,6 +39,10 @@ type PaintText = {
     /// The full cell content width (before the text rectangle's 2 x padX inset) that Excel measures the
     /// printed overflow run against. Used only with `PrintOverflowHashes`; 0 means `Rect.Width`.
     PrintHashCellWidth: float
+    /// Print only: a cell's own text, which the PDF right-aligns and centres by the face's hinted 600-dpi advances
+    /// (`ExcelText.printWidthDots`), centred 4 dots right of the middle, as Excel 2019 prints cell text
+    /// (tools/excel-parity/print-inset-oracle.md). False for chart, shape, header and rich-run text.
+    PrintGdiAlign: bool
     /// The run Excel 2019 measures for a printed number's fit (`CellText.printFitRunOf`): its formatted
     /// text without `_x`/`*x` width markers. Empty where the printed fit cutoff does not apply (General
     /// and date formats, text, rich runs, wrapped, rotated or shrink-to-fit cells). Print only.
@@ -384,6 +388,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     PrintOverflowHashes = false
                     PrintHashSlots = 0
                     PrintHashCellWidth = 0.0
+                    PrintGdiAlign = false
                     PrintFitText = ""
                     PrintFitPads = ""
                     PrintFitFullText = ""
@@ -415,6 +420,7 @@ let private buildHeaderPaintItems (model: SpreadsheetModel) (viewport: Viewport)
                     PrintOverflowHashes = false
                     PrintHashSlots = 0
                     PrintHashCellWidth = 0.0
+                    PrintGdiAlign = false
                     PrintFitText = ""
                     PrintFitPads = ""
                     PrintFitFullText = ""
@@ -906,6 +912,16 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 viewport.Measurer
                 |> Option.map (fun m ->
                     fun (s: string) -> m s fontPt format.FontName format.Bold format.Italic)
+            // In print a cell's text stands its own font's pad from the cell's sides (`ExcelText.printCellPadDots`),
+            // whatever the Normal font; a face the tables do not know keeps the Normal font's `printPadXOf`.
+            let family = defaultArg format.FontName model.NormalFontName
+            let dotsToPx (dots: float) = dots * 96.0 / 600.0 / printScale
+            let padX =
+                if printing && printScale > 0.0 then
+                    match ExcelText.printCellPadDots family format.Bold format.Italic fontPt printScale with
+                    | Some dots -> dotsToPx dots
+                    | None -> padX
+                else padX
             // (Its text, number-formatted to fit, "" where a data bar or an icon set hides it: `cellLook`.)
             let displayText = look.Text
             // Cells in a hidden column (0 width) or hidden row (0 height) paint
@@ -953,8 +969,18 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 let printedText =
                     printing
                     && (match unwrapFormulaValue value with CellValue.String _ -> true | _ -> false)
-                let padExtras =
+                // A printed fill layout is counted in Excel's printer widths: each run's hinted 600-dpi advances
+                // (`ExcelText.printWidthDots`; the screen measure where the tables do not know a character).
+                let fillMeasure =
                     match measure with
+                    | Some m when fillLayoutForPrint && printScale > 0.0 ->
+                        Some (fun (s: string) ->
+                            match ExcelText.printWidthDots family format.Bold format.Italic fontPt printScale s with
+                            | Some dots -> dotsToPx dots
+                            | None -> m s)
+                    | other -> other
+                let padExtras =
+                    match fillMeasure with
                     | Some m when not displayHashes || fillLayoutForPrint ->
                         let lead, trail =
                             if printedText then textWidthPads format value
@@ -966,14 +992,17 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                 // The fill layout gets the whole printed content width: both `_x` pad advances reserved.
                 // Excel fits a fill cell on its prefix and suffix, without the fill chars, so a display
                 // Paint hashed for a tight cell prints the number when that run fits (count can then be 0).
+                // Excel's repeat window is 2 dots wider than the text box: count = floor((W - 2P + 2 - w) / a) in
+                // dots on all 4,140 measured fill cells (print-inset-oracle.md, "Fill count").
                 let fillAvailable =
-                    baseRect.Width - 2.0 * padX - iconGutter - leftIndent - rightIndent
+                    baseRect.Width - 2.0 * padX + (if printing && printScale > 0.0 then dotsToPx 2.0 else 0.0)
+                    - iconGutter - leftIndent - rightIndent
                     - (match padExtras with Some (leadExtra, trailExtra) -> leadExtra + trailExtra | None -> 0.0)
                 let fillRuns =
-                    match numericValue, measure, padExtras, format.NumberFormat with
+                    match numericValue, fillMeasure, padExtras, format.NumberFormat with
                     | Some n, Some m, Some (leadExtra, trailExtra), Some code when fillLayoutForPrint ->
                         match (try CellText.printFillLayoutRuns code n rawNumericText m fillAvailable with _ -> None) with
-                        | Some (left, right, fixedWidth) when right <> "" ->
+                        | Some (left, right, fixedWidth) ->
                             // Excel's printed fill fit uses the whole cell width less the print-fit
                             // intercept (`Print fit cutoff`: half a digit + 0.875 pt at the page scale),
                             // with the `_x` pads at their own advances and no fill chars. The helper's
@@ -982,12 +1011,6 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             if fixedWidth + leadExtra + trailExtra + cutoff <= baseRect.Width + 1e-9 then
                                 Some (left, right)
                             else None
-                        // A fill token with nothing after it (`0.00* `) keeps the prior single run: Excel
-                        // places that number exactly as its no-fill twin and only appends the fill chars
-                        // (measured: `0.00* ` amount x equals `0.00` on the left sheet, and centre/right
-                        // follow the aligned text including one fill char). The two-run layout needs a
-                        // suffix to anchor right; without evidence for a non-space suffix it is left out.
-                        | Some _ -> None
                         | None -> None
                     | _ -> None
                 let padLeft, padRight =
@@ -1238,6 +1261,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                                 PrintOverflowHashes = false
                                 PrintHashSlots = 0
                                 PrintHashCellWidth = 0.0
+                                PrintGdiAlign = false
                                 PrintFitText = ""
                                 PrintFitPads = ""
                                 PrintFitFullText = ""
@@ -1272,6 +1296,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             PrintOverflowHashes = false
                             PrintHashSlots = printSlots
                             PrintHashCellWidth = baseRect.Width
+                            PrintGdiAlign = printing
                             PrintFitText = ""
                             PrintFitPads = ""
                             PrintFitFullText = ""
@@ -1288,8 +1313,16 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             Rotation = format.TextRotation
                             Clip = textClip
                         }
-                    if left <> "" then yield zone, runItem left AlignLeft
-                    if right <> "" then yield zone, runItem right AlignRight
+                    if right = "" then
+                        // A suffix-empty section (`0.00* `, `0.00*.`, `0.00*-`): Excel pads the number
+                        // with the fill characters and then places that whole padded string with the
+                        // cell's own alignment. The count is the same left-anchored padding count, so
+                        // count 0 is byte-equal to the no-fill twin and centre/right shift the number
+                        // left by half/whole fill advances respectively. One run, the cell's alignment.
+                        if left <> "" then yield zone, runItem left align
+                    else
+                        if left <> "" then yield zone, runItem left AlignLeft
+                        if right <> "" then yield zone, runItem right AlignRight
                 | _ ->
                     // Plain (or wrapped) cell text — one DrawText per line.
                     for i, line in List.indexed lines do
@@ -1305,6 +1338,7 @@ let private buildCellPaintItems (printOffset: (float * float * float) option) (p
                             PrintOverflowHashes = printing && overflowHashes
                             PrintHashSlots = printSlots
                             PrintHashCellWidth = baseRect.Width
+                            PrintGdiAlign = printing
                             PrintFitText = printFitText
                             PrintFitPads = printFitPads
                             PrintFitFullText = printFitFullText
@@ -1468,6 +1502,7 @@ let drawingFrameItems (rect: Rect) (label: string) : PaintItem list =
           PrintOverflowHashes = false
           PrintHashSlots = 0
           PrintHashCellWidth = 0.0
+          PrintGdiAlign = false
           PrintFitText = ""
           PrintFitPads = ""
           PrintFitFullText = ""
@@ -1542,6 +1577,7 @@ let scenePaintItems (scene: Rbt.Spreadsheet.Charts.Scene) : PaintItem list =
                 PrintOverflowHashes = false
                 PrintHashSlots = 0
                 PrintHashCellWidth = 0.0
+                PrintGdiAlign = false
                 PrintFitText = ""
                 PrintFitPads = ""
                 PrintFitFullText = ""
@@ -1821,6 +1857,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             PrintOverflowHashes = false
                             PrintHashSlots = 0
                             PrintHashCellWidth = 0.0
+                            PrintGdiAlign = false
                             PrintFitText = ""
                             PrintFitPads = ""
                             PrintFitFullText = ""
@@ -1857,6 +1894,7 @@ let buildViewportPaintItemsWithSource (source: Rbt.Spreadsheet.Sparklines.Source
                             PrintOverflowHashes = false
                             PrintHashSlots = 0
                             PrintHashCellWidth = 0.0
+                            PrintGdiAlign = false
                             PrintFitText = ""
                             PrintFitPads = ""
                             PrintFitFullText = ""

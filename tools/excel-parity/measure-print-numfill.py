@@ -234,9 +234,10 @@ def parse_pdf(path):
             cm = re.search(rb'/Contents\s*\[(.*?)\]', pb, re.S)
             cids = [int(x) for x in re.findall(rb'(\d+) 0 R', cm.group(1))] if cm else []
         content = '\n'.join(stream_of(objs.get(c, b'')).decode('latin1') for c in cids)
-        runs, segs, rects, pending = [], [], [], []
+        runs, segs, rects, pending, ssegs = [], [], [], [], []
         font = None; fs = 0.0; tm = (1, 0, 0, 1, 0, 0); charsp = 0.0; wordsp = 0.0
         cur_m = None
+        line_w = 1.0; line_w_stack = []; path = []
         for line in content.split('\n'):
             line = line.strip()
             if not line:
@@ -250,6 +251,13 @@ def parse_pdf(path):
                 continue
             if op == 'Tf' and len(args) >= 2:
                 font = fonts.get(args[-2].lstrip('/')); fs = float(args[-1])
+            elif op == 'q':
+                line_w_stack.append(line_w)
+            elif op == 'Q':
+                line_w = line_w_stack.pop() if line_w_stack else line_w
+            elif op == 'w' and args:
+                try: line_w = float(args[-1])
+                except ValueError: pass
             elif op == 'Tc' and args:
                 try: charsp = float(args[-1])
                 except ValueError: pass
@@ -268,13 +276,23 @@ def parse_pdf(path):
             elif op in ('n', 'W', 'W*'):
                 pending = []
             elif op == 'm' and len(args) >= 2:
-                try: cur_m = (float(args[-2]), float(args[-1]))
-                except ValueError: cur_m = None
+                try:
+                    cur_m = (float(args[-2]), float(args[-1]))
+                    path = [cur_m]
+                except ValueError:
+                    cur_m = None; path = []
             elif op == 'l' and len(args) >= 2 and cur_m is not None:
                 try:
-                    segs.append((cur_m[0], cur_m[1], float(args[-2]), float(args[-1])))
+                    p = (float(args[-2]), float(args[-1]))
+                    segs.append((cur_m[0], cur_m[1], p[0], p[1]))
+                    path.append(p)
+                    cur_m = p
                 except ValueError:
                     pass
+            elif op in ('S', 's'):
+                for a, b in zip(path, path[1:]):
+                    ssegs.append((a[0], a[1], b[0], b[1], line_w))
+                path = []
             elif op in ('TJ', 'Tj'):
                 if op == 'Tj':
                     pieces = [next((a for a in reversed(args) if a.startswith(('(', '<'))), args[-1])]
@@ -295,7 +313,8 @@ def parse_pdf(path):
                         except ValueError: pass
                 runs.append({'x': start, 'y': tm[5], 'end': x, 'text': text,
                              'chars': chars, 'font': font['base'] if font else '?', 'size': fs})
-        result.append({'page': pn, 'runs': runs, 'segs': segs, 'rects': rects})
+        result.append({'page': pn, 'runs': runs, 'segs': segs, 'rects': rects,
+                       'ssegs': ssegs})
     return result
 
 
@@ -408,19 +427,47 @@ def find_dollar(rs):
 
 
 def fill_counts(rs, amount, fill_char):
+    """Count fill glyphs before/after the amount in emitted text order.
+
+    Glyph origins need not sit inside the previous glyph's advance box: Excel's first trailing fill
+    glyph commonly starts a few hundredths of a point before the number's /Widths advance end (and
+    the last one may overlap the next glyph's origin). An x threshold therefore drops that glyph and
+    undercounts by one. The emitted text order is unambiguous: amount match first, fill chars after.
+    """
     if not fill_char or amount is None:
         return 0, 0
-    _, ax0, ax1, _ = amount
-    before = after = 0
-    for r in rs:
-        for ch, a, b in r['chars']:
-            if ch != fill_char:
-                continue
-            if a < ax0 - 0.05:
-                before += 1
-            elif a >= ax1 - 0.05:
-                after += 1
-    return before, after
+    amount = amount[0]
+    if not amount:
+        return 0, 0
+    text = ''.join(r['text'] for r in rs)
+    i = text.find(amount)
+    if i < 0:
+        return 0, 0
+    return text.count(fill_char, 0, i), text.count(fill_char, i + len(amount))
+
+
+def fill_step(rs, amount, fill_char):
+    """Median origin-to-origin advance of the trailing fill glyphs, else one glyph advance."""
+    if not fill_char or amount is None:
+        return None
+    amount = amount[0]
+    if not amount:
+        return None
+    text = ''.join(r['text'] for r in rs)
+    i = text.find(amount)
+    if i < 0:
+        return None
+    flat = [(ch, a, b) for r in rs for ch, a, b in r['chars']]
+    ordered = flat
+    start = i + len(amount)
+    tail = [b - a for ch, a, b in ordered[start:] if ch == fill_char]
+    if not tail:
+        return None
+    origins = [a for ch, a, b in ordered[start:] if ch == fill_char]
+    steps = sorted(round(y - x, 4) for x, y in zip(origins, origins[1:]) if y - x > 0.01)
+    if steps:
+        return steps[len(steps) // 2]
+    return round(tail[0], 4)
 
 
 def measure_side(pdfs, cells):
@@ -484,6 +531,8 @@ def measure_side(pdfs, cells):
                     dx0, dx1 = find_dollar(rs)
                     fill = next((c[7] for c in want if c[1] == row and c[2] == wlabel), '')
                     fb, fa = fill_counts(rs, (amount, ax0, ax1, _) if amount else None, fill)
+                    fstep = fill_step(rs, (amount, ax0, ax1, _) if amount else None, fill)
+                    composite = max((b for r in rs for _, _, b in r['chars']), default=None)
                     measured[(sheet, row, wlabel)] = {
                         'cell_left': left, 'cell_right': right, 'text': text,
                         'hash': bool(amount is None and '#' in text),
@@ -493,6 +542,7 @@ def measure_side(pdfs, cells):
                         'dollar': '$' if dx0 is not None else '', 'dollar_x0': dx0, 'dollar_x1': dx1,
                         'dollar_gap_left': None if dx0 is None else dx0 - left,
                         'fill_char': fill or '', 'fill_before': fb, 'fill_after': fa,
+                        'composite_x1': composite, 'fill_adv': fstep,
                     }
     return measured
 
@@ -518,11 +568,13 @@ def main():
                              active_fill(code, float(value))))
     pdfs = read_pdf_table(excel_tsv)
     excel = measure_side([(s, i, os.path.join(excel_dir, name)) for s, i, name in pdfs], manifest)
-    ours = measure_side([(s, i, os.path.join(ours_dir, f'ours-{i}.pdf')) for s, i, _ in pdfs], manifest)
+    ours_paths = [(s, i, os.path.join(ours_dir, f'ours-{i}.pdf')) for s, i, _ in pdfs]
+    ours = measure_side([p for p in ours_paths if os.path.exists(p[2])], manifest)
     with open(out_path, 'w', encoding='utf-8') as f:
         f.write('sheet\tindex\trow\twidth\tformat_name\tformat\tvalue\talign\tside\tcell_left\tcell_right\t'
                 'text\thash\tamount\tamount_x0\tamount_x1\tamount_gap_left\tamount_gap_right\t'
-                'dollar\tdollar_x0\tdollar_x1\tdollar_gap_left\tfill_char\tfill_before\tfill_after\n')
+                'dollar\tdollar_x0\tdollar_x1\tdollar_gap_left\tfill_char\tfill_before\tfill_after\t'
+                'composite_x1\tfill_adv\n')
         for sheet, index, _ in pdfs:
             for c in [x for x in manifest if x[0] == sheet]:
                 sname, row, width, fname, code, value, align, fill = c
@@ -538,7 +590,8 @@ def main():
                         m['amount'], fmt(m['amount_x0']), fmt(m['amount_x1']),
                         fmt(m['amount_gap_left']), fmt(m['amount_gap_right']),
                         m['dollar'], fmt(m['dollar_x0']), fmt(m['dollar_x1']), fmt(m['dollar_gap_left']),
-                        m['fill_char'], m['fill_before'], m['fill_after']])) + '\n')
+                        m['fill_char'], m['fill_before'], m['fill_after'],
+                        fmt(m['composite_x1']), fmt(m['fill_adv'])])) + '\n')
     print(out_path)
 
 

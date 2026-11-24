@@ -1,0 +1,40 @@
+# Preregistered trailing-fill print predictions (TrailingTruth), locked before the fresh Arial 60% export.
+# Fixture: tools/excel-parity/make-print-numfill-fixture.py --set trail-holdout
+#   workbook tests/test-documents-excel/synthetic-print-numfill-trail-holdout.xlsx
+#   manifest tools/excel-parity/print-numfill-trail-holdout-cells.tsv
+#   face/scale Arial 11 pt at 60 % (fresh face and fresh print scale; training used Aptos Narrow 14 at 100 %)
+# Formats: N1 `0.00` control, S2 `0.00* ` (space suffix), D2 `0.00*.` (dot suffix),
+#          F8 `0.00*-;0.00` (dash suffix on positive/zero; second section `0.00` on negative).
+# Widths 5.5..12.0 in 0.25-char steps, four bands, left/centre/right sheets, values +1234.5/-1234.5/0.
+# Measurement: measure-print-numfill.py content-stream Tm/TJ positions. Fill counts are counted in
+# emitted text order after the matched amount, so a first fill glyph whose origin sits a few
+# hundredths before the number's /Widths advance end is still counted (the old x-threshold count
+# dropped it: 8 emitted spaces were counted as 7). Cell edges are printed border centrelines.
+#
+# Training truth (Aptos Narrow 14 / 100 %, direct Excel 2019, /var/tmp/numfill-oracle/trail-train):
+#   972 cells measured, 0 monotonicity/step violations, 0 hash-vs-control mismatches, 0 sign mismatches.
+#   Left: amount x0/x1 identical to the N1 twin for every fill count (max delta 0.000 pt).
+#   Centre: (N1_x0 - x0) - N*a/2 in [-0.025, +0.098] pt; right: (N1_x0 - x0) - N*a in [-0.050, +0.212].
+#   Adv measured vs 600-dpi font model: space 2.626 vs 2.640, dot 3.594..3.650 vs 3.600,
+#   dash 4.296..4.324 vs 4.320 pt.
+#   Count law on all 140 left-aligned fill cells is exact with
+#   N = floor((W_cell - pad - w(number)) / a), pad in [4.22, 4.32] pt (mid 4.27).
+#   Excel quirk locked here: a multi-section format prints the negative section on the absolute
+#   value, so F8's negative `0.00` prints "1234.50" with NO minus and no fill; its fit/hash control
+#   is the positive N1 cell, not the negative one.
+#
+# The checks below are Excel-truth relations. excel_failures must be 0; ours_failures count the
+# engine on the same relations. TOL = 0.35 pt unless a row says otherwise.
+test_id	group	check	formats	values	expected	accept
+TRAIL_LEFT_EDGE	fill_after	left: amount x0 and x1 equal the matched `0.00` control	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	amount x0/x1 == control x0/x1	|dx0|,|dx1| <= 0.35 pt
+TRAIL_CENTER_SHIFT	fill_after	centre: the whole number+fill block is centred	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	x0 == control_x0 - N*adv/2	|delta| <= 0.35 pt
+TRAIL_RIGHT_SHIFT	fill_after	right: the whole number+fill block is right-aligned	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	x0 == control_x0 - N*adv	|delta| <= 0.35 pt
+TRAIL_TEXT	fill_after	amount text and sign are unchanged by the trailing fill	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	"1234.50","-1234.50","0.00"; F8 neg "1234.50"	exact
+TRAIL_COUNT0	fill_after	count 0 is exactly the no-fill twin, no fill glyph emitted	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	N==0 => x0/x1 equal control	|delta| <= 0.011 pt
+TRAIL_INSIDE	fill_after	number and fill stay inside the printed cell	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	x0 >= cell_left+0.5 and composite_x1 <= cell_right-0.5	0.5 pt
+TRAIL_RESIDUAL	fill_after	fill run is maximal but never touches the border	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	N>0 => 0.5 <= cell_right-composite_x1 <= adv+2.5	0.5..adv+2.5
+TRAIL_ADV	fill_after	measured fill advance equals the 600-dpi font model at size*scale	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	Arial 11/60: space 1.800, dot 1.800, dash 2.160	|delta| <= 0.15 pt
+TRAIL_HASH_EQ	fill_after	trailing fill never changes overflow; F8 neg fits like the positive text	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	hash == matched control hash; F8 neg control = N1 pos	exact
+TRAIL_MONO	count	fill count non-decreasing in width	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	step <= 1 (space,dash), <= 2 (dot)	exact
+TRAIL_SIGN	sign	number sign follows the format section	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	neg keeps minus except F8 section-2 absolute value	exact
+TRAIL_COUNT_LAW	count	content-width law: N = floor((W - left_inset - right_inset - w(number))/adv)	S2_space_after,D2_dot_after,F8_suffix_empty	pos,neg,zero	insets from same-width N1 left/right controls	|N_pred - N| <= 1

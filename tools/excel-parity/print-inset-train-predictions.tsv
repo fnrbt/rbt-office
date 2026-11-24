@@ -1,0 +1,577 @@
+sheet	row	width	align	face	size	scale	kind	ppem	digit	pad	w_gdi
+P60_left	2	14	left	Aptos Narrow	9	60	pos	45	23	10	150
+P60_left	2	18	left	Aptos Narrow	9	60	pos	45	23	10	150
+P60_left	3	14	left	Aptos Narrow	9	60	neg	45	23	10	164
+P60_left	3	18	left	Aptos Narrow	9	60	neg	45	23	10	164
+P60_left	4	14	left	Aptos Narrow	9	60	zero	45	23	10	81
+P60_left	4	18	left	Aptos Narrow	9	60	zero	45	23	10	81
+P60_left	5	14	left	Aptos Narrow	9	60	text	45	23	10	150
+P60_left	5	18	left	Aptos Narrow	9	60	text	45	23	10	150
+P60_left	6	14	left	Aptos Narrow	11	60	pos	55	28	11	182
+P60_left	6	18	left	Aptos Narrow	11	60	pos	55	28	11	182
+P60_left	7	14	left	Aptos Narrow	11	60	neg	55	28	11	199
+P60_left	7	18	left	Aptos Narrow	11	60	neg	55	28	11	199
+P60_left	8	14	left	Aptos Narrow	11	60	zero	55	28	11	98
+P60_left	8	18	left	Aptos Narrow	11	60	zero	55	28	11	98
+P60_left	9	14	left	Aptos Narrow	11	60	text	55	28	11	182
+P60_left	9	18	left	Aptos Narrow	11	60	text	55	28	11	182
+P60_left	10	14	left	Aptos Narrow	14	60	pos	70	35	13	228
+P60_left	10	18	left	Aptos Narrow	14	60	pos	70	35	13	228
+P60_left	11	14	left	Aptos Narrow	14	60	neg	70	35	13	249
+P60_left	11	18	left	Aptos Narrow	14	60	neg	70	35	13	249
+P60_left	12	14	left	Aptos Narrow	14	60	zero	70	35	13	123
+P60_left	12	18	left	Aptos Narrow	14	60	zero	70	35	13	123
+P60_left	13	14	left	Aptos Narrow	14	60	text	70	35	13	228
+P60_left	13	18	left	Aptos Narrow	14	60	text	70	35	13	228
+P60_left	14	14	left	Arial	9	60	pos	45	25	11	163
+P60_left	14	18	left	Arial	9	60	pos	45	25	11	163
+P60_left	15	14	left	Arial	9	60	neg	45	25	11	178
+P60_left	15	18	left	Arial	9	60	neg	45	25	11	178
+P60_left	16	14	left	Arial	9	60	zero	45	25	11	88
+P60_left	16	18	left	Arial	9	60	zero	45	25	11	88
+P60_left	17	14	left	Arial	9	60	text	45	25	11	163
+P60_left	17	18	left	Arial	9	60	text	45	25	11	163
+P60_left	18	14	left	Arial	11	60	pos	55	31	12	201
+P60_left	18	18	left	Arial	11	60	pos	55	31	12	201
+P60_left	19	14	left	Arial	11	60	neg	55	31	12	219
+P60_left	19	18	left	Arial	11	60	neg	55	31	12	219
+P60_left	20	14	left	Arial	11	60	zero	55	31	12	108
+P60_left	20	18	left	Arial	11	60	zero	55	31	12	108
+P60_left	21	14	left	Arial	11	60	text	55	31	12	201
+P60_left	21	18	left	Arial	11	60	text	55	31	12	201
+P60_left	22	14	left	Arial	14	60	pos	70	39	14	253
+P60_left	22	18	left	Arial	14	60	pos	70	39	14	253
+P60_left	23	14	left	Arial	14	60	neg	70	39	14	276
+P60_left	23	18	left	Arial	14	60	neg	70	39	14	276
+P60_left	24	14	left	Arial	14	60	zero	70	39	14	136
+P60_left	24	18	left	Arial	14	60	zero	70	39	14	136
+P60_left	25	14	left	Arial	14	60	text	70	39	14	253
+P60_left	25	18	left	Arial	14	60	text	70	39	14	253
+P60_left	26	14	left	Calibri	9	60	pos	45	23	10	149
+P60_left	26	18	left	Calibri	9	60	pos	45	23	10	149
+P60_left	27	14	left	Calibri	9	60	neg	45	23	10	163
+P60_left	27	18	left	Calibri	9	60	neg	45	23	10	163
+P60_left	28	14	left	Calibri	9	60	zero	45	23	10	80
+P60_left	28	18	left	Calibri	9	60	zero	45	23	10	80
+P60_left	29	14	left	Calibri	9	60	text	45	23	10	149
+P60_left	29	18	left	Calibri	9	60	text	45	23	10	149
+P60_left	30	14	left	Calibri	11	60	pos	55	28	11	182
+P60_left	30	18	left	Calibri	11	60	pos	55	28	11	182
+P60_left	31	14	left	Calibri	11	60	neg	55	28	11	199
+P60_left	31	18	left	Calibri	11	60	neg	55	28	11	199
+P60_left	32	14	left	Calibri	11	60	zero	55	28	11	98
+P60_left	32	18	left	Calibri	11	60	zero	55	28	11	98
+P60_left	33	14	left	Calibri	11	60	text	55	28	11	182
+P60_left	33	18	left	Calibri	11	60	text	55	28	11	182
+P60_left	34	14	left	Calibri	14	60	pos	70	35	13	228
+P60_left	34	18	left	Calibri	14	60	pos	70	35	13	228
+P60_left	35	14	left	Calibri	14	60	neg	70	35	13	249
+P60_left	35	18	left	Calibri	14	60	neg	70	35	13	249
+P60_left	36	14	left	Calibri	14	60	zero	70	35	13	123
+P60_left	36	18	left	Calibri	14	60	zero	70	35	13	123
+P60_left	37	14	left	Calibri	14	60	text	70	35	13	228
+P60_left	37	18	left	Calibri	14	60	text	70	35	13	228
+P60_left	38	14	left	Georgia	9	60	pos	45	28	11	158
+P60_left	38	18	left	Georgia	9	60	pos	45	28	11	158
+P60_left	39	14	left	Georgia	9	60	neg	45	28	11	175
+P60_left	39	18	left	Georgia	9	60	neg	45	28	11	175
+P60_left	40	14	left	Georgia	9	60	zero	45	28	11	96
+P60_left	40	18	left	Georgia	9	60	zero	45	28	11	96
+P60_left	41	14	left	Georgia	9	60	text	45	28	11	158
+P60_left	41	18	left	Georgia	9	60	text	45	28	11	158
+P60_left	42	14	left	Georgia	11	60	pos	55	34	13	194
+P60_left	42	18	left	Georgia	11	60	pos	55	34	13	194
+P60_left	43	14	left	Georgia	11	60	neg	55	34	13	215
+P60_left	43	18	left	Georgia	11	60	neg	55	34	13	215
+P60_left	44	14	left	Georgia	11	60	zero	55	34	13	117
+P60_left	44	18	left	Georgia	11	60	zero	55	34	13	117
+P60_left	45	14	left	Georgia	11	60	text	55	34	13	194
+P60_left	45	18	left	Georgia	11	60	text	55	34	13	194
+P60_left	46	14	left	Georgia	14	60	pos	70	43	15	247
+P60_left	46	18	left	Georgia	14	60	pos	70	43	15	247
+P60_left	47	14	left	Georgia	14	60	neg	70	43	15	273
+P60_left	47	18	left	Georgia	14	60	neg	70	43	15	273
+P60_left	48	14	left	Georgia	14	60	zero	70	43	15	148
+P60_left	48	18	left	Georgia	14	60	zero	70	43	15	148
+P60_left	49	14	left	Georgia	14	60	text	70	43	15	247
+P60_left	49	18	left	Georgia	14	60	text	70	43	15	247
+P60_center	2	14	center	Aptos Narrow	9	60	pos	45	23	10	150
+P60_center	2	18	center	Aptos Narrow	9	60	pos	45	23	10	150
+P60_center	3	14	center	Aptos Narrow	9	60	neg	45	23	10	164
+P60_center	3	18	center	Aptos Narrow	9	60	neg	45	23	10	164
+P60_center	4	14	center	Aptos Narrow	9	60	zero	45	23	10	81
+P60_center	4	18	center	Aptos Narrow	9	60	zero	45	23	10	81
+P60_center	5	14	center	Aptos Narrow	9	60	text	45	23	10	150
+P60_center	5	18	center	Aptos Narrow	9	60	text	45	23	10	150
+P60_center	6	14	center	Aptos Narrow	11	60	pos	55	28	11	182
+P60_center	6	18	center	Aptos Narrow	11	60	pos	55	28	11	182
+P60_center	7	14	center	Aptos Narrow	11	60	neg	55	28	11	199
+P60_center	7	18	center	Aptos Narrow	11	60	neg	55	28	11	199
+P60_center	8	14	center	Aptos Narrow	11	60	zero	55	28	11	98
+P60_center	8	18	center	Aptos Narrow	11	60	zero	55	28	11	98
+P60_center	9	14	center	Aptos Narrow	11	60	text	55	28	11	182
+P60_center	9	18	center	Aptos Narrow	11	60	text	55	28	11	182
+P60_center	10	14	center	Aptos Narrow	14	60	pos	70	35	13	228
+P60_center	10	18	center	Aptos Narrow	14	60	pos	70	35	13	228
+P60_center	11	14	center	Aptos Narrow	14	60	neg	70	35	13	249
+P60_center	11	18	center	Aptos Narrow	14	60	neg	70	35	13	249
+P60_center	12	14	center	Aptos Narrow	14	60	zero	70	35	13	123
+P60_center	12	18	center	Aptos Narrow	14	60	zero	70	35	13	123
+P60_center	13	14	center	Aptos Narrow	14	60	text	70	35	13	228
+P60_center	13	18	center	Aptos Narrow	14	60	text	70	35	13	228
+P60_center	14	14	center	Arial	9	60	pos	45	25	11	163
+P60_center	14	18	center	Arial	9	60	pos	45	25	11	163
+P60_center	15	14	center	Arial	9	60	neg	45	25	11	178
+P60_center	15	18	center	Arial	9	60	neg	45	25	11	178
+P60_center	16	14	center	Arial	9	60	zero	45	25	11	88
+P60_center	16	18	center	Arial	9	60	zero	45	25	11	88
+P60_center	17	14	center	Arial	9	60	text	45	25	11	163
+P60_center	17	18	center	Arial	9	60	text	45	25	11	163
+P60_center	18	14	center	Arial	11	60	pos	55	31	12	201
+P60_center	18	18	center	Arial	11	60	pos	55	31	12	201
+P60_center	19	14	center	Arial	11	60	neg	55	31	12	219
+P60_center	19	18	center	Arial	11	60	neg	55	31	12	219
+P60_center	20	14	center	Arial	11	60	zero	55	31	12	108
+P60_center	20	18	center	Arial	11	60	zero	55	31	12	108
+P60_center	21	14	center	Arial	11	60	text	55	31	12	201
+P60_center	21	18	center	Arial	11	60	text	55	31	12	201
+P60_center	22	14	center	Arial	14	60	pos	70	39	14	253
+P60_center	22	18	center	Arial	14	60	pos	70	39	14	253
+P60_center	23	14	center	Arial	14	60	neg	70	39	14	276
+P60_center	23	18	center	Arial	14	60	neg	70	39	14	276
+P60_center	24	14	center	Arial	14	60	zero	70	39	14	136
+P60_center	24	18	center	Arial	14	60	zero	70	39	14	136
+P60_center	25	14	center	Arial	14	60	text	70	39	14	253
+P60_center	25	18	center	Arial	14	60	text	70	39	14	253
+P60_center	26	14	center	Calibri	9	60	pos	45	23	10	149
+P60_center	26	18	center	Calibri	9	60	pos	45	23	10	149
+P60_center	27	14	center	Calibri	9	60	neg	45	23	10	163
+P60_center	27	18	center	Calibri	9	60	neg	45	23	10	163
+P60_center	28	14	center	Calibri	9	60	zero	45	23	10	80
+P60_center	28	18	center	Calibri	9	60	zero	45	23	10	80
+P60_center	29	14	center	Calibri	9	60	text	45	23	10	149
+P60_center	29	18	center	Calibri	9	60	text	45	23	10	149
+P60_center	30	14	center	Calibri	11	60	pos	55	28	11	182
+P60_center	30	18	center	Calibri	11	60	pos	55	28	11	182
+P60_center	31	14	center	Calibri	11	60	neg	55	28	11	199
+P60_center	31	18	center	Calibri	11	60	neg	55	28	11	199
+P60_center	32	14	center	Calibri	11	60	zero	55	28	11	98
+P60_center	32	18	center	Calibri	11	60	zero	55	28	11	98
+P60_center	33	14	center	Calibri	11	60	text	55	28	11	182
+P60_center	33	18	center	Calibri	11	60	text	55	28	11	182
+P60_center	34	14	center	Calibri	14	60	pos	70	35	13	228
+P60_center	34	18	center	Calibri	14	60	pos	70	35	13	228
+P60_center	35	14	center	Calibri	14	60	neg	70	35	13	249
+P60_center	35	18	center	Calibri	14	60	neg	70	35	13	249
+P60_center	36	14	center	Calibri	14	60	zero	70	35	13	123
+P60_center	36	18	center	Calibri	14	60	zero	70	35	13	123
+P60_center	37	14	center	Calibri	14	60	text	70	35	13	228
+P60_center	37	18	center	Calibri	14	60	text	70	35	13	228
+P60_center	38	14	center	Georgia	9	60	pos	45	28	11	158
+P60_center	38	18	center	Georgia	9	60	pos	45	28	11	158
+P60_center	39	14	center	Georgia	9	60	neg	45	28	11	175
+P60_center	39	18	center	Georgia	9	60	neg	45	28	11	175
+P60_center	40	14	center	Georgia	9	60	zero	45	28	11	96
+P60_center	40	18	center	Georgia	9	60	zero	45	28	11	96
+P60_center	41	14	center	Georgia	9	60	text	45	28	11	158
+P60_center	41	18	center	Georgia	9	60	text	45	28	11	158
+P60_center	42	14	center	Georgia	11	60	pos	55	34	13	194
+P60_center	42	18	center	Georgia	11	60	pos	55	34	13	194
+P60_center	43	14	center	Georgia	11	60	neg	55	34	13	215
+P60_center	43	18	center	Georgia	11	60	neg	55	34	13	215
+P60_center	44	14	center	Georgia	11	60	zero	55	34	13	117
+P60_center	44	18	center	Georgia	11	60	zero	55	34	13	117
+P60_center	45	14	center	Georgia	11	60	text	55	34	13	194
+P60_center	45	18	center	Georgia	11	60	text	55	34	13	194
+P60_center	46	14	center	Georgia	14	60	pos	70	43	15	247
+P60_center	46	18	center	Georgia	14	60	pos	70	43	15	247
+P60_center	47	14	center	Georgia	14	60	neg	70	43	15	273
+P60_center	47	18	center	Georgia	14	60	neg	70	43	15	273
+P60_center	48	14	center	Georgia	14	60	zero	70	43	15	148
+P60_center	48	18	center	Georgia	14	60	zero	70	43	15	148
+P60_center	49	14	center	Georgia	14	60	text	70	43	15	247
+P60_center	49	18	center	Georgia	14	60	text	70	43	15	247
+P60_right	2	14	right	Aptos Narrow	9	60	pos	45	23	10	150
+P60_right	2	18	right	Aptos Narrow	9	60	pos	45	23	10	150
+P60_right	3	14	right	Aptos Narrow	9	60	neg	45	23	10	164
+P60_right	3	18	right	Aptos Narrow	9	60	neg	45	23	10	164
+P60_right	4	14	right	Aptos Narrow	9	60	zero	45	23	10	81
+P60_right	4	18	right	Aptos Narrow	9	60	zero	45	23	10	81
+P60_right	5	14	right	Aptos Narrow	9	60	text	45	23	10	150
+P60_right	5	18	right	Aptos Narrow	9	60	text	45	23	10	150
+P60_right	6	14	right	Aptos Narrow	11	60	pos	55	28	11	182
+P60_right	6	18	right	Aptos Narrow	11	60	pos	55	28	11	182
+P60_right	7	14	right	Aptos Narrow	11	60	neg	55	28	11	199
+P60_right	7	18	right	Aptos Narrow	11	60	neg	55	28	11	199
+P60_right	8	14	right	Aptos Narrow	11	60	zero	55	28	11	98
+P60_right	8	18	right	Aptos Narrow	11	60	zero	55	28	11	98
+P60_right	9	14	right	Aptos Narrow	11	60	text	55	28	11	182
+P60_right	9	18	right	Aptos Narrow	11	60	text	55	28	11	182
+P60_right	10	14	right	Aptos Narrow	14	60	pos	70	35	13	228
+P60_right	10	18	right	Aptos Narrow	14	60	pos	70	35	13	228
+P60_right	11	14	right	Aptos Narrow	14	60	neg	70	35	13	249
+P60_right	11	18	right	Aptos Narrow	14	60	neg	70	35	13	249
+P60_right	12	14	right	Aptos Narrow	14	60	zero	70	35	13	123
+P60_right	12	18	right	Aptos Narrow	14	60	zero	70	35	13	123
+P60_right	13	14	right	Aptos Narrow	14	60	text	70	35	13	228
+P60_right	13	18	right	Aptos Narrow	14	60	text	70	35	13	228
+P60_right	14	14	right	Arial	9	60	pos	45	25	11	163
+P60_right	14	18	right	Arial	9	60	pos	45	25	11	163
+P60_right	15	14	right	Arial	9	60	neg	45	25	11	178
+P60_right	15	18	right	Arial	9	60	neg	45	25	11	178
+P60_right	16	14	right	Arial	9	60	zero	45	25	11	88
+P60_right	16	18	right	Arial	9	60	zero	45	25	11	88
+P60_right	17	14	right	Arial	9	60	text	45	25	11	163
+P60_right	17	18	right	Arial	9	60	text	45	25	11	163
+P60_right	18	14	right	Arial	11	60	pos	55	31	12	201
+P60_right	18	18	right	Arial	11	60	pos	55	31	12	201
+P60_right	19	14	right	Arial	11	60	neg	55	31	12	219
+P60_right	19	18	right	Arial	11	60	neg	55	31	12	219
+P60_right	20	14	right	Arial	11	60	zero	55	31	12	108
+P60_right	20	18	right	Arial	11	60	zero	55	31	12	108
+P60_right	21	14	right	Arial	11	60	text	55	31	12	201
+P60_right	21	18	right	Arial	11	60	text	55	31	12	201
+P60_right	22	14	right	Arial	14	60	pos	70	39	14	253
+P60_right	22	18	right	Arial	14	60	pos	70	39	14	253
+P60_right	23	14	right	Arial	14	60	neg	70	39	14	276
+P60_right	23	18	right	Arial	14	60	neg	70	39	14	276
+P60_right	24	14	right	Arial	14	60	zero	70	39	14	136
+P60_right	24	18	right	Arial	14	60	zero	70	39	14	136
+P60_right	25	14	right	Arial	14	60	text	70	39	14	253
+P60_right	25	18	right	Arial	14	60	text	70	39	14	253
+P60_right	26	14	right	Calibri	9	60	pos	45	23	10	149
+P60_right	26	18	right	Calibri	9	60	pos	45	23	10	149
+P60_right	27	14	right	Calibri	9	60	neg	45	23	10	163
+P60_right	27	18	right	Calibri	9	60	neg	45	23	10	163
+P60_right	28	14	right	Calibri	9	60	zero	45	23	10	80
+P60_right	28	18	right	Calibri	9	60	zero	45	23	10	80
+P60_right	29	14	right	Calibri	9	60	text	45	23	10	149
+P60_right	29	18	right	Calibri	9	60	text	45	23	10	149
+P60_right	30	14	right	Calibri	11	60	pos	55	28	11	182
+P60_right	30	18	right	Calibri	11	60	pos	55	28	11	182
+P60_right	31	14	right	Calibri	11	60	neg	55	28	11	199
+P60_right	31	18	right	Calibri	11	60	neg	55	28	11	199
+P60_right	32	14	right	Calibri	11	60	zero	55	28	11	98
+P60_right	32	18	right	Calibri	11	60	zero	55	28	11	98
+P60_right	33	14	right	Calibri	11	60	text	55	28	11	182
+P60_right	33	18	right	Calibri	11	60	text	55	28	11	182
+P60_right	34	14	right	Calibri	14	60	pos	70	35	13	228
+P60_right	34	18	right	Calibri	14	60	pos	70	35	13	228
+P60_right	35	14	right	Calibri	14	60	neg	70	35	13	249
+P60_right	35	18	right	Calibri	14	60	neg	70	35	13	249
+P60_right	36	14	right	Calibri	14	60	zero	70	35	13	123
+P60_right	36	18	right	Calibri	14	60	zero	70	35	13	123
+P60_right	37	14	right	Calibri	14	60	text	70	35	13	228
+P60_right	37	18	right	Calibri	14	60	text	70	35	13	228
+P60_right	38	14	right	Georgia	9	60	pos	45	28	11	158
+P60_right	38	18	right	Georgia	9	60	pos	45	28	11	158
+P60_right	39	14	right	Georgia	9	60	neg	45	28	11	175
+P60_right	39	18	right	Georgia	9	60	neg	45	28	11	175
+P60_right	40	14	right	Georgia	9	60	zero	45	28	11	96
+P60_right	40	18	right	Georgia	9	60	zero	45	28	11	96
+P60_right	41	14	right	Georgia	9	60	text	45	28	11	158
+P60_right	41	18	right	Georgia	9	60	text	45	28	11	158
+P60_right	42	14	right	Georgia	11	60	pos	55	34	13	194
+P60_right	42	18	right	Georgia	11	60	pos	55	34	13	194
+P60_right	43	14	right	Georgia	11	60	neg	55	34	13	215
+P60_right	43	18	right	Georgia	11	60	neg	55	34	13	215
+P60_right	44	14	right	Georgia	11	60	zero	55	34	13	117
+P60_right	44	18	right	Georgia	11	60	zero	55	34	13	117
+P60_right	45	14	right	Georgia	11	60	text	55	34	13	194
+P60_right	45	18	right	Georgia	11	60	text	55	34	13	194
+P60_right	46	14	right	Georgia	14	60	pos	70	43	15	247
+P60_right	46	18	right	Georgia	14	60	pos	70	43	15	247
+P60_right	47	14	right	Georgia	14	60	neg	70	43	15	273
+P60_right	47	18	right	Georgia	14	60	neg	70	43	15	273
+P60_right	48	14	right	Georgia	14	60	zero	70	43	15	148
+P60_right	48	18	right	Georgia	14	60	zero	70	43	15	148
+P60_right	49	14	right	Georgia	14	60	text	70	43	15	247
+P60_right	49	18	right	Georgia	14	60	text	70	43	15	247
+P100_left	2	14	left	Aptos Narrow	9	100	pos	75	38	14	248
+P100_left	2	18	left	Aptos Narrow	9	100	pos	75	38	14	248
+P100_left	3	14	left	Aptos Narrow	9	100	neg	75	38	14	271
+P100_left	3	18	left	Aptos Narrow	9	100	neg	75	38	14	271
+P100_left	4	14	left	Aptos Narrow	9	100	zero	75	38	14	134
+P100_left	4	18	left	Aptos Narrow	9	100	zero	75	38	14	134
+P100_left	5	14	left	Aptos Narrow	9	100	text	75	38	14	248
+P100_left	5	18	left	Aptos Narrow	9	100	text	75	38	14	248
+P100_left	6	14	left	Aptos Narrow	11	100	pos	92	47	16	306
+P100_left	6	18	left	Aptos Narrow	11	100	pos	92	47	16	306
+P100_left	7	14	left	Aptos Narrow	11	100	neg	92	47	16	334
+P100_left	7	18	left	Aptos Narrow	11	100	neg	92	47	16	334
+P100_left	8	14	left	Aptos Narrow	11	100	zero	92	47	16	165
+P100_left	8	18	left	Aptos Narrow	11	100	zero	92	47	16	165
+P100_left	9	14	left	Aptos Narrow	11	100	text	92	47	16	306
+P100_left	9	18	left	Aptos Narrow	11	100	text	92	47	16	306
+P100_left	10	14	left	Aptos Narrow	14	100	pos	117	59	19	384
+P100_left	10	18	left	Aptos Narrow	14	100	pos	117	59	19	384
+P100_left	11	14	left	Aptos Narrow	14	100	neg	117	59	19	420
+P100_left	11	18	left	Aptos Narrow	14	100	neg	117	59	19	420
+P100_left	12	14	left	Aptos Narrow	14	100	zero	117	59	19	207
+P100_left	12	18	left	Aptos Narrow	14	100	zero	117	59	19	207
+P100_left	13	14	left	Aptos Narrow	14	100	text	117	59	19	384
+P100_left	13	18	left	Aptos Narrow	14	100	text	117	59	19	384
+P100_left	14	14	left	Arial	9	100	pos	75	42	15	273
+P100_left	14	18	left	Arial	9	100	pos	75	42	15	273
+P100_left	15	14	left	Arial	9	100	neg	75	42	15	298
+P100_left	15	18	left	Arial	9	100	neg	75	42	15	298
+P100_left	16	14	left	Arial	9	100	zero	75	42	15	147
+P100_left	16	18	left	Arial	9	100	zero	75	42	15	147
+P100_left	17	14	left	Arial	9	100	text	75	42	15	273
+P100_left	17	18	left	Arial	9	100	text	75	42	15	273
+P100_left	18	14	left	Arial	11	100	pos	92	51	17	332
+P100_left	18	18	left	Arial	11	100	pos	92	51	17	332
+P100_left	19	14	left	Arial	11	100	neg	92	51	17	363
+P100_left	19	18	left	Arial	11	100	neg	92	51	17	363
+P100_left	20	14	left	Arial	11	100	zero	92	51	17	179
+P100_left	20	18	left	Arial	11	100	zero	92	51	17	179
+P100_left	21	14	left	Arial	11	100	text	92	51	17	332
+P100_left	21	18	left	Arial	11	100	text	92	51	17	332
+P100_left	22	14	left	Arial	14	100	pos	117	65	21	423
+P100_left	22	18	left	Arial	14	100	pos	117	65	21	423
+P100_left	23	14	left	Arial	14	100	neg	117	65	21	462
+P100_left	23	18	left	Arial	14	100	neg	117	65	21	462
+P100_left	24	14	left	Arial	14	100	zero	117	65	21	228
+P100_left	24	18	left	Arial	14	100	zero	117	65	21	228
+P100_left	25	14	left	Arial	14	100	text	117	65	21	423
+P100_left	25	18	left	Arial	14	100	text	117	65	21	423
+P100_left	26	14	left	Calibri	9	100	pos	75	38	14	247
+P100_left	26	18	left	Calibri	9	100	pos	75	38	14	247
+P100_left	27	14	left	Calibri	9	100	neg	75	38	14	270
+P100_left	27	18	left	Calibri	9	100	neg	75	38	14	270
+P100_left	28	14	left	Calibri	9	100	zero	75	38	14	133
+P100_left	28	18	left	Calibri	9	100	zero	75	38	14	133
+P100_left	29	14	left	Calibri	9	100	text	75	38	14	247
+P100_left	29	18	left	Calibri	9	100	text	75	38	14	247
+P100_left	30	14	left	Calibri	11	100	pos	92	47	16	305
+P100_left	30	18	left	Calibri	11	100	pos	92	47	16	305
+P100_left	31	14	left	Calibri	11	100	neg	92	47	16	333
+P100_left	31	18	left	Calibri	11	100	neg	92	47	16	333
+P100_left	32	14	left	Calibri	11	100	zero	92	47	16	164
+P100_left	32	18	left	Calibri	11	100	zero	92	47	16	164
+P100_left	33	14	left	Calibri	11	100	text	92	47	16	305
+P100_left	33	18	left	Calibri	11	100	text	92	47	16	305
+P100_left	34	14	left	Calibri	14	100	pos	117	59	19	384
+P100_left	34	18	left	Calibri	14	100	pos	117	59	19	384
+P100_left	35	14	left	Calibri	14	100	neg	117	59	19	420
+P100_left	35	18	left	Calibri	14	100	neg	117	59	19	420
+P100_left	36	14	left	Calibri	14	100	zero	117	59	19	207
+P100_left	36	18	left	Calibri	14	100	zero	117	59	19	207
+P100_left	37	14	left	Calibri	14	100	text	117	59	19	384
+P100_left	37	18	left	Calibri	14	100	text	117	59	19	384
+P100_left	38	14	left	Georgia	9	100	pos	75	46	16	263
+P100_left	38	18	left	Georgia	9	100	pos	75	46	16	263
+P100_left	39	14	left	Georgia	9	100	neg	75	46	16	291
+P100_left	39	18	left	Georgia	9	100	neg	75	46	16	291
+P100_left	40	14	left	Georgia	9	100	zero	75	46	16	158
+P100_left	40	18	left	Georgia	9	100	zero	75	46	16	158
+P100_left	41	14	left	Georgia	9	100	text	75	46	16	263
+P100_left	41	18	left	Georgia	9	100	text	75	46	16	263
+P100_left	42	14	left	Georgia	11	100	pos	92	56	18	324
+P100_left	42	18	left	Georgia	11	100	pos	92	56	18	324
+P100_left	43	14	left	Georgia	11	100	neg	92	56	18	358
+P100_left	43	18	left	Georgia	11	100	neg	92	56	18	358
+P100_left	44	14	left	Georgia	11	100	zero	92	56	18	193
+P100_left	44	18	left	Georgia	11	100	zero	92	56	18	193
+P100_left	45	14	left	Georgia	11	100	text	92	56	18	324
+P100_left	45	18	left	Georgia	11	100	text	92	56	18	324
+P100_left	46	14	left	Georgia	14	100	pos	117	72	22	412
+P100_left	46	18	left	Georgia	14	100	pos	117	72	22	412
+P100_left	47	14	left	Georgia	14	100	neg	117	72	22	456
+P100_left	47	18	left	Georgia	14	100	neg	117	72	22	456
+P100_left	48	14	left	Georgia	14	100	zero	117	72	22	248
+P100_left	48	18	left	Georgia	14	100	zero	117	72	22	248
+P100_left	49	14	left	Georgia	14	100	text	117	72	22	412
+P100_left	49	18	left	Georgia	14	100	text	117	72	22	412
+P100_center	2	14	center	Aptos Narrow	9	100	pos	75	38	14	248
+P100_center	2	18	center	Aptos Narrow	9	100	pos	75	38	14	248
+P100_center	3	14	center	Aptos Narrow	9	100	neg	75	38	14	271
+P100_center	3	18	center	Aptos Narrow	9	100	neg	75	38	14	271
+P100_center	4	14	center	Aptos Narrow	9	100	zero	75	38	14	134
+P100_center	4	18	center	Aptos Narrow	9	100	zero	75	38	14	134
+P100_center	5	14	center	Aptos Narrow	9	100	text	75	38	14	248
+P100_center	5	18	center	Aptos Narrow	9	100	text	75	38	14	248
+P100_center	6	14	center	Aptos Narrow	11	100	pos	92	47	16	306
+P100_center	6	18	center	Aptos Narrow	11	100	pos	92	47	16	306
+P100_center	7	14	center	Aptos Narrow	11	100	neg	92	47	16	334
+P100_center	7	18	center	Aptos Narrow	11	100	neg	92	47	16	334
+P100_center	8	14	center	Aptos Narrow	11	100	zero	92	47	16	165
+P100_center	8	18	center	Aptos Narrow	11	100	zero	92	47	16	165
+P100_center	9	14	center	Aptos Narrow	11	100	text	92	47	16	306
+P100_center	9	18	center	Aptos Narrow	11	100	text	92	47	16	306
+P100_center	10	14	center	Aptos Narrow	14	100	pos	117	59	19	384
+P100_center	10	18	center	Aptos Narrow	14	100	pos	117	59	19	384
+P100_center	11	14	center	Aptos Narrow	14	100	neg	117	59	19	420
+P100_center	11	18	center	Aptos Narrow	14	100	neg	117	59	19	420
+P100_center	12	14	center	Aptos Narrow	14	100	zero	117	59	19	207
+P100_center	12	18	center	Aptos Narrow	14	100	zero	117	59	19	207
+P100_center	13	14	center	Aptos Narrow	14	100	text	117	59	19	384
+P100_center	13	18	center	Aptos Narrow	14	100	text	117	59	19	384
+P100_center	14	14	center	Arial	9	100	pos	75	42	15	273
+P100_center	14	18	center	Arial	9	100	pos	75	42	15	273
+P100_center	15	14	center	Arial	9	100	neg	75	42	15	298
+P100_center	15	18	center	Arial	9	100	neg	75	42	15	298
+P100_center	16	14	center	Arial	9	100	zero	75	42	15	147
+P100_center	16	18	center	Arial	9	100	zero	75	42	15	147
+P100_center	17	14	center	Arial	9	100	text	75	42	15	273
+P100_center	17	18	center	Arial	9	100	text	75	42	15	273
+P100_center	18	14	center	Arial	11	100	pos	92	51	17	332
+P100_center	18	18	center	Arial	11	100	pos	92	51	17	332
+P100_center	19	14	center	Arial	11	100	neg	92	51	17	363
+P100_center	19	18	center	Arial	11	100	neg	92	51	17	363
+P100_center	20	14	center	Arial	11	100	zero	92	51	17	179
+P100_center	20	18	center	Arial	11	100	zero	92	51	17	179
+P100_center	21	14	center	Arial	11	100	text	92	51	17	332
+P100_center	21	18	center	Arial	11	100	text	92	51	17	332
+P100_center	22	14	center	Arial	14	100	pos	117	65	21	423
+P100_center	22	18	center	Arial	14	100	pos	117	65	21	423
+P100_center	23	14	center	Arial	14	100	neg	117	65	21	462
+P100_center	23	18	center	Arial	14	100	neg	117	65	21	462
+P100_center	24	14	center	Arial	14	100	zero	117	65	21	228
+P100_center	24	18	center	Arial	14	100	zero	117	65	21	228
+P100_center	25	14	center	Arial	14	100	text	117	65	21	423
+P100_center	25	18	center	Arial	14	100	text	117	65	21	423
+P100_center	26	14	center	Calibri	9	100	pos	75	38	14	247
+P100_center	26	18	center	Calibri	9	100	pos	75	38	14	247
+P100_center	27	14	center	Calibri	9	100	neg	75	38	14	270
+P100_center	27	18	center	Calibri	9	100	neg	75	38	14	270
+P100_center	28	14	center	Calibri	9	100	zero	75	38	14	133
+P100_center	28	18	center	Calibri	9	100	zero	75	38	14	133
+P100_center	29	14	center	Calibri	9	100	text	75	38	14	247
+P100_center	29	18	center	Calibri	9	100	text	75	38	14	247
+P100_center	30	14	center	Calibri	11	100	pos	92	47	16	305
+P100_center	30	18	center	Calibri	11	100	pos	92	47	16	305
+P100_center	31	14	center	Calibri	11	100	neg	92	47	16	333
+P100_center	31	18	center	Calibri	11	100	neg	92	47	16	333
+P100_center	32	14	center	Calibri	11	100	zero	92	47	16	164
+P100_center	32	18	center	Calibri	11	100	zero	92	47	16	164
+P100_center	33	14	center	Calibri	11	100	text	92	47	16	305
+P100_center	33	18	center	Calibri	11	100	text	92	47	16	305
+P100_center	34	14	center	Calibri	14	100	pos	117	59	19	384
+P100_center	34	18	center	Calibri	14	100	pos	117	59	19	384
+P100_center	35	14	center	Calibri	14	100	neg	117	59	19	420
+P100_center	35	18	center	Calibri	14	100	neg	117	59	19	420
+P100_center	36	14	center	Calibri	14	100	zero	117	59	19	207
+P100_center	36	18	center	Calibri	14	100	zero	117	59	19	207
+P100_center	37	14	center	Calibri	14	100	text	117	59	19	384
+P100_center	37	18	center	Calibri	14	100	text	117	59	19	384
+P100_center	38	14	center	Georgia	9	100	pos	75	46	16	263
+P100_center	38	18	center	Georgia	9	100	pos	75	46	16	263
+P100_center	39	14	center	Georgia	9	100	neg	75	46	16	291
+P100_center	39	18	center	Georgia	9	100	neg	75	46	16	291
+P100_center	40	14	center	Georgia	9	100	zero	75	46	16	158
+P100_center	40	18	center	Georgia	9	100	zero	75	46	16	158
+P100_center	41	14	center	Georgia	9	100	text	75	46	16	263
+P100_center	41	18	center	Georgia	9	100	text	75	46	16	263
+P100_center	42	14	center	Georgia	11	100	pos	92	56	18	324
+P100_center	42	18	center	Georgia	11	100	pos	92	56	18	324
+P100_center	43	14	center	Georgia	11	100	neg	92	56	18	358
+P100_center	43	18	center	Georgia	11	100	neg	92	56	18	358
+P100_center	44	14	center	Georgia	11	100	zero	92	56	18	193
+P100_center	44	18	center	Georgia	11	100	zero	92	56	18	193
+P100_center	45	14	center	Georgia	11	100	text	92	56	18	324
+P100_center	45	18	center	Georgia	11	100	text	92	56	18	324
+P100_center	46	14	center	Georgia	14	100	pos	117	72	22	412
+P100_center	46	18	center	Georgia	14	100	pos	117	72	22	412
+P100_center	47	14	center	Georgia	14	100	neg	117	72	22	456
+P100_center	47	18	center	Georgia	14	100	neg	117	72	22	456
+P100_center	48	14	center	Georgia	14	100	zero	117	72	22	248
+P100_center	48	18	center	Georgia	14	100	zero	117	72	22	248
+P100_center	49	14	center	Georgia	14	100	text	117	72	22	412
+P100_center	49	18	center	Georgia	14	100	text	117	72	22	412
+P100_right	2	14	right	Aptos Narrow	9	100	pos	75	38	14	248
+P100_right	2	18	right	Aptos Narrow	9	100	pos	75	38	14	248
+P100_right	3	14	right	Aptos Narrow	9	100	neg	75	38	14	271
+P100_right	3	18	right	Aptos Narrow	9	100	neg	75	38	14	271
+P100_right	4	14	right	Aptos Narrow	9	100	zero	75	38	14	134
+P100_right	4	18	right	Aptos Narrow	9	100	zero	75	38	14	134
+P100_right	5	14	right	Aptos Narrow	9	100	text	75	38	14	248
+P100_right	5	18	right	Aptos Narrow	9	100	text	75	38	14	248
+P100_right	6	14	right	Aptos Narrow	11	100	pos	92	47	16	306
+P100_right	6	18	right	Aptos Narrow	11	100	pos	92	47	16	306
+P100_right	7	14	right	Aptos Narrow	11	100	neg	92	47	16	334
+P100_right	7	18	right	Aptos Narrow	11	100	neg	92	47	16	334
+P100_right	8	14	right	Aptos Narrow	11	100	zero	92	47	16	165
+P100_right	8	18	right	Aptos Narrow	11	100	zero	92	47	16	165
+P100_right	9	14	right	Aptos Narrow	11	100	text	92	47	16	306
+P100_right	9	18	right	Aptos Narrow	11	100	text	92	47	16	306
+P100_right	10	14	right	Aptos Narrow	14	100	pos	117	59	19	384
+P100_right	10	18	right	Aptos Narrow	14	100	pos	117	59	19	384
+P100_right	11	14	right	Aptos Narrow	14	100	neg	117	59	19	420
+P100_right	11	18	right	Aptos Narrow	14	100	neg	117	59	19	420
+P100_right	12	14	right	Aptos Narrow	14	100	zero	117	59	19	207
+P100_right	12	18	right	Aptos Narrow	14	100	zero	117	59	19	207
+P100_right	13	14	right	Aptos Narrow	14	100	text	117	59	19	384
+P100_right	13	18	right	Aptos Narrow	14	100	text	117	59	19	384
+P100_right	14	14	right	Arial	9	100	pos	75	42	15	273
+P100_right	14	18	right	Arial	9	100	pos	75	42	15	273
+P100_right	15	14	right	Arial	9	100	neg	75	42	15	298
+P100_right	15	18	right	Arial	9	100	neg	75	42	15	298
+P100_right	16	14	right	Arial	9	100	zero	75	42	15	147
+P100_right	16	18	right	Arial	9	100	zero	75	42	15	147
+P100_right	17	14	right	Arial	9	100	text	75	42	15	273
+P100_right	17	18	right	Arial	9	100	text	75	42	15	273
+P100_right	18	14	right	Arial	11	100	pos	92	51	17	332
+P100_right	18	18	right	Arial	11	100	pos	92	51	17	332
+P100_right	19	14	right	Arial	11	100	neg	92	51	17	363
+P100_right	19	18	right	Arial	11	100	neg	92	51	17	363
+P100_right	20	14	right	Arial	11	100	zero	92	51	17	179
+P100_right	20	18	right	Arial	11	100	zero	92	51	17	179
+P100_right	21	14	right	Arial	11	100	text	92	51	17	332
+P100_right	21	18	right	Arial	11	100	text	92	51	17	332
+P100_right	22	14	right	Arial	14	100	pos	117	65	21	423
+P100_right	22	18	right	Arial	14	100	pos	117	65	21	423
+P100_right	23	14	right	Arial	14	100	neg	117	65	21	462
+P100_right	23	18	right	Arial	14	100	neg	117	65	21	462
+P100_right	24	14	right	Arial	14	100	zero	117	65	21	228
+P100_right	24	18	right	Arial	14	100	zero	117	65	21	228
+P100_right	25	14	right	Arial	14	100	text	117	65	21	423
+P100_right	25	18	right	Arial	14	100	text	117	65	21	423
+P100_right	26	14	right	Calibri	9	100	pos	75	38	14	247
+P100_right	26	18	right	Calibri	9	100	pos	75	38	14	247
+P100_right	27	14	right	Calibri	9	100	neg	75	38	14	270
+P100_right	27	18	right	Calibri	9	100	neg	75	38	14	270
+P100_right	28	14	right	Calibri	9	100	zero	75	38	14	133
+P100_right	28	18	right	Calibri	9	100	zero	75	38	14	133
+P100_right	29	14	right	Calibri	9	100	text	75	38	14	247
+P100_right	29	18	right	Calibri	9	100	text	75	38	14	247
+P100_right	30	14	right	Calibri	11	100	pos	92	47	16	305
+P100_right	30	18	right	Calibri	11	100	pos	92	47	16	305
+P100_right	31	14	right	Calibri	11	100	neg	92	47	16	333
+P100_right	31	18	right	Calibri	11	100	neg	92	47	16	333
+P100_right	32	14	right	Calibri	11	100	zero	92	47	16	164
+P100_right	32	18	right	Calibri	11	100	zero	92	47	16	164
+P100_right	33	14	right	Calibri	11	100	text	92	47	16	305
+P100_right	33	18	right	Calibri	11	100	text	92	47	16	305
+P100_right	34	14	right	Calibri	14	100	pos	117	59	19	384
+P100_right	34	18	right	Calibri	14	100	pos	117	59	19	384
+P100_right	35	14	right	Calibri	14	100	neg	117	59	19	420
+P100_right	35	18	right	Calibri	14	100	neg	117	59	19	420
+P100_right	36	14	right	Calibri	14	100	zero	117	59	19	207
+P100_right	36	18	right	Calibri	14	100	zero	117	59	19	207
+P100_right	37	14	right	Calibri	14	100	text	117	59	19	384
+P100_right	37	18	right	Calibri	14	100	text	117	59	19	384
+P100_right	38	14	right	Georgia	9	100	pos	75	46	16	263
+P100_right	38	18	right	Georgia	9	100	pos	75	46	16	263
+P100_right	39	14	right	Georgia	9	100	neg	75	46	16	291
+P100_right	39	18	right	Georgia	9	100	neg	75	46	16	291
+P100_right	40	14	right	Georgia	9	100	zero	75	46	16	158
+P100_right	40	18	right	Georgia	9	100	zero	75	46	16	158
+P100_right	41	14	right	Georgia	9	100	text	75	46	16	263
+P100_right	41	18	right	Georgia	9	100	text	75	46	16	263
+P100_right	42	14	right	Georgia	11	100	pos	92	56	18	324
+P100_right	42	18	right	Georgia	11	100	pos	92	56	18	324
+P100_right	43	14	right	Georgia	11	100	neg	92	56	18	358
+P100_right	43	18	right	Georgia	11	100	neg	92	56	18	358
+P100_right	44	14	right	Georgia	11	100	zero	92	56	18	193
+P100_right	44	18	right	Georgia	11	100	zero	92	56	18	193
+P100_right	45	14	right	Georgia	11	100	text	92	56	18	324
+P100_right	45	18	right	Georgia	11	100	text	92	56	18	324
+P100_right	46	14	right	Georgia	14	100	pos	117	72	22	412
+P100_right	46	18	right	Georgia	14	100	pos	117	72	22	412
+P100_right	47	14	right	Georgia	14	100	neg	117	72	22	456
+P100_right	47	18	right	Georgia	14	100	neg	117	72	22	456
+P100_right	48	14	right	Georgia	14	100	zero	117	72	22	248
+P100_right	48	18	right	Georgia	14	100	zero	117	72	22	248
+P100_right	49	14	right	Georgia	14	100	text	117	72	22	412
+P100_right	49	18	right	Georgia	14	100	text	117	72	22	412

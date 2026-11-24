@@ -8,9 +8,12 @@ surfaces have actually been checked. It complements
 
 ## Spreadsheet branch handoff
 
-**Resume on `origin/wip/excel-trailing-fill`** (runtime `95d58286`, complete measurement evidence `3406ca9b`). The last shipped spreadsheet runtime on `origin/master` is `bf132a48` (numeric accounting fill). The trailing-fill candidate is **not shipped**: versus that baseline it corrects 750 repeat counts but regresses 15 by one glyph. Core, native and browser checks passed; the paired Excel PDF comparison is the reason to hold promotion.
+**Shipped on `origin/master`: trailing numeric fill plus printed cell-text insets** (merge of `wip/excel-trailing-fill`, tip `b28c7d3c` + gate re-scope). Each cell's text pad comes from its own font, `ceil(digit/4)+4` dots (not the Normal font's). Right and centre alignment use hinted GDI widths, glyphs are set at hinted advances, and the fill count is `floor((cw - 2P + 2 - w)/a)`. That count is exact on all 4,140 measured Excel fill cells (`tools/excel-parity/print-inset-oracle.md`). Results versus bf132a48:
+- paired trailing gate PASS: 0 count errors, absolute 0.35 pt and all relative checks pass, browser equals native;
+- no-fill controls all moved toward Excel;
+- numeric-fill and text-pad gates pass (text-pad max error 0.229 pt, was 0.645), and print-helper tests 336/336.
 
-**Next experiment:** print plain positive, negative and zero numbers without fill, holding column width and workbook Normal font fixed. Measure number width and left/right insets independently across cell fonts, sizes and print scales; lock predictions on withheld combinations before changing the exporter. Rerun the paired trailing-fill gate before promotion. Border weight is ruled out across 1,080 fill cases; do not tune a border or per-font constant. On the WIP branch see `tools/excel-parity/print-border-fill-oracle.md` and `tools/excel-parity/print-fill-layout-gate.md`.
+**Next experiment:** derive the print fit / `###` cutoff from the same quantities. Today it is design-width advances plus a fitted half-digit + 0.875 pt intercept. Test `cw - 2P + k` dots with hinted widths on the existing hash-geometry and fit-cutoff sweeps. The trailing holdout's genuine-overflow cells at width 6.25 print 4 `#` where Excel prints 5 (pre-existing). Open: the pad of bold and italic faces is untested.
 
 Published branch tips below are already ancestors of the shipped runtime; they are checkpoints, not additional merge requests. All refs are on `origin`.
 

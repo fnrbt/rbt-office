@@ -422,7 +422,7 @@ let mutable private chartTextFont = "Calibri"
 
 let private text (s: string) (rect: Rect) (size: float) (color: string) (align: TextAlign) (vAlign: VerticalAlign) : PaintItem =
     DrawText { Text = s; Rect = rect; Color = color; FontSize = size; FontName = Some chartTextFont
-               Bold = false; Italic = false; PrintItalicEligible = false; PrintOverflowHashes = false; PrintHashSlots = 0; PrintHashCellWidth = 0.0; PrintFitText = ""; PrintFitPads = ""; PrintFitFullText = ""; PrintFitItalicEligible = false; Underline = false; UnderlineDouble = false; Strikethrough = false
+               Bold = false; Italic = false; PrintItalicEligible = false; PrintOverflowHashes = false; PrintHashSlots = 0; PrintHashCellWidth = 0.0; PrintGdiAlign = false; PrintFitText = ""; PrintFitPads = ""; PrintFitFullText = ""; PrintFitItalicEligible = false; Underline = false; UnderlineDouble = false; Strikethrough = false
                Align = align; VerticalAlign = vAlign; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Baseline = 0.0; Rotation = 0; Clip = None }
 
 let private axisColor = "#595959"
@@ -699,7 +699,7 @@ let buildSlicer (spec: SlicerSpec) (rect: Rect) : PaintItem list =
       yield StrokeRect ({ X = rect.X + 0.5; Y = rect.Y + 0.5; Width = rect.Width - 1.0; Height = rect.Height - 1.0 }, border, 1.0)
       // Caption (bold) + divider under the header.
       yield DrawText { Text = spec.Caption; Rect = { X = rect.X + 5.0; Y = rect.Y; Width = rect.Width - 10.0; Height = headerH }
-                       Color = "#595959"; FontSize = 11.0; FontName = Some spec.Font; Bold = true; Italic = false; PrintItalicEligible = false; PrintOverflowHashes = false; PrintHashSlots = 0; PrintHashCellWidth = 0.0; PrintFitText = ""; PrintFitPads = ""; PrintFitFullText = ""; PrintFitItalicEligible = false
+                       Color = "#595959"; FontSize = 11.0; FontName = Some spec.Font; Bold = true; Italic = false; PrintItalicEligible = false; PrintOverflowHashes = false; PrintHashSlots = 0; PrintHashCellWidth = 0.0; PrintGdiAlign = false; PrintFitText = ""; PrintFitPads = ""; PrintFitFullText = ""; PrintFitItalicEligible = false
                        Underline = false; UnderlineDouble = false; Strikethrough = false
                        Align = AlignLeft; VerticalAlign = VAlignMiddle; LineIndex = 0; LineCount = 1; BaselineShift = 0.0; Baseline = 0.0; Rotation = 0; Clip = None }
       yield VecPath ([ VMove (rect.X, bodyTop); VLine (rect.X + rect.Width, bodyTop) ], None, Some (border, 1.0))

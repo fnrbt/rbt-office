@@ -52,6 +52,21 @@ HOLDOUT_SHORT = ['N0_plain', 'N1_plain_0', 'S1_space_before', 'D1_dot_before', '
 HOLDOUT_WIDE = ['W_C1_currency_space', 'W_A1_accounting']
 SHORT_WIDTHS = ['9.25', '9.5', '9.75', '10', '10.25', '10.5', '10.75', '11']
 WIDE_WIDTHS = ['13', '13.25', '13.5', '13.75', '14', '14.25', '14.5']
+# Trailing-fill sweep: suffix-empty `*x` where the fill token ends the active section. Widths run
+# from where `0.00` itself stops fitting up through several fill-count transitions; each band is a
+# separate sheet because a landscape page cannot carry the whole 0.25-char sweep with its header.
+TRAIL_FORMATS = [
+    ('N1_plain_0', '0.00'),
+    ('S2_space_after', '0.00* '),
+    ('D2_dot_after', '0.00*.'),
+    ('F8_suffix_empty', '0.00*-;0.00'),
+]
+TRAIL_WIDTH_BANDS = [
+    ['5.5', '5.75', '6', '6.25', '6.5', '6.75', '7'],
+    ['7.25', '7.5', '7.75', '8', '8.25', '8.5', '8.75'],
+    ['9', '9.25', '9.5', '9.75', '10', '10.25', '10.5'],
+    ['10.75', '11', '11.25', '11.5', '11.75', '12'],
+]
 VALUES = [('pos', '1234.5'), ('neg', '-1234.5'), ('zero', '0')]
 ALIGNS = ['left', 'center', 'right']
 PALETTE = ['DDEBF7', 'FFF2CC', 'E2EFDA', 'FCE4D6', 'E4DFEC', 'D9E1F2', 'EDEDED', 'FFE699']
@@ -62,6 +77,12 @@ def attr(text):
 
 
 def build_set(name, face, size, scale):
+    if name == 'trail-train' or name == 'trail-holdout':
+        return [
+            (f'T{band + 1}_{align}', TRAIL_FORMATS, widths, align)
+            for band, widths in enumerate(TRAIL_WIDTH_BANDS)
+            for align in ALIGNS
+        ]
     if name == 'train':
         short = SHORT_FORMATS
         wide = WIDE_FORMATS
@@ -205,7 +226,8 @@ def build(out, cells_path, set_name, face, size, scale):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--set', required=True, choices=['train', 'holdout-georgia', 'holdout-tahoma'])
+    ap.add_argument('--set', required=True,
+                    choices=['train', 'holdout-georgia', 'holdout-tahoma', 'trail-train', 'trail-holdout'])
     ap.add_argument('--out', required=True)
     ap.add_argument('--cells', required=True)
     ap.add_argument('--face')
@@ -216,6 +238,8 @@ def main():
         'train': ('Aptos Narrow', 14.0, 100),
         'holdout-georgia': ('Georgia', 12.0, 75),
         'holdout-tahoma': ('Tahoma', 10.0, 100),
+        'trail-train': ('Aptos Narrow', 14.0, 100),
+        'trail-holdout': ('Arial', 11.0, 60),
     }[args.set]
     face = args.face or defaults[0]
     size = args.size or defaults[1]
