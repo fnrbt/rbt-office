@@ -40,6 +40,7 @@ let modules =
       Rbt.Spreadsheet.Functions.FnDatabase.moduleName, Rbt.Spreadsheet.Functions.FnDatabase.functions
       Rbt.Spreadsheet.Functions.FnEngineering.moduleName, Rbt.Spreadsheet.Functions.FnEngineering.functions
       Rbt.Spreadsheet.Functions.FnStatistical.moduleName, Rbt.Spreadsheet.Functions.FnStatistical.functions
+      Rbt.Spreadsheet.Functions.FnStatDist.moduleName, Rbt.Spreadsheet.Functions.FnStatDist.functions
       Rbt.Spreadsheet.Functions.FnFinancial.moduleName, Rbt.Spreadsheet.Functions.FnFinancial.functions
       Rbt.Spreadsheet.Functions.FnText.moduleName, Rbt.Spreadsheet.Functions.FnText.functions
       Rbt.Spreadsheet.Functions.FnArrays.moduleName, Rbt.Spreadsheet.Functions.FnArrays.functions
