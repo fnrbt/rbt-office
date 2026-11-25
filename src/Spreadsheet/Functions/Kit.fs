@@ -55,6 +55,19 @@ type Args(ev: FunctionEvaluator, args: Expr list, ctx: EvalContext) =
     /// Argument `i` as a number, `fallback` when it is not given.
     member this.NumberOr (i: int) (fallback: float) : Result<float, string> =
         if this.Supplied i then this.Number i else Ok fallback
+    /// Argument `i` as a number the way the functions that came from the
+    /// Analysis ToolPak (the bonds, the complex numbers, the engineering ones)
+    /// take it: a logical is #VALUE!, and a required argument left empty in
+    /// the call (`COUPDAYS(s,m,,0)`) #N/A.
+    member this.AtpNumber (i: int) : Result<float, string> =
+        if not (this.Supplied i) then Result.Error Err.na
+        else
+            match this.Value i with
+            | CellValue.Boolean _ -> Result.Error Err.value
+            | v -> coerceNumber v
+    /// `AtpNumber` of an optional argument, `fallback` when it is not given.
+    member this.AtpNumberOr (i: int) (fallback: float) : Result<float, string> =
+        if this.Supplied i then this.AtpNumber i else Ok fallback
     member this.Text (i: int) : Result<string, string> = coerceText (this.Value i)
     member this.Bool (i: int) : Result<bool, string> = coerceBool (this.Value i)
     member this.BoolOr (i: int) (fallback: bool) : Result<bool, string> =

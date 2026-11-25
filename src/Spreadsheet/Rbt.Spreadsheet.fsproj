@@ -29,6 +29,8 @@
     <Compile Include="Functions/FnText.fs" />
     <Compile Include="Functions/FnArrays.fs" />
     <Compile Include="Functions/FnInformation.fs" />
+    <Compile Include="Functions/FnBonds.fs" />
+    <Compile Include="Functions/FnComplex.fs" />
     <Compile Include="Functions/All.fs" />
     <Compile Include="Calc.fs" />
     <Compile Include="Recalc.fs" />

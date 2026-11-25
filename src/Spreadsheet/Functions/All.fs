@@ -12,4 +12,6 @@ let installed : bool =
     FnText.install ()
     FnArrays.install ()
     FnInformation.install ()
+    FnBonds.install ()
+    FnComplex.install ()
     true
