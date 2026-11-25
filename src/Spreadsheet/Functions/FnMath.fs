@@ -109,9 +109,9 @@ let functions : FunctionDef list =
     [ numeric1 "ACOT" (fun x -> numOk (Math.PI / 2.0 - Math.Atan x))
       numeric1 "ACOTH" (fun x -> if abs x <= 1.0 then fail Err.num else numOk (0.5 * Math.Log ((x + 1.0) / (x - 1.0))))
       numeric1 "COTH" (fun x -> if x = 0.0 then fail Err.div0 elif abs x >= trigLimit then fail Err.num else numOk (1.0 / Math.Tanh x))
-      numeric1 "CSC" (fun x -> if abs x >= trigLimit then fail Err.num elif x = 0.0 then fail Err.div0 else numOk (1.0 / Math.Sin x))
+      numeric1 "CSC" (fun x -> if abs x >= trigLimit then fail Err.num elif x = 0.0 then fail Err.div0 else (let v = Rbt.Spreadsheet.ExcelTrig.sin x in if v = 0.0 then fail Err.div0 else numOk (1.0 / v)))
       numeric1 "CSCH" (fun x -> if abs x >= trigLimit then fail Err.num elif x = 0.0 then fail Err.div0 else numOk (1.0 / Math.Sinh x))
-      numeric1 "SEC" (fun x -> if abs x >= trigLimit then fail Err.num else numOk (1.0 / Math.Cos x))
+      numeric1 "SEC" (fun x -> if abs x >= trigLimit then fail Err.num else (let v = Rbt.Spreadsheet.ExcelTrig.cos x in if v = 0.0 then fail Err.div0 else numOk (1.0 / v)))
       numeric1 "SECH" (fun x -> if abs x >= trigLimit then fail Err.num else numOk (1.0 / Math.Cosh x))
       numeric1 "SQRTPI" (fun x -> if x < 0.0 then fail Err.num else numOk (Math.Sqrt (x * Math.PI)))
       numeric1 "FACTDOUBLE" (fun x ->

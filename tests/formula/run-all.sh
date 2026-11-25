@@ -106,6 +106,7 @@ stages=(
     stage69-normal-ets-xml
     stage70-regex-trimrange-text
     stage71-rounding-multiples
+    stage72-gap-functions
     numbertext
 )
 

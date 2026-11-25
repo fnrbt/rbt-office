@@ -20,6 +20,7 @@
     <Compile Include="Pivot.fs" />
     <Compile Include="FunctionCatalog.fs" />
     <Compile Include="NormalDistribution.fs" />
+    <Compile Include="ExcelTrig.fs" />
     <Compile Include="Formula.fs" />
     <Compile Include="Functions/Kit.fs" />
     <Compile Include="Functions/FnMath.fs" />

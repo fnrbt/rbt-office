@@ -24,7 +24,6 @@ let private digitsText (value: CellValue) : Result<string, string> =
 /// The number written in `radix` with at most ten digits, a ten-digit one with
 /// its top digit's high bit set being negative (two's complement).
 let private parseTenDigits (radix: int) (text: string) : Result<float, string> =
-    let text = text.Trim()
     if text.Length > 10 then Result.Error Err.num
     else
         let digit (c: char) =
@@ -68,9 +67,14 @@ let private writeTenDigits (radix: int) (value: float) (places: float option) : 
 
 let private convert (name: string) (fromRadix: int) (toRadix: int) =
     scalar name 1 2 "|S" (fun a -> res {
+        // `places` first, 1 to 10 (as DEC2BIN and the others in Formula.fs): OCT2HEX(TRUE,11) is #NUM!.
+        let! places =
+            if a.Supplied 1 then
+                (match a.Value 1 with CellValue.Boolean _ -> Result.Error Err.value | v -> numberOf v)
+                |> Result.bind (fun p -> let p = truncate p in if p < 1.0 || p > 10.0 then Result.Error Err.num else Ok (Some p))
+            else Ok None
         let! text = digitsText (a.Value 0)
         let! value = parseTenDigits fromRadix text
-        let! places = if a.Supplied 1 then a.Number 1 |> Result.map Some else Ok None
         return! writeTenDigits toRadix value places })
 
 /// The largest number the bit functions take: 2^48 - 1.

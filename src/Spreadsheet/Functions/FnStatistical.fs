@@ -628,6 +628,8 @@ let functions : FunctionDef list =
                 r0 + (x - lower) / (upper - lower) * (rankOf upper - r0)
         return! numOk (truncateTo digits rank) })
       arrayed "MODE.MULT" 1 -1 "" (fun a -> res {
+        // A text or logical written as an argument is #VALUE!, as for MODE.SNGL.
+        do! check (a.Exprs |> Array.forall (function Expr.Str _ | Expr.Bool _ -> false | _ -> true)) Err.value
         let! xs = a.Numbers 0
         let found = modes xs
         do! check (found.Length > 0) Err.na

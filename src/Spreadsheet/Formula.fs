@@ -4037,7 +4037,8 @@ let varianceFold sample sqrtResult : Fold<CellValue, struct (string voption * in
             if (sample && n < 2) || n < 1 then CellValue.Error Err.div0
             else
                 let variance = m2 / (if sample then float (n - 1) else float n)
-                CellValue.Number (if sqrtResult then sqrt variance else variance) }
+                if Double.IsInfinity variance || Double.IsNaN variance then CellValue.Error Err.num
+                else CellValue.Number (if sqrtResult then sqrt variance else variance) }
 
 let devSqFold : Fold<CellValue, struct (string voption * int * float * float), CellValue> =
     { Init = struct (ValueNone, 0, 0.0, 0.0)
@@ -8283,7 +8284,9 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             if (sample && count64 < 2L) || count64 < 1L then err Err.div0
             else
                 let variance = varianceM2 / (if sample then float (count64 - 1L) else float count64)
-                CellValue.Number (if sqrtResult then sqrt variance else variance)
+                // Squares past the largest double are #NUM! (Excel 2019: STDEV({1E+200,2E+200,3E+200})).
+                if Double.IsInfinity variance || Double.IsNaN variance then err Err.num
+                else CellValue.Number (if sqrtResult then sqrt variance else variance)
         | "DEVSQ" -> if count = 0 then err Err.num else CellValue.Number varianceM2
         | "AVEDEV" ->
             if count = 0 then err Err.num
@@ -8423,7 +8426,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             if (sample && count < 2L) || count < 1L then err Err.div0
             else
                 let variance = m2 / (if sample then float (count - 1L) else float count)
-                CellValue.Number (if sqrtResult then sqrt variance else variance)
+                if Double.IsInfinity variance || Double.IsNaN variance then err Err.num
+                else CellValue.Number (if sqrtResult then sqrt variance else variance)
         | ValueNone -> CellValue.Number 0.0
     let tryArithmeticNumericAggregate sourceExpr =
         match numericBufferOfArithmeticValue sourceExpr with
@@ -12878,9 +12882,13 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         match argNum 0, (if nargs >= 2 then argNum 1 else Ok 10.0) with
         | Result.Error e, _ | _, Result.Error e -> err e
         | Ok x, Ok b -> if x <= 0.0 || b <= 0.0 || b = 1.0 then err Err.num else CellValue.Number (log x / log b)
-    | "SIN" -> unaryNum (sin >> CellValue.Number)
-    | "COS" -> unaryNum (cos >> CellValue.Number)
-    | "TAN" -> unaryNum (tan >> CellValue.Number)
+    // ExcelTrig: the x87's pi in the argument reduction, #NUM! from 2^27 (Excel 2019, bit for bit).
+    | "SIN" -> unaryNum (fun x -> if abs x >= ExcelTrig.limit then err Err.num else CellValue.Number (ExcelTrig.sin x))
+    | "COS" -> unaryNum (fun x -> if abs x >= ExcelTrig.limit then err Err.num else CellValue.Number (ExcelTrig.cos x))
+    | "TAN" ->
+        unaryNum (fun x ->
+            if abs x >= ExcelTrig.limit then err Err.num
+            else (let t = ExcelTrig.tan x in if Double.IsNaN t then err Err.div0 else CellValue.Number t))
     | "RADIANS" -> unaryNum (fun d -> CellValue.Number (d * Math.PI / 180.0))
     | "DEGREES" -> unaryNum (fun r -> CellValue.Number (r * 180.0 / Math.PI))
     | "QUOTIENT" ->
@@ -12961,6 +12969,8 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
             match tryRangeBinOpAggregate () with
             | ValueSome result -> result
             | ValueNone -> foldArgsIgnoringMissingCells (aVariantFold fnName) args ctx
+    // A text or logical written as an argument is #VALUE! (Excel 2019: MODE(1,1,"3") and MODE(1,1,TRUE)).
+    | "MODE" | "MODE.SNGL" when args |> List.exists (function Expr.Str _ | Expr.Bool _ -> true | _ -> false) -> err Err.value
     | "MODE" | "MODE.SNGL" ->
         match args with
         | [ sourceExpr ] ->
@@ -13021,8 +13031,11 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         if nargs < 2 then err Err.value else
         match argNum 1 with
         | Result.Error e -> err e
+        | Ok p when isQ && p < 0.0 -> err Err.num
         | Ok p ->
-            let k = if isQ then p / 4.0 else p
+            // QUARTILE's quart is truncated (Excel 2019: QUARTILE({1,2,3,4,5},2.7) is 3, 4.5 is the maximum;
+            // -0.5 is #NUM!).
+            let k = if isQ then Math.Truncate p / 4.0 else p
             let sourceExpr = argExpr 0
             match numericBufferOfArithmeticValue sourceExpr with
             | ValueSome (Result.Error e) -> err e
@@ -14168,9 +14181,12 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             | Ok days ->
                 for day in days do set.Add(int (floor day)) |> ignore
                 Ok set
+    // The Analysis ToolPak's base conversions (Excel 2019, 1,269 probe cells): the text as it is (a space
+    // is not a digit, #NUM!), "" is 0.
     let parseDigits (text: string) (radix: int) (maxDigits: int) : float option =
-        let t = text.Trim().ToUpperInvariant()
-        if t.Length = 0 || t.Length > maxDigits then None
+        let t = text.ToUpperInvariant()
+        if t.Length = 0 then Some 0.0
+        elif t.Length > maxDigits then None
         else
             let mutable value = 0.0
             let mutable valid = true
@@ -14203,10 +14219,12 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
                 if width < digits.Length || width > maxDigits then err Err.num
                 else CellValue.String (String.replicate (width - digits.Length) "0" + digits)
             | _ -> CellValue.String digits
+    // An argument of the base conversions as the Analysis ToolPak reads it: a logical is #VALUE!.
+    let atpRaw i = match argRaw i with CellValue.Boolean _ -> CellValue.Error Err.value | v -> v
     let fromBase radix maxDigits =
         if nargs <> 1 then err Err.value
         else
-            match argText 0 with
+            match coerceText (atpRaw 0) with
             | Result.Error e -> err e
             | Ok text ->
                 match parseDigits text radix maxDigits with
@@ -14215,9 +14233,19 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
     let toBase radix maxDigits =
         if nargs < 1 || nargs > 2 then err Err.value
         else
-            match argNum 0, (if supplied 1 then argNum 1 |> Result.map Some else Ok None) with
-            | Result.Error e, _ | _, Result.Error e -> err e
-            | Ok value, Ok places -> formatDigits value radix maxDigits places
+            // `places` is read first and must be 1 to 10 whatever the number (a negative one then ignores
+            // it): DEC2HEX(1/0,11) is #NUM!, DEC2HEX(-1,0) #NUM!, DEC2HEX("x",1/0) #DIV/0!.
+            let places =
+                if supplied 1 then
+                    coerceNumber (atpRaw 1)
+                    |> Result.bind (fun p -> let p = Math.Truncate p in if p < 1.0 || p > 10.0 then Result.Error Err.num else Ok (Some p))
+                else Ok None
+            match places with
+            | Result.Error e -> err e
+            | Ok places ->
+                match coerceNumber (atpRaw 0) with
+                | Result.Error e -> err e
+                | Ok value -> formatDigits value radix maxDigits places
     let bitOperation (op: int64 -> int64 -> int64) =
         if nargs <> 2 then err Err.value
         else
@@ -14415,10 +14443,21 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             if x > 20.0 then CellValue.Number 1.0
             elif x < -20.0 then CellValue.Number -1.0
             else (let a, b = exp x, exp (-x) in CellValue.Number ((a - b) / (a + b))))
-    | "ASINH" -> unary (fun x -> CellValue.Number (if x < 0.0 then -(log (-x + sqrt (x * x + 1.0))) else log (x + sqrt (x * x + 1.0))))
-    | "ACOSH" -> unary (fun x -> if x < 1.0 then err Err.num else CellValue.Number (log (x + sqrt (x * x - 1.0))))
-    | "ATANH" -> unary (fun x -> if x <= -1.0 || x >= 1.0 then err Err.num else CellValue.Number (0.5 * log ((1.0 + x) / (1.0 - x))))
-    | "COT" -> unary (fun x -> if x = 0.0 then err Err.div0 else finite (1.0 / Math.Tan x))
+    // ASINH and ACOSH as written (Excel 2019, every probe cell bit for bit): x * x overflows past 1E+154,
+    // and the result is #NUM!. ATANH: 1/2 ln((1+x)/(1-x)), which cancels for a small x, where Excel's
+    // value is the series (ATANH(1E-10) is 1E-10).
+    | "ASINH" -> unary (fun x -> finite (if x < 0.0 then -(log (-x + sqrt (x * x + 1.0))) else log (x + sqrt (x * x + 1.0))))
+    | "ACOSH" -> unary (fun x -> if x < 1.0 then err Err.num else finite (log (x + sqrt (x * x - 1.0))))
+    | "ATANH" ->
+        unary (fun x ->
+            if x <= -1.0 || x >= 1.0 then err Err.num
+            elif abs x < 1e-5 then (let x2 = x * x in CellValue.Number (x + x * x2 * (1.0 / 3.0 + x2 / 5.0)))
+            else CellValue.Number (0.5 * log ((1.0 + x) / (1.0 - x))))
+    | "COT" ->
+        unary (fun x ->
+            if x = 0.0 then err Err.div0
+            elif abs x >= ExcelTrig.limit then err Err.num
+            else (let t = ExcelTrig.tan x in if Double.IsNaN t then CellValue.Number 0.0 else finite (1.0 / t)))
     // ----- dates ------------------------------------------------------------
     | "DAYS360" ->
         if nargs < 2 then err Err.value
@@ -14525,6 +14564,15 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             | Ok pairs when pairs.Length = 0 -> err Err.div0
             | Ok pairs ->
                 let count, meanY, meanX, syy, sxx, sxy = regression pairs
+                // A sum of squares or products past the largest double is #NUM! for the function that uses it
+                // (Excel 2019: PEARSON and STEYX of {1E+200,2E+200,3E+200} are #NUM!, COVAR is a number).
+                let over (v: float) = Double.IsInfinity v || Double.IsNaN v
+                let uses =
+                    match fnName with
+                    | "COVAR" | "COVARIANCE.P" | "COVARIANCE.S" -> [ sxy ]
+                    | "SLOPE" | "INTERCEPT" -> [ sxx; sxy ]
+                    | _ -> [ sxx; syy; sxy ]
+                if uses |> List.exists over then err Err.num else
                 match fnName with
                 | "COVAR" | "COVARIANCE.P" -> CellValue.Number (sxy / count)
                 | "COVARIANCE.S" -> if count < 2.0 then err Err.div0 else CellValue.Number (sxy / (count - 1.0))
