@@ -382,6 +382,28 @@ for name, yr in [('TREND', 'H1:H10'), ('GROWTH', 'N1:N10')]:
     regression(name, ['H12:Q12', 'H13:Q13', '{11,12}'], 1, 2)
     regression(name, ['{5}', '{2}', '{3}'], 1, 1)
 
+# ----- second round (appended, so that the batches before the last keep their cells)
+# t near 0: where Excel's T.DIST turns into exactly 1/2.
+for t in [1e-9, 1e-8, 3e-8, 1e-7, 3e-7, 1e-6, 1e-5, 1e-4, 1e-3]:
+    for df in [1, 10, 1e6]:
+        add(call('T.DIST', [str(t), str(df), 'TRUE']))
+        add(call('T.DIST', [str(-t), str(df), 'TRUE']))
+        add(call('T.DIST.RT', [str(t), str(df)]))
+        add(call('T.DIST.2T', [str(t), str(df)]))
+# TINV beyond 1.
+for p in [1, 1.0000001, 1.5, 1.99, 1.9999999, 2, 2.01, 3]:
+    for df in [1, 4]:
+        add(call('TINV', [str(p), str(df)]))
+# The gamma function's first and last representable values.
+for x in [171.62, 171.624, 171.625, -170.6, -171.1, -175.5, 3e-308, -3e-308]:
+    add(call('GAMMA', [str(x)]))
+# A density at 0 for shape 1, the other legacy names.
+for f in ['GAMMADIST(0,1,1,FALSE)', 'CHIDIST(0,2)', 'BETADIST(0,1,1)', 'WEIBULL(0,1,2,FALSE)', 'EXPONDIST(0,2,FALSE)',
+          'POISSON(0,0,FALSE)', 'POISSON(3,0,TRUE)', 'BINOMDIST(0,0,1,FALSE)', 'BINOMDIST(0,5,1,FALSE)',
+          'BINOMDIST(5,5,0,FALSE)', 'BINOMDIST(0,5,0,FALSE)', 'NEGBINOMDIST(0,1,0.999999)',
+          'CRITBINOM(1000000,0.5,0.5)', 'BINOM.INV(5,0.5,0.03125)', 'BINOM.INV(5,0.5,0.03125000001)']:
+    add(f)
+
 cells = [(addr, value) for addr, value in DATA]
 os.makedirs(sys.argv[1], exist_ok=True)
 batches = [formulas[i:i + BATCH] for i in range(0, len(formulas), BATCH)]

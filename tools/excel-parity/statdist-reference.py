@@ -206,7 +206,7 @@ def dist(name, a, start):
     if name == 'T.DIST':
         n = trunc(g(1))
         if g(2) != 0:
-            return 1 - t_upper(n, g(0))
+            return t_upper(n, -g(0)) if g(0) < 0 else 1 - t_upper(n, g(0))
         return t_pdf(n, g(0))
     if name == 'T.DIST.2T':
         return min(D(1), 2 * t_upper(trunc(g(1)), g(0)))

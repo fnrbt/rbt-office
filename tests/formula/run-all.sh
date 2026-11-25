@@ -101,6 +101,7 @@ stages=(
     stage64-pivot-styles
     stage65-sparklines
     stage66-icon-sets
+    stage67-statistical-distributions
     numbertext
 )
 

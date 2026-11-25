@@ -177,7 +177,9 @@ let gammaFn (x: float) : float =
         let q = g / dh
         let ph, pl = twoProd q dh
         let q = q + ((g - ph) - pl - q * dl) / dh
-        scaleBy q -scale
+        // Below the normal doubles Excel's GAMMA is 0.
+        let g = scaleBy q -scale
+        if abs g < 2.2250738585072014e-308 then 0.0 else g
 
 /// x log(x / np) + np - x, accurately for x near np (Loader).
 let bd0 (x: float) (np: float) =
@@ -397,8 +399,16 @@ let tUpper (n: float) (t: float) =
         let x, y =
             if t2 > 1e300 then (n / abs t) / abs t, 1.0
             else n / (n + t2), t2 / (n + t2)
-        let i, _ = betaIJ (n / 2.0) 0.5 x y
-        if t > 0.0 then i / 2.0 else 1.0 - i / 2.0
+        // Excel works with x = n / (n + t^2): where that is 1 in doubles its
+        // tails are exactly 1/2 (T.DIST(1E-8, 1, TRUE) = 0.5).
+        if x = 1.0 then 0.5
+        // One degree of freedom: Excel's closed form I_x(1/2, 1/2) = (2/pi) asin(sqrt x).
+        elif n = 1.0 then
+            let i = 2.0 * Math.Asin (Math.Sqrt x) / Math.PI
+            if t > 0.0 then i / 2.0 else 1.0 - i / 2.0
+        else
+            let i, _ = betaIJ (n / 2.0) 0.5 x y
+            if t > 0.0 then i / 2.0 else 1.0 - i / 2.0
 
 /// P(0 < T <= t) for t >= 0: 1/2 - P(T > t), without the cancellation.
 let tCentral (n: float) (t: float) =
