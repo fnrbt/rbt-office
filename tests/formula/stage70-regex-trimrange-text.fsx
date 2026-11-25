@@ -289,6 +289,10 @@ for formula in [ "A1:.E10"; "A1.:E10"; "A1.:.E10"; "Sheet2!A1.:.B5"; "'My Sheet'
     | Result.Error message -> eq ("parses " + formula) message ""
 eq "parses to its function" (parseFormula "=A1.:E10" |> Result.map (function Function (name, [ RangeRef _ ]) -> name | _ -> "?")) (Ok "_TRO_LEADING")
 eq "the file's name prints as the operator" (parseFormula "=_xlfn._TRO_TRAILING(A1:E10)" |> Result.map exprToFormula) (Ok "A1:.E10")
+// a structure edit moves their references and keeps the operator as written
+eq "rows put in" (adjustFormulaTextForEdit (InsertRows (0, 2)) (fun _ -> true) "=SUM( A1.:.E10 )+1") "=SUM( A3.:.E12 )+1"
+eq "columns taken out" (adjustFormulaTextForEdit (DeleteCols (0, 1)) (fun _ -> true) "=ROWS(B1:.E10)") "=ROWS(A1:.D10)"
+eq "filled down" (shiftFormulaReferences 1 0 "=COUNTA(A1.:E10)") "=COUNTA(A2.:E11)"
 // in the file: TRIMRANGE calls (what Excel stores for the operators is not documented)
 eq "file form" (FormulaNames.fileFormula "=SUM(A1.:.E10)") "=SUM(_xlfn.TRIMRANGE(A1:E10,3,3))"
 eq "file form, sheet" (FormulaNames.fileFormula "='My S'!A:.A") "=_xlfn.TRIMRANGE('My S'!A:A,2,2)"

@@ -1,7 +1,9 @@
 ' cscript probe-phonetic.vbs BOOK.xlsx OUT.tsv: opens BOOK.xlsx in Excel and writes, for each cell of column A
 ' of the first sheet, the furigana Excel keeps for it (Phonetics.Count, each Phonetic's Start, Length and Text)
 ' and what PHONETIC() of it gives, then Excel's language settings (LanguageSettings: install, UI and whether
-' the East Asian editing languages are enabled). Run it with run-excel-vbs-on-vm.sh.
+' the East Asian editing languages are enabled). Run it with run-excel-vbs-on-vm.sh. (In the VM's Excel 2019 -
+' English, no East Asian editing language - Phonetics is not there: every cell's line says "Object required";
+' the language lines are phonetic-vm-language.tsv.)
 Set fso = CreateObject("Scripting.FileSystemObject")
 Set x = CreateObject("Excel.Application") : x.Visible = False : x.DisplayAlerts = False : x.AutomationSecurity = 3
 Set wb = x.Workbooks.Open(WScript.Arguments(0), 0, True)
