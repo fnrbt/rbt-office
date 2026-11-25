@@ -102,6 +102,7 @@ stages=(
     stage65-sparklines
     stage66-icon-sets
     stage67-statistical-distributions
+    stage68-bonds-complex-engineering
     numbertext
 )
 

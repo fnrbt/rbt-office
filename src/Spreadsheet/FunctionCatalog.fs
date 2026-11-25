@@ -11,22 +11,74 @@ open Fable.Core
 /// `Flags`: 1 volatile, 2 gives an array.
 type Entry = { Name: string; Module: string; Signature: string; Flags: int }
 
-let modules : string array = [| "Arrays"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text" |]
+let modules : string array = [| "Arrays"; "Bonds"; "Complex"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text" |]
 
 let entries : Entry array =
     [|
        { Name = "EXPAND"; Module = "Arrays"; Signature = ""; Flags = 2 }
        { Name = "WRAPCOLS"; Module = "Arrays"; Signature = ""; Flags = 2 }
        { Name = "WRAPROWS"; Module = "Arrays"; Signature = ""; Flags = 2 }
+       { Name = "ACCRINT"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "AMORDEGRC"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "AMORLINC"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPDAYBS"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPDAYS"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPDAYSNC"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPNCD"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPNUM"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COUPPCD"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "DURATION"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "MDURATION"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "ODDFPRICE"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "ODDFYIELD"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "ODDLPRICE"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "ODDLYIELD"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "PRICE"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "YIELD"; Module = "Bonds"; Signature = "|S"; Flags = 0 }
+       { Name = "COMPLEX"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMABS"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMAGINARY"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMARGUMENT"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCONJUGATE"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCOS"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCOSH"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCOT"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCSC"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMCSCH"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMDIV"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMEXP"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMLN"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMLOG10"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMLOG2"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMPOWER"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMPRODUCT"; Module = "Complex"; Signature = "|R"; Flags = 0 }
+       { Name = "IMREAL"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSEC"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSECH"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSIN"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSINH"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSQRT"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSUB"; Module = "Complex"; Signature = "|S"; Flags = 0 }
+       { Name = "IMSUM"; Module = "Complex"; Signature = "|R"; Flags = 0 }
+       { Name = "IMTAN"; Module = "Complex"; Signature = "|S"; Flags = 0 }
        { Name = "DSTDEV"; Module = "Database"; Signature = "RSR"; Flags = 0 }
        { Name = "DSTDEVP"; Module = "Database"; Signature = "RSR"; Flags = 0 }
        { Name = "DVAR"; Module = "Database"; Signature = "RSR"; Flags = 0 }
        { Name = "DVARP"; Module = "Database"; Signature = "RSR"; Flags = 0 }
+       { Name = "BESSELI"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "BESSELJ"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "BESSELK"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "BESSELY"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "BIN2HEX"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "BIN2OCT"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "BITLSHIFT"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "BITRSHIFT"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "CONVERT"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "DELTA"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "ERF"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "ERF.PRECISE"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "ERFC"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
+       { Name = "ERFC.PRECISE"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "GESTEP"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "HEX2BIN"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
        { Name = "HEX2OCT"; Module = "Engineering"; Signature = "|S"; Flags = 0 }
@@ -191,6 +243,10 @@ let private resolved () : JS.Promise<unit> = jsNative
 
 [<Emit("import(\"./Functions/FnArrays.js\").then((m) => { m.install(); })")>]
 let private loadFnArrays () : JS.Promise<unit> = jsNative
+[<Emit("import(\"./Functions/FnBonds.js\").then((m) => { m.install(); })")>]
+let private loadFnBonds () : JS.Promise<unit> = jsNative
+[<Emit("import(\"./Functions/FnComplex.js\").then((m) => { m.install(); })")>]
+let private loadFnComplex () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnDatabase.js\").then((m) => { m.install(); })")>]
 let private loadFnDatabase () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnEngineering.js\").then((m) => { m.install(); })")>]
@@ -212,6 +268,8 @@ let private loadFnText () : JS.Promise<unit> = jsNative
 let load (moduleName: string) : JS.Promise<unit> =
     match moduleName with
     | "Arrays" -> loadFnArrays ()
+    | "Bonds" -> loadFnBonds ()
+    | "Complex" -> loadFnComplex ()
     | "Database" -> loadFnDatabase ()
     | "Engineering" -> loadFnEngineering ()
     | "Financial" -> loadFnFinancial ()
