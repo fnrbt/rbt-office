@@ -4763,12 +4763,12 @@ let applyBin (op: string) (lv: CellValue) (rv: CellValue) : CellValue =
             | "-" -> (let x = a - b in if Double.IsInfinity x || Double.IsNaN x then err Err.num else CellValue.Number x)
             | "*" -> finiteProduct (a * b)
             | "/" -> if b > -minNormal && b < minNormal then err Err.div0 else finiteProduct (a / b)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b = 0)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b <> 0)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b < 0)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b > 0)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b <= 0)
-            | "{o}" -> CellValue.Boolean (compareNumbers a b >= 0)
+            | "=" -> CellValue.Boolean (compareNumbers a b = 0)
+            | "<>" -> CellValue.Boolean (compareNumbers a b <> 0)
+            | "<" -> CellValue.Boolean (compareNumbers a b < 0)
+            | ">" -> CellValue.Boolean (compareNumbers a b > 0)
+            | "<=" -> CellValue.Boolean (compareNumbers a b <= 0)
+            | ">=" -> CellValue.Boolean (compareNumbers a b >= 0)
             | _ -> applyBinGeneral op lv rv
         | _ -> applyBinGeneral op lv rv
     | _ -> applyBinGeneral op lv rv
