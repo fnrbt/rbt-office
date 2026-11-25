@@ -59,150 +59,77 @@ exception XmlError of string
 let private isXmlSpace (c: char) = c = ' ' || c = '\t' || c = '\n' || c = '\r'
 let private isNameStart (c: char) = Char.IsLetter c || c = '_' || c = ':' || int c > 127
 let private isNameChar (c: char) = isNameStart c || Char.IsDigit c || c = '-' || c = '.'
+let private isName (s: string) = s.Length > 0 && isNameStart s.[0] && Seq.forall isNameChar s
 
-/// The document node of `text`, or XmlError.
+/// The document node of `text`, or XmlError. The text is taken apart by the package readers' lexer
+/// (XmlDsl.XmlLexer); what it lets through that MSXML refuses is refused here: a name that is none, an
+/// attribute twice, text outside the root element, an XML declaration anywhere but first, a DOCTYPE.
 let parseXml (source: string) : XNode =
-    let s = source.Replace("\r\n", "\n").Replace('\r', '\n')
-    let n = s.Length
-    let mutable i = 0
     let fail () = raise (XmlError "malformed")
-    let peek (k: int) = if i + k < n then s.[i + k] else '\000'
-    let startsWith (t: string) = System.String.CompareOrdinal(s, i, t, 0, t.Length) = 0
-    let skipSpace () = while i < n && isXmlSpace s.[i] do i <- i + 1
-    let expect (t: string) = if startsWith t then i <- i + t.Length else fail ()
-    let readName () =
-        if i >= n || not (isNameStart s.[i]) then fail ()
-        let start = i
-        while i < n && isNameChar s.[i] do i <- i + 1
-        s.Substring(start, i - start)
-    let readUntil (t: string) =
-        let j = s.IndexOf(t, i, StringComparison.Ordinal)
-        if j < 0 then fail ()
-        let text = s.Substring(i, j - i)
-        i <- j + t.Length
-        text
-    let entity (sb: Text.StringBuilder) =
-        // at '&'
-        let j = s.IndexOf(';', i)
-        if j < 0 then fail ()
-        let name = s.Substring(i + 1, j - i - 1)
-        i <- j + 1
-        match name with
-        | "lt" -> sb.Append '<' |> ignore
-        | "gt" -> sb.Append '>' |> ignore
-        | "amp" -> sb.Append '&' |> ignore
-        | "quot" -> sb.Append '"' |> ignore
-        | "apos" -> sb.Append '\'' |> ignore
-        | _ when name.Length > 1 && name.[0] = '#' ->
-            let hex = name.[1] = 'x'
-            let digits = name.Substring(if hex then 2 else 1)
-            let mutable code = 0
-            if digits = "" || digits.Length > 8 then fail ()
-            for c in digits do
-                let d =
-                    if c >= '0' && c <= '9' then int c - int '0'
-                    elif hex && c >= 'a' && c <= 'f' then int c - int 'a' + 10
-                    elif hex && c >= 'A' && c <= 'F' then int c - int 'A' + 10
-                    else fail ()
-                code <- code * (if hex then 16 else 10) + d
-            if code <= 0 || code > 0x10FFFF || (code >= 0xD800 && code <= 0xDFFF) then fail ()
-            if code < 0x10000 then sb.Append(char code) |> ignore
-            else
-                let v = code - 0x10000
-                sb.Append(char (0xD800 + (v >>> 10))).Append(char (0xDC00 + (v &&& 0x3FF))) |> ignore
-        | _ -> fail ()
-    let misc (parent: XNode) =
-        // Comments, instructions and whitespace between the top-level parts.
-        let mutable go = true
-        while go do
-            skipSpace ()
-            if startsWith "<!--" then
-                i <- i + 4
-                parent.Children.Add(XNode(NodeKind.Comment, "", readUntil "-->", parent))
-            elif startsWith "<?" then
-                i <- i + 2
-                let target = readName ()
-                let body = readUntil "?>"
-                if target.Equals("xml", StringComparison.OrdinalIgnoreCase) then fail ()
-                parent.Children.Add(XNode(NodeKind.Instruction, target, body.TrimStart(), parent))
-            else go <- false
-    let rec element (parent: XNode) =
-        expect "<"
-        let name = readName ()
-        let node = XNode(NodeKind.Element, name, "", parent)
-        parent.Children.Add node
-        let seen = HashSet<string>()
-        let mutable openTag = true
-        while openTag do
-            let hadSpace = i < n && isXmlSpace s.[i]
-            skipSpace ()
-            if startsWith "/>" then
-                i <- i + 2
-                openTag <- false
-            elif peek 0 = '>' then
-                i <- i + 1
-                content node
-                expect "</"
-                if readName () <> name then fail ()
-                skipSpace ()
-                expect ">"
-                openTag <- false
-            else
-                if not hadSpace then fail ()
-                let attr = readName ()
-                skipSpace ()
-                expect "="
-                skipSpace ()
-                let quote = peek 0
-                if quote <> '"' && quote <> '\'' then fail ()
-                i <- i + 1
-                let sb = Text.StringBuilder()
-                while i < n && s.[i] <> quote do
-                    match s.[i] with
-                    | '<' -> fail ()
-                    | '&' -> entity sb
-                    | c when isXmlSpace c -> sb.Append ' ' |> ignore; i <- i + 1
-                    | c -> sb.Append c |> ignore; i <- i + 1
-                if i >= n then fail ()
-                i <- i + 1
-                if not (seen.Add attr) then fail ()
-                node.Attributes.Add(XNode(NodeKind.Attribute, attr, sb.ToString(), node))
-    and content (node: XNode) =
-        let sb = Text.StringBuilder()
-        let flush () =
-            if sb.Length > 0 then
-                let text = sb.ToString()
-                sb.Clear() |> ignore
-                // MSXML drops the text that is only whitespace.
-                if not (Seq.forall isXmlSpace text) then node.Children.Add(XNode(NodeKind.Text, "", text, node))
-        let mutable go = true
-        while go do
-            if i >= n then fail ()
-            match s.[i] with
-            | '<' ->
-                flush ()
-                if startsWith "</" then go <- false
-                elif startsWith "<!--" then
-                    i <- i + 4
-                    node.Children.Add(XNode(NodeKind.Comment, "", readUntil "-->", node))
-                elif startsWith "<![CDATA[" then
-                    i <- i + 9
-                    node.Children.Add(XNode(NodeKind.Text, "", readUntil "]]>", node))
-                elif startsWith "<?" then
-                    i <- i + 2
-                    let target = readName ()
-                    node.Children.Add(XNode(NodeKind.Instruction, target, (readUntil "?>").TrimStart(), node))
-                elif startsWith "<!" then fail ()
-                else element node
-            | '&' -> entity sb
-            | c -> sb.Append c |> ignore; i <- i + 1
+    let lexer = XmlDsl.XmlLexer(source, 0, source.Length)
     let doc = XNode(NodeKind.Document, "", "", null)
-    if startsWith "<?xml" && (i + 5 >= n || isXmlSpace s.[i + 5]) then readUntil "?>" |> ignore
-    misc doc
-    if not (startsWith "<") || startsWith "<!" then fail ()
-    element doc
-    misc doc
-    if i < n then fail ()
+    let mutable current = doc
+    let mutable rootSeen = false
+    let mutable first = true
+    let pending = Text.StringBuilder()
+    let flush () =
+        if pending.Length > 0 then
+            let text = pending.ToString()
+            pending.Clear() |> ignore
+            // MSXML drops the text that is only whitespace.
+            if not (Seq.forall isXmlSpace text) then current.Children.Add(XNode(NodeKind.Text, "", text, current))
+    let raw (opening: int) (closing: int) = source.Substring(lexer.Start + opening, lexer.End - lexer.Start - opening - closing)
+    let mutable go = true
+    try
+        while go do
+            let token = lexer.Next ()
+            let atFirst = first
+            first <- false
+            match token with
+            | XmlDsl.XmlToken.StartTag ->
+                flush ()
+                if obj.ReferenceEquals(current, doc) && rootSeen then fail ()
+                let name = lexer.Name
+                if not (isName name) then fail ()
+                let node = XNode(NodeKind.Element, name, "", current)
+                current.Children.Add node
+                let seen = HashSet<string>()
+                for a in 0 .. lexer.AttributeCount - 1 do
+                    let attr = lexer.AttributeName a
+                    if not (isName attr) || not (seen.Add attr) then fail ()
+                    node.Attributes.Add(XNode(NodeKind.Attribute, attr, lexer.AttributeValue a, node))
+                if obj.ReferenceEquals(current, doc) then rootSeen <- true
+                if not lexer.SelfClosing then current <- node
+            | XmlDsl.XmlToken.EndTag ->
+                flush ()
+                current <- current.Parent
+            | XmlDsl.XmlToken.Text ->
+                if obj.ReferenceEquals(current, doc) then (if not lexer.TextIsBlank then fail ())
+                else pending.Append(lexer.TextValue ()) |> ignore
+            | XmlDsl.XmlToken.CData ->
+                if obj.ReferenceEquals(current, doc) then fail ()
+                flush ()
+                current.Children.Add(XNode(NodeKind.Text, "", lexer.TextValue (), current))
+            | XmlDsl.XmlToken.Comment ->
+                flush ()
+                current.Children.Add(XNode(NodeKind.Comment, "", (raw 4 3).Replace("\r\n", "\n").Replace('\r', '\n'), current))
+            | XmlDsl.XmlToken.Instruction ->
+                flush ()
+                let body = (raw 2 2).Replace("\r\n", "\n").Replace('\r', '\n')
+                let mutable k = 0
+                while k < body.Length && not (isXmlSpace body.[k]) do k <- k + 1
+                let target = body.Substring(0, k)
+                if not (isName target) then fail ()
+                if target.Equals("xml", StringComparison.OrdinalIgnoreCase) then
+                    // The XML declaration: first in the text, and nowhere else.
+                    if not (atFirst && lexer.Start = 0 && target = "xml") then fail ()
+                else current.Children.Add(XNode(NodeKind.Instruction, target, body.Substring(k).TrimStart(), current))
+            | XmlDsl.XmlToken.EndOfText -> go <- false
+            | _ -> fail ()
+    with
+    | XmlError _ -> reraise ()
+    | _ -> fail ()
+    if not (obj.ReferenceEquals(current, doc)) || not rootSeen then fail ()
     // Document order.
     let mutable order = 0
     let rec number (x: XNode) =
