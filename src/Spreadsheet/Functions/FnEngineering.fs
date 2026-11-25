@@ -88,6 +88,9 @@ let private shift (name: string) (left: bool) =
         do! check (result <= bitLimit) Err.num
         return CellValue.Number result })
 
+/// A result as Excel holds it: no denormal numbers (ERFC(27) is 0).
+let private held (x: float) = if abs x < 2.2250738585072014E-308 then 0.0 else x
+
 // --- The error function ------------------------------------------------------------------
 // fdlibm's erf and erfc (s_erf.c), accurate to an ulp, as Excel's are.
 
@@ -344,7 +347,7 @@ let private bessel (name: string) (positiveX: bool) (f: int -> float -> float) =
         let n = truncate n
         do! check (name = "BESSELK" || abs x < 134217728.0) Err.num
         do! check (not positiveX || x > 0.0) Err.num
-        return! numOk (f (int n) x) })
+        return! numOk (held (f (int n) x)) })
 
 // --- CONVERT ---------------------------------------------------------------------------------
 // Excel's unit table: each unit's category, its size in the category's base
@@ -610,18 +613,18 @@ let functions : FunctionDef list =
         let! lower = a.AtpNumber 0
         if a.Supplied 1 then
             let! upper = a.AtpNumber 1
-            return! numOk (erfBetween lower upper)
+            return! numOk (held (erfBetween lower upper))
         elif a.Count > 1 then return! fail Err.na
-        else return! numOk (erf lower) })
+        else return! numOk (held (erf lower)) })
       scalar "ERF.PRECISE" 1 1 "|S" (fun a -> res {
         let! x = a.AtpNumber 0
-        return! numOk (erf x) })
+        return! numOk (held (erf x)) })
       scalar "ERFC" 1 1 "|S" (fun a -> res {
         let! x = a.AtpNumber 0
-        return! numOk (erfc x) })
+        return! numOk (held (erfc x)) })
       scalar "ERFC.PRECISE" 1 1 "|S" (fun a -> res {
         let! x = a.AtpNumber 0
-        return! numOk (erfc x) })
+        return! numOk (held (erfc x)) })
       bessel "BESSELI" false besselI
       bessel "BESSELJ" false besselJ
       bessel "BESSELK" true besselK
