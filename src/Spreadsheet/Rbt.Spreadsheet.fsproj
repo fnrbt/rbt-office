@@ -25,6 +25,7 @@
     <Compile Include="Functions/FnDatabase.fs" />
     <Compile Include="Functions/FnEngineering.fs" />
     <Compile Include="Functions/FnStatistical.fs" />
+    <Compile Include="Functions/FnStatDist.fs" />
     <Compile Include="Functions/FnFinancial.fs" />
     <Compile Include="Functions/FnText.fs" />
     <Compile Include="Functions/FnArrays.fs" />
