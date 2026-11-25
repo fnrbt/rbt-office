@@ -8,6 +8,7 @@ let installed : bool =
     FnDatabase.install ()
     FnEngineering.install ()
     FnStatistical.install ()
+    FnStatDist.install ()
     FnFinancial.install ()
     FnText.install ()
     FnArrays.install ()

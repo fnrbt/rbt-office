@@ -11,7 +11,7 @@ open Fable.Core
 /// `Flags`: 1 volatile, 2 gives an array.
 type Entry = { Name: string; Module: string; Signature: string; Flags: int }
 
-let modules : string array = [| "Arrays"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Statistical"; "Text" |]
+let modules : string array = [| "Arrays"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text" |]
 
 let entries : Entry array =
     [|
@@ -88,12 +88,71 @@ let entries : Entry array =
        { Name = "SUMX2MY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
        { Name = "SUMX2PY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
        { Name = "SUMXMY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
+       { Name = "BETA.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BETA.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BETADIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BETAINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BINOM.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BINOM.DIST.RANGE"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BINOM.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "BINOMDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHIDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHIINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHISQ.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHISQ.DIST.RT"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHISQ.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHISQ.INV.RT"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CHISQ.TEST"; Module = "Distributions"; Signature = "RR"; Flags = 0 }
+       { Name = "CHITEST"; Module = "Distributions"; Signature = "RR"; Flags = 0 }
+       { Name = "CONFIDENCE.T"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "CRITBINOM"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "EXPON.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "EXPONDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "F.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "F.DIST.RT"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "F.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "F.INV.RT"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "F.TEST"; Module = "Distributions"; Signature = "RR"; Flags = 0 }
+       { Name = "FDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "FINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "FTEST"; Module = "Distributions"; Signature = "RR"; Flags = 0 }
+       { Name = "GAMMA"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMA.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMA.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMADIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMAINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMALN"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "GAMMALN.PRECISE"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "HYPGEOM.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "HYPGEOMDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "LOGINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "LOGNORM.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "LOGNORM.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "LOGNORMDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "NEGBINOM.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "NEGBINOMDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "POISSON"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "POISSON.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.DIST.2T"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.DIST.RT"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.INV.2T"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "T.TEST"; Module = "Distributions"; Signature = "RRSS"; Flags = 0 }
+       { Name = "TDIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "TINV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "TTEST"; Module = "Distributions"; Signature = "RRSS"; Flags = 0 }
+       { Name = "WEIBULL"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
+       { Name = "WEIBULL.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
        { Name = "CONFIDENCE"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "CONFIDENCE.NORM"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHER"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHERINV"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "GAUSS"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
+       { Name = "GROWTH"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "KURT"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
+       { Name = "LINEST"; Module = "Statistical"; Signature = ""; Flags = 2 }
+       { Name = "LOGEST"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "MODE.MULT"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "PERCENTILE.EXC"; Module = "Statistical"; Signature = "RS"; Flags = 0 }
        { Name = "PERCENTRANK.EXC"; Module = "Statistical"; Signature = "RSS"; Flags = 0 }
@@ -107,6 +166,7 @@ let entries : Entry array =
        { Name = "STANDARDIZE"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "STDEVA"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
        { Name = "STDEVPA"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
+       { Name = "TREND"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "TRIMMEAN"; Module = "Statistical"; Signature = "RS"; Flags = 0 }
        { Name = "VARA"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
        { Name = "VARPA"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
@@ -141,6 +201,8 @@ let private loadFnFinancial () : JS.Promise<unit> = jsNative
 let private loadFnInformation () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnMath.js\").then((m) => { m.install(); })")>]
 let private loadFnMath () : JS.Promise<unit> = jsNative
+[<Emit("import(\"./Functions/FnStatDist.js\").then((m) => { m.install(); })")>]
+let private loadFnStatDist () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnStatistical.js\").then((m) => { m.install(); })")>]
 let private loadFnStatistical () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnText.js\").then((m) => { m.install(); })")>]
@@ -155,6 +217,7 @@ let load (moduleName: string) : JS.Promise<unit> =
     | "Financial" -> loadFnFinancial ()
     | "Information" -> loadFnInformation ()
     | "Math" -> loadFnMath ()
+    | "Distributions" -> loadFnStatDist ()
     | "Statistical" -> loadFnStatistical ()
     | "Text" -> loadFnText ()
     | _ -> resolved ()
