@@ -263,7 +263,297 @@ let private trend (exponential: bool) (a: Args) : Result<CellValue[][], string> 
             return [| Array.init cols (fun c -> shown (predict sol (Array.init k (fun j -> fresh.[j].[c])))) |] }
 
 
+// ----- FORECAST.ETS and its kin -------------------------------------------------
+//
+// Additive error, trend and season (AAA) exponential smoothing in the error
+// correction form, as Excel 2016+ describes it. Measured in Excel 2019
+// (tools/excel-parity/make-ets-probe.py):
+//  - Without a season the model is Excel's exactly: the level starts at the
+//    first value, the trend at the least-squares slope of the whole series;
+//    l = l + b + alpha e, b = b + beta e (beta multiplies the error, not the
+//    level's change); the errors from the second point on, the first counted
+//    as 0 in MAE, RMSE, SMAPE; MASE against the naive one-step forecast.
+//    Given Excel's alpha and beta this reproduces its statistics and
+//    forecasts to the last digit (for 8 or more points; 4 and 5 points start
+//    the trend otherwise).
+//  - How Excel chooses alpha, beta and gamma is not reproduced: its values lie
+//    on a coarse lattice (0.001 apart from 1/n-like points: 0.002, 0.126,
+//    0.251, 1/6, 0.5, 0.501, 0.75, 0.998 ...) and are not the minimum of the
+//    in-sample squared or absolute errors. Here they minimize the squared
+//    errors over that range, by a lattice search refined coordinate-wise.
+//  - The season's start, the detection of its length (here the strongest
+//    autocorrelation of the detrended series) and the confidence interval's
+//    spread past one step are this module's, not measured.
+//  - The rules of the arguments are Excel's: values and timeline of the same
+//    count (#N/A); points without a number left out; the timeline sorted, its
+//    step the least difference; repeated dates aggregated (1 AVERAGE, 2 COUNT,
+//    3 COUNTA, 4 MAX, 5 MEDIAN, 6 MIN, 7 SUM; else #NUM!); missing steps
+//    completed (1 linear interpolation, 0 zeros; else #NUM!); seasonality 0,
+//    1 (detect) or a whole number (else #NUM!; 8761 too), a season too long
+//    for the data dropped; a target before the timeline #NUM!, on it the
+//    series' value; statistic_type 1 to 8, confidence_level 0 <= c < 1.
+
+type private EtsFit =
+    { Alpha: float; Beta: float; Gamma: float; Season: int
+      Level: float; Trend: float; Seasonals: float[]; Errors: float[]; Fitted: float[]
+      Series: float[]; Start: float; Step: float }
+
+/// The values on a regular timeline: (series, first time, step).
+let private etsSeries (a: Args) (vi: int) (ti: int) (completion: float) (aggregation: float) : Result<float[] * float * float, string> =
+    let vs = a.Flat vi
+    let ts = a.Flat ti
+    if vs.Length <> ts.Length then Result.Error Err.na
+    else
+        let pairs =
+            [| for k in 0 .. vs.Length - 1 do
+                 match ts.[k], vs.[k] with
+                 | CellValue.Number t, v -> yield t, v
+                 | _ -> () |]
+        match pairs |> Array.tryPick (fun (_, v) -> match v with CellValue.Error e -> Some e | _ -> None) with
+        | Some e -> Result.Error e
+        | None ->
+        let groups = pairs |> Array.groupBy fst |> Array.sortBy fst
+        if groups.Length < 2 then Result.Error Err.num
+        else
+            let times = groups |> Array.map fst
+            let step = Array.init (times.Length - 1) (fun k -> times.[k + 1] - times.[k]) |> Array.min
+            let aggregate (items: CellValue[]) =
+                let nums = items |> Array.choose (fun v -> match v with CellValue.Number x -> Some x | _ -> None)
+                match int aggregation with
+                | 2 -> Some (float nums.Length)
+                | 3 -> Some (float (items |> Array.filter (fun v -> match v with CellValue.Empty -> false | _ -> true) |> Array.length))
+                | _ when nums.Length = 0 -> None
+                | 4 -> Some (Array.max nums)
+                | 5 -> let s = Array.sort nums in Some (if s.Length % 2 = 1 then s.[s.Length / 2] else (s.[s.Length / 2 - 1] + s.[s.Length / 2]) / 2.0)
+                | 6 -> Some (Array.min nums)
+                | 7 -> Some (Array.sum nums)
+                | _ -> Some (Array.average nums)
+            let count = int (Math.Round ((times.[times.Length - 1] - times.[0]) / step)) + 1
+            if count > 100000 then Result.Error Err.num
+            else
+                let slots : float option[] = Array.create count None
+                for (t, items) in groups do
+                    let k = int (Math.Round ((t - times.[0]) / step))
+                    slots.[k] <- aggregate (items |> Array.map snd)
+                // Completion: linear between the known neighbours, or zeros.
+                let ys = Array.zeroCreate count
+                let known = [| for k in 0 .. count - 1 do if slots.[k].IsSome then yield k |]
+                if known.Length < 2 then Result.Error Err.num
+                else
+                    for k in 0 .. count - 1 do
+                        ys.[k] <-
+                            match slots.[k] with
+                            | Some v -> v
+                            | None when completion = 0.0 -> 0.0
+                            | None ->
+                                let lo = known |> Array.filter (fun j -> j < k)
+                                let hi = known |> Array.filter (fun j -> j > k)
+                                match lo, hi with
+                                | [||], _ -> slots.[hi.[0]].Value
+                                | _, [||] -> slots.[lo.[lo.Length - 1]].Value
+                                | _ ->
+                                    let j0, j1 = lo.[lo.Length - 1], hi.[0]
+                                    let v0, v1 = slots.[j0].Value, slots.[j1].Value
+                                    v0 + (v1 - v0) * float (k - j0) / float (j1 - j0)
+                    Ok (ys, times.[0], step)
+
+let private olsLine (ys: float[]) =
+    let n = float ys.Length
+    let mx = (n - 1.0) / 2.0
+    let my = Array.average ys
+    let mutable sxy = 0.0
+    let mutable sxx = 0.0
+    for i in 0 .. ys.Length - 1 do
+        sxy <- sxy + (float i - mx) * (ys.[i] - my)
+        sxx <- sxx + (float i - mx) * (float i - mx)
+    let slope = if sxx = 0.0 then 0.0 else sxy / sxx
+    my - slope * mx, slope
+
+/// The smoothing of ys with the parameters: the final states and the one-step errors.
+let private etsRun (ys: float[]) (m: int) (alpha: float) (beta: float) (gamma: float) =
+    let n = ys.Length
+    let c, slope = olsLine ys
+    let errors = Array.zeroCreate n
+    let fitted = Array.copy ys
+    if m = 0 then
+        let mutable l = ys.[0]
+        let mutable b = slope
+        for i in 1 .. n - 1 do
+            let f = l + b
+            let e = ys.[i] - f
+            fitted.[i] <- f
+            errors.[i] <- e
+            l <- l + b + alpha * e
+            b <- b + beta * e
+        l, b, [||], errors, fitted
+    else
+        // The first season from the detrended series, averaged over the whole seasons.
+        let full = max 1 (n / m)
+        let seasonal = Array.init m (fun p ->
+            let vals = [| for j in 0 .. full - 1 do let i = j * m + p in if i < n then yield ys.[i] - (c + slope * float i) |]
+            Array.average vals)
+        let mean = Array.average seasonal
+        let s = ResizeArray(seasonal |> Array.map (fun v -> v - mean))
+        let mutable l = c + slope * float (m - 1)
+        let mutable b = slope
+        for i in m .. n - 1 do
+            let f = l + b + s.[i - m]
+            let e = ys.[i] - f
+            fitted.[i] <- f
+            errors.[i] <- e
+            l <- l + b + alpha * e
+            b <- b + beta * e
+            s.Add(s.[i - m] + gamma * e)
+        l, b, s.ToArray(), errors, fitted
+
+let private sse (errors: float[]) = errors |> Array.sumBy (fun e -> e * e)
+
+/// The parameters with the least squared errors: a lattice, then coordinate refinement.
+let private etsFit (ys: float[]) (m: int) (start: float) (step: float) : EtsFit =
+    let lattice = [| 0.001; 0.01; 0.05; 0.1; 0.2; 0.3; 0.4; 0.5; 0.6; 0.7; 0.8; 0.9; 0.999 |]
+    let cost (p: float[]) = let _, _, _, e, _ = etsRun ys m p.[0] p.[1] p.[2] in sse e
+    let gammas = if m = 0 then [| 0.0 |] else lattice
+    let mutable best = [| 0.5; 0.001; (if m = 0 then 0.0 else 0.001) |]
+    let mutable bestCost = cost best
+    for a in lattice do
+        for b in lattice do
+            for g in gammas do
+                let p = [| a; b; g |]
+                let c = cost p
+                if c < bestCost then
+                    best <- p
+                    bestCost <- c
+    let dims = if m = 0 then 2 else 3
+    let mutable delta = 0.05
+    while delta >= 0.0005 do
+        let mutable improved = true
+        while improved do
+            improved <- false
+            for d in 0 .. dims - 1 do
+                for sign in [ -1.0; 1.0 ] do
+                    let p = Array.copy best
+                    p.[d] <- max 0.001 (min 0.999 (p.[d] + sign * delta))
+                    let c = cost p
+                    if c < bestCost - 1e-12 * (1.0 + bestCost) then
+                        best <- p
+                        bestCost <- c
+                        improved <- true
+        delta <- delta / 2.0
+    let l, b, s, e, f = etsRun ys m best.[0] best.[1] best.[2]
+    { Alpha = best.[0]; Beta = best.[1]; Gamma = (if m = 0 then 2.220446049250313e-16 else best.[2]); Season = m
+      Level = l; Trend = b; Seasonals = s; Errors = e; Fitted = f; Series = ys; Start = start; Step = step }
+
+/// The season length found in ys: the lag of the strongest autocorrelation of
+/// the detrended series, when it is clear (above 0.5 and a peak), else 0.
+let private detectSeason (ys: float[]) =
+    let n = ys.Length
+    let c, slope = olsLine ys
+    let r = Array.init n (fun i -> ys.[i] - (c + slope * float i))
+    let var = r |> Array.sumBy (fun v -> v * v)
+    if var = 0.0 || n < 6 then 0
+    else
+        let acf k = (Array.init (n - k) (fun i -> r.[i] * r.[i + k]) |> Array.sum) / var
+        let maxLag = min 8760 (n / 2)
+        let mutable best = 0
+        let mutable bestValue = 0.5
+        for k in 2 .. maxLag do
+            let v = acf k
+            if v > bestValue && v >= acf (k - 1) && (k + 1 > n - 1 || v >= acf (k + 1)) then
+                best <- k
+                bestValue <- v
+        best
+
+/// The arguments shared by the four functions, from index `first`:
+/// seasonality (when `withSeason`), data_completion, aggregation; the fit.
+let private etsArgs (a: Args) (vi: int) (ti: int) (first: int) (withSeason: bool) : Result<EtsFit, string> = res {
+    let i = if withSeason then first + 1 else first
+    let! seasonality = if withSeason then a.NumberOr first 1.0 else Ok 1.0
+    let! completion = a.NumberOr i 1.0
+    let! aggregation = a.NumberOr (i + 1) 1.0
+    do! check (seasonality >= 0.0 && seasonality = Math.Floor seasonality) Err.num
+    do! check (completion = 0.0 || completion = 1.0) Err.num
+    do! check (aggregation >= 1.0 && aggregation <= 7.0 && aggregation = Math.Floor aggregation) Err.num
+    let! ys, start, step = etsSeries a vi ti completion aggregation
+    let m =
+        match int seasonality with
+        | 1 -> detectSeason ys
+        | k -> k
+    // A season needs two of it in the data.
+    let m = if m >= 2 && 2 * m <= ys.Length then m else 0
+    return etsFit ys m start step }
+
+/// The forecast h steps (a real number) after the last point.
+let private etsForecast (fit: EtsFit) (target: float) : Result<float, string> =
+    let n = fit.Series.Length
+    let pos = (target - fit.Start) / fit.Step
+    if pos < 0.0 then Result.Error Err.num
+    elif pos <= float (n - 1) then
+        let k = int (Math.Floor pos)
+        if k >= n - 1 then Ok fit.Series.[n - 1]
+        else Ok (fit.Series.[k] + (fit.Series.[k + 1] - fit.Series.[k]) * (pos - float k))
+    else
+        let h = pos - float (n - 1)
+        let seasonal =
+            if fit.Season = 0 then 0.0
+            else
+                let s = fit.Seasonals
+                let k = int (Math.Ceiling h)
+                let idx = s.Length - fit.Season + ((k - 1) % fit.Season)
+                s.[idx]
+        Ok (fit.Level + h * fit.Trend + seasonal)
+
+let private etsStatistic (fit: EtsFit) (kind: int) =
+    let n = float fit.Series.Length
+    let errs = fit.Errors
+    match kind with
+    | 1 -> fit.Alpha
+    | 2 -> fit.Beta
+    | 3 -> fit.Gamma
+    | 4 ->
+        let ys = fit.Series
+        let naive = (Array.init (ys.Length - 1) (fun i -> abs (ys.[i + 1] - ys.[i])) |> Array.sum) / (n - 1.0)
+        let mae = (errs |> Array.sumBy abs) / n
+        if naive = 0.0 then 0.0 else mae / naive
+    | 5 ->
+        (Array.init errs.Length (fun i ->
+            let d = (abs fit.Series.[i] + abs fit.Fitted.[i]) / 2.0
+            if d = 0.0 then 0.0 else abs errs.[i] / d) |> Array.sum) / n
+    | 6 -> (errs |> Array.sumBy abs) / n
+    | 7 -> Math.Sqrt (sse errs / n)
+    | _ -> fit.Step
+
+let private etsFunctions : FunctionDef list =
+    [ scalar "FORECAST.ETS" 3 6 "SRRSSS" (fun a -> res {
+        let! target = a.Number 0
+        let! fit = etsArgs a 1 2 3 true
+        let! v = etsForecast fit target
+        return! numOk v })
+      scalar "FORECAST.ETS.CONFINT" 3 7 "SRRSSSS" (fun a -> res {
+        let! target = a.Number 0
+        let! level = a.NumberOr 3 0.95
+        do! check (level >= 0.0 && level < 1.0) Err.num
+        let! fit = etsArgs a 1 2 4 true
+        let! _ = etsForecast fit target
+        let n = fit.Series.Length
+        let h = max 1.0 (Math.Ceiling ((target - fit.Start) / fit.Step - float (n - 1)))
+        let rmse = Math.Sqrt (sse fit.Errors / float n)
+        let al, be = fit.Alpha, fit.Beta
+        // The spread of the h-step error of the AAN model (Hyndman et al.).
+        let factor = 1.0 + (h - 1.0) * (al * al + al * be * h + be * be * h * (2.0 * h - 1.0) / 6.0)
+        let z = NormalDistribution.quantile (0.5 + level / 2.0)
+        return! numOk (if level = 0.0 then 0.0 else z * rmse * Math.Sqrt factor) })
+      scalar "FORECAST.ETS.SEASONALITY" 2 4 "RRSS" (fun a -> res {
+        let! fit = etsArgs a 0 1 2 false
+        return! numOk (float fit.Season) })
+      scalar "FORECAST.ETS.STAT" 3 6 "RRSSSS" (fun a -> res {
+        let! kind = a.Number 2
+        let kind = truncate kind
+        do! check (kind >= 1.0 && kind <= 8.0) Err.num
+        let! fit = etsArgs a 0 1 3 true
+        return! numOk (etsStatistic fit (int kind)) }) ]
+
 let functions : FunctionDef list =
+    etsFunctions @
     [ arrayed "LINEST" 1 4 "" (linest false)
       arrayed "LOGEST" 1 4 "" (linest true)
       arrayed "TREND" 1 4 "" (trend false)

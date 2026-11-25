@@ -201,6 +201,10 @@ let entries : Entry array =
        { Name = "CONFIDENCE.NORM"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHER"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHERINV"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
+       { Name = "FORECAST.ETS"; Module = "Statistical"; Signature = "SRRSSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.CONFINT"; Module = "Statistical"; Signature = "SRRSSSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.SEASONALITY"; Module = "Statistical"; Signature = "RRSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.STAT"; Module = "Statistical"; Signature = "RRSSSS"; Flags = 0 }
        { Name = "GAUSS"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "GROWTH"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "KURT"; Module = "Statistical"; Signature = "|R"; Flags = 0 }

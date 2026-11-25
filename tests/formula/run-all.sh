@@ -103,6 +103,7 @@ stages=(
     stage66-icon-sets
     stage67-statistical-distributions
     stage68-bonds-complex-engineering
+    stage69-normal-ets-xml
     numbertext
 )
 
