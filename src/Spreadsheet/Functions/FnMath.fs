@@ -161,6 +161,12 @@ let functions : FunctionDef list =
       scalar "FLOOR.MATH" 1 3 "|S" (fun a -> roundToMultiple false a (Some 2))
       scalar "CEILING.PRECISE" 1 2 "|S" (fun a -> roundToMultiple true a None)
       scalar "ISO.CEILING" 1 2 "|S" (fun a -> roundToMultiple true a None)
+      // ECMA.CEILING is CEILING (Excel 2019: the same value or error as CEILING on 154 probe pairs; it takes
+      // both arguments, a formula with one Excel does not accept).
+      scalar "ECMA.CEILING" 2 2 "|S" (fun a -> res {
+        let! x = a.Number 0
+        let! significance = a.Number 1
+        return a.Ev.Call "CEILING" [ Expr.Number x; Expr.Number significance ] a.Ctx })
       scalar "FLOOR.PRECISE" 1 2 "|S" (fun a -> roundToMultiple false a None)
       numeric2 "COMBINA" (fun n k ->
         let n = truncate n

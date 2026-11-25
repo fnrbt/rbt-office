@@ -105,6 +105,7 @@ stages=(
     stage68-bonds-complex-engineering
     stage69-normal-ets-xml
     stage70-regex-trimrange-text
+    stage71-rounding-multiples
     numbertext
 )
 

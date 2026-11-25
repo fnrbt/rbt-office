@@ -126,6 +126,7 @@ let entries : Entry array =
        { Name = "CSC"; Module = "Math"; Signature = "|S"; Flags = 0 }
        { Name = "CSCH"; Module = "Math"; Signature = "|S"; Flags = 0 }
        { Name = "DECIMAL"; Module = "Math"; Signature = "|S"; Flags = 0 }
+       { Name = "ECMA.CEILING"; Module = "Math"; Signature = "|S"; Flags = 0 }
        { Name = "FACTDOUBLE"; Module = "Math"; Signature = "|S"; Flags = 0 }
        { Name = "FLOOR.MATH"; Module = "Math"; Signature = "|S"; Flags = 0 }
        { Name = "FLOOR.PRECISE"; Module = "Math"; Signature = "|S"; Flags = 0 }
@@ -239,6 +240,7 @@ let entries : Entry array =
        { Name = "DOLLAR"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "ENCODEURL"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "FINDB"; Module = "Text"; Signature = "|S"; Flags = 0 }
+       { Name = "JIS"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "LEFTB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "LENB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "MIDB"; Module = "Text"; Signature = "|S"; Flags = 0 }

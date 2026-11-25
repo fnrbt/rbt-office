@@ -12888,14 +12888,42 @@ and evalFunction (name: string) (args: Expr list) (ctx: EvalContext) : CellValue
         | Result.Error e, _ | _, Result.Error e -> err e
         | Ok a, Ok b -> if b = 0.0 then err Err.div0 else CellValue.Number (Math.Truncate(a / b))
     | "CEILING" | "FLOOR" ->
+        // Excel 2019 (1,311 probe cells, CEILING / FLOOR / MROUND): the quotient x / significance is rounded
+        // to 15 significant digits before its ceiling or floor is taken, and the result is that integer times
+        // the significance (FLOOR(0.3,0.1) is 3 x 0.1 = 0.30000000000000004, FLOOR(4.3,0.1) 4.3). A positive
+        // number with a negative significance is #NUM!; a significance of 0 is 0 for CEILING and #DIV/0! for
+        // FLOOR (FLOOR(0,0) is 0). A quotient or result that overflows is #NUM!.
         let up = fnName = "CEILING"
         match argNum 0, (if nargs >= 2 then argNum 1 else Ok 1.0) with
         | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok x, Ok sg -> if sg = 0.0 then CellValue.Number 0.0 else CellValue.Number ((if up then ceil (x / sg) else floor (x / sg)) * sg)
+        | Ok x, Ok sg ->
+            if sg = 0.0 then (if up || x = 0.0 then CellValue.Number 0.0 else err Err.div0)
+            elif x > 0.0 && sg < 0.0 then err Err.num
+            else
+                let q = NumberText.roundToSignificantDigits 15 (x / sg)
+                let r = (if up then ceil q else floor q) * sg
+                if Double.IsInfinity q || Double.IsInfinity r || Double.IsNaN r then err Err.num
+                else CellValue.Number (if r = 0.0 then 0.0 else r)
     | "MROUND" ->
-        match argNum 0, argNum 1 with
-        | Result.Error e, _ | _, Result.Error e -> err e
-        | Ok x, Ok m -> if m = 0.0 then CellValue.Number 0.0 else CellValue.Number (roundHalfAway (x / m) * m)
+        // Excel 2019 (the same probe): signs that differ are #NUM!, a multiple of 0 gives 0, a logical is
+        // #VALUE! (an Analysis ToolPak function). The quotient is rounded to 16 significant digits (while it
+        // is below 2^52; past that it is an integer) and then half away from zero: MROUND(1.15,0.1) is 12 x
+        // 0.1 = 1.2000000000000002, MROUND(4.35,0.1) 4.3.
+        let atpNum i = match argRaw i with CellValue.Boolean _ -> Result.Error Err.value | v -> coerceNumber v
+        match atpNum 0 with
+        | Result.Error e -> err e
+        | Ok x ->
+        match atpNum 1 with
+        | Result.Error e -> err e
+        | Ok m ->
+            if m = 0.0 then CellValue.Number 0.0
+            elif (x > 0.0 && m < 0.0) || (x < 0.0 && m > 0.0) then err Err.num
+            else
+                let q = x / m
+                let q = if abs q < 4503599627370496.0 then NumberText.roundToSignificantDigits 16 q else q
+                let r = roundHalfAway q * m
+                if Double.IsInfinity q || Double.IsInfinity r || Double.IsNaN r then err Err.num
+                else CellValue.Number (if r = 0.0 then 0.0 else r)
     | "EVEN" -> unaryNum (fun x -> let n = ceil (abs x / 2.0) * 2.0 in CellValue.Number (if x < 0.0 then -n else n))
     | "ODD" -> unaryNum (fun x -> let n = 2.0 * ceil ((abs x - 1.0) / 2.0) + 1.0 in CellValue.Number (if x < 0.0 then -n else n))
     | "SUMSQ" ->

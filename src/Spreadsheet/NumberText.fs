@@ -355,6 +355,18 @@ let sameToSignificantDigits (precision: int) (x: float) (y: float) : bool =
         let b = roundDigits false (exactDigits y) precision
         a.Text = b.Text && a.Scale = b.Scale
 
+/// x rounded to `precision` significant digits, a half away from zero (CEILING, FLOOR and MROUND round
+/// their quotient so before they take its integer). x itself when it is 0, not finite, or an integer
+/// of at most 15 digits.
+let roundToSignificantDigits (precision: int) (x: float) : float =
+    if x = 0.0 || Double.IsNaN x || Double.IsInfinity x || (x = Math.Floor x && abs x < 1e15) then x
+    else
+        let d = roundDigits false (exactDigits x) precision
+        if d.Text.Length = 0 then 0.0
+        else
+            let v = float ("0." + d.Text + "e" + string d.Scale)
+            if x < 0.0 then -v else v
+
 /// A number's text as Excel reads it - typed into a cell, written in a formula, or text turned into
 /// a number (VALUE, `"1.5"*1`, a criteria's number): its first 15 significant digits, the rest cut,
 /// not rounded (`1.0000000000000099` is 1, `123456789012345.6` is 123456789012345; checked in
