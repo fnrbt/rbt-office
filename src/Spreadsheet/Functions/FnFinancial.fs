@@ -103,8 +103,116 @@ let private securityTerm (a: Args) (basisAt: int) =
         let! fraction = yearFraction a settlement maturity basis
         return settlement, maturity, basis, fraction }
 
+// ----- EUROCONVERT --------------------------------------------------------------
+
+/// The fixed rates of the euro (units of the currency per euro) and the
+/// decimals an amount in it is rounded to, as the Euro Currency Tools add-in
+/// of Excel 2019 (EUROTOOL.XLAM) has them: the eleven currencies of 1999 and
+/// those that joined until 2009. The Latvian, Lithuanian and Croatian ones
+/// that came after are not in it (#VALUE!).
+let private euroCurrencies =
+    dict [ "EUR", (1.0, 2); "BEF", (40.3399, 0); "LUF", (40.3399, 0); "DEM", (1.95583, 2); "ESP", (166.386, 0)
+           "FRF", (6.55957, 2); "IEP", (0.787564, 2); "ITL", (1936.27, 0); "NLG", (2.20371, 2); "ATS", (13.7603, 2)
+           "PTE", (200.482, 0); "FIM", (5.94573, 2); "GRD", (340.75, 0); "SIT", (239.64, 2); "CYP", (0.585274, 2)
+           "MTL", (0.4293, 2); "SKK", (30.126, 2); "EEK", (15.6466, 2) ]
+
+/// x rounded to `decimals` places by its 15 significant digits, halves away
+/// from zero (ROUND's way: the euro value 0.0005 of 1.95583 * 1 / 2000 DEM is
+/// 0.001 at three places though its double is a little below the half).
+let private roundDecimal (x: float) (decimals: int) =
+    if x = 0.0 || Double.IsNaN x || Double.IsInfinity x then x
+    else
+        let text = Rbt.Spreadsheet.NumberText.numberToString "E14" (abs x)
+        let e = text.IndexOf 'E'
+        let mantissa = text.Substring(0, e).Replace(".", "")
+        let exponent = int (text.Substring(e + 1))
+        let keep = exponent + 1 + decimals
+        if keep >= mantissa.Length then x
+        elif keep < 0 then 0.0 * float (sign x)
+        else
+            let up = mantissa.[keep] >= '5'
+            let digits = mantissa.Substring(0, keep)
+            let magnitude =
+                (if digits = "" then 0.0 else Double.Parse(digits, Globalization.CultureInfo.InvariantCulture))
+                + (if up then 1.0 else 0.0)
+            // The kept digits are an integer: one division by the power of ten
+            // rounds once, to the double nearest the decimal.
+            let value = if decimals > 0 then magnitude / Math.Pow (10.0, float decimals) else magnitude * Math.Pow (10.0, float -decimals)
+            if x < 0.0 then -value else value
+
+/// An argument of the add-in's VBA function: one value (an array or a range
+/// of more than one cell, an error, is #VALUE!); a logical is the VBA Boolean
+/// (TRUE -1); an empty cell 0.
+let private vbaValue (a: Args) (i: int) : Result<CellValue, string> =
+    if a.IsRangeLike i && (let rows = a.Array i in rows.Length > 1 || rows.[0].Length > 1) then fail Err.value
+    else
+        match (if a.IsRangeLike i then (a.Array i).[0].[0] else a.Value i) with
+        | CellValue.Error _ -> fail Err.value
+        | v -> Ok v
+
+let private vbaNumber (a: Args) (i: int) : Result<float, string> = res {
+    let! v = vbaValue a i
+    match v with
+    | CellValue.Boolean b -> return (if b then -1.0 else 0.0)
+    | CellValue.Empty -> return 0.0
+    | v -> return! (coerceNumber v |> Result.mapError (fun _ -> Err.value)) }
+
+/// EUROCONVERT(number, source, target, [full_precision], [triangulation_precision]),
+/// measured in Excel 2019 with the add-in (make-euro-probe.py): source and target
+/// in any case; the same currency gives the number back unrounded; a national
+/// amount's euro value kept to 15 significant digits; between two national
+/// currencies through the euro, that value rounded to
+/// triangulation_precision places (an integer from 3, a fraction rounded; also
+/// when the target is the euro; ignored from the euro); the result rounded to
+/// the target's places unless full_precision is TRUE (a number: not 0).
+let private euroConvert =
+    scalar "EUROCONVERT" 3 5 "|R" (fun a -> res {
+        let! number = vbaNumber a 0
+        let currency i = res {
+            let! v = vbaValue a i
+            match v with
+            | CellValue.String s ->
+                match euroCurrencies.TryGetValue (s.ToUpperInvariant()) with
+                | true, (rate, places) -> return s.ToUpperInvariant(), rate, places
+                | _ -> return! fail Err.value
+            | _ -> return! fail Err.value }
+        let! source, sourceRate, _ = currency 1
+        let! target, targetRate, targetPlaces = currency 2
+        let! full =
+            if not (a.Supplied 3) then Ok false
+            else res {
+                let! v = vbaValue a 3
+                match v with
+                | CellValue.Boolean b -> return b
+                | CellValue.Empty -> return false
+                | v -> let! x = coerceNumber v |> Result.mapError (fun _ -> Err.value) in return x <> 0.0 }
+        let! triangulation =
+            if not (a.Supplied 4) then Ok None
+            else res {
+                let! t = vbaNumber a 4
+                let t = Math.Round t
+                do! check (t >= 3.0) Err.value
+                return Some (int (min t 100.0)) }
+        if source = target then return CellValue.Number number
+        else
+            // The euro value keeps 15 significant digits (as a cell would hold
+            // it: 337.8 DEM is 6967.28152242272 LUF in full, not ...2706).
+            let euro =
+                if source = "EUR" then number
+                else
+                    let e = number / sourceRate
+                    if e = 0.0 || Double.IsInfinity e then e
+                    else Double.Parse(Rbt.Spreadsheet.NumberText.numberToString "E14" e, Globalization.CultureInfo.InvariantCulture)
+            let euro =
+                match triangulation with
+                | Some t when source <> "EUR" -> roundDecimal euro t
+                | _ -> euro
+            let value = if target = "EUR" then euro else euro * targetRate
+            return! numOk (if full then value else roundDecimal value targetPlaces) })
+
 let functions : FunctionDef list =
-    [ scalar "DB" 4 5 "|S" (fun a -> res {
+    [ euroConvert
+      scalar "DB" 4 5 "|S" (fun a -> res {
         let! cost = a.Number 0
         let! salvage = a.Number 1
         let! life = a.Number 2

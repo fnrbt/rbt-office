@@ -15,4 +15,5 @@ let installed : bool =
     FnInformation.install ()
     FnBonds.install ()
     FnComplex.install ()
+    FnWeb.install ()
     true

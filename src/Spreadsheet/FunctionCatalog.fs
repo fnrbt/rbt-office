@@ -11,7 +11,7 @@ open Fable.Core
 /// `Flags`: 1 volatile, 2 gives an array.
 type Entry = { Name: string; Module: string; Signature: string; Flags: int }
 
-let modules : string array = [| "Arrays"; "Bonds"; "Complex"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text" |]
+let modules : string array = [| "Arrays"; "Bonds"; "Complex"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text"; "Web" |]
 
 let entries : Entry array =
     [|
@@ -91,6 +91,7 @@ let entries : Entry array =
        { Name = "DOLLARDE"; Module = "Financial"; Signature = "|S"; Flags = 0 }
        { Name = "DOLLARFR"; Module = "Financial"; Signature = "|S"; Flags = 0 }
        { Name = "EFFECT"; Module = "Financial"; Signature = "|S"; Flags = 0 }
+       { Name = "EUROCONVERT"; Module = "Financial"; Signature = "|R"; Flags = 0 }
        { Name = "FVSCHEDULE"; Module = "Financial"; Signature = "SR"; Flags = 0 }
        { Name = "INTRATE"; Module = "Financial"; Signature = "|S"; Flags = 0 }
        { Name = "ISPMT"; Module = "Financial"; Signature = "|S"; Flags = 0 }
@@ -200,6 +201,10 @@ let entries : Entry array =
        { Name = "CONFIDENCE.NORM"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHER"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "FISHERINV"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
+       { Name = "FORECAST.ETS"; Module = "Statistical"; Signature = "SRRSSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.CONFINT"; Module = "Statistical"; Signature = "SRRSSSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.SEASONALITY"; Module = "Statistical"; Signature = "RRSS"; Flags = 0 }
+       { Name = "FORECAST.ETS.STAT"; Module = "Statistical"; Signature = "RRSSSS"; Flags = 0 }
        { Name = "GAUSS"; Module = "Statistical"; Signature = "|S"; Flags = 0 }
        { Name = "GROWTH"; Module = "Statistical"; Signature = ""; Flags = 2 }
        { Name = "KURT"; Module = "Statistical"; Signature = "|R"; Flags = 0 }
@@ -225,6 +230,7 @@ let entries : Entry array =
        { Name = "Z.TEST"; Module = "Statistical"; Signature = "RSS"; Flags = 0 }
        { Name = "ZTEST"; Module = "Statistical"; Signature = "RSS"; Flags = 0 }
        { Name = "ARRAYTOTEXT"; Module = "Text"; Signature = "RS"; Flags = 0 }
+       { Name = "BAHTTEXT"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "DOLLAR"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "ENCODEURL"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "FINDB"; Module = "Text"; Signature = "|S"; Flags = 0 }
@@ -235,6 +241,7 @@ let entries : Entry array =
        { Name = "RIGHTB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "SEARCHB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "VALUETOTEXT"; Module = "Text"; Signature = "|S"; Flags = 0 }
+       { Name = "FILTERXML"; Module = "Web"; Signature = ""; Flags = 2 }
     |]
 
 #if FABLE_COMPILER
@@ -263,6 +270,8 @@ let private loadFnStatDist () : JS.Promise<unit> = jsNative
 let private loadFnStatistical () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnText.js\").then((m) => { m.install(); })")>]
 let private loadFnText () : JS.Promise<unit> = jsNative
+[<Emit("import(\"./Functions/FnWeb.js\").then((m) => { m.install(); })")>]
+let private loadFnWeb () : JS.Promise<unit> = jsNative
 
 /// Fetch and install a module (its `install`).
 let load (moduleName: string) : JS.Promise<unit> =
@@ -278,5 +287,6 @@ let load (moduleName: string) : JS.Promise<unit> =
     | "Distributions" -> loadFnStatDist ()
     | "Statistical" -> loadFnStatistical ()
     | "Text" -> loadFnText ()
+    | "Web" -> loadFnWeb ()
     | _ -> resolved ()
 #endif
