@@ -408,6 +408,7 @@ type Session(initial: Workbook, ?historyBySheet: bool) =
             { now with
                 Cells = patchMap sameCell was.Cells becomes.Cells now.Cells
                 RichRuns = patchMap eqOption was.RichRuns becomes.RichRuns now.RichRuns
+                Phonetics = patchMap eqOption was.Phonetics becomes.Phonetics now.Phonetics
                 RowHeights = patchMap eqOption was.RowHeights becomes.RowHeights now.RowHeights
                 ColumnWidths = patchMap eqOption was.ColumnWidths becomes.ColumnWidths now.ColumnWidths
                 BestFitColumns = chooseRef was.BestFitColumns becomes.BestFitColumns now.BestFitColumns

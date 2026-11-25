@@ -103,6 +103,7 @@ stages=(
     stage66-icon-sets
     stage67-statistical-distributions
     stage68-bonds-complex-engineering
+    stage70-regex-trimrange-text
     numbertext
 )
 
@@ -114,6 +115,10 @@ required=(
     tests/test-documents-excel/synthetic-slicers.xlsx
     tests/test-documents-excel/synthetic-sparkline-looks.xlsx
     tests/test-documents-excel/synthetic-icon-sets.xlsx
+    tests/test-documents-excel/synthetic-phonetic.xlsx
+    tools/excel-parity/regex-perl.jsonl
+    tools/excel-parity/widthconv-excel.tsv
+    tools/excel-parity/phonetic-excel.tsv
     tests/test-documents-excel/synthetic-pivot-styles.xlsx
     tests/test-documents-excel/synthetic-pivot-styles.excel.tsv
     tests/real-world/chart-zoo.xlsx

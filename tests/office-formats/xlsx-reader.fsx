@@ -168,6 +168,7 @@ let mkWorkbook sheet : XlsxReader.Workbook =
         Relationships = []
         NamedRanges = []
         ThemeAccents = [||]
+        SharedStringPhonetics = [||]
         ThemeColors = [||]
         TableStyles = []
         SlicerStyles = XlsxReader.SlicerStyleDefinitions.none

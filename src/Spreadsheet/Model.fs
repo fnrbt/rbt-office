@@ -263,6 +263,12 @@ type VertAlign =
 /// Per-run formatting override for rich-text cells. Each field is optional;
 /// when None the run inherits from the cell's base CellFormat. Originates
 /// from `<rPr>` children of `<r>` elements inside `<si>` shared strings.
+/// The furigana of a cell's text (an xlsx `<rPh>`), as PHONETIC gives it: `Reading` is the text with
+/// the readings in place of what they read, in the kana `Kind` asks for (the `<phoneticPr type>`:
+/// "Hiragana", "halfwidthKatakana", "noConversion", "" for full-width katakana). `Text` is the text
+/// it is of: a cell whose text is no longer that has no reading.
+type CellPhonetic = { Text: string; Reading: string; Kind: string }
+
 type RunOverride = {
     Bold: bool option
     Italic: bool option
@@ -1635,6 +1641,9 @@ type SpreadsheetModel = {
     /// source order; the runs concatenate to the plain cell value.
     RichRuns: Map<CellAddress, (string * RunOverride) list>
 
+    /// The furigana of cells that have one (see `CellPhonetic`).
+    Phonetics: Map<CellAddress, CellPhonetic>
+
     /// Number of rows that stay pinned at the top while the body scrolls
     /// vertically. Set from `<pane ySplit="N" state="frozen"/>` in the
     /// sheet's sheetView. Zero = no freeze.
@@ -1863,6 +1872,7 @@ let createEmpty rowCount colCount = {
     ConditionalFormats = []
     MergedCells = []
     RichRuns = Map.empty
+    Phonetics = Map.empty
     FrozenRows = 0
     FrozenCols = 0
     PageSetup = defaultPageSetup
@@ -3262,6 +3272,7 @@ let sortRegionByColumn (active: CellAddress) (ascending: bool) (model: Spreadshe
         { sorted with
             Cells = cells
             RichRuns = moveMap model.RichRuns (fun _ runs -> runs)
+            Phonetics = (if model.Phonetics.IsEmpty then model.Phonetics else moveMap model.Phonetics (fun _ p -> p))
             ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark)) }
         |> reapplyFilter
 
@@ -4457,6 +4468,7 @@ let applyStructureEditWith (targetsEditedSheet: string option -> bool) (edit: St
                 else { axes with HiddenColSizes = moveIndexMap axes.HiddenColSizes; ColLevels = moveIndexMap axes.ColLevels; CollapsedCols = moveSet axes.CollapsedCols })
         ConditionalFormats = conditionalFormats
         RichRuns = moveAddressMap model.RichRuns
+        Phonetics = (if model.Phonetics.IsEmpty then model.Phonetics else moveAddressMap model.Phonetics)
         ArrayMarks = followArrayMarks cells (moveAddressMap model.ArrayMarks)
         MergedCells = merges
         Tables = tables

@@ -11,7 +11,7 @@ open Fable.Core
 /// `Flags`: 1 volatile, 2 gives an array.
 type Entry = { Name: string; Module: string; Signature: string; Flags: int }
 
-let modules : string array = [| "Arrays"; "Bonds"; "Complex"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Distributions"; "Statistical"; "Text" |]
+let modules : string array = [| "Arrays"; "Bonds"; "Complex"; "Database"; "Engineering"; "Financial"; "Information"; "Math"; "Regex"; "Distributions"; "Statistical"; "Text" |]
 
 let entries : Entry array =
     [|
@@ -140,6 +140,9 @@ let entries : Entry array =
        { Name = "SUMX2MY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
        { Name = "SUMX2PY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
        { Name = "SUMXMY2"; Module = "Math"; Signature = "RR"; Flags = 0 }
+       { Name = "REGEXEXTRACT"; Module = "Regex"; Signature = ""; Flags = 2 }
+       { Name = "REGEXREPLACE"; Module = "Regex"; Signature = "|S"; Flags = 0 }
+       { Name = "REGEXTEST"; Module = "Regex"; Signature = "|S"; Flags = 0 }
        { Name = "BETA.DIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
        { Name = "BETA.INV"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
        { Name = "BETADIST"; Module = "Distributions"; Signature = "|S"; Flags = 0 }
@@ -225,12 +228,15 @@ let entries : Entry array =
        { Name = "Z.TEST"; Module = "Statistical"; Signature = "RSS"; Flags = 0 }
        { Name = "ZTEST"; Module = "Statistical"; Signature = "RSS"; Flags = 0 }
        { Name = "ARRAYTOTEXT"; Module = "Text"; Signature = "RS"; Flags = 0 }
+       { Name = "ASC"; Module = "Text"; Signature = "|S"; Flags = 0 }
+       { Name = "DBCS"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "DOLLAR"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "ENCODEURL"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "FINDB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "LEFTB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "LENB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "MIDB"; Module = "Text"; Signature = "|S"; Flags = 0 }
+       { Name = "PHONETIC"; Module = "Text"; Signature = "R"; Flags = 0 }
        { Name = "REPLACEB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "RIGHTB"; Module = "Text"; Signature = "|S"; Flags = 0 }
        { Name = "SEARCHB"; Module = "Text"; Signature = "|S"; Flags = 0 }
@@ -257,6 +263,8 @@ let private loadFnFinancial () : JS.Promise<unit> = jsNative
 let private loadFnInformation () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnMath.js\").then((m) => { m.install(); })")>]
 let private loadFnMath () : JS.Promise<unit> = jsNative
+[<Emit("import(\"./Functions/FnRegex.js\").then((m) => { m.install(); })")>]
+let private loadFnRegex () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnStatDist.js\").then((m) => { m.install(); })")>]
 let private loadFnStatDist () : JS.Promise<unit> = jsNative
 [<Emit("import(\"./Functions/FnStatistical.js\").then((m) => { m.install(); })")>]
@@ -275,6 +283,7 @@ let load (moduleName: string) : JS.Promise<unit> =
     | "Financial" -> loadFnFinancial ()
     | "Information" -> loadFnInformation ()
     | "Math" -> loadFnMath ()
+    | "Regex" -> loadFnRegex ()
     | "Distributions" -> loadFnStatDist ()
     | "Statistical" -> loadFnStatistical ()
     | "Text" -> loadFnText ()

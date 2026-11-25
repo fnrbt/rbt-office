@@ -974,6 +974,7 @@ module Import =
         // The cells that hold formulas: the sheet's formula index (`Model.formulaIndexOf`).
         let formulaCells = ResizeArray<CellAddress>()
         let mutable richRuns = Map.empty<CellAddress, (string * RunOverride) list>
+        let mutable phonetics = Map.empty<CellAddress, CellPhonetic>
         // The other cells of a legacy array formula (<f t="array" ref="F94:H94">)
         // hold results the anchor's formula spilled there: they belong to the
         // anchor, so a recalculation spills over them again instead of finding
@@ -1027,6 +1028,12 @@ module Import =
                                 | _ -> []
                         match runs with
                         | _ :: _ :: _ -> richRuns <- Map.add addr (runs |> List.map (fun (text, props) -> text, runOverrideOf true wb.ThemeColors props)) richRuns
+                        | _ -> ()
+                        match cell.Value with
+                        | XlsxReader.SharedString idx when idx >= 0 && idx < wb.SharedStringPhonetics.Length ->
+                            let reading, kind = wb.SharedStringPhonetics.[idx]
+                            if reading <> "" && idx < wb.SharedStrings.Length then
+                                phonetics <- Map.add addr { Text = wb.SharedStrings.[idx]; Reading = reading; Kind = kind } phonetics
                         | _ -> ()
 
         // A note on a cell the sheet data has no element for (a cell without
@@ -1301,6 +1308,7 @@ module Import =
                 KeptRanges = keptRanges
                 Cells = cellMap
                 RichRuns = richRuns
+                Phonetics = phonetics
                 MergedCells = merged
                 RowHeights = rowHeights
                 ColumnWidths = columnWidths
