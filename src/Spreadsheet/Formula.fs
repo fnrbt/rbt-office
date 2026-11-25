@@ -494,13 +494,37 @@ let private externalSheetLength (input: string) (i: int) : int =
         while j < n && (Char.IsLetterOrDigit input.[j] || input.[j] = '_' || input.[j] = '.') do j <- j + 1
         if j > nameStart && j < n && input.[j] = '!' && not (Char.IsDigit input.[nameStart]) then j - i else 0
 
+/// The functions a trim reference (`A1:.E10`, `A1.:E10`, `A1.:.E10`) is read as: what the reference
+/// operator's dots ask to trim (`TRIMRANGE(A1:E10,2,2)` and so on).
+let trimRefFunctionNames = [| "_TRO_LEADING"; "_TRO_TRAILING"; "_TRO_ALL" |]
+
+/// 1 leading, 2 trailing, 3 both: what a trim reference function trims (0 for any other name).
+let trimRefMode (name: string) =
+    if name.Length < 8 || name.[0] <> '_' then 0
+    elif equalsOrdinalIgnoreCase name "_TRO_LEADING" then 1
+    elif equalsOrdinalIgnoreCase name "_TRO_TRAILING" then 2
+    elif equalsOrdinalIgnoreCase name "_TRO_ALL" then 3
+    else 0
+
 let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collections.Generic.List<struct (int * int)>) : Token array =
     let n = input.Length
     let tokens = System.Collections.Generic.List<Token>(max 1 (n - startIndex + 1))
     let mutable i = startIndex
+    // A trim reference is lexed as a call of its function: `A1.:E10` as `_TRO_LEADING(A1:E10)`. The
+    // left operand ended with a dot (`leadingTrim`); the call is closed after the right operand.
+    let mutable leadingTrim = false
+    let mutable closeTrimAt = -1
+    let closeTrim () =
+        if closeTrimAt >= 0 && tokens.Count > closeTrimAt then
+            tokens.Add TRParen
+            if not (isNull spans) then
+                let struct (_, last) = spans.[spans.Count - 1]
+                spans.Add(struct (last, last))
+            closeTrimAt <- -1
     while i < n do
+        closeTrim ()
         let tokenStart = i
-        let before = tokens.Count
+        let mutable before = tokens.Count
         let c = input.[i]
         if Char.IsWhiteSpace c then
             while i < n && Char.IsWhiteSpace input.[i] do i <- i + 1
@@ -530,6 +554,12 @@ let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collecti
                     // 'E' not followed by an exponent — not part of the number.
                     i <- save
             let text = input.Substring(start, i - start)
+            // (`1.:5`: the row 1 of a trim reference, its dot the operator's)
+            let text =
+                if text.Length > 1 && text.EndsWith "." && i < n && input.[i] = ':' then
+                    leadingTrim <- true
+                    text.Substring(0, text.Length - 1)
+                else text
             // A number written in a formula keeps its first 15 significant digits, the rest cut.
             tokens.Add(TNumber (Double.Parse(NumberText.cutToSignificantDigits text, CultureInfo.InvariantCulture)))
         elif c = '"' then
@@ -588,6 +618,10 @@ let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collecti
             // forward-compatibility prefixes (`_xlfn.XLOOKUP`,
             // `_xlfn._xlws.FILTER`, `_xlpm.x`); the name is what follows.
             let mutable ident = input.Substring(start, i - start)
+            if ident.Length > 1 && ident.EndsWith "." && i < n && input.[i] = ':' then
+                // `A1.:E10`: the dot is the trim reference's
+                ident <- ident.Substring(0, ident.Length - 1)
+                leadingTrim <- true
             let mutable stripped = true
             while stripped do
                 stripped <- false
@@ -647,7 +681,32 @@ let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collecti
                 | '}' -> tokens.Add(TRBrace); i <- i + 1
                 | ';' -> tokens.Add(TSemicolon); i <- i + 1
                 | ',' -> tokens.Add(TComma); i <- i + 1
-                | ':' -> tokens.Add(TColon); i <- i + 1
+                | ':' ->
+                    let trailing =
+                        i + 2 < n && input.[i + 1] = '.' && (input.[i + 2] = '$' || Char.IsLetterOrDigit input.[i + 2])
+                    let leading = leadingTrim
+                    leadingTrim <- false
+                    if (leading || trailing) && tokens.Count > 0
+                       && (match tokens.[tokens.Count - 1] with TIdent _ | TNumber _ -> true | _ -> false) then
+                        // The left operand (with its sheet: `S!A1`, `'S 2'!A1`) goes into the call.
+                        let operand =
+                            if tokens.Count >= 3 && tokens.[tokens.Count - 2] = TBang
+                               && (match tokens.[tokens.Count - 3] with TIdent _ | TSheet _ -> true | _ -> false) then tokens.Count - 3
+                            else tokens.Count - 1
+                        let name = trimRefFunctionNames.[(if leading then 1 else 0) + (if trailing then 2 else 0) - 1]
+                        tokens.Insert(operand, TLParen)
+                        tokens.Insert(operand, TIdent name)
+                        if not (isNull spans) then
+                            let struct (first, _) = spans.[operand]
+                            spans.Insert(operand, struct (first, first))
+                            spans.Insert(operand, struct (first, first))
+                            before <- before + 2
+                        tokens.Add(TColon)
+                        closeTrimAt <- tokens.Count
+                        i <- i + (if trailing then 2 else 1)
+                    else
+                        tokens.Add(TColon)
+                        i <- i + 1
                 | '!' -> tokens.Add(TBang); i <- i + 1
                 | '@' -> tokens.Add(TAt); i <- i + 1
                 // Anything else is not formula syntax. Dropping it would make
@@ -655,6 +714,7 @@ let private tokenizeSpansFrom (input: string) startIndex (spans: System.Collecti
                 | other -> failwithf "Unexpected character '%c'" other
         if not (isNull spans) then
             for _ in before .. tokens.Count - 1 do spans.Add(struct (tokenStart, i))
+    closeTrim ()
     tokens.Add(TEnd)
     if not (isNull spans) then spans.Add(struct (n, n))
     tokens.ToArray()
@@ -1980,6 +2040,17 @@ let rec private appendExpr (sb: Text.StringBuilder) (minPrecedence: int) (expr: 
     | Function (name, [ operand ]) when name = implicitIntersectionName ->
         sb.Append('@') |> ignore
         appendExpr sb 8 operand
+    | Function (name, [ RangeRef _ as range ]) when trimRefMode name > 0 ->
+        // a trim reference: the range with the dots of its operator (`A1.:.E10`)
+        let inner = System.Text.StringBuilder()
+        appendExpr inner 8 range
+        let text = inner.ToString()
+        let colon = text.LastIndexOf ':'
+        let mode = trimRefMode name
+        if colon < 0 then sb.Append(name).Append('(').Append(text).Append(')') |> ignore
+        else
+            sb.Append(text.Substring(0, colon)).Append(if mode &&& 1 = 1 then ".:" else ":")
+              .Append(if mode &&& 2 = 2 then "." else "").Append(text.Substring(colon + 1)) |> ignore
     | Function (name, args) ->
         sb.Append(name).Append('(') |> ignore
         let mutable first = true
@@ -4351,6 +4422,8 @@ let private takesArrayParam (name: string) =
 let private isReferenceFunction (name: string) =
     (name.Length = 6 && equalsOrdinalIgnoreCase name "OFFSET")
     || (name.Length = 8 && equalsOrdinalIgnoreCase name "INDIRECT")
+    || (name.Length = 9 && equalsOrdinalIgnoreCase name "TRIMRANGE")
+    || trimRefMode name > 0
     || (name.Length = 1 && (name = rangeOperatorName || name = intersectionOperatorName))
 
 let private isIndexFunction (name: string) =
@@ -4400,7 +4473,7 @@ let private isArrayExprCore (openRanges: bool) (dynamicReferences: bool) (e: Exp
         | Function (name, _) when name = unionOperatorName -> found <- true
         | Function (name, args) when isReferenceFunction name ->
             // What OFFSET/INDIRECT return is only known when evaluated.
-            if dynamicReferences then found <- true
+            if dynamicReferences || equalsOrdinalIgnoreCase name "TRIMRANGE" || trimRefMode name > 0 then found <- true
             elif name = rangeOperatorName || name = intersectionOperatorName then
                 for arg in args do stack.Add arg
         | Function (name, args) when isIndexFunction name ->
@@ -4779,6 +4852,19 @@ type EvalContext = {
     /// containing table for unqualified refs. None for ad-hoc evaluation.
     CurrentCell: CellAddress option
 }
+
+/// The sheet a reference of an evaluation points at (its own when the reference names none).
+let referenceModel (sheet: string option) (ctx: EvalContext) : SpreadsheetModel option =
+    resolveModel sheet ctx.Model ctx.Workbook
+
+let mutable private doubleByteLanguage = false
+
+/// Whether Excel's editing language is a double-byte one (Japanese, Chinese, Korean), which ASC and
+/// DBCS convert for and PHONETIC needs. Off by default, as in an Excel with a European language (the
+/// Excel 2019 of the parity VM, English, no East Asian editing language: there ASC and DBCS give their
+/// text unchanged and PHONETIC is #N/A). A host whose users write Japanese turns it on.
+let setDoubleByteLanguage (on: bool) = doubleByteLanguage <- on
+let isDoubleByteLanguage () = doubleByteLanguage
 
 /// Build a context with no workbook — same-sheet formulas only, no defined
 /// names. Convenient for callers that just have a bare model.
@@ -5735,6 +5821,88 @@ and resolveReferenceFunction (name: string) (args: Expr list) (ctx: EvalContext)
                      | ErrorLit _ -> ErrorLit Err.ref
                      | reference -> reference)
                 | _ -> ErrorLit Err.ref
+    elif equalsOrdinalIgnoreCase name "TRIMRANGE" || trimRefMode name > 0 then
+        // TRIMRANGE(range, [trim_rows], [trim_cols]) and the trim references (`A1.:.E10`): the
+        // range without its blank rows / columns at the start (1), the end (2) or both (3, the
+        // default); 0 trims nothing. A cell is blank when it holds nothing (a formula giving ""
+        // is not). A range with nothing in it is #REF! (exceljet), unless nothing is to be trimmed;
+        // an array is trimmed of its empty values.
+        let fixedMode = trimRefMode name
+        let modeAt i =
+            if fixedMode > 0 then Ok fixedMode
+            elif i >= args.Length then Ok 3
+            else
+                match args.[i] with
+                | MissingArg -> Ok 3
+                | e ->
+                    match coerceNumber (eval e ctx) with
+                    | Result.Error code -> Result.Error code
+                    | Ok x ->
+                        let mode = Math.Truncate x
+                        if mode >= 0.0 && mode <= 3.0 then Ok (int mode) else Result.Error Err.value
+        if args.Length < 1 || args.Length > (if fixedMode > 0 then 1 else 3) then ErrorLit Err.value
+        else
+            match modeAt 1, modeAt 2 with
+            | Result.Error e, _ | _, Result.Error e -> ErrorLit e
+            | Ok rowsMode, Ok colsMode ->
+                let target =
+                    match args.[0] with
+                    // a whole column / row stays whole: what is not trimmed is all of it
+                    | RangeRef (a, b) when isOpenRange a b -> args.[0]
+                    | e -> asReference e
+                let area =
+                    match target with
+                    | CellRef r -> Some (r.Sheet, r.Row, r.Col, r.Row, r.Col)
+                    | RangeRef (a, b) ->
+                        let sr, sc, er, ec = normalizeRange a b
+                        Some (a.Sheet, sr, sc, er, ec)
+                    | _ -> None
+                match area, target with
+                | Some (sheet, top, left, bottom, right), _ ->
+                    match resolveModel sheet ctx.Model ctx.Workbook with
+                    | None -> ErrorLit Err.ref
+                    | Some m ->
+                        let mutable r0 = Int32.MaxValue
+                        let mutable r1 = -1
+                        let mutable c0 = Int32.MaxValue
+                        let mutable c1 = -1
+                        for KeyValue(addr, cell) in m.Cells do
+                            if addr.Row >= top && addr.Row <= bottom && addr.Col >= left && addr.Col <= right then
+                                match cell.Value with
+                                | CellValue.Empty -> ()
+                                | _ ->
+                                    r0 <- min r0 addr.Row
+                                    r1 <- max r1 addr.Row
+                                    c0 <- min c0 addr.Col
+                                    c1 <- max c1 addr.Col
+                        if r1 < 0 && (rowsMode <> 0 || colsMode <> 0) then ErrorLit Err.ref
+                        else
+                            let top = if rowsMode &&& 1 = 1 then r0 else top
+                            let bottom = if rowsMode &&& 2 = 2 then r1 else bottom
+                            let left = if colsMode &&& 1 = 1 then c0 else left
+                            let right = if colsMode &&& 2 = 2 then c1 else right
+                            let corner row col = { Sheet = sheet; Row = row; Col = col; RowAbs = false; ColAbs = false }
+                            if top = bottom && left = right then CellRef (corner top left)
+                            else RangeRef (corner top left, corner bottom right)
+                | None, ErrorLit e when isReferenceSyntax args.[0] -> ErrorLit e
+                | None, _ ->
+                    // not a reference: an array, its empty values trimmed the same way
+                    let arr = evalArray args.[0] ctx
+                    let rows = arr.Length
+                    let cols = if rows > 0 then arr.[0].Length else 0
+                    let blank (v: CellValue) = match v with CellValue.Empty -> true | _ -> false
+                    let rowBlank r = Array.forall blank arr.[r]
+                    let colBlank c = arr |> Array.forall (fun row -> c >= row.Length || blank row.[c])
+                    let mutable top = 0
+                    let mutable bottom = rows - 1
+                    let mutable left = 0
+                    let mutable right = cols - 1
+                    if rowsMode &&& 1 = 1 then (while top <= bottom && rowBlank top do top <- top + 1)
+                    if rowsMode &&& 2 = 2 then (while bottom >= top && rowBlank bottom do bottom <- bottom - 1)
+                    if colsMode &&& 1 = 1 then (while left <= right && colBlank left do left <- left + 1)
+                    if colsMode &&& 2 = 2 then (while right >= left && colBlank right do right <- right - 1)
+                    if top > bottom || left > right then ErrorLit Err.ref
+                    else ArrayLit [| for r in top .. bottom -> [| for c in left .. right -> arr.[r].[c] |] |]
     else
         // OFFSET(reference, rows, cols, [height], [width])
         if args.Length < 3 then ErrorLit Err.value
@@ -15382,7 +15550,7 @@ let private spillsInOneWalk (dynamicReferences: bool) (e: Expr) : bool =
                     deepStack.Add false
             elif name = unionOperatorName then found <- true
             elif isReferenceFunction name then
-                if dynamicReferences then found <- true
+                if dynamicReferences || equalsOrdinalIgnoreCase name "TRIMRANGE" || trimRefMode name > 0 then found <- true
                 else
                     let operands = name = rangeOperatorName || name = intersectionOperatorName
                     for arg in args do
@@ -15488,7 +15656,8 @@ let private formulaTextMaySpill (formula: string) =
                 formula.IndexOf ':' >= 0 || formula.IndexOf '{' >= 0 || formula.IndexOf '#' >= 0 || formula.IndexOf '[' >= 0
                 || (let upper = formula.ToUpperInvariant()
                     upper.IndexOf("OFFSET", StringComparison.Ordinal) >= 0 || upper.IndexOf("INDIRECT", StringComparison.Ordinal) >= 0
-                    || upper.IndexOf("INDEX", StringComparison.Ordinal) >= 0)
+                    || upper.IndexOf("INDEX", StringComparison.Ordinal) >= 0 || upper.IndexOf("TRIMRANGE", StringComparison.Ordinal) >= 0
+                    || upper.IndexOf("_TRO_", StringComparison.Ordinal) >= 0)
                 || formulaTextMayContainArrayFunctionName formula
             if maySpillByText.Count > 100000 then maySpillByText.Clear()
             maySpillByText.[formula] <- found

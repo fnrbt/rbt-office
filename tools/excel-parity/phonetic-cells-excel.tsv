@@ -1,0 +1,25 @@
+S	A1	s	abc	abc
+S	A2	n	1.23000000000000E+02	123	0:123:0
+S	A3	e	#DIV/0!	#DIV/0!
+S	A4	b	True	TRUE
+S	A5	s	xy	xy
+S	A6	s	漢字	漢字
+S	B1	e	#N/A	#N/A
+S	B2	e	#N/A	#N/A
+S	B3	e	#N/A	#N/A
+S	B4	e	#N/A	#N/A
+S	B5	e	#N/A	#N/A
+S	B6	e	#N/A	#N/A
+S	B7	e	#N/A	#N/A
+S	B8	e	#N/A	#N/A
+S	B9	e	#N/A	#N/A
+S	B10	e	#N/A	#N/A
+S	B11	e	#N/A	#N/A
+S	B12	e	#N/A	#N/A
+S	B13	e	#N/A	#N/A
+S	B14	e	#NULL!	#NULL!
+S	B15	b	False	FALSE
+S	B16	e	#N/A	#N/A
+S	B17	e	#N/A	#N/A
+S	B18	e	#N/A	#N/A
+S	C1	e	#N/A	#N/A

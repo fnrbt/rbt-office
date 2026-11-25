@@ -2161,6 +2161,7 @@ let sortRange (memberName: string) (range: CellRange) (keys: SortKey list) (opti
                 { model with
                     Cells = cells
                     RichRuns = moveMap model.RichRuns (fun _ runs -> runs)
+                    Phonetics = (if model.Phonetics.IsEmpty then model.Phonetics else moveMap model.Phonetics (fun _ p -> p))
                     ArrayMarks = followArrayMarks cells (moveMap model.ArrayMarks (fun _ mark -> mark))
                     Threads = moveMap model.Threads (fun _ thread -> thread)
                     Hyperlinks = hyperlinks
@@ -3770,7 +3771,7 @@ let inheritedNumberFormat (formatAt: string option -> int -> int -> string optio
                 | "TRIMMEAN" | "GEOMEAN" | "HARMEAN" | "PERCENTILE" | "PERCENTILE.INC" | "PERCENTILE.EXC" | "QUARTILE" | "QUARTILE.INC" | "QUARTILE.EXC" ->
                     args |> List.tryPick formatOf
                 | "ROUND" | "ROUNDUP" | "ROUNDDOWN" | "MROUND" | "CEILING" | "CEILING.MATH" | "FLOOR" | "FLOOR.MATH" | "INT" | "TRUNC" | "ABS" | "N" | "EVEN" | "ODD"
-                | "INDEX" | "OFFSET" | "SUMIFS" | "AVERAGEIFS" | "MAXIFS" | "MINIFS" | "SINGLE" | "ANCHORARRAY" | "SORT" | "UNIQUE" | "FILTER" | "TAKE" | "DROP" -> arg 0
+                | "INDEX" | "OFFSET" | "TRIMRANGE" | "_TRO_ALL" | "_TRO_LEADING" | "_TRO_TRAILING" | "SUMIFS" | "AVERAGEIFS" | "MAXIFS" | "MINIFS" | "SINGLE" | "ANCHORARRAY" | "SORT" | "UNIQUE" | "FILTER" | "TAKE" | "DROP" -> arg 0
                 | "SUMIF" | "AVERAGEIF" -> firstOf [ 2; 0 ]
                 | "SUBTOTAL" -> (match List.tryItem 0 args with
                                  // (2, 3, 102, 103: counts.)

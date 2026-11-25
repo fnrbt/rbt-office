@@ -34,6 +34,9 @@
     <Compile Include="Functions/FnBonds.fs" />
     <Compile Include="Functions/FnComplex.fs" />
     <Compile Include="Functions/FnWeb.fs" />
+    <Compile Include="Functions/RegexUnicode.fs" />
+    <Compile Include="Functions/Pcre.fs" />
+    <Compile Include="Functions/FnRegex.fs" />
     <Compile Include="Functions/All.fs" />
     <Compile Include="Calc.fs" />
     <Compile Include="Recalc.fs" />

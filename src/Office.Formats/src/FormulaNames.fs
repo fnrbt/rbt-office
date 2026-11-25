@@ -37,8 +37,60 @@ let private futureFunctions =
 let private isNameStart (c: char) = System.Char.IsLetter c || c = '_' || c = '\\'
 let private isNameChar (c: char) = System.Char.IsLetterOrDigit c || c = '_' || c = '.' || c = '\\'
 
+/// The trim references of a formula (`A1.:E10`, `A1:.E10`, `A1.:.E10`, `A:.A`) written as the
+/// TRIMRANGE calls they stand for (`TRIMRANGE(A1:E10,1,1)`), for the file: what Excel stores for
+/// them is not documented, TRIMRANGE is.
+let private trimRefsAsCalls (formula: string) : string =
+    if formula.IndexOf(".:", System.StringComparison.Ordinal) < 0 && formula.IndexOf(":.", System.StringComparison.Ordinal) < 0 then formula
+    else
+        let n = formula.Length
+        let isRefChar (c: char) = System.Char.IsLetterOrDigit c || c = '$' || c = '_' || c = '.'
+        let sb = StringBuilder(n + 24)
+        let mutable copied = 0
+        let mutable i = 0
+        while i < n do
+            let c = formula.[i]
+            if c = '"' then
+                i <- i + 1
+                while i < n && formula.[i] <> '"' do i <- i + 1
+                i <- i + 1
+            elif c = '\'' then
+                i <- i + 1
+                while i < n && not (formula.[i] = '\'' && not (i + 1 < n && formula.[i + 1] = '\'')) do
+                    i <- if formula.[i] = '\'' then i + 2 else i + 1
+                i <- i + 1
+            elif c = ':' then
+                let leading = i > 0 && formula.[i - 1] = '.'
+                let trailing = i + 1 < n && formula.[i + 1] = '.'
+                if leading || trailing then
+                    // the left operand, with its sheet
+                    let mutable start = if leading then i - 1 else i
+                    while start > copied && isRefChar formula.[start - 1] do start <- start - 1
+                    if start > copied && formula.[start - 1] = '!' then
+                        start <- start - 1
+                        if start > copied && formula.[start - 1] = '\'' then
+                            start <- start - 1
+                            while start > copied && not (formula.[start - 1] = '\'' && not (start - 2 >= copied && formula.[start - 2] = '\'')) do start <- start - 1
+                            if start > copied then start <- start - 1
+                        else
+                            while start > copied && isRefChar formula.[start - 1] do start <- start - 1
+                    let mutable finish = if trailing then i + 2 else i + 1
+                    while finish < n && (System.Char.IsLetterOrDigit formula.[finish] || formula.[finish] = '$') do finish <- finish + 1
+                    let left = formula.Substring(start, (if leading then i - 1 else i) - start)
+                    let right = formula.Substring((if trailing then i + 2 else i + 1), finish - (if trailing then i + 2 else i + 1))
+                    if left <> "" && right <> "" then
+                        let mode = (if leading then 1 else 0) + (if trailing then 2 else 0)
+                        sb.Append(formula.Substring(copied, start - copied)).Append("TRIMRANGE(").Append(left).Append(':').Append(right)
+                          .Append(',').Append(mode).Append(',').Append(mode).Append(')') |> ignore
+                        copied <- finish
+                    i <- finish
+                else i <- i + 1
+            else i <- i + 1
+        sb.Append(formula.Substring copied).ToString()
+
 /// A formula as the file format stores it: prefixes added where they are missing.
 let fileFormula (formula: string) : string =
+    let formula = trimRefsAsCalls formula
     // Fast path: no `(` after a name of the table, nothing to do.
     let n = formula.Length
     let names = System.Collections.Generic.List<int * int * bool>()   // start, length, followed by '('

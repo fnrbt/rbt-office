@@ -1447,6 +1447,9 @@ type Workbook = {
     /// Parsed runs for shared-string entries that have rich text. Same length
     /// as `SharedStrings`; entries with no rich runs have an empty list.
     SharedStringRuns: (string * RunProps) list array
+    /// The furigana of the shared strings that have one (`Xlsx.sharedStringPhonetics`: reading,
+    /// kana type); empty when none has.
+    SharedStringPhonetics: (string * string) array
     Styles: CellStyle array
     /// Differential formats from styles.xml `<dxfs>`, indexed by dxfId.
     /// Conditional-formatting cellIs / expression rules reference these.
@@ -3157,8 +3160,9 @@ module Xlsx =
                 match reader.NodeType with
                 | System.Xml.XmlNodeType.Element ->
                     match reader.LocalName with
-                    | "r" -> runs.Add(parseSharedStringRun reader)
-                    | "t" when runs.Count = 0 ->
+                    | "r" when reader.Depth = depth + 1 -> runs.Add(parseSharedStringRun reader)
+                    // (a <t> of an <rPh> is the reading, not the text)
+                    | "t" when runs.Count = 0 && reader.Depth = depth + 1 ->
                         plainText.Append(readSharedStringText reader) |> ignore
                     | _ -> ()
                 | System.Xml.XmlNodeType.EndElement when reader.Depth = depth ->
@@ -4590,6 +4594,39 @@ module Xlsx =
                 { Text = text; Runs = runs })
         |> List.toArray
 #endif
+
+    /// The furigana of each shared string, as PHONETIC reads it: the string's text with the span
+    /// (`sb` to `eb`) of each `<rPh>` run replaced by the run's text, and the kana its
+    /// `<phoneticPr type>` asks for ("" for the default, full-width katakana); ("", "") for a
+    /// string with no reading. Empty when no string has one.
+    let sharedStringPhonetics (sstXml: string) : (string * string) array =
+        if isNull sstXml || sstXml.IndexOf("rPh", System.StringComparison.Ordinal) < 0 then [||]
+        else
+            let sst = XmlDsl.parse sstXml
+            childElems "si" sst
+            |> List.map (fun si ->
+                let runs =
+                    childElems "rPh" si
+                    |> List.choose (fun rPh ->
+                        match Xml.attr "sb" rPh |> Option.bind tryParseInt, Xml.attr "eb" rPh |> Option.bind tryParseInt with
+                        | Some sb, Some eb ->
+                            let reading = childElems "t" rPh |> List.map (descendantTextConcat "t") |> String.concat ""
+                            Some (sb, eb, reading)
+                        | _ -> None)
+                    |> List.sortBy (fun (sb, _, _) -> sb)
+                if runs.IsEmpty then "", ""
+                else
+                    let text = descendantTextConcat "t" si
+                    let sb = StringBuilder()
+                    let mutable at = 0
+                    for (first, last, reading) in runs do
+                        let first = max at (min first text.Length)
+                        sb.Append(text.Substring(at, first - at)).Append(reading) |> ignore
+                        at <- max first (min last text.Length)
+                    sb.Append(text.Substring at) |> ignore
+                    let kind = childElems "phoneticPr" si |> List.tryHead |> Option.bind (Xml.attr "type") |> Option.defaultValue ""
+                    sb.ToString(), kind)
+            |> List.toArray
 
     // Workbook sheets metadata
     type SheetInfo = {
@@ -6852,6 +6889,7 @@ let private buildWorkbook (scanRows: bool) (source: PartSource) (header: Workboo
         Sheets = worksheets
         SharedStrings = sharedStringTexts
         SharedStringRuns = sharedStringRuns
+        SharedStringPhonetics = source.Text header.SharedStringsPath |> Option.map Xlsx.sharedStringPhonetics |> Option.defaultValue [||]
         Styles = styles
         Dxfs = dxfs
         Relationships = header.Rels

@@ -16,4 +16,5 @@ let installed : bool =
     FnBonds.install ()
     FnComplex.install ()
     FnWeb.install ()
+    FnRegex.install ()
     true

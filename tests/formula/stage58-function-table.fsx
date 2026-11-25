@@ -47,7 +47,8 @@ let modules =
       Rbt.Spreadsheet.Functions.FnInformation.moduleName, Rbt.Spreadsheet.Functions.FnInformation.functions
       Rbt.Spreadsheet.Functions.FnBonds.moduleName, Rbt.Spreadsheet.Functions.FnBonds.functions
       Rbt.Spreadsheet.Functions.FnComplex.moduleName, Rbt.Spreadsheet.Functions.FnComplex.functions
-      Rbt.Spreadsheet.Functions.FnWeb.moduleName, Rbt.Spreadsheet.Functions.FnWeb.functions ]
+      Rbt.Spreadsheet.Functions.FnWeb.moduleName, Rbt.Spreadsheet.Functions.FnWeb.functions
+      Rbt.Spreadsheet.Functions.FnRegex.moduleName, Rbt.Spreadsheet.Functions.FnRegex.functions ]
 let fromModules =
     [ for (moduleName, defs) in modules do
         for def in defs ->
