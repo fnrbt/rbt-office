@@ -13913,45 +13913,10 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             sxx <- sxx + (x - meanX) * (x - meanX)
             sxy <- sxy + (y - meanY) * (x - meanX)
         count, meanY, meanX, syy, sxx, sxy
-    // Standard normal CDF (Marsaglia's series; exact to double precision).
-    let normCdf (z: float) =
-        if z < -8.0 then 0.0
-        elif z > 8.0 then 1.0
-        else
-            let q = z * z
-            let mutable sum = z
-            let mutable previous = 0.0
-            let mutable term = z
-            let mutable i = 1.0
-            while sum <> previous do
-                previous <- sum
-                i <- i + 2.0
-                term <- term * q / i
-                sum <- sum + term
-            0.5 + sum * exp (-0.5 * q - 0.91893853320467274178)
-    let normPdf (z: float) = exp (-0.5 * z * z) / sqrt (2.0 * Math.PI)
-    // Inverse standard normal: Acklam's rational approximation, then one
-    // Halley step against the exact CDF.
-    let normInv (p: float) =
-        let a = [| -3.969683028665376e+01; 2.209460984245205e+02; -2.759285104469687e+02; 1.383577518672690e+02; -3.066479806614716e+01; 2.506628277459239e+00 |]
-        let b = [| -5.447609879822406e+01; 1.615858368580409e+02; -1.556989798598866e+02; 6.680131188771972e+01; -1.328068155288572e+01 |]
-        let c = [| -7.784894002430293e-03; -3.223964580411365e-01; -2.400758277161838e+00; -2.549732539343734e+00; 4.374664141464968e+00; 2.938163982698783e+00 |]
-        let d = [| 7.784695709041462e-03; 3.224671290700398e-01; 2.445134137142996e+00; 3.754408661907416e+00 |]
-        let low = 0.02425
-        let x =
-            if p < low then
-                let q = sqrt (-2.0 * log p)
-                (((((c.[0] * q + c.[1]) * q + c.[2]) * q + c.[3]) * q + c.[4]) * q + c.[5]) / ((((d.[0] * q + d.[1]) * q + d.[2]) * q + d.[3]) * q + 1.0)
-            elif p <= 1.0 - low then
-                let q = p - 0.5
-                let r = q * q
-                (((((a.[0] * r + a.[1]) * r + a.[2]) * r + a.[3]) * r + a.[4]) * r + a.[5]) * q / (((((b.[0] * r + b.[1]) * r + b.[2]) * r + b.[3]) * r + b.[4]) * r + 1.0)
-            else
-                let q = sqrt (-2.0 * log (1.0 - p))
-                -(((((c.[0] * q + c.[1]) * q + c.[2]) * q + c.[3]) * q + c.[4]) * q + c.[5]) / ((((d.[0] * q + d.[1]) * q + d.[2]) * q + d.[3]) * q + 1.0)
-        let e = normCdf x - p
-        let u = e * sqrt (2.0 * Math.PI) * exp (x * x / 2.0)
-        x - u / (1.0 + x * u / 2.0)
+    // The standard normal distribution as Excel computes it (NormalDistribution.fs).
+    let normCdf (z: float) = NormalDistribution.cdf z
+    let normPdf (z: float) = NormalDistribution.pdf z
+    let normInv (p: float) = NormalDistribution.quantile p
     let isLeapYear year = (year % 4 = 0 && year % 100 <> 0) || year % 400 = 0
     let lastDayOfMonth (d: DateTime) = d.Day = DateTime.DaysInMonth(d.Year, d.Month)
     let days360 (startSerial: float) (endSerial: float) (european: bool) =
@@ -14423,8 +14388,11 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
             match argNum 0 with
             | Result.Error e -> err e
             | Ok z ->
-                let cumulative = fnName = "NORMSDIST" || not (supplied 1) || (match coerceBool (argRaw 1) with Ok flag -> flag | _ -> true)
-                CellValue.Number (if cumulative then normCdf z else normPdf z)
+                match (if fnName = "NORMSDIST" || not (supplied 1) then Ok true else coerceBool (argRaw 1)) with
+                | Result.Error e -> err e
+                | Ok cumulative ->
+                    let v = if cumulative then normCdf z else normPdf z
+                    if Double.IsNaN v then err Err.num else CellValue.Number v
     | "NORM.DIST" | "NORMDIST" ->
         if nargs < 4 then err Err.value
         else
@@ -14434,17 +14402,21 @@ and evalExtendedFunction (fnName: string) (args: Expr list) (ctx: EvalContext) :
                 if sd <= 0.0 then err Err.num
                 else
                     let z = (x - mean) / sd
-                    CellValue.Number (if cumulative then normCdf z else normPdf z / sd)
+                    let v = if cumulative then normCdf z else normPdf z / sd
+                    if Double.IsNaN v || Double.IsInfinity v then err Err.num else CellValue.Number v
     | "NORM.S.INV" | "NORMSINV" ->
-        unary (fun p -> if p <= 0.0 || p >= 1.0 then err Err.num else CellValue.Number (normInv p))
+        unary (fun p -> let z = normInv p in if Double.IsNaN z then err Err.num else CellValue.Number z)
     | "NORM.INV" | "NORMINV" ->
         if nargs <> 3 then err Err.value
         else
             match argNum 0, argNum 1, argNum 2 with
             | Result.Error e, _, _ | _, Result.Error e, _ | _, _, Result.Error e -> err e
             | Ok p, Ok mean, Ok sd ->
-                if p <= 0.0 || p >= 1.0 || sd <= 0.0 then err Err.num
-                else CellValue.Number (mean + sd * normInv p)
+                let z = normInv p
+                if Double.IsNaN z || sd <= 0.0 then err Err.num
+                else
+                    let v = mean + sd * z
+                    if Double.IsInfinity v then err Err.num else CellValue.Number v
     // ----- matrices ---------------------------------------------------------
     | "MDETERM" ->
         if nargs <> 1 then err Err.value

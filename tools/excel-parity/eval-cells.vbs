@@ -8,6 +8,7 @@
 ' A number's line ends with its exact value, "m*2^e" (m an integer of up to 53 bits, as hi*2^26+lo):
 ' "hi:lo:e". A line "#ITERATE<tab>count<tab>delta" first turns iterative calculation on.
 ' A line "#NOCALC" leaves out the full recalculation (the values as typed in, one by one).
+' A line "#ADDIN<tab>path" opens an add-in workbook (EUROTOOL.XLAM for EUROCONVERT) before the cells.
 Set fso = CreateObject("Scripting.FileSystemObject")
 inPath = WScript.Arguments(0)
 outPath = WScript.Arguments(1)
@@ -23,6 +24,9 @@ Do While Not f.AtEndOfStream
   If Left(line, 8) = "#ITERATE" Then
     it = Split(line, vbTab)
     x.Iteration = True : x.MaxIterations = CInt(it(1)) : x.MaxChange = CDbl(it(2))
+  ElseIf Left(line, 6) = "#ADDIN" Then
+    x.Workbooks.Open Split(line, vbTab)(1)
+    wb.Activate
   ElseIf line = "#NOCALC" Then
     noCalc = True
   ElseIf Len(line) > 0 Then

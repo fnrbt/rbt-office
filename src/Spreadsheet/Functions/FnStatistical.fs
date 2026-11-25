@@ -5,17 +5,14 @@ module Rbt.Spreadsheet.Functions.FnStatistical
 
 open System
 open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet
 open Rbt.Spreadsheet.Formula
 open Rbt.Spreadsheet.Functions.Kit
 
 let moduleName = "Statistical"
 
-/// The standard normal distribution function, Formula.fs's (NORM.S.DIST).
-let private normalCdf (a: Args) (z: float) =
-    coerceNumber (a.Ev.Call "NORM.S.DIST" [ Number z; Bool true ] a.Ctx)
-
-let private normalInverse (a: Args) (p: float) =
-    coerceNumber (a.Ev.Call "NORM.S.INV" [ Number p ] a.Ctx)
+/// The standard normal distribution of NormalDistribution.fs (NORM.S.DIST's).
+let private normalCdf (z: float) = NormalDistribution.cdf z
 
 let private variance (sample: bool) (xs: float[]) : Result<float, string> =
     let n = xs.Length
@@ -387,29 +384,30 @@ let functions : FunctionDef list =
         let! sd = a.Number 2
         do! check (sd > 0.0) Err.num
         return! numOk ((x - m) / sd) })
-      numeric1 "PHI" (fun x -> numOk (Math.Exp (-x * x / 2.0) / Math.Sqrt (2.0 * Math.PI)))
+      numeric1 "PHI" (fun x -> numOk (NormalDistribution.pdf x))
       scalar "GAUSS" 1 1 "|S" (fun a -> res {
         let! z = a.Number 0
-        let! p = normalCdf a z
-        return! numOk (p - 0.5) })
+        return! numOk (normalCdf z - 0.5) })
       scalar "CONFIDENCE.NORM" 3 3 "|S" (fun a -> res {
         let! alpha = a.Number 0
         let! sd = a.Number 1
         let! size = a.Number 2
         let size = truncate size
         do! check (alpha > 0.0 && alpha < 1.0 && sd > 0.0 && size >= 1.0) Err.num
-        let! z = normalInverse a (1.0 - alpha / 2.0)
+        let z = NormalDistribution.quantile (1.0 - alpha / 2.0)
         return! numOk (z * sd / Math.Sqrt size) })
       scalar "Z.TEST" 2 3 "RSS" (fun a -> res {
         let! xs = a.NumbersBetween 0 0
         let! x = a.Number 1
         do! check (xs.Length > 0) Err.na
-        let! sigma =
-            if a.Supplied 2 then a.Number 2
-            else variance true xs |> Result.map Math.Sqrt
-        do! check (sigma > 0.0) Err.div0
-        let! p = normalCdf a ((Array.average xs - x) / (sigma / Math.Sqrt (float xs.Length)))
-        return! numOk (1.0 - p) }) ]
+        // The sample deviation is computed (and #DIV/0! for one value) even when sigma is given.
+        let! sd = variance true xs |> Result.map Math.Sqrt
+        let! sigma = if a.Supplied 2 then a.Number 2 else Ok sd
+        do! check (a.Supplied 2 || sigma > 0.0) Err.div0
+        do! check (sigma > 0.0) Err.num
+        // The upper tail as the lower one of the mirrored statistic: Excel keeps
+        // the small probabilities (7.2e-73), which 1 - P would lose.
+        return! numOk (normalCdf ((x - Array.average xs) / (sigma / Math.Sqrt (float xs.Length)))) }) ]
     |> fun defs ->
         let byName name = defs |> List.find (fun d -> d.Name = name)
         defs @ [ alias "CONFIDENCE" (byName "CONFIDENCE.NORM"); alias "ZTEST" (byName "Z.TEST") ]

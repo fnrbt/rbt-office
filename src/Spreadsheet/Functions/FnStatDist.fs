@@ -14,6 +14,7 @@ module Rbt.Spreadsheet.Functions.FnStatDist
 
 open System
 open Rbt.Spreadsheet.Model
+open Rbt.Spreadsheet
 open Rbt.Spreadsheet.Formula
 open Rbt.Spreadsheet.Functions.Kit
 
@@ -518,25 +519,6 @@ let gammaInverse (a: float) (p: float) (q: float) : float =
         // A quantile below the normal doubles is 0 (as Excel's GAMMA.INV gives it).
         if x < 2.2250738585072014e-308 then 0.0 else x
 
-/// The standard normal distribution function, from Q(1/2, z^2/2) (accurate in
-/// the far tails, where 1/2 + series loses everything): z^2 is carried as a
-/// double-double and its low part applied to first order.
-let normalCdf (z: float) =
-    if z = 0.0 then 0.5
-    elif Double.IsNaN z then nan
-    else
-        let hi, lo = twoProd z z
-        let h = hi / 2.0
-        let _, q = gammaPQ 0.5 h
-        let q = if h > 0.0 && lo <> 0.0 then q - lo / 2.0 * gammaDensity 0.5 h else q
-        if z < 0.0 then q / 2.0 else 1.0 - q / 2.0
-
-/// The standard normal quantile, 0 < p < 1, from the inverse of Q(1/2, .).
-let normalQuantile (p: float) =
-    if p = 0.5 then 0.0
-    elif p < 0.5 then -(Math.Sqrt (2.0 * gammaInverse 0.5 (1.0 - 2.0 * p) (2.0 * p)))
-    else Math.Sqrt (2.0 * gammaInverse 0.5 (2.0 * p - 1.0) (2.0 * (1.0 - p)))
-
 /// x with I_x(a, b) = p (q = 1 - p), solving for whichever tail is the
 /// smaller.
 let private betaSolve (a: float) (b: float) (p: float) (q: float) : float =
@@ -989,21 +971,21 @@ let private lognormDist =
         let! cumulative = a.Bool 3
         do! check (x > 0.0 && sd > 0.0) Err.num
         let z = (Math.Log x - mean) / sd
-        if cumulative then return! numOk (normalCdf z)
+        if cumulative then return! numOk (NormalDistribution.cdf z)
         else return! numOk (Math.Exp (-0.5 * z * z) / (Math.Sqrt (2.0 * Math.PI) * sd * x)) })
 
 let private lognormDistLegacy =
     scalar "LOGNORMDIST" 3 3 "|S" (fun a -> res {
         let! x, mean, sd = lognormArgs a
         do! check (x > 0.0 && sd > 0.0) Err.num
-        return! numOk (normalCdf ((Math.Log x - mean) / sd)) })
+        return! numOk (NormalDistribution.cdf ((Math.Log x - mean) / sd)) })
 
 let private lognormInv name =
     scalar name 3 3 "|S" (fun a -> res {
         let! p, mean, sd = lognormArgs a
         do! probability p
         do! check (sd > 0.0) Err.num
-        return! numOk (Math.Exp (mean + sd * normalQuantile p)) })
+        return! numOk (Math.Exp (mean + sd * NormalDistribution.quantile p)) })
 
 let private hypgeomArgs (a: Args) = res {
     let! sample = a.Number 0
