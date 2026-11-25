@@ -313,6 +313,12 @@ let functions : FunctionDef list =
       scalar "DBCS" 1 1 "|S" (fun a -> res {
         let! text = a.Text 0
         return CellValue.String (if isDoubleByteLanguage () then toFullWidth text else text) })
+      // JIS is DBCS under its Japanese name: an Excel without a double-byte editing language does not know
+      // it (#NAME?, as on the parity VM).
+      scalar "JIS" 1 1 "|S" (fun a -> res {
+        do! check (isDoubleByteLanguage ()) Err.name
+        let! text = a.Text 0
+        return CellValue.String (toFullWidth text) })
       scalar "PHONETIC" 1 1 "R" phonetic
       byteVariant "LENB" 1 1 "LEN"
       byteVariant "LEFTB" 1 2 "LEFT"

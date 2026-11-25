@@ -338,7 +338,7 @@ eq "grown, full recalculation" (valueAtCell fullyGrown 0 2, valueAtCell fullyGro
 // ===== ASC, DBCS, JIS, PHONETIC =======================================================
 // Excel 2019 on the VM (English, no East Asian editing language: phonetic-vm-language.tsv): ASC and
 // DBCS give every text as it is (widthconv-excel.tsv: every code point of the blocks they would
-// touch), JIS is no function (#NAME?), PHONETIC is #N/A for any reference - furigana in the file
+// touch), JIS is no function (#NAME?; with a double-byte language it is DBCS), PHONETIC is #N/A for any reference - furigana in the file
 // (synthetic-phonetic.xlsx, phonetic-excel.tsv) or not (phonetic-cells-excel.tsv).
 let widthCases = File.ReadAllLines(Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "tools", "excel-parity", "widthconv-cells.txt"))
 let widthExcel = File.ReadAllLines(Path.Combine(__SOURCE_DIRECTORY__, "..", "..", "tools", "excel-parity", "widthconv-excel.tsv"))
@@ -389,6 +389,8 @@ for line in phoneticExcel do
 // Unicode's width forms (as Windows' LCMapString) - not checked against such an Excel.
 setDoubleByteLanguage true
 text empty "=ASC(\"ＡＢＣ１２３\")" "ABC123"
+text empty "=JIS(\"abc ｶﾞ123\")" "ａｂｃ　ガ１２３"
+text empty "=JIS(\"abc ｶﾞ123\")" (match value empty "=DBCS(\"abc ｶﾞ123\")" with CellValue.String t -> t | _ -> "")
 text empty "=ASC(\"Ｅｘｃｅｌ　２０１９\")" "Excel 2019"
 text empty "=ASC(\"アイウ\")" "ｱｲｳ"
 text empty "=ASC(\"ガギグパ\")" "ｶﾞｷﾞｸﾞﾊﾟ"
